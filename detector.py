@@ -19,7 +19,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL = os.environ.get("SENT2_MODEL", "qwen2.5vl:7b")
 
 TILE = 320       # tile size in source pixels
-UPSCALE = 3      # tiles are upscaled before being sent to the model (~960 px)
+SENT_PX = 1000   # each tile is upscaled so its long side is ~this many px
 OVERLAP = 48     # tile overlap so objects on seams aren't missed
 MAX_BOX_FRAC = 0.6   # boxes wider/taller than this share of the tile are junk
 MAX_PER_TILE = 40    # sanity cap on detections returned for one tile
@@ -35,12 +35,12 @@ DEFAULT_TARGETS = ["ship", "boat", "airplane"]
 
 PROMPT = """This is a {w}x{h} pixel Sentinel-2 satellite image tile at 10 m per pixel.
 At this resolution a car is ~1 px, an aircraft ~7 px, a large ship ~30 px — objects are TINY.
-Look carefully for these small objects only: {targets}.
+Look carefully for these small objects: {targets}.
 
 Rules:
-- Report a box ONLY for a clear, distinct object you can actually see. It is far better to miss one than to invent one.
-- Most tiles contain NONE of these objects. If so, return an empty list — that is the correct and common answer.
-- Each box must tightly wrap ONE small object. Never return a box that covers most of the tile or a large stretch of ground, water, runway or apron.
+- Box every instance you can actually identify, but only real, visible objects — do not guess wildly on empty ground.
+- Each box must tightly wrap ONE object. Never return a box that covers most of the tile or a large stretch of ground, water, runway or apron.
+- If you genuinely see none, return an empty list.
 
 Respond with ONLY JSON:
 {{"detections": [{{"label": "<one of: {targets}>", "box": [x1, y1, x2, y2]}}]}}
@@ -230,13 +230,16 @@ def detect(image_path: str, targets: list[str] | None = None, progress=None) -> 
         for ox in xs:
             tile = img.crop((ox, oy, min(ox + TILE, W), min(oy + TILE, H)))
             tw, th = tile.size
-            sent = tile.resize((tw * UPSCALE, th * UPSCALE), Image.LANCZOS)
+            # Upscale each tile so its long side is ~SENT_PX; small (tightly
+            # cropped) areas get more zoom, making objects easier to see.
+            up = max(2, min(6, round(SENT_PX / max(tw, th))))
+            sent = tile.resize((tw * up, th * up), Image.LANCZOS)
             for d in _query_tile(sent, model, targets):
                 x1, y1, x2, y2 = d["bbox"]
                 detections.append({
                     "label": d["label"],
-                    "bbox": [ox + x1 / UPSCALE, oy + y1 / UPSCALE,
-                             ox + x2 / UPSCALE, oy + y2 / UPSCALE],
+                    "bbox": [ox + x1 / up, oy + y1 / up,
+                             ox + x2 / up, oy + y2 / up],
                 })
             done += 1
             if progress:

@@ -23,6 +23,8 @@
   input[type=text] { cursor: text; width: 230px; }
   input[type=text]::placeholder { color: var(--muted); }
   button.primary { background: var(--accent); color: #06202e; border: none; font-weight: 600; }
+  button.active { background: var(--accent); color: #06202e; border: none; font-weight: 600; }
+  #map.drawing { cursor: crosshair; }
   button.detect { background: var(--danger); color: #fff; border: none; font-weight: 600; }
   button:disabled { opacity: .45; cursor: default; }
   #status { font-size: 13px; color: var(--muted); margin-left: auto; max-width: 46ch; }
@@ -52,10 +54,11 @@
       <option value="95">any</option>
     </select>
   </div>
+  <button id="draw">✏️ Draw area</button>
   <button id="fetch" class="primary" disabled>Fetch latest imagery</button>
   <button id="detect" class="detect" disabled>Detect targets (AI)</button>
   <div class="ctrl"><label><input type="checkbox" id="showBoxes" checked> highlights</label></div>
-  <div id="status">Click anywhere on the map to pick a spot.</div>
+  <div id="status">Drag a box over an area (or click a point), then fetch.</div>
 </header>
 <div id="map"></div>
 <div class="legend" id="legend">
@@ -74,23 +77,80 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const statusEl = document.getElementById('status');
 const fetchBtn = document.getElementById('fetch');
 const detectBtn = document.getElementById('detect');
+const drawBtn = document.getElementById('draw');
 const showBoxes = document.getElementById('showBoxes');
 
 let picked = null, marker = null, overlay = null, scene = null;
 let boxLayer = L.layerGroup().addTo(map);
 let cleanUrl = null, annotatedUrl = null;
 
+// Selected area: either a drawn rectangle (selectionRect) or a click point.
+let selectionRect = null, selectedBounds = null;
+
 function setStatus(msg, err = false) {
   statusEl.textContent = msg;
   statusEl.className = err ? 'err' : '';
 }
 
+function clearSelection() {
+  if (marker) { marker.remove(); marker = null; }
+  if (selectionRect) { selectionRect.remove(); selectionRect = null; }
+  selectedBounds = null;
+  picked = null;
+}
+
+// --- Click a point (default mode) -------------------------------------------
 map.on('click', e => {
+  if (drawing) return;               // clicks are for point-pick only
+  clearSelection();
   picked = e.latlng;
-  if (marker) marker.remove();
   marker = L.marker(picked).addTo(map);
   fetchBtn.disabled = false;
   setStatus(`Picked ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)} — fetch imagery.`);
+});
+
+// --- Drag a rectangle (draw mode) -------------------------------------------
+let drawing = false, dragStart = null;
+
+drawBtn.onclick = () => {
+  drawing = !drawing;
+  drawBtn.classList.toggle('active', drawing);
+  map.getContainer().classList.toggle('drawing', drawing);
+  if (drawing) {
+    map.dragging.disable();
+    setStatus('Draw mode: drag a box over the area you want. Click the button again to pan.');
+  } else {
+    map.dragging.enable();
+    setStatus('Pan mode. Drag the map, or turn on Draw area to select a box.');
+  }
+};
+
+map.on('mousedown', e => {
+  if (!drawing) return;
+  clearSelection();
+  dragStart = e.latlng;
+  selectionRect = L.rectangle([dragStart, dragStart],
+    {color: '#38bdf8', weight: 2, dashArray: '5', fillOpacity: 0.08}).addTo(map);
+});
+
+map.on('mousemove', e => {
+  if (!drawing || !dragStart) return;
+  selectionRect.setBounds(L.latLngBounds(dragStart, e.latlng));
+});
+
+map.on('mouseup', e => {
+  if (!drawing || !dragStart) return;
+  const b = L.latLngBounds(dragStart, e.latlng);
+  dragStart = null;
+  if (b.getNorth() - b.getSouth() < 1e-4 || b.getEast() - b.getWest() < 1e-4) {
+    setStatus('Box too small — drag a larger area.', true);
+    if (selectionRect) { selectionRect.remove(); selectionRect = null; }
+    return;
+  }
+  selectedBounds = b;
+  fetchBtn.disabled = false;
+  const km = (b.getNorth() - b.getSouth()) * 111;
+  setStatus(`Area selected (~${km.toFixed(1)} km tall). Fetch imagery, or turn off Draw area to pan.`);
 });
 
 function updateLegend(colors) {
@@ -117,26 +177,34 @@ fetchBtn.onclick = async () => {
       });
       const plan = await pr.json();
       if (pr.ok) {
+        // A drawn box wins over the AI's suggested area size.
         size_km = plan.size_km; max_cloud = plan.max_cloud; targets = plan.targets;
         updateLegend(plan.colors);
-        setStatus(`AI plan: ${plan.targets.join(', ')} · ${plan.size_km} km · <${plan.max_cloud}% cloud — ${plan.reason}`);
+        const area = selectedBounds ? 'your drawn area' : `${plan.size_km} km`;
+        setStatus(`AI plan: ${plan.targets.join(', ')} · ${area} · <${plan.max_cloud}% cloud — ${plan.reason}`);
       }
     } catch (e) { /* fall back to manual settings */ }
+  }
+
+  const body = {max_cloud, targets};
+  if (selectedBounds) {
+    body.bbox = [selectedBounds.getWest(), selectedBounds.getSouth(),
+                 selectedBounds.getEast(), selectedBounds.getNorth()];
+  } else {
+    body.lat = picked.lat; body.lon = picked.lng; body.size_km = size_km;
   }
 
   setStatus('Searching Copernicus archive & downloading latest scene…');
   try {
     const r = await fetch('/api/fetch', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        lat: picked.lat, lon: picked.lng,
-        size_km, max_cloud, targets
-      })
+      body: JSON.stringify(body)
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
     scene = j;
     cleanUrl = j.image_url; annotatedUrl = null;
+    if (selectionRect) { selectionRect.remove(); selectionRect = null; }
     if (overlay) overlay.remove();
     overlay = L.imageOverlay(j.image_url, j.bounds, {opacity: 1}).addTo(map);
     map.fitBounds(j.bounds);

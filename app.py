@@ -72,12 +72,21 @@ def data_file(name):
 @app.post("/api/fetch")
 def api_fetch():
     p = request.get_json(force=True)
-    lat, lon = float(p["lat"]), float(p["lon"])
-    size_km = float(p.get("size_km", 8))
     max_cloud = float(p.get("max_cloud", 30))
     targets = [str(t).lower() for t in p.get("targets", []) if str(t).strip()] or detector.DEFAULT_TARGETS
 
-    bbox = sentinel.bbox_around(lat, lon, size_km)
+    # Either an explicit drawn rectangle [west, south, east, north],
+    # or a click point plus an area size.
+    if p.get("bbox"):
+        bbox = [float(v) for v in p["bbox"]]
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            return jsonify({"error": "Drawn area is empty — drag a larger box."}), 400
+        if (bbox[2] - bbox[0]) > 0.6 or (bbox[3] - bbox[1]) > 0.6:
+            return jsonify({"error": "Drawn area is too large (max ~60 km) — draw a tighter box."}), 400
+    else:
+        lat, lon = float(p["lat"]), float(p["lon"])
+        size_km = float(p.get("size_km", 8))
+        bbox = sentinel.bbox_around(lat, lon, size_km)
     try:
         items = sentinel.search_latest(bbox, max_cloud=max_cloud)
     except Exception as e:

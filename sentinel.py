@@ -43,20 +43,23 @@ def search_latest(bbox: list[float], max_cloud: float = 30.0, limit: int = 12) -
 
 
 def _stretch(img: np.ndarray) -> np.ndarray:
-    """Percentile contrast stretch on raw reflectance so every scene —
-    bright desert or dark ocean — uses the full display range. A single
-    stretch across all bands preserves the colour balance; nodata (black)
-    pixels are excluded from the stats."""
-    valid = img[img.any(axis=-1)].astype(np.float32)
-    if valid.size == 0:
+    """Per-band percentile contrast stretch on raw reflectance. Stretching
+    each band independently balances the colour (desert reads as natural tan
+    instead of a red/orange cast) and uses the full display range whether the
+    scene is bright desert or dark ocean. Nodata (black) pixels are excluded."""
+    mask = img.any(axis=-1)
+    if not mask.any():
         return np.zeros(img.shape, np.uint8)
-    lo, hi = np.percentile(valid, (2.0, 98.0))
-    if hi - lo < 1:
-        hi = lo + 1
-    out = np.clip((img.astype(np.float32) - lo) / (hi - lo), 0, 1)
-    # mild gamma lift so shadows and water keep visible detail
-    out = out ** 0.85
-    return (out * 255).astype(np.uint8)
+    out = np.zeros(img.shape, np.uint8)
+    for b in range(img.shape[-1]):
+        band = img[..., b].astype(np.float32)
+        lo, hi = np.percentile(band[mask], (2.0, 98.0))
+        if hi - lo < 1:
+            hi = lo + 1
+        # mild gamma lift so shadows and water keep visible detail
+        v = np.clip((band - lo) / (hi - lo), 0, 1) ** 0.85
+        out[..., b] = (v * 255).astype(np.uint8)
+    return out
 
 
 def download_visual(item: dict, bbox: list[float], out_path: str) -> dict:
