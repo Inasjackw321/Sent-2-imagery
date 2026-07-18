@@ -16,10 +16,12 @@
   header h1 { font-size: 16px; margin: 0; letter-spacing: .03em; }
   header h1 span { color: var(--accent); }
   .ctrl { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
-  select, button {
+  select, button, input[type=text] {
     background: #202836; color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer;
   }
+  input[type=text] { cursor: text; width: 230px; }
+  input[type=text]::placeholder { color: var(--muted); }
   button.primary { background: var(--accent); color: #06202e; border: none; font-weight: 600; }
   button.detect { background: var(--danger); color: #fff; border: none; font-weight: 600; }
   button:disabled { opacity: .45; cursor: default; }
@@ -34,6 +36,7 @@
 <body>
 <header>
   <h1>Sent-<span>2</span> Imagery</h1>
+  <input type="text" id="query" placeholder="What are you looking for? e.g. jets at this airport">
   <div class="ctrl">Area
     <select id="size">
       <option value="4">4 km</option>
@@ -50,15 +53,15 @@
     </select>
   </div>
   <button id="fetch" class="primary" disabled>Fetch latest imagery</button>
-  <button id="detect" class="detect" disabled>Detect boats &amp; planes (AI)</button>
+  <button id="detect" class="detect" disabled>Detect targets (AI)</button>
   <div class="ctrl"><label><input type="checkbox" id="showBoxes" checked> highlights</label></div>
   <div id="status">Click anywhere on the map to pick a spot.</div>
 </header>
 <div id="map"></div>
-<div class="legend">
+<div class="legend" id="legend">
   <b>Legend</b><br>
   <span class="sw" style="background:#00e5ff"></span>boat / ship<br>
-  <span class="sw" style="background:#ff3d71"></span>airplane / jet
+  <span class="sw" style="background:#ff3d71"></span>airplane
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -90,17 +93,44 @@ map.on('click', e => {
   setStatus(`Picked ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)} — fetch imagery.`);
 });
 
+function updateLegend(colors) {
+  const el = document.getElementById('legend');
+  el.innerHTML = '<b>Legend</b><br>' + Object.entries(colors)
+    .map(([label, c]) => `<span class="sw" style="background:${c}"></span>${label}`)
+    .join('<br>');
+}
+
 fetchBtn.onclick = async () => {
   fetchBtn.disabled = detectBtn.disabled = true;
   boxLayer.clearLayers();
+  const query = document.getElementById('query').value.trim();
+  let size_km = +document.getElementById('size').value;
+  let max_cloud = +document.getElementById('cloud').value;
+  let targets = [];
+
+  if (query) {
+    setStatus('Asking the AI how to set up this search…');
+    try {
+      const pr = await fetch('/api/plan', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query})
+      });
+      const plan = await pr.json();
+      if (pr.ok) {
+        size_km = plan.size_km; max_cloud = plan.max_cloud; targets = plan.targets;
+        updateLegend(plan.colors);
+        setStatus(`AI plan: ${plan.targets.join(', ')} · ${plan.size_km} km · <${plan.max_cloud}% cloud — ${plan.reason}`);
+      }
+    } catch (e) { /* fall back to manual settings */ }
+  }
+
   setStatus('Searching Copernicus archive & downloading latest scene…');
   try {
     const r = await fetch('/api/fetch', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
         lat: picked.lat, lon: picked.lng,
-        size_km: +document.getElementById('size').value,
-        max_cloud: +document.getElementById('cloud').value
+        size_km, max_cloud, targets
       })
     });
     const j = await r.json();
@@ -110,8 +140,10 @@ fetchBtn.onclick = async () => {
     if (overlay) overlay.remove();
     overlay = L.imageOverlay(j.image_url, j.bounds, {opacity: 1}).addTo(map);
     map.fitBounds(j.bounds);
+    if (j.colors) updateLegend(j.colors);
     const when = new Date(j.datetime).toLocaleString();
-    setStatus(`Scene ${j.scene_id} · ${when} · ${j.cloud_cover.toFixed(0)}% cloud. Ready to detect.`);
+    const what = j.targets ? ` Looking for: ${j.targets.join(', ')}.` : '';
+    setStatus(`Scene from ${when} · ${j.cloud_cover.toFixed(0)}% cloud.${what} Ready to detect.`);
     detectBtn.disabled = false;
   } catch (e) {
     setStatus('Fetch failed: ' + e.message, true);
@@ -151,8 +183,7 @@ async function poll() {
   annotatedUrl = res.annotated_url + '?t=' + Date.now();
   if (showBoxes.checked) overlay.setUrl(annotatedUrl);
   for (const d of res.detections) {
-    const color = (d.label === 'airplane' || d.label === 'jet') ? '#ff3d71' : '#00e5ff';
-    L.rectangle(d.bounds, {color, weight: 2, fillOpacity: 0.08})
+    L.rectangle(d.bounds, {color: d.color || '#ffd400', weight: 2, fillOpacity: 0.08})
       .bindPopup(d.label).addTo(boxLayer);
   }
   setStatus(res.count === 0

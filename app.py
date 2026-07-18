@@ -42,7 +42,21 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 scenes: dict[str, dict] = {}
 jobs: dict[str, dict] = {}
 
-LABEL_COLORS = {"boat": "#00e5ff", "ship": "#00e5ff", "airplane": "#ff3d71", "jet": "#ff3d71"}
+PALETTE = ["#00e5ff", "#ff3d71", "#ffd400", "#7cff4f"]
+
+
+def _color_map(targets: list[str]) -> dict[str, str]:
+    return {t: PALETTE[i % len(PALETTE)] for i, t in enumerate(targets)}
+
+
+@app.post("/api/plan")
+def api_plan():
+    query = str(request.get_json(force=True).get("query", "")).strip()
+    if not query:
+        return jsonify({"error": "Empty query."}), 400
+    plan = detector.plan_query(query)
+    plan["colors"] = _color_map(plan["targets"])
+    return jsonify(plan)
 
 
 @app.get("/")
@@ -61,6 +75,7 @@ def api_fetch():
     lat, lon = float(p["lat"]), float(p["lon"])
     size_km = float(p.get("size_km", 8))
     max_cloud = float(p.get("max_cloud", 30))
+    targets = [str(t).lower() for t in p.get("targets", []) if str(t).strip()] or detector.DEFAULT_TARGETS
 
     bbox = sentinel.bbox_around(lat, lon, size_km)
     try:
@@ -82,6 +97,8 @@ def api_fetch():
         meta["key"] = key
         meta["image_url"] = f"/data/{png}"
         meta["image_path"] = os.path.join(DATA_DIR, png)
+        meta["targets"] = targets
+        meta["colors"] = _color_map(targets)
         scenes[key] = meta
         public = {k: v for k, v in meta.items() if k != "image_path"}
         return jsonify(public)
@@ -107,7 +124,7 @@ def api_detect():
             def progress(done, total):
                 job["done"], job["total"] = done, total
 
-            dets = detector.detect(scene["image_path"], progress=progress)
+            dets = detector.detect(scene["image_path"], targets=scene["targets"], progress=progress)
             annotated = _annotate(scene, dets)
             job["result"] = {
                 "detections": _georef(scene, dets),
@@ -139,9 +156,10 @@ def _annotate(scene: dict, dets: list[dict]) -> str:
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
     except OSError:
         font = ImageFont.load_default()
+    colors = scene.get("colors", {})
     for d in dets:
         x1, y1, x2, y2 = d["bbox"]
-        color = LABEL_COLORS.get(d["label"], "#ffd400")
+        color = colors.get(d["label"], "#ffd400")
         draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
         draw.text((x1, max(0, y1 - 18)), d["label"], fill=color, font=font)
     name = f"annotated_{scene['key']}.png"
@@ -153,11 +171,13 @@ def _georef(scene: dict, dets: list[dict]) -> list[dict]:
     """Convert pixel bboxes to lat/lon rectangles for the map."""
     (south, west), (north, east) = scene["bounds"]
     W, H = scene["width"], scene["height"]
+    colors = scene.get("colors", {})
     out = []
     for d in dets:
         x1, y1, x2, y2 = d["bbox"]
         out.append({
             "label": d["label"],
+            "color": colors.get(d["label"], "#ffd400"),
             "bounds": [
                 [north - (y2 / H) * (north - south), west + (x1 / W) * (east - west)],
                 [north - (y1 / H) * (north - south), west + (x2 / W) * (east - west)],

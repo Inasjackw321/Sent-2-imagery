@@ -43,48 +43,59 @@ def search_latest(bbox: list[float], max_cloud: float = 30.0, limit: int = 12) -
 
 
 def _stretch(img: np.ndarray) -> np.ndarray:
-    """Percentile contrast stretch so bright scenes (deserts, sand) don't
-    render washed-out white. A single stretch across all bands preserves
-    the colour balance; nodata (black) pixels are excluded from the stats."""
-    valid = img[img.any(axis=-1)]
+    """Percentile contrast stretch on raw reflectance so every scene —
+    bright desert or dark ocean — uses the full display range. A single
+    stretch across all bands preserves the colour balance; nodata (black)
+    pixels are excluded from the stats."""
+    valid = img[img.any(axis=-1)].astype(np.float32)
     if valid.size == 0:
-        return img.astype(np.uint8)
-    lo, hi = np.percentile(valid.astype(np.float32), (1.0, 99.0))
+        return np.zeros(img.shape, np.uint8)
+    lo, hi = np.percentile(valid, (2.0, 98.0))
     if hi - lo < 1:
-        return img.astype(np.uint8)
-    out = (img.astype(np.float32) - lo) * (255.0 / (hi - lo))
-    return np.clip(out, 0, 255).astype(np.uint8)
+        hi = lo + 1
+    out = np.clip((img.astype(np.float32) - lo) / (hi - lo), 0, 1)
+    # mild gamma lift so shadows and water keep visible detail
+    out = out ** 0.85
+    return (out * 255).astype(np.uint8)
 
 
 def download_visual(item: dict, bbox: list[float], out_path: str) -> dict:
-    """Windowed read of the scene's true-colour COG, warped to EPSG:4326.
+    """Windowed read of the scene's raw 10 m red/green/blue reflectance
+    bands, warped to EPSG:4326 and rendered with our own contrast stretch.
+
+    The ready-made 'visual' (TCI) product clips bright surfaces like
+    desert to pure white, destroying detail — the raw bands don't.
 
     Saves a PNG to out_path and returns metadata including the exact
     geographic bounds of the saved image.
     """
-    href = item["assets"]["visual"]["href"]
-    with rasterio.open(href) as src:
-        with WarpedVRT(src, crs="EPSG:4326", resampling=Resampling.bilinear) as vrt:
-            left = max(bbox[0], vrt.bounds.left)
-            bottom = max(bbox[1], vrt.bounds.bottom)
-            right = min(bbox[2], vrt.bounds.right)
-            top = min(bbox[3], vrt.bounds.top)
-            if right <= left or top <= bottom:
-                raise ValueError("Requested area does not overlap this scene")
+    bands = []
+    out_w = out_h = 0
+    bottom = left = top = right = 0.0
+    for asset in ("red", "green", "blue"):
+        href = item["assets"][asset]["href"]
+        with rasterio.open(href) as src:
+            with WarpedVRT(src, crs="EPSG:4326", resampling=Resampling.bilinear) as vrt:
+                left = max(bbox[0], vrt.bounds.left)
+                bottom = max(bbox[1], vrt.bounds.bottom)
+                right = min(bbox[2], vrt.bounds.right)
+                top = min(bbox[3], vrt.bounds.top)
+                if right <= left or top <= bottom:
+                    raise ValueError("Requested area does not overlap this scene")
 
-            window = from_bounds(left, bottom, right, top, transform=vrt.transform)
-            w, h = int(window.width), int(window.height)
-            scale = min(1.0, MAX_PIXELS / max(w, h))
-            out_w, out_h = max(1, int(w * scale)), max(1, int(h * scale))
+                window = from_bounds(left, bottom, right, top, transform=vrt.transform)
+                w, h = int(window.width), int(window.height)
+                scale = min(1.0, MAX_PIXELS / max(w, h))
+                out_w, out_h = max(1, int(w * scale)), max(1, int(h * scale))
 
-            data = vrt.read(
-                indexes=[1, 2, 3],
-                window=window,
-                out_shape=(3, out_h, out_w),
-                resampling=Resampling.bilinear,
-            )
+                bands.append(vrt.read(
+                    indexes=1,
+                    window=window,
+                    out_shape=(out_h, out_w),
+                    resampling=Resampling.bilinear,
+                ))
 
-    img = _stretch(np.transpose(data, (1, 2, 0)))
+    img = _stretch(np.stack(bands, axis=-1))
     Image.fromarray(img, "RGB").save(out_path)
 
     props = item["properties"]

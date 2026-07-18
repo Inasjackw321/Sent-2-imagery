@@ -22,12 +22,22 @@ TILE = 512       # tile size in source pixels
 UPSCALE = 2      # tiles are upscaled before being sent to the model
 OVERLAP = 64     # tile overlap so objects on seams aren't missed
 
-PROMPT = """You are analysing a satellite image tile ({w}x{h} pixels).
-Find every boat, ship, airplane or jet visible in the image.
-Respond with ONLY a JSON array, no other text. Each element:
-{{"label": "boat" | "ship" | "airplane", "bbox": [x1, y1, x2, y2]}}
+DEFAULT_TARGETS = ["boat", "ship", "airplane"]
+
+PROMPT = """You are analysing a satellite image tile ({w}x{h} pixels, ~10 m per pixel).
+Find every instance of: {targets}.
+Respond with ONLY JSON, no other text, in this exact shape:
+{{"detections": [{{"label": "<one of: {targets}>", "bbox": [x1, y1, x2, y2]}}]}}
 bbox is in pixel coordinates of this {w}x{h} image (x1,y1 = top-left, x2,y2 = bottom-right).
-If there are none, respond with []."""
+If there are none: {{"detections": []}}"""
+
+PLAN_PROMPT = """You configure a Sentinel-2 satellite imagery app (10 m/pixel resolution).
+The user says what they want to find: "{query}"
+Choose settings and respond with ONLY JSON in this exact shape:
+{{"targets": ["<1-4 short singular object nouns to detect>"],
+  "size_km": <area size in km, 2-20: small (2-5) for a single harbour/airport, large (10-20) for coastline or region scans>,
+  "max_cloud": <max cloud cover %, 0-100: low (10-20) normally, higher only if the user cares more about recency than clarity>,
+  "reason": "<one short sentence explaining your choices>"}}"""
 
 
 def _installed_models() -> list[str]:
@@ -59,41 +69,69 @@ def ollama_available() -> tuple[bool, str]:
         return False, f"Cannot reach Ollama at {OLLAMA_URL}. Is it running?"
 
 
-def _query_tile(tile_img: Image.Image, model: str) -> list[dict]:
-    w, h = tile_img.size
-    buf = io.BytesIO()
-    tile_img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode()
-
+def _chat(model: str, prompt: str, images: list[str] | None = None) -> str:
+    msg: dict = {"role": "user", "content": prompt}
+    if images:
+        msg["images"] = images
     r = requests.post(
         f"{OLLAMA_URL}/api/chat",
         json={
             "model": model,
             "stream": False,
-            "messages": [{
-                "role": "user",
-                "content": PROMPT.format(w=w, h=h),
-                "images": [b64],
-            }],
+            "format": "json",
+            "messages": [msg],
             "options": {"temperature": 0},
         },
         timeout=300,
     )
     if not r.ok:
-        detail = r.text[:300]
-        raise RuntimeError(f"Ollama error {r.status_code} for model '{model}': {detail}")
-    text = r.json().get("message", {}).get("content", "")
+        raise RuntimeError(f"Ollama error {r.status_code} for model '{model}': {r.text[:300]}")
+    return r.json().get("message", {}).get("content", "")
+
+
+def plan_query(query: str) -> dict:
+    """Ask the model to turn 'what am I looking for' into fetch/detect settings."""
+    plan = {"targets": DEFAULT_TARGETS, "size_km": 8, "max_cloud": 30,
+            "reason": "Default settings."}
+    try:
+        text = _chat(resolve_model(), PLAN_PROMPT.format(query=query.strip()[:300]))
+        raw = json.loads(text)
+    except (RuntimeError, requests.RequestException, json.JSONDecodeError):
+        return plan
+    targets = [str(t).lower().strip() for t in raw.get("targets", []) if str(t).strip()][:4]
+    if targets:
+        plan["targets"] = targets
+    try:
+        plan["size_km"] = min(20.0, max(2.0, float(raw["size_km"])))
+        plan["max_cloud"] = min(100.0, max(0.0, float(raw["max_cloud"])))
+    except (KeyError, TypeError, ValueError):
+        pass
+    if isinstance(raw.get("reason"), str):
+        plan["reason"] = raw["reason"][:200]
+    return plan
+
+
+def _query_tile(tile_img: Image.Image, model: str, targets: list[str]) -> list[dict]:
+    w, h = tile_img.size
+    buf = io.BytesIO()
+    tile_img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    text = _chat(model, PROMPT.format(w=w, h=h, targets=", ".join(targets)), images=[b64])
     return _parse_detections(text, w, h)
 
 
 def _parse_detections(text: str, w: int, h: int) -> list[dict]:
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if not match:
-        return []
+    raw = None
     try:
-        raw = json.loads(match.group(0))
+        obj = json.loads(text)
+        raw = obj.get("detections") if isinstance(obj, dict) else obj
     except json.JSONDecodeError:
-        return []
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if match:
+            try:
+                raw = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
     out = []
     for d in raw if isinstance(raw, list) else []:
         try:
@@ -133,9 +171,10 @@ def _dedupe(dets: list[dict], iou_thresh: float = 0.45) -> list[dict]:
     return kept
 
 
-def detect(image_path: str, progress=None) -> list[dict]:
+def detect(image_path: str, targets: list[str] | None = None, progress=None) -> list[dict]:
     """Run detection over the whole image. Returns detections in full-image
     pixel coordinates: [{"label", "bbox": [x1, y1, x2, y2]}, ...]."""
+    targets = targets or DEFAULT_TARGETS
     model = resolve_model()
     img = Image.open(image_path).convert("RGB")
     W, H = img.size
@@ -151,7 +190,7 @@ def detect(image_path: str, progress=None) -> list[dict]:
             tile = img.crop((ox, oy, min(ox + TILE, W), min(oy + TILE, H)))
             tw, th = tile.size
             sent = tile.resize((tw * UPSCALE, th * UPSCALE), Image.LANCZOS)
-            for d in _query_tile(sent, model):
+            for d in _query_tile(sent, model, targets):
                 x1, y1, x2, y2 = d["bbox"]
                 detections.append({
                     "label": d["label"],
