@@ -42,6 +42,20 @@ def search_latest(bbox: list[float], max_cloud: float = 30.0, limit: int = 12) -
     return r.json().get("features", [])
 
 
+def _stretch(img: np.ndarray) -> np.ndarray:
+    """Percentile contrast stretch so bright scenes (deserts, sand) don't
+    render washed-out white. A single stretch across all bands preserves
+    the colour balance; nodata (black) pixels are excluded from the stats."""
+    valid = img[img.any(axis=-1)]
+    if valid.size == 0:
+        return img.astype(np.uint8)
+    lo, hi = np.percentile(valid.astype(np.float32), (1.0, 99.0))
+    if hi - lo < 1:
+        return img.astype(np.uint8)
+    out = (img.astype(np.float32) - lo) * (255.0 / (hi - lo))
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def download_visual(item: dict, bbox: list[float], out_path: str) -> dict:
     """Windowed read of the scene's true-colour COG, warped to EPSG:4326.
 
@@ -70,7 +84,7 @@ def download_visual(item: dict, bbox: list[float], out_path: str) -> dict:
                 resampling=Resampling.bilinear,
             )
 
-    img = np.transpose(data, (1, 2, 0)).astype(np.uint8)
+    img = _stretch(np.transpose(data, (1, 2, 0)))
     Image.fromarray(img, "RGB").save(out_path)
 
     props = item["properties"]

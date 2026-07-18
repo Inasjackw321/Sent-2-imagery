@@ -30,19 +30,36 @@ bbox is in pixel coordinates of this {w}x{h} image (x1,y1 = top-left, x2,y2 = bo
 If there are none, respond with []."""
 
 
+def _installed_models() -> list[str]:
+    r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+    r.raise_for_status()
+    return [m.get("name", "") for m in r.json().get("models", [])]
+
+
+def resolve_model() -> str:
+    """Match the configured model to the tag actually installed in Ollama
+    (e.g. 'qwen2.5vl:7b' requested but 'qwen2.5vl:latest' pulled)."""
+    models = _installed_models()
+    if MODEL in models:
+        return MODEL
+    base = MODEL.split(":")[0]
+    for m in models:
+        if m.split(":")[0] == base:
+            return m
+    return MODEL
+
+
 def ollama_available() -> tuple[bool, str]:
     try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-        r.raise_for_status()
-        models = [m.get("name", "") for m in r.json().get("models", [])]
-        if any(m.startswith(MODEL.split(":")[0]) for m in models):
+        models = _installed_models()
+        if any(m.split(":")[0] == MODEL.split(":")[0] for m in models):
             return True, "ok"
         return False, f"Ollama is running but model '{MODEL}' is not pulled. Run: ollama pull {MODEL}"
     except requests.RequestException:
         return False, f"Cannot reach Ollama at {OLLAMA_URL}. Is it running?"
 
 
-def _query_tile(tile_img: Image.Image) -> list[dict]:
+def _query_tile(tile_img: Image.Image, model: str) -> list[dict]:
     w, h = tile_img.size
     buf = io.BytesIO()
     tile_img.save(buf, format="PNG")
@@ -51,7 +68,7 @@ def _query_tile(tile_img: Image.Image) -> list[dict]:
     r = requests.post(
         f"{OLLAMA_URL}/api/chat",
         json={
-            "model": MODEL,
+            "model": model,
             "stream": False,
             "messages": [{
                 "role": "user",
@@ -62,7 +79,9 @@ def _query_tile(tile_img: Image.Image) -> list[dict]:
         },
         timeout=300,
     )
-    r.raise_for_status()
+    if not r.ok:
+        detail = r.text[:300]
+        raise RuntimeError(f"Ollama error {r.status_code} for model '{model}': {detail}")
     text = r.json().get("message", {}).get("content", "")
     return _parse_detections(text, w, h)
 
@@ -117,6 +136,7 @@ def _dedupe(dets: list[dict], iou_thresh: float = 0.45) -> list[dict]:
 def detect(image_path: str, progress=None) -> list[dict]:
     """Run detection over the whole image. Returns detections in full-image
     pixel coordinates: [{"label", "bbox": [x1, y1, x2, y2]}, ...]."""
+    model = resolve_model()
     img = Image.open(image_path).convert("RGB")
     W, H = img.size
     step = TILE - OVERLAP
@@ -131,7 +151,7 @@ def detect(image_path: str, progress=None) -> list[dict]:
             tile = img.crop((ox, oy, min(ox + TILE, W), min(oy + TILE, H)))
             tw, th = tile.size
             sent = tile.resize((tw * UPSCALE, th * UPSCALE), Image.LANCZOS)
-            for d in _query_tile(sent):
+            for d in _query_tile(sent, model):
                 x1, y1, x2, y2 = d["bbox"]
                 detections.append({
                     "label": d["label"],
