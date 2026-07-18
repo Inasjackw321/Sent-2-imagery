@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sent-2 Imagery</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #10141a; --panel: #171d26; --border: #2a3442;
+    --text: #e6edf3; --muted: #8b98a9; --accent: #38bdf8; --danger: #ff3d71;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .03em; }
+  header h1 span { color: var(--accent); }
+  .ctrl { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  select, button {
+    background: #202836; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: #06202e; border: none; font-weight: 600; }
+  button.detect { background: var(--danger); color: #fff; border: none; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  #status { font-size: 13px; color: var(--muted); margin-left: auto; max-width: 46ch; }
+  #status.err { color: var(--danger); }
+  #map { flex: 1; }
+  .legend { position: absolute; bottom: 18px; right: 12px; z-index: 1000; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--muted); }
+  .legend b { color: var(--text); }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sent-<span>2</span> Imagery</h1>
+  <div class="ctrl">Area
+    <select id="size">
+      <option value="4">4 km</option>
+      <option value="8" selected>8 km</option>
+      <option value="15">15 km</option>
+    </select>
+  </div>
+  <div class="ctrl">Max cloud
+    <select id="cloud">
+      <option value="10">10%</option>
+      <option value="30" selected>30%</option>
+      <option value="60">60%</option>
+      <option value="95">any</option>
+    </select>
+  </div>
+  <button id="fetch" class="primary" disabled>Fetch latest imagery</button>
+  <button id="detect" class="detect" disabled>Detect boats &amp; planes (AI)</button>
+  <div class="ctrl"><label><input type="checkbox" id="showBoxes" checked> highlights</label></div>
+  <div id="status">Click anywhere on the map to pick a spot.</div>
+</header>
+<div id="map"></div>
+<div class="legend">
+  <b>Legend</b><br>
+  <span class="sw" style="background:#00e5ff"></span>boat / ship<br>
+  <span class="sw" style="background:#ff3d71"></span>airplane / jet
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([25.77, -80.15], 11);   // Miami — plenty of boats
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+const statusEl = document.getElementById('status');
+const fetchBtn = document.getElementById('fetch');
+const detectBtn = document.getElementById('detect');
+const showBoxes = document.getElementById('showBoxes');
+
+let picked = null, marker = null, overlay = null, scene = null;
+let boxLayer = L.layerGroup().addTo(map);
+let cleanUrl = null, annotatedUrl = null;
+
+function setStatus(msg, err = false) {
+  statusEl.textContent = msg;
+  statusEl.className = err ? 'err' : '';
+}
+
+map.on('click', e => {
+  picked = e.latlng;
+  if (marker) marker.remove();
+  marker = L.marker(picked).addTo(map);
+  fetchBtn.disabled = false;
+  setStatus(`Picked ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)} — fetch imagery.`);
+});
+
+fetchBtn.onclick = async () => {
+  fetchBtn.disabled = detectBtn.disabled = true;
+  boxLayer.clearLayers();
+  setStatus('Searching Copernicus archive & downloading latest scene…');
+  try {
+    const r = await fetch('/api/fetch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        lat: picked.lat, lon: picked.lng,
+        size_km: +document.getElementById('size').value,
+        max_cloud: +document.getElementById('cloud').value
+      })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    scene = j;
+    cleanUrl = j.image_url; annotatedUrl = null;
+    if (overlay) overlay.remove();
+    overlay = L.imageOverlay(j.image_url, j.bounds, {opacity: 1}).addTo(map);
+    map.fitBounds(j.bounds);
+    const when = new Date(j.datetime).toLocaleString();
+    setStatus(`Scene ${j.scene_id} · ${when} · ${j.cloud_cover.toFixed(0)}% cloud. Ready to detect.`);
+    detectBtn.disabled = false;
+  } catch (e) {
+    setStatus('Fetch failed: ' + e.message, true);
+  }
+  fetchBtn.disabled = false;
+};
+
+detectBtn.onclick = async () => {
+  detectBtn.disabled = true;
+  boxLayer.clearLayers();
+  setStatus('Starting qwen2.5vl detection…');
+  try {
+    const r = await fetch('/api/detect', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: scene.key})
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    poll();
+  } catch (e) {
+    setStatus(e.message, true);
+    detectBtn.disabled = false;
+  }
+};
+
+async function poll() {
+  const r = await fetch('/api/detect/status?key=' + scene.key);
+  const j = await r.json();
+  if (j.state === 'running') {
+    setStatus(`Analysing tiles with qwen2.5vl… ${j.done}/${j.total}`);
+    setTimeout(poll, 1500);
+    return;
+  }
+  detectBtn.disabled = false;
+  if (j.state === 'failed') { setStatus('Detection failed: ' + j.error, true); return; }
+  const res = j.result;
+  annotatedUrl = res.annotated_url + '?t=' + Date.now();
+  if (showBoxes.checked) overlay.setUrl(annotatedUrl);
+  for (const d of res.detections) {
+    const color = (d.label === 'airplane' || d.label === 'jet') ? '#ff3d71' : '#00e5ff';
+    L.rectangle(d.bounds, {color, weight: 2, fillOpacity: 0.08})
+      .bindPopup(d.label).addTo(boxLayer);
+  }
+  setStatus(res.count === 0
+    ? 'Analysis finished — nothing detected in this scene.'
+    : `Found ${res.count} object${res.count > 1 ? 's' : ''} — click a box for its label.`);
+}
+
+showBoxes.onchange = () => {
+  if (!overlay) return;
+  if (showBoxes.checked) {
+    if (annotatedUrl) overlay.setUrl(annotatedUrl);
+    map.addLayer(boxLayer);
+  } else {
+    overlay.setUrl(cleanUrl);
+    map.removeLayer(boxLayer);
+  }
+};
+</script>
+</body>
+</html>
