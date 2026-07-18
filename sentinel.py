@@ -147,6 +147,42 @@ def bounds_latlon(bbox: list[float]) -> list[list[float]]:
     return [[bbox[1], bbox[0]], [bbox[3], bbox[2]]]
 
 
+def scenes_by_day(items: list[dict], limit: int = 10) -> list[dict]:
+    """Deduplicate a range search to one (clearest) scene per day, oldest first,
+    keeping at most `limit` most-recent days."""
+    by_day: dict[str, dict] = {}
+    for it in items:
+        day = str(it["properties"]["datetime"])[:10]
+        cur = by_day.get(day)
+        if cur is None or it["properties"].get("eo:cloud_cover", 100) < cur["properties"].get("eo:cloud_cover", 100):
+            by_day[day] = it
+    days = sorted(by_day)[-limit:]
+    return [by_day[d] for d in days]
+
+
+def render_stack(raw_list: list[np.ndarray]):
+    """Stretch a list of raw-reflectance arrays with ONE shared per-band scaling
+    (computed over all scenes) so every date is radiometrically comparable.
+    Returns (rgb_list, mask_list)."""
+    masks = [r.any(axis=-1) for r in raw_list]
+    los, his = [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]
+    for b in range(3):
+        pools = [r[..., b][m] for r, m in zip(raw_list, masks) if m.any()]
+        if pools:
+            pool = np.concatenate(pools).astype(np.float32)
+            lo, hi = np.percentile(pool, (2.0, 98.0))
+            los[b], his[b] = float(lo), float(hi if hi - lo >= 1 else lo + 1)
+    out = []
+    for r, m in zip(raw_list, masks):
+        img = np.zeros(r.shape, np.uint8)
+        for b in range(3):
+            v = np.clip((r[..., b].astype(np.float32) - los[b]) / (his[b] - los[b]), 0, 1) ** 0.85
+            img[..., b] = (v * 255).astype(np.uint8)
+        img[~m] = 0
+        out.append(img)
+    return out, masks
+
+
 def _stretch(img: np.ndarray) -> np.ndarray:
     """Per-band percentile contrast stretch on raw reflectance. Stretching
     each band independently balances the colour (desert reads as natural tan

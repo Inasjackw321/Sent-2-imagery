@@ -135,11 +135,11 @@ def plan_query(query: str) -> dict:
 
 CHANGE_PROMPT = """These are two Sentinel-2 satellite crops of the SAME location (10 m/pixel).
 The FIRST image is earlier ({d1}). The SECOND image is later ({d2}).
-Describe what CHANGED from the first to the second image, in a few words.
-Look for: new crater or blast damage, a destroyed or damaged building, new construction,
-aircraft or vehicles that appeared or left, ships that moved, new ground scarring or burn marks.
+Focus on movement of vehicles and aircraft. Describe what CHANGED from the first to the
+second image in a few words — e.g. aircraft or vehicles appeared or left, how many, ships
+that moved, or new construction.
 Respond with ONLY JSON:
-{{"change": "<short phrase>", "category": "damage" | "movement" | "construction" | "other" | "none"}}
+{{"change": "<short phrase>", "category": "movement" | "construction" | "other" | "none"}}
 If the two crops look essentially the same, respond {{"change": "no significant change", "category": "none"}}."""
 
 
@@ -165,7 +165,7 @@ def describe_change(before_img: Image.Image, after_img: Image.Image,
         category = str(obj.get("category", "other")).lower().strip()
     except (RuntimeError, requests.RequestException, json.JSONDecodeError, AttributeError):
         return {"change": "change detected (AI description unavailable)", "category": "other"}
-    if category not in ("damage", "movement", "construction", "other", "none"):
+    if category not in ("movement", "construction", "other", "none"):
         category = "other"
     return {"change": change, "category": category}
 

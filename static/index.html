@@ -119,10 +119,9 @@ function setStatus(m, err=false){ statusEl.innerHTML=m; statusEl.className=err?'
 let overlay=null, boxLayer=L.layerGroup().addTo(map);
 let siteMarkers=L.layerGroup().addTo(map);
 
-const CAT_COLORS={damage:'#ff3d71',movement:'#00e5ff',construction:'#ffd400',other:'#b388ff'};
+const PLANE_COLOR='#00e5ff';
 function monitorLegend(){
-  legend.innerHTML='<b>Change type</b><br>'+Object.entries(CAT_COLORS)
-    .map(([k,c])=>`<span class="sw" style="background:${c}"></span>${k}`).join('<br>');
+  legend.innerHTML='<b>Legend</b><br><span class="sw" style="background:'+PLANE_COLOR+'"></span>aircraft this date';
 }
 
 // ---------- Tab switching ----------
@@ -130,6 +129,7 @@ let currentTab='monitor';
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>selectTab(t.dataset.tab));
 function selectTab(tab){
   currentTab=tab;
+  if(typeof stopPlay==='function') stopPlay();
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
   boxLayer.clearLayers();
   if(overlay){ overlay.remove(); overlay=null; }
@@ -166,10 +166,9 @@ function renderSites(list){
     else if(s.status==='insufficient') sub=s.message;
     else if(s.status==='error') sub='error: '+s.message;
     else if(s.status==='ok'){
-      sub=`${s.before_date} → ${s.after_date} · ${s.change_count} change${s.change_count!==1?'s':''}`;
-      const cats=[...new Set(s.regions.map(r=>r.category))];
-      chips='<div class="chips">'+cats.map(c=>`<span class="chip" style="background:${CAT_COLORS[c]||'#b388ff'}">${c}</span>`).join('')+'</div>';
-      if(s.change_count===0) chips='<div class="chips"><span class="chip" style="background:#8b98a9">no change</span></div>';
+      const arrow=s.net>0?`▲ +${s.net}`:(s.net<0?`▼ ${s.net}`:'– 0');
+      sub=`${s.dates.length} dates · peak ${s.peak} · avg ${s.avg} aircraft`;
+      chips=`<div class="chips"><span class="chip" style="background:${s.net>0?'#7cff4f':(s.net<0?'#ff3d71':'#8b98a9')}">${arrow} net</span>${s.ai_note?`<span class="chip" style="background:#b388ff">${s.ai_note}</span>`:''}</div>`;
     }
     div.innerHTML=`<div class="name">${s.name}</div><div class="sub">${sub}</div>${chips}`;
     if(s.status==='ok') div.onclick=()=>selectSite(s.id);
@@ -200,50 +199,87 @@ async function pollScan(locs){
     setTimeout(()=>pollScan(locs),2000); return;
   }
   document.getElementById('scan').disabled=false;
-  const total=j.results.reduce((n,r)=>n+(r.change_count||0),0);
   const okN=j.results.filter(r=>r.status==='ok').length;
-  setStatus(`Scan complete — ${okN}/${j.total} sites compared, ${total} changes flagged. Click a site to inspect.`);
-  const first=j.results.find(r=>r.status==='ok'&&r.change_count>0)||j.results.find(r=>r.status==='ok');
+  const imgs=j.results.reduce((n,r)=>n+(r.dates?r.dates.length:0),0);
+  setStatus(`Scan complete — ${okN}/${j.total} sites, ${imgs} scenes analysed. Click a site to see its plane-movement graph.`);
+  const first=j.results.find(r=>r.status==='ok');
   if(first) selectSite(first.id);
 }
 
-let curSite=null;
+let curSite=null, curDateIdx=0;
 function selectSite(id){
   const s=monitorResults[id]; if(!s) return;
-  curSite=s;
+  stopPlay();
+  curSite=s; curDateIdx=s.scenes.length-1;
   Object.values(monitorResults).forEach(r=>r.selected=false); s.selected=true;
   document.querySelectorAll('.site').forEach(el=>el.classList.remove('sel'));
-  boxLayer.clearLayers();
+  buildInspect(s);
   if(overlay) overlay.remove();
-  overlay=L.imageOverlay(s.change_url,s.bounds,{opacity:1}).addTo(map);
+  overlay=L.imageOverlay(s.scenes[curDateIdx].url,s.bounds,{opacity:1}).addTo(map);
   map.fitBounds(s.bounds);
-  s.regions.forEach(r=>{
-    L.rectangle(r.bounds,{color:r.color,weight:2,fillOpacity:0.1})
-      .bindPopup(`<b>${r.category}</b><br>${r.change}`).addTo(boxLayer);
-  });
-  showView('change');
-  addViewControls(s);
-  setStatus(`${s.name}: ${s.before_date} → ${s.after_date}. ${s.change_count} change(s).`
-    + (s.ai?'':' <b>(AI offline — descriptions unavailable)</b>'));
+  showDate(curDateIdx);
+  setStatus(`${s.name}: ${s.dates.length} scenes over ${s.first_date} → ${s.last_date}. `
+    +`Peak ${s.peak}, avg ${s.avg}, net ${s.net>0?'+':''}${s.net} aircraft.`
+    +(s.ai_note?` AI: ${s.ai_note}.`:'')+(s.ai?'':' (AI offline)'));
 }
 
-function addViewControls(s){
-  // rebuild the segmented before/after/change control at top of site list
-  let bar=document.getElementById('viewbar');
-  if(!bar){ bar=document.createElement('div'); bar.id='viewbar'; bar.className='seg';
-    document.getElementById('sites').before(bar); }
-  bar.innerHTML='';
-  [['before','Before'],['after','After'],['change','Change']].forEach(([v,label])=>{
-    const b=document.createElement('button'); b.textContent=label;
-    b.onclick=()=>showView(v); bar.appendChild(b);
-  });
+function buildInspect(s){
+  let box=document.getElementById('inspect');
+  if(!box){ box=document.createElement('div'); box.id='inspect';
+    document.getElementById('sites').before(box); }
+  box.innerHTML=`<div style="font-size:13px;font-weight:600;margin:4px 0">${s.name} — aircraft over time</div>`
+    +chartSVG(s.series)
+    +`<div class="row" style="margin-top:8px"><button id="playbtn">▶ Play</button>`
+    +`<input type="range" id="scrub" min="0" max="${s.scenes.length-1}" value="${s.scenes.length-1}" style="flex:1"></div>`
+    +`<div class="sub" id="datelabel" style="font-size:12px;color:var(--muted)"></div>`
+    +`<div class="hint">Line = aircraft counted per date. Drag the slider (or Play) to step through the month; cyan boxes mark the aircraft found on that date.</div>`;
+  document.getElementById('scrub').oninput=e=>showDate(+e.target.value);
+  document.getElementById('playbtn').onclick=togglePlay;
+  box.querySelectorAll('.cdot').forEach(d=>d.onclick=()=>showDate(+d.dataset.i));
 }
-function showView(v){
+function stopPlay(){ if(playTimer){ clearInterval(playTimer); playTimer=null; } }
+
+function chartSVG(series){
+  const W=300,H=110,pad=24;
+  const counts=series.map(p=>p.count), maxC=Math.max(1,...counts);
+  const x=i=>pad+(series.length<2?0:i*(W-2*pad)/(series.length-1));
+  const y=c=>H-pad-(c/maxC)*(H-2*pad);
+  const pts=series.map((p,i)=>`${x(i)},${y(p.count)}`).join(' ');
+  let dots='',labels='';
+  series.forEach((p,i)=>{
+    dots+=`<circle cx="${x(i)}" cy="${y(p.count)}" r="3" fill="${PLANE_COLOR}" data-i="${i}" class="cdot" style="cursor:pointer"/>`
+        +`<text x="${x(i)}" y="${y(p.count)-6}" fill="#e6edf3" font-size="9" text-anchor="middle">${p.count}</text>`;
+    if(i===0||i===series.length-1)
+      labels+=`<text x="${x(i)}" y="${H-6}" fill="#8b98a9" font-size="9" text-anchor="middle">${p.date.slice(5)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:8px">
+    <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="#2a3442"/>
+    <polyline points="${pts}" fill="none" stroke="${PLANE_COLOR}" stroke-width="2"/>
+    ${dots}${labels}
+    <text x="4" y="14" fill="#8b98a9" font-size="9">planes</text></svg>`;
+}
+
+let playTimer=null;
+function togglePlay(){
+  const btn=document.getElementById('playbtn');
+  if(playTimer){ clearInterval(playTimer); playTimer=null; btn.textContent='▶ Play'; return; }
+  btn.textContent='⏸ Pause';
+  playTimer=setInterval(()=>{
+    let n=(curDateIdx+1)%curSite.scenes.length; showDate(n);
+  },900);
+}
+
+function showDate(i){
   if(!curSite||!overlay) return;
-  const url={before:curSite.before_url,after:curSite.after_url,change:curSite.change_url}[v];
-  overlay.setUrl(url);
-  document.querySelectorAll('#viewbar button').forEach((b,i)=>b.classList.toggle('active',['before','after','change'][i]===v));
-  boxLayer.eachLayer(l=>l.setStyle&&l.setStyle({opacity:v==='change'?1:0.5}));
+  curDateIdx=i;
+  const sc=curSite.scenes[i];
+  overlay.setUrl(sc.url);
+  const scrub=document.getElementById('scrub'); if(scrub) scrub.value=i;
+  const lbl=document.getElementById('datelabel');
+  if(lbl) lbl.innerHTML=`<b style="color:var(--text)">${sc.date}</b> · ${sc.count} aircraft · ${sc.cloud}% cloud`;
+  boxLayer.clearLayers();
+  sc.blobs.forEach(b=>L.rectangle(b.bounds,{color:PLANE_COLOR,weight:2,fillOpacity:0.15}).addTo(boxLayer));
+  document.querySelectorAll('.cdot').forEach(d=>d.setAttribute('r',+d.dataset.i===i?'5':'3'));
 }
 
 // ================= EXPLORE (manual single-scene) =================

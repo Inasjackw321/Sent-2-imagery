@@ -36,6 +36,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 import changedetect
 import detector
+import planes
 import sentinel
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -92,8 +93,8 @@ def api_monitor():
         return jsonify({"error": "A scan is already running."}), 409
     p = request.get_json(force=True, silent=True) or {}
     days = int(p.get("days", 30))
-    box_km = float(p.get("box_km", 6))
-    max_cloud = float(p.get("max_cloud", 20))
+    box_km = float(p.get("box_km", 5))
+    max_cloud = float(p.get("max_cloud", 35))
     ids = p.get("ids")  # optional subset
     locs = [l for l in LOCATIONS if not ids or l["id"] in ids]
 
@@ -124,66 +125,78 @@ def api_monitor_status():
     return jsonify(monitor_job)
 
 
-def _scan_location(loc: dict, days: int, box_km: float, max_cloud: float) -> dict:
-    import numpy as np
+DISPLAY_PX = 1000   # upscale saved PNGs to at least this so detail reads clearly
 
+
+def _save_scene(img, name: str):
+    """Save an RGB array, upscaled (Lanczos) so small native tiles are legible."""
+    from PIL import Image as _Image
+    pil = _Image.fromarray(img, "RGB")
+    w, h = pil.size
+    if max(w, h) < DISPLAY_PX:
+        s = DISPLAY_PX / max(w, h)
+        pil = pil.resize((int(w * s), int(h * s)), _Image.LANCZOS)
+    pil.save(os.path.join(DATA_DIR, name))
+
+
+def _scan_location(loc: dict, days: int, box_km: float, max_cloud: float) -> dict:
     bbox = sentinel.bbox_around(loc["lat"], loc["lon"], box_km)
     base = {"id": loc["id"], "name": loc["name"], "lat": loc["lat"], "lon": loc["lon"],
             "bounds": sentinel.bounds_latlon(bbox)}
 
-    items = sentinel.search_range(bbox, days=days, max_cloud=max_cloud)
-    pair = sentinel.pick_before_after(items)
-    if pair is None:
+    items = sentinel.search_range(bbox, days=days, max_cloud=max_cloud, limit=60)
+    scenes_items = sentinel.scenes_by_day(items, limit=10)
+    if len(scenes_items) < 2:
         return {**base, "status": "insufficient",
                 "message": f"Fewer than 2 clear (<{max_cloud:.0f}% cloud) scenes in the last {days} days."}
-    before_it, after_it = pair
+
     out_wh = sentinel.grid_size(bbox)
-    before_raw = sentinel.read_raw(before_it, bbox, out_wh)
-    after_raw = sentinel.read_raw(after_it, bbox, out_wh)
-    before8, after8, mask = sentinel.render_pair(before_raw, after_raw)
     W, H = out_wh
+    dates = [str(it["properties"]["datetime"])[:10] for it in scenes_items]
+    raw_list = [sentinel.read_raw(it, bbox, out_wh) for it in scenes_items]
+    stack, masks = sentinel.render_stack(raw_list)
 
-    regions, diff = changedetect.change_regions(before8, after8, mask)
+    # Aircraft-movement time series from the whole month's stack.
+    bg, series, per_date_blobs = planes.movement_series(stack, masks, dates)
 
-    key = uuid.uuid4().hex[:10]
-    before_name = f"before_{key}.png"
-    after_name = f"after_{key}.png"
-    change_name = f"change_{key}.png"
-    Image.fromarray(before8, "RGB").save(os.path.join(DATA_DIR, before_name))
-    Image.fromarray(after8, "RGB").save(os.path.join(DATA_DIR, after_name))
-    changedetect.heat_overlay(after8, diff, regions).save(os.path.join(DATA_DIR, change_name))
-
-    d1 = str(before_it["properties"]["datetime"])[:10]
-    d2 = str(after_it["properties"]["datetime"])[:10]
-
-    ok, _ = detector.ollama_available()
-    out_regions = []
-    for r in regions[:6]:   # describe the strongest changes only
-        info = {"change": "change detected", "category": "other"}
-        if ok:
-            bcrop, acrop = changedetect.crop_pair(before8, after8, r["bbox"])
-            info = detector.describe_change(bcrop, acrop, d1, d2)
-        if info["category"] == "none":
-            continue
-        out_regions.append({
-            "bounds": changedetect.region_bounds_latlon(r["bbox"], bbox, W, H),
-            "change": info["change"],
-            "category": info["category"],
-            "color": changedetect.CATEGORY_COLORS.get(info["category"], "#b388ff"),
-            "intensity": round(r["intensity"], 1),
+    key = uuid.uuid4().hex[:8]
+    scenes_out = []
+    for i, (img, date, blobs) in enumerate(zip(stack, dates, per_date_blobs)):
+        name = f"ts_{key}_{i}.png"
+        _save_scene(img, name)
+        scenes_out.append({
+            "date": date,
+            "cloud": round(scenes_items[i]["properties"].get("eo:cloud_cover", 0), 1),
+            "url": f"/data/{name}",
+            "count": len(blobs),
+            "blobs": [{"bounds": changedetect.region_bounds_latlon(b["bbox"], bbox, W, H)}
+                      for b in blobs],
         })
+
+    counts = [s["count"] for s in series]
+    first, last = counts[0], counts[-1]
+
+    # One AI note on aircraft movement between the first and last clear date.
+    ok, _ = detector.ollama_available()
+    ai_note = ""
+    if ok:
+        info = detector.describe_change(
+            Image.fromarray(stack[0], "RGB"), Image.fromarray(stack[-1], "RGB"),
+            dates[0], dates[-1])
+        if info["category"] != "none":
+            ai_note = info["change"]
 
     return {
         **base,
         "status": "ok",
-        "before_date": d1, "after_date": d2,
-        "before_cloud": round(before_it["properties"].get("eo:cloud_cover", 0), 1),
-        "after_cloud": round(after_it["properties"].get("eo:cloud_cover", 0), 1),
-        "before_url": f"/data/{before_name}",
-        "after_url": f"/data/{after_name}",
-        "change_url": f"/data/{change_name}",
-        "regions": out_regions,
-        "change_count": len(out_regions),
+        "dates": dates,
+        "series": series,
+        "scenes": scenes_out,
+        "peak": max(counts),
+        "net": last - first,
+        "avg": round(sum(counts) / len(counts), 1),
+        "first_date": dates[0], "last_date": dates[-1],
+        "ai_note": ai_note,
         "ai": ok,
     }
 
