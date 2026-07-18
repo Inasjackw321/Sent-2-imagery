@@ -3,272 +3,333 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sent-2 Imagery</title>
+<title>Sent-2 Change Monitor</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   :root {
-    --bg: #10141a; --panel: #171d26; --border: #2a3442;
-    --text: #e6edf3; --muted: #8b98a9; --accent: #38bdf8; --danger: #ff3d71;
+    --bg:#10141a; --panel:#171d26; --panel2:#1e2733; --border:#2a3442;
+    --text:#e6edf3; --muted:#8b98a9; --accent:#38bdf8; --danger:#ff3d71;
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
-  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; letter-spacing: .03em; }
-  header h1 span { color: var(--accent); }
-  .ctrl { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
-  select, button, input[type=text] {
-    background: #202836; color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer;
-  }
-  input[type=text] { cursor: text; width: 230px; }
-  input[type=text]::placeholder { color: var(--muted); }
-  button.primary { background: var(--accent); color: #06202e; border: none; font-weight: 600; }
-  button.active { background: var(--accent); color: #06202e; border: none; font-weight: 600; }
-  #map.drawing { cursor: crosshair; }
-  button.detect { background: var(--danger); color: #fff; border: none; font-weight: 600; }
-  button:disabled { opacity: .45; cursor: default; }
-  #status { font-size: 13px; color: var(--muted); margin-left: auto; max-width: 46ch; }
-  #status.err { color: var(--danger); }
-  #map { flex: 1; }
-  .legend { position: absolute; bottom: 18px; right: 12px; z-index: 1000; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--muted); }
-  .legend b { color: var(--text); }
-  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; letter-spacing:.03em; white-space:nowrap; }
+  header h1 span { color:var(--accent); }
+  .tabs { display:flex; gap:4px; }
+  .tab { background:#202836; color:var(--muted); border:1px solid var(--border); border-radius:6px; padding:6px 14px; font-size:13px; cursor:pointer; }
+  .tab.active { background:var(--accent); color:#06202e; border:none; font-weight:600; }
+  #status { font-size:13px; color:var(--muted); margin-left:auto; max-width:52ch; }
+  #status.err { color:var(--danger); }
+  .main { flex:1; display:flex; min-height:0; }
+  .sidebar { width:340px; background:var(--panel); border-right:1px solid var(--border); overflow-y:auto; padding:14px; }
+  #map { flex:1; }
+  #map.drawing { cursor:crosshair; }
+  select, button, input[type=text] { background:#202836; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:13px; cursor:pointer; }
+  input[type=text] { cursor:text; width:100%; }
+  input[type=text]::placeholder { color:var(--muted); }
+  button.primary { background:var(--accent); color:#06202e; border:none; font-weight:600; }
+  button.detect { background:var(--danger); color:#fff; border:none; font-weight:600; }
+  button.active { background:var(--accent); color:#06202e; border:none; font-weight:600; }
+  button:disabled { opacity:.45; cursor:default; }
+  .row { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  .row label { font-size:12px; color:var(--muted); }
+  .hint { font-size:12px; color:var(--muted); margin:6px 0 14px; line-height:1.5; }
+  .site { background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px; cursor:pointer; }
+  .site:hover { border-color:var(--accent); }
+  .site.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  .site .name { font-size:13px; font-weight:600; }
+  .site .sub { font-size:11px; color:var(--muted); margin-top:3px; }
+  .chips { margin-top:6px; display:flex; gap:4px; flex-wrap:wrap; }
+  .chip { font-size:10px; padding:2px 7px; border-radius:10px; color:#06121a; font-weight:600; }
+  .seg { display:flex; gap:0; margin:10px 0; }
+  .seg button { border-radius:0; border-right:none; flex:1; }
+  .seg button:first-child { border-radius:6px 0 0 6px; }
+  .seg button:last-child { border-radius:0 6px 6px 0; border-right:1px solid var(--border); }
+  .legend { position:absolute; bottom:18px; right:12px; z-index:1000; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--muted); }
+  .legend b { color:var(--text); }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:sp 0.8s linear infinite; vertical-align:-2px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
 </style>
 </head>
 <body>
 <header>
-  <h1>Sent-<span>2</span> Imagery</h1>
-  <input type="text" id="query" placeholder="What are you looking for? e.g. jets at this airport">
-  <div class="ctrl">Area
-    <select id="size">
-      <option value="4">4 km</option>
-      <option value="8" selected>8 km</option>
-      <option value="15">15 km</option>
-    </select>
+  <h1>Sent-<span>2</span> Change Monitor</h1>
+  <div class="tabs">
+    <button class="tab active" data-tab="monitor">Monitor</button>
+    <button class="tab" data-tab="explore">Explore</button>
   </div>
-  <div class="ctrl">Max cloud
+  <div id="status">Scan the watched locations to detect changes over the last month.</div>
+</header>
+<div class="main">
+  <div class="sidebar" id="sidebar"></div>
+  <div id="map"></div>
+</div>
+<div class="legend" id="legend"></div>
+
+<!-- Sidebar templates -->
+<template id="tpl-monitor">
+  <div class="row">
+    <label>Window</label>
+    <select id="days">
+      <option value="14">14 days</option>
+      <option value="30" selected>30 days</option>
+      <option value="60">60 days</option>
+    </select>
+    <label>Max cloud</label>
     <select id="cloud">
       <option value="10">10%</option>
-      <option value="30" selected>30%</option>
-      <option value="60">60%</option>
-      <option value="95">any</option>
+      <option value="20" selected>20%</option>
+      <option value="40">40%</option>
     </select>
   </div>
-  <button id="draw">✏️ Draw area</button>
-  <button id="fetch" class="primary" disabled>Fetch latest imagery</button>
-  <button id="detect" class="detect" disabled>Detect targets (AI)</button>
-  <div class="ctrl"><label><input type="checkbox" id="showBoxes" checked> highlights</label></div>
-  <div id="status">Drag a box over an area (or click a point), then fetch.</div>
-</header>
-<div id="map"></div>
-<div class="legend" id="legend">
-  <b>Legend</b><br>
-  <span class="sw" style="background:#00e5ff"></span>boat / ship<br>
-  <span class="sw" style="background:#ff3d71"></span>airplane
-</div>
+  <button id="scan" class="primary" style="width:100%">Scan all locations</button>
+  <div class="hint" id="scanHint">Pulls two clear scenes per site from the chosen window, aligns them, finds where the ground changed, and asks the AI what changed.</div>
+  <div id="sites"></div>
+</template>
+
+<template id="tpl-explore">
+  <input type="text" id="query" placeholder="What are you looking for? e.g. jets at this airport">
+  <div class="row" style="margin-top:10px">
+    <label>Area</label>
+    <select id="size"><option value="4">4 km</option><option value="8" selected>8 km</option><option value="15">15 km</option></select>
+    <label>Cloud</label>
+    <select id="ecloud"><option value="10">10%</option><option value="30" selected>30%</option><option value="60">60%</option><option value="95">any</option></select>
+  </div>
+  <div class="row">
+    <button id="draw">✏️ Draw area</button>
+    <button id="fetch" class="primary" disabled>Fetch imagery</button>
+    <button id="detect" class="detect" disabled>Detect (AI)</button>
+  </div>
+  <div class="row"><label><input type="checkbox" id="showBoxes" checked> show highlights</label></div>
+  <div class="hint">Drag a box (or click a point) then fetch the latest scene. Detection tiles it through qwen2.5vl.</div>
+</template>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const map = L.map('map').setView([25.77, -80.15], 11);   // Miami — plenty of boats
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '&copy; OpenStreetMap contributors'
-}).addTo(map);
+const map = L.map('map').setView([28, 45], 5);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {attribution:'&copy; OpenStreetMap contributors'}).addTo(map);
 
 const statusEl = document.getElementById('status');
-const fetchBtn = document.getElementById('fetch');
-const detectBtn = document.getElementById('detect');
-const drawBtn = document.getElementById('draw');
-const showBoxes = document.getElementById('showBoxes');
+const sidebar = document.getElementById('sidebar');
+const legend = document.getElementById('legend');
+function setStatus(m, err=false){ statusEl.innerHTML=m; statusEl.className=err?'err':''; }
 
-let picked = null, marker = null, overlay = null, scene = null;
-let boxLayer = L.layerGroup().addTo(map);
-let cleanUrl = null, annotatedUrl = null;
+let overlay=null, boxLayer=L.layerGroup().addTo(map);
+let siteMarkers=L.layerGroup().addTo(map);
 
-// Selected area: either a drawn rectangle (selectionRect) or a click point.
-let selectionRect = null, selectedBounds = null;
-
-function setStatus(msg, err = false) {
-  statusEl.textContent = msg;
-  statusEl.className = err ? 'err' : '';
+const CAT_COLORS={damage:'#ff3d71',movement:'#00e5ff',construction:'#ffd400',other:'#b388ff'};
+function monitorLegend(){
+  legend.innerHTML='<b>Change type</b><br>'+Object.entries(CAT_COLORS)
+    .map(([k,c])=>`<span class="sw" style="background:${c}"></span>${k}`).join('<br>');
 }
 
-function clearSelection() {
-  if (marker) { marker.remove(); marker = null; }
-  if (selectionRect) { selectionRect.remove(); selectionRect = null; }
-  selectedBounds = null;
-  picked = null;
-}
-
-// --- Click a point (default mode) -------------------------------------------
-map.on('click', e => {
-  if (drawing) return;               // clicks are for point-pick only
-  clearSelection();
-  picked = e.latlng;
-  marker = L.marker(picked).addTo(map);
-  fetchBtn.disabled = false;
-  setStatus(`Picked ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)} — fetch imagery.`);
-});
-
-// --- Drag a rectangle (draw mode) -------------------------------------------
-let drawing = false, dragStart = null;
-
-drawBtn.onclick = () => {
-  drawing = !drawing;
-  drawBtn.classList.toggle('active', drawing);
-  map.getContainer().classList.toggle('drawing', drawing);
-  if (drawing) {
-    map.dragging.disable();
-    setStatus('Draw mode: drag a box over the area you want. Click the button again to pan.');
-  } else {
-    map.dragging.enable();
-    setStatus('Pan mode. Drag the map, or turn on Draw area to select a box.');
-  }
-};
-
-map.on('mousedown', e => {
-  if (!drawing) return;
-  clearSelection();
-  dragStart = e.latlng;
-  selectionRect = L.rectangle([dragStart, dragStart],
-    {color: '#38bdf8', weight: 2, dashArray: '5', fillOpacity: 0.08}).addTo(map);
-});
-
-map.on('mousemove', e => {
-  if (!drawing || !dragStart) return;
-  selectionRect.setBounds(L.latLngBounds(dragStart, e.latlng));
-});
-
-map.on('mouseup', e => {
-  if (!drawing || !dragStart) return;
-  const b = L.latLngBounds(dragStart, e.latlng);
-  dragStart = null;
-  if (b.getNorth() - b.getSouth() < 1e-4 || b.getEast() - b.getWest() < 1e-4) {
-    setStatus('Box too small — drag a larger area.', true);
-    if (selectionRect) { selectionRect.remove(); selectionRect = null; }
-    return;
-  }
-  selectedBounds = b;
-  fetchBtn.disabled = false;
-  const km = (b.getNorth() - b.getSouth()) * 111;
-  setStatus(`Area selected (~${km.toFixed(1)} km tall). Fetch imagery, or turn off Draw area to pan.`);
-});
-
-function updateLegend(colors) {
-  const el = document.getElementById('legend');
-  el.innerHTML = '<b>Legend</b><br>' + Object.entries(colors)
-    .map(([label, c]) => `<span class="sw" style="background:${c}"></span>${label}`)
-    .join('<br>');
-}
-
-fetchBtn.onclick = async () => {
-  fetchBtn.disabled = detectBtn.disabled = true;
+// ---------- Tab switching ----------
+let currentTab='monitor';
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>selectTab(t.dataset.tab));
+function selectTab(tab){
+  currentTab=tab;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
   boxLayer.clearLayers();
-  const query = document.getElementById('query').value.trim();
-  let size_km = +document.getElementById('size').value;
-  let max_cloud = +document.getElementById('cloud').value;
-  let targets = [];
+  if(overlay){ overlay.remove(); overlay=null; }
+  sidebar.innerHTML='';
+  sidebar.appendChild(document.getElementById('tpl-'+tab).content.cloneNode(true));
+  if(tab==='monitor'){ initMonitor(); } else { initExplore(); }
+}
 
-  if (query) {
+// ================= MONITOR =================
+let monitorResults={};
+function initMonitor(){
+  monitorLegend();
+  siteMarkers.clearLayers();
+  document.getElementById('scan').onclick=startScan;
+  fetch('/api/locations').then(r=>r.json()).then(locs=>{
+    locs.forEach(l=>{
+      L.circleMarker([l.lat,l.lon],{radius:6,color:'#38bdf8',weight:2,fillOpacity:0.3})
+        .bindTooltip(l.name).addTo(siteMarkers);
+    });
+    renderSites(locs.map(l=>({...l,status:'pending'})));
+  });
+  setStatus('Ready. Choose a window and scan all locations.');
+}
+
+function renderSites(list){
+  const el=document.getElementById('sites'); if(!el) return;
+  el.innerHTML='';
+  list.forEach(s=>{
+    const div=document.createElement('div');
+    div.className='site'+(s.status==='ok'&&monitorResults[s.id]&&monitorResults[s.id].selected?' sel':'');
+    let sub='', chips='';
+    if(s.status==='pending') sub='not scanned yet';
+    else if(s.status==='scanning') sub='<span class="spin"></span> scanning…';
+    else if(s.status==='insufficient') sub=s.message;
+    else if(s.status==='error') sub='error: '+s.message;
+    else if(s.status==='ok'){
+      sub=`${s.before_date} → ${s.after_date} · ${s.change_count} change${s.change_count!==1?'s':''}`;
+      const cats=[...new Set(s.regions.map(r=>r.category))];
+      chips='<div class="chips">'+cats.map(c=>`<span class="chip" style="background:${CAT_COLORS[c]||'#b388ff'}">${c}</span>`).join('')+'</div>';
+      if(s.change_count===0) chips='<div class="chips"><span class="chip" style="background:#8b98a9">no change</span></div>';
+    }
+    div.innerHTML=`<div class="name">${s.name}</div><div class="sub">${sub}</div>${chips}`;
+    if(s.status==='ok') div.onclick=()=>selectSite(s.id);
+    el.appendChild(div);
+  });
+}
+
+async function startScan(){
+  const days=+document.getElementById('days').value;
+  const max_cloud=+document.getElementById('cloud').value;
+  document.getElementById('scan').disabled=true;
+  setStatus('<span class="spin"></span> Scanning locations… this downloads imagery and runs the AI, give it a minute.');
+  const locs=await (await fetch('/api/locations')).json();
+  renderSites(locs.map(l=>({...l,status:'scanning'})));
+  await fetch('/api/monitor',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({days,max_cloud})});
+  pollScan(locs);
+}
+
+async function pollScan(locs){
+  const j=await (await fetch('/api/monitor/status')).json();
+  const done={}; j.results.forEach(r=>done[r.id]=r);
+  j.results.forEach(r=>{ if(r.status==='ok') monitorResults[r.id]=r; });
+  const merged=locs.map(l=>done[l.id]||{...l,status:'scanning'});
+  renderSites(merged);
+  if(j.state==='running'){
+    setStatus(`<span class="spin"></span> Scanning… ${j.done}/${j.total} locations done.`);
+    setTimeout(()=>pollScan(locs),2000); return;
+  }
+  document.getElementById('scan').disabled=false;
+  const total=j.results.reduce((n,r)=>n+(r.change_count||0),0);
+  const okN=j.results.filter(r=>r.status==='ok').length;
+  setStatus(`Scan complete — ${okN}/${j.total} sites compared, ${total} changes flagged. Click a site to inspect.`);
+  const first=j.results.find(r=>r.status==='ok'&&r.change_count>0)||j.results.find(r=>r.status==='ok');
+  if(first) selectSite(first.id);
+}
+
+let curSite=null;
+function selectSite(id){
+  const s=monitorResults[id]; if(!s) return;
+  curSite=s;
+  Object.values(monitorResults).forEach(r=>r.selected=false); s.selected=true;
+  document.querySelectorAll('.site').forEach(el=>el.classList.remove('sel'));
+  boxLayer.clearLayers();
+  if(overlay) overlay.remove();
+  overlay=L.imageOverlay(s.change_url,s.bounds,{opacity:1}).addTo(map);
+  map.fitBounds(s.bounds);
+  s.regions.forEach(r=>{
+    L.rectangle(r.bounds,{color:r.color,weight:2,fillOpacity:0.1})
+      .bindPopup(`<b>${r.category}</b><br>${r.change}`).addTo(boxLayer);
+  });
+  showView('change');
+  addViewControls(s);
+  setStatus(`${s.name}: ${s.before_date} → ${s.after_date}. ${s.change_count} change(s).`
+    + (s.ai?'':' <b>(AI offline — descriptions unavailable)</b>'));
+}
+
+function addViewControls(s){
+  // rebuild the segmented before/after/change control at top of site list
+  let bar=document.getElementById('viewbar');
+  if(!bar){ bar=document.createElement('div'); bar.id='viewbar'; bar.className='seg';
+    document.getElementById('sites').before(bar); }
+  bar.innerHTML='';
+  [['before','Before'],['after','After'],['change','Change']].forEach(([v,label])=>{
+    const b=document.createElement('button'); b.textContent=label;
+    b.onclick=()=>showView(v); bar.appendChild(b);
+  });
+}
+function showView(v){
+  if(!curSite||!overlay) return;
+  const url={before:curSite.before_url,after:curSite.after_url,change:curSite.change_url}[v];
+  overlay.setUrl(url);
+  document.querySelectorAll('#viewbar button').forEach((b,i)=>b.classList.toggle('active',['before','after','change'][i]===v));
+  boxLayer.eachLayer(l=>l.setStyle&&l.setStyle({opacity:v==='change'?1:0.5}));
+}
+
+// ================= EXPLORE (manual single-scene) =================
+let picked=null, marker=null, scene=null, selectionRect=null, selectedBounds=null;
+let cleanUrl=null, annotatedUrl=null, drawing=false, dragStart=null;
+
+function initExplore(){
+  legend.innerHTML='<b>Legend</b><br><span class="sw" style="background:#00e5ff"></span>detections';
+  siteMarkers.clearLayers();
+  picked=null; scene=null; selectedBounds=null;
+  document.getElementById('draw').onclick=toggleDraw;
+  document.getElementById('fetch').onclick=doFetch;
+  document.getElementById('detect').onclick=doDetect;
+  document.getElementById('showBoxes').onchange=toggleBoxes;
+  setStatus('Drag a box over an area (or click a point), then fetch.');
+}
+function toggleDraw(){
+  drawing=!drawing;
+  document.getElementById('draw').classList.toggle('active',drawing);
+  map.getContainer().classList.toggle('drawing',drawing);
+  if(drawing){ map.dragging.disable(); setStatus('Draw mode: drag a box. Click the button again to pan.'); }
+  else { map.dragging.enable(); setStatus('Pan mode.'); }
+}
+function clearSel(){ if(marker){marker.remove();marker=null;} if(selectionRect){selectionRect.remove();selectionRect=null;} selectedBounds=null; picked=null; }
+map.on('click',e=>{ if(currentTab!=='explore'||drawing) return; clearSel(); picked=e.latlng; marker=L.marker(picked).addTo(map);
+  document.getElementById('fetch').disabled=false; setStatus(`Picked ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)} — fetch imagery.`); });
+map.on('mousedown',e=>{ if(currentTab!=='explore'||!drawing) return; clearSel(); dragStart=e.latlng;
+  selectionRect=L.rectangle([dragStart,dragStart],{color:'#38bdf8',weight:2,dashArray:'5',fillOpacity:0.08}).addTo(map); });
+map.on('mousemove',e=>{ if(!drawing||!dragStart) return; selectionRect.setBounds(L.latLngBounds(dragStart,e.latlng)); });
+map.on('mouseup',e=>{ if(!drawing||!dragStart) return; const b=L.latLngBounds(dragStart,e.latlng); dragStart=null;
+  if(b.getNorth()-b.getSouth()<1e-4){ setStatus('Box too small.',true); if(selectionRect){selectionRect.remove();selectionRect=null;} return; }
+  selectedBounds=b; document.getElementById('fetch').disabled=false;
+  setStatus(`Area selected (~${((b.getNorth()-b.getSouth())*111).toFixed(1)} km). Fetch imagery.`); });
+
+async function doFetch(){
+  const fetchBtn=document.getElementById('fetch'), detectBtn=document.getElementById('detect');
+  fetchBtn.disabled=detectBtn.disabled=true; boxLayer.clearLayers();
+  const query=document.getElementById('query').value.trim();
+  let size_km=+document.getElementById('size').value, max_cloud=+document.getElementById('ecloud').value, targets=[];
+  if(query){
     setStatus('Asking the AI how to set up this search…');
-    try {
-      const pr = await fetch('/api/plan', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({query})
-      });
-      const plan = await pr.json();
-      if (pr.ok) {
-        // A drawn box wins over the AI's suggested area size.
-        size_km = plan.size_km; max_cloud = plan.max_cloud; targets = plan.targets;
-        updateLegend(plan.colors);
-        const area = selectedBounds ? 'your drawn area' : `${plan.size_km} km`;
-        setStatus(`AI plan: ${plan.targets.join(', ')} · ${area} · <${plan.max_cloud}% cloud — ${plan.reason}`);
-      }
-    } catch (e) { /* fall back to manual settings */ }
+    try{ const plan=await (await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})})).json();
+      if(plan.targets){ size_km=plan.size_km; max_cloud=plan.max_cloud; targets=plan.targets;
+        legend.innerHTML='<b>Legend</b><br>'+Object.entries(plan.colors).map(([k,c])=>`<span class="sw" style="background:${c}"></span>${k}`).join('<br>');
+        setStatus(`AI plan: ${plan.targets.join(', ')} · ${selectedBounds?'drawn area':plan.size_km+' km'} · <${plan.max_cloud}% cloud`); } }
+    catch(e){}
   }
-
-  const body = {max_cloud, targets};
-  if (selectedBounds) {
-    body.bbox = [selectedBounds.getWest(), selectedBounds.getSouth(),
-                 selectedBounds.getEast(), selectedBounds.getNorth()];
-  } else {
-    body.lat = picked.lat; body.lon = picked.lng; body.size_km = size_km;
-  }
-
-  setStatus('Searching Copernicus archive & downloading latest scene…');
-  try {
-    const r = await fetch('/api/fetch', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body)
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    scene = j;
-    cleanUrl = j.image_url; annotatedUrl = null;
-    if (selectionRect) { selectionRect.remove(); selectionRect = null; }
-    if (overlay) overlay.remove();
-    overlay = L.imageOverlay(j.image_url, j.bounds, {opacity: 1}).addTo(map);
-    map.fitBounds(j.bounds);
-    if (j.colors) updateLegend(j.colors);
-    const when = new Date(j.datetime).toLocaleString();
-    const what = j.targets ? ` Looking for: ${j.targets.join(', ')}.` : '';
-    setStatus(`Scene from ${when} · ${j.cloud_cover.toFixed(0)}% cloud.${what} Ready to detect.`);
-    detectBtn.disabled = false;
-  } catch (e) {
-    setStatus('Fetch failed: ' + e.message, true);
-  }
-  fetchBtn.disabled = false;
-};
-
-detectBtn.onclick = async () => {
-  detectBtn.disabled = true;
-  boxLayer.clearLayers();
-  setStatus('Starting qwen2.5vl detection…');
-  try {
-    const r = await fetch('/api/detect', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({key: scene.key})
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || r.statusText);
-    poll();
-  } catch (e) {
-    setStatus(e.message, true);
-    detectBtn.disabled = false;
-  }
-};
-
-async function poll() {
-  const r = await fetch('/api/detect/status?key=' + scene.key);
-  const j = await r.json();
-  if (j.state === 'running') {
-    setStatus(`Analysing tiles with qwen2.5vl… ${j.done}/${j.total}`);
-    setTimeout(poll, 1500);
-    return;
-  }
-  detectBtn.disabled = false;
-  if (j.state === 'failed') { setStatus('Detection failed: ' + j.error, true); return; }
-  const res = j.result;
-  annotatedUrl = res.annotated_url + '?t=' + Date.now();
-  if (showBoxes.checked) overlay.setUrl(annotatedUrl);
-  for (const d of res.detections) {
-    L.rectangle(d.bounds, {color: d.color || '#ffd400', weight: 2, fillOpacity: 0.08})
-      .bindPopup(d.label).addTo(boxLayer);
-  }
-  setStatus(res.count === 0
-    ? 'Analysis finished — nothing detected in this scene.'
-    : `Found ${res.count} object${res.count > 1 ? 's' : ''} — click a box for its label.`);
+  const body={max_cloud,targets};
+  if(selectedBounds) body.bbox=[selectedBounds.getWest(),selectedBounds.getSouth(),selectedBounds.getEast(),selectedBounds.getNorth()];
+  else { body.lat=picked.lat; body.lon=picked.lng; body.size_km=size_km; }
+  setStatus('Downloading latest scene…');
+  try{
+    const j=await (await fetch('/api/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+    if(j.error) throw new Error(j.error);
+    scene=j; cleanUrl=j.image_url; annotatedUrl=null;
+    if(selectionRect){selectionRect.remove();selectionRect=null;}
+    if(overlay) overlay.remove();
+    overlay=L.imageOverlay(j.image_url,j.bounds).addTo(map); map.fitBounds(j.bounds);
+    setStatus(`Scene ${new Date(j.datetime).toLocaleDateString()} · ${j.cloud_cover.toFixed(0)}% cloud. Ready to detect.`);
+    detectBtn.disabled=false;
+  }catch(e){ setStatus('Fetch failed: '+e.message,true); }
+  fetchBtn.disabled=false;
 }
+async function doDetect(){
+  const detectBtn=document.getElementById('detect'); detectBtn.disabled=true; boxLayer.clearLayers();
+  setStatus('Starting qwen2.5vl detection…');
+  try{ const j=await (await fetch('/api/detect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:scene.key})})).json();
+    if(j.error) throw new Error(j.error); pollDetect();
+  }catch(e){ setStatus(e.message,true); detectBtn.disabled=false; }
+}
+async function pollDetect(){
+  const j=await (await fetch('/api/detect/status?key='+scene.key)).json();
+  if(j.state==='running'){ setStatus(`Analysing tiles… ${j.done}/${j.total}`); setTimeout(pollDetect,1500); return; }
+  document.getElementById('detect').disabled=false;
+  if(j.state==='failed'){ setStatus('Detection failed: '+j.error,true); return; }
+  annotatedUrl=j.result.annotated_url+'?t='+Date.now();
+  if(document.getElementById('showBoxes').checked) overlay.setUrl(annotatedUrl);
+  j.result.detections.forEach(d=>L.rectangle(d.bounds,{color:d.color||'#ffd400',weight:2,fillOpacity:0.08}).bindPopup(d.label).addTo(boxLayer));
+  setStatus(j.result.count===0?'Nothing detected in this scene.':`Found ${j.result.count} object(s).`);
+}
+function toggleBoxes(){ if(!overlay||!scene) return;
+  if(document.getElementById('showBoxes').checked){ if(annotatedUrl) overlay.setUrl(annotatedUrl); map.addLayer(boxLayer); }
+  else { overlay.setUrl(cleanUrl); map.removeLayer(boxLayer); } }
 
-showBoxes.onchange = () => {
-  if (!overlay) return;
-  if (showBoxes.checked) {
-    if (annotatedUrl) overlay.setUrl(annotatedUrl);
-    map.addLayer(boxLayer);
-  } else {
-    overlay.setUrl(cleanUrl);
-    map.removeLayer(boxLayer);
-  }
-};
+// boot
+selectTab('monitor');
 </script>
 </body>
 </html>

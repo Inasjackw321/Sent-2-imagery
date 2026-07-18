@@ -6,6 +6,7 @@ straight onto a web map.
 """
 
 import math
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import requests
@@ -40,6 +41,110 @@ def search_latest(bbox: list[float], max_cloud: float = 30.0, limit: int = 12) -
     r = requests.post(STAC_URL, json=body, timeout=60)
     r.raise_for_status()
     return r.json().get("features", [])
+
+
+def search_range(bbox: list[float], days: int = 30, max_cloud: float = 20.0,
+                 limit: int = 40) -> list[dict]:
+    """Return scenes covering bbox from the last `days` days, newest first."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    body = {
+        "collections": [COLLECTION],
+        "bbox": bbox,
+        "limit": limit,
+        "datetime": f"{start.isoformat()}/{end.isoformat()}",
+        "query": {"eo:cloud_cover": {"lt": max_cloud}},
+        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+    }
+    r = requests.post(STAC_URL, json=body, timeout=60)
+    r.raise_for_status()
+    return r.json().get("features", [])
+
+
+def pick_before_after(items: list[dict]) -> tuple[dict, dict] | None:
+    """From a range search (newest first), pick the newest and the oldest
+    scene on distinct days, preferring the clearest scene per day."""
+    by_day: dict[str, dict] = {}
+    for it in items:
+        day = str(it["properties"]["datetime"])[:10]
+        cur = by_day.get(day)
+        if cur is None or it["properties"].get("eo:cloud_cover", 100) < cur["properties"].get("eo:cloud_cover", 100):
+            by_day[day] = it
+    days = sorted(by_day)
+    if len(days) < 2:
+        return None
+    return by_day[days[0]], by_day[days[-1]]   # (before, after)
+
+
+def grid_size(bbox: list[float], max_px: int = 1400) -> tuple[int, int]:
+    """Fixed output pixel grid for a bbox at ~10 m/pixel, capped to max_px.
+    Depends only on the bbox, so two dates share an identical grid."""
+    mid_lat = (bbox[1] + bbox[3]) / 2.0
+    w_m = (bbox[2] - bbox[0]) * 111320.0 * max(0.05, math.cos(math.radians(mid_lat)))
+    h_m = (bbox[3] - bbox[1]) * 111320.0
+    w, h = w_m / 10.0, h_m / 10.0
+    scale = min(1.0, max_px / max(w, h, 1))
+    return max(1, int(w * scale)), max(1, int(h * scale))
+
+
+def read_raw(item: dict, bbox: list[float], out_wh: tuple[int, int]) -> np.ndarray:
+    """Read the red/green/blue reflectance bands onto a fixed bbox pixel grid.
+
+    Data is placed into a zero canvas by its geographic position, so scenes
+    that only partly cover the bbox still align pixel-for-pixel across dates
+    (uncovered pixels stay 0 / nodata)."""
+    out_w, out_h = out_wh
+    px_lon = (bbox[2] - bbox[0]) / out_w
+    px_lat = (bbox[3] - bbox[1]) / out_h
+    canvas = np.zeros((out_h, out_w, 3), dtype=np.uint16)
+
+    for b, asset in enumerate(("red", "green", "blue")):
+        href = item["assets"][asset]["href"]
+        with rasterio.open(href) as src:
+            with WarpedVRT(src, crs="EPSG:4326", resampling=Resampling.bilinear) as vrt:
+                cl = max(bbox[0], vrt.bounds.left)
+                cb = max(bbox[1], vrt.bounds.bottom)
+                cr = min(bbox[2], vrt.bounds.right)
+                ct = min(bbox[3], vrt.bounds.top)
+                if cr <= cl or ct <= cb:
+                    continue  # no overlap; leave nodata
+                col0 = int(round((cl - bbox[0]) / px_lon))
+                col1 = int(round((cr - bbox[0]) / px_lon))
+                row0 = int(round((bbox[3] - ct) / px_lat))
+                row1 = int(round((bbox[3] - cb) / px_lat))
+                ow, oh = max(1, col1 - col0), max(1, row1 - row0)
+                window = from_bounds(cl, cb, cr, ct, transform=vrt.transform)
+                data = vrt.read(1, window=window, out_shape=(oh, ow),
+                                resampling=Resampling.bilinear)
+                canvas[row0:row0 + oh, col0:col0 + ow, b] = data[:oh, :ow]
+    return canvas
+
+
+def render_pair(before_raw: np.ndarray, after_raw: np.ndarray):
+    """Stretch two raw-reflectance arrays with a SHARED per-band scaling so
+    they are radiometrically comparable (real changes are preserved) while
+    still looking good. Returns (before_rgb, after_rgb, valid_mask)."""
+    mask = before_raw.any(axis=-1) & after_raw.any(axis=-1)
+    before8 = np.zeros(before_raw.shape, np.uint8)
+    after8 = np.zeros(after_raw.shape, np.uint8)
+    if not mask.any():
+        return before8, after8, mask
+    for b in range(3):
+        pool = np.concatenate([before_raw[..., b][mask], after_raw[..., b][mask]]).astype(np.float32)
+        lo, hi = np.percentile(pool, (2.0, 98.0))
+        if hi - lo < 1:
+            hi = lo + 1
+        for src, dst in ((before_raw, before8), (after_raw, after8)):
+            v = np.clip((src[..., b].astype(np.float32) - lo) / (hi - lo), 0, 1) ** 0.85
+            dst[..., b] = (v * 255).astype(np.uint8)
+    before8[~mask] = 0
+    after8[~mask] = 0
+    return before8, after8, mask
+
+
+def bounds_latlon(bbox: list[float]) -> list[list[float]]:
+    """bbox [w,s,e,n] -> Leaflet [[south, west], [north, east]]."""
+    return [[bbox[1], bbox[0]], [bbox[3], bbox[2]]]
 
 
 def _stretch(img: np.ndarray) -> np.ndarray:

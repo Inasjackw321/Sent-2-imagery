@@ -133,6 +133,43 @@ def plan_query(query: str) -> dict:
     return plan
 
 
+CHANGE_PROMPT = """These are two Sentinel-2 satellite crops of the SAME location (10 m/pixel).
+The FIRST image is earlier ({d1}). The SECOND image is later ({d2}).
+Describe what CHANGED from the first to the second image, in a few words.
+Look for: new crater or blast damage, a destroyed or damaged building, new construction,
+aircraft or vehicles that appeared or left, ships that moved, new ground scarring or burn marks.
+Respond with ONLY JSON:
+{{"change": "<short phrase>", "category": "damage" | "movement" | "construction" | "other" | "none"}}
+If the two crops look essentially the same, respond {{"change": "no significant change", "category": "none"}}."""
+
+
+def _img_b64(img: Image.Image, upscale_to: int = 384) -> str:
+    w, h = img.size
+    if max(w, h) < upscale_to:
+        s = upscale_to / max(w, h)
+        img = img.resize((max(1, int(w * s)), max(1, int(h * s))), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def describe_change(before_img: Image.Image, after_img: Image.Image,
+                    d1: str, d2: str, model: str | None = None) -> dict:
+    """Ask the vision model what changed between two aligned crops."""
+    model = model or resolve_model()
+    imgs = [_img_b64(before_img), _img_b64(after_img)]
+    try:
+        text = _chat(model, CHANGE_PROMPT.format(d1=d1, d2=d2), images=imgs)
+        obj = json.loads(text)
+        change = str(obj.get("change", "")).strip() or "change detected"
+        category = str(obj.get("category", "other")).lower().strip()
+    except (RuntimeError, requests.RequestException, json.JSONDecodeError, AttributeError):
+        return {"change": "change detected (AI description unavailable)", "category": "other"}
+    if category not in ("damage", "movement", "construction", "other", "none"):
+        category = "other"
+    return {"change": change, "category": category}
+
+
 def _query_tile(tile_img: Image.Image, model: str, targets: list[str]) -> list[dict]:
     w, h = tile_img.size
     buf = io.BytesIO()
