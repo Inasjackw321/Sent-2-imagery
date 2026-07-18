@@ -18,26 +18,47 @@ from PIL import Image
 OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 MODEL = os.environ.get("SENT2_MODEL", "qwen2.5vl:7b")
 
-TILE = 512       # tile size in source pixels
-UPSCALE = 2      # tiles are upscaled before being sent to the model
-OVERLAP = 64     # tile overlap so objects on seams aren't missed
+TILE = 320       # tile size in source pixels
+UPSCALE = 3      # tiles are upscaled before being sent to the model (~960 px)
+OVERLAP = 48     # tile overlap so objects on seams aren't missed
+MAX_BOX_FRAC = 0.6   # boxes wider/taller than this share of the tile are junk
+MAX_PER_TILE = 40    # sanity cap on detections returned for one tile
 
-DEFAULT_TARGETS = ["boat", "ship", "airplane"]
+# Targets the planner must never pick: huge linear / area features that a
+# per-object detector cannot meaningfully box.
+BANNED_TARGETS = {"runway", "runways", "road", "roads", "highway", "coastline",
+                  "coast", "water", "sea", "ocean", "river", "lake", "forest",
+                  "field", "fields", "land", "ground", "building area", "city",
+                  "airport", "harbour", "harbor", "port", "terminal", "apron"}
 
-PROMPT = """You are analysing a satellite image tile ({w}x{h} pixels, ~10 m per pixel).
-Find every instance of: {targets}.
-Respond with ONLY JSON, no other text, in this exact shape:
-{{"detections": [{{"label": "<one of: {targets}>", "bbox": [x1, y1, x2, y2]}}]}}
-bbox is in pixel coordinates of this {w}x{h} image (x1,y1 = top-left, x2,y2 = bottom-right).
-If there are none: {{"detections": []}}"""
+DEFAULT_TARGETS = ["ship", "boat", "airplane"]
 
-PLAN_PROMPT = """You configure a Sentinel-2 satellite imagery app (10 m/pixel resolution).
-The user says what they want to find: "{query}"
-Choose settings and respond with ONLY JSON in this exact shape:
-{{"targets": ["<1-4 short singular object nouns to detect>"],
-  "size_km": <area size in km, 2-20: small (2-5) for a single harbour/airport, large (10-20) for coastline or region scans>,
-  "max_cloud": <max cloud cover %, 0-100: low (10-20) normally, higher only if the user cares more about recency than clarity>,
-  "reason": "<one short sentence explaining your choices>"}}"""
+PROMPT = """This is a {w}x{h} pixel Sentinel-2 satellite image tile at 10 m per pixel.
+At this resolution a car is ~1 px, an aircraft ~7 px, a large ship ~30 px — objects are TINY.
+Look carefully for these small objects only: {targets}.
+
+Rules:
+- Report a box ONLY for a clear, distinct object you can actually see. It is far better to miss one than to invent one.
+- Most tiles contain NONE of these objects. If so, return an empty list — that is the correct and common answer.
+- Each box must tightly wrap ONE small object. Never return a box that covers most of the tile or a large stretch of ground, water, runway or apron.
+
+Respond with ONLY JSON:
+{{"detections": [{{"label": "<one of: {targets}>", "box": [x1, y1, x2, y2]}}]}}
+Coordinates are normalized 0 to 1000 (0,0 = top-left corner; 1000,1000 = bottom-right corner).
+If nothing is found: {{"detections": []}}"""
+
+PLAN_PROMPT = """You configure a Sentinel-2 satellite imagery search. Resolution is 10 m/pixel,
+so only objects larger than about 20 m are visible as small blobs.
+The user wants to find: "{query}"
+
+Respond with ONLY JSON in this exact shape:
+{{"targets": ["<1-3 small, discrete, COUNTABLE objects, singular nouns, e.g. ship, boat, airplane, tanker, truck>"],
+  "size_km": <area size in km, 2-20: small (2-4) for one airport or harbour, large (10-20) for coastline or region scans>,
+  "max_cloud": <max cloud cover %, 0-100: use 10-20 for clear imagery>,
+  "reason": "<one short sentence explaining your choices>"}}
+
+Only choose objects that show up individually as small blobs. NEVER choose large linear or area
+features such as runway, road, coastline, water, forest, building or airport itself."""
 
 
 def _installed_models() -> list[str]:
@@ -98,7 +119,8 @@ def plan_query(query: str) -> dict:
         raw = json.loads(text)
     except (RuntimeError, requests.RequestException, json.JSONDecodeError):
         return plan
-    targets = [str(t).lower().strip() for t in raw.get("targets", []) if str(t).strip()][:4]
+    targets = [str(t).lower().strip() for t in raw.get("targets", []) if str(t).strip()]
+    targets = [t for t in targets if t not in BANNED_TARGETS][:3]
     if targets:
         plan["targets"] = targets
     try:
@@ -117,10 +139,26 @@ def _query_tile(tile_img: Image.Image, model: str, targets: list[str]) -> list[d
     tile_img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
     text = _chat(model, PROMPT.format(w=w, h=h, targets=", ".join(targets)), images=[b64])
-    return _parse_detections(text, w, h)
+    dets = _parse_detections(text, w, h, targets)
+
+    # Drop hallucinated boxes that swallow most of the tile.
+    kept = [d for d in dets
+            if (d["bbox"][2] - d["bbox"][0]) < MAX_BOX_FRAC * w
+            and (d["bbox"][3] - d["bbox"][1]) < MAX_BOX_FRAC * h]
+    return kept[:MAX_PER_TILE]
 
 
-def _parse_detections(text: str, w: int, h: int) -> list[dict]:
+def _to_pixels(v: float, dim: int) -> float:
+    """Interpret a model coordinate. We ask for normalised 0-1000, but stay
+    robust to models that answer in 0-1 fractions or raw pixels."""
+    if v <= 1.5:            # fraction of the image
+        return v * dim
+    if v <= 1000:           # normalised 0-1000 (our requested convention)
+        return v / 1000.0 * dim
+    return v                # already pixels
+
+
+def _parse_detections(text: str, w: int, h: int, targets: list[str] | None = None) -> list[dict]:
     raw = None
     try:
         obj = json.loads(text)
@@ -132,21 +170,24 @@ def _parse_detections(text: str, w: int, h: int) -> list[dict]:
                 raw = json.loads(match.group(0))
             except json.JSONDecodeError:
                 pass
+    allowed = {t.lower() for t in targets} if targets else None
     out = []
     for d in raw if isinstance(raw, list) else []:
         try:
             label = str(d["label"]).lower()
-            x1, y1, x2, y2 = (float(v) for v in d["bbox"])
+            coords = d.get("box", d.get("bbox"))
+            x1, y1, x2, y2 = (float(v) for v in coords)
         except (KeyError, TypeError, ValueError):
             continue
-        # Some models answer in 0-1000 normalised coords; rescale if so.
-        if max(x1, x2) <= 1000 and w > 1000:
-            x1, x2 = x1 * w / 1000, x2 * w / 1000
-            y1, y2 = y1 * h / 1000, y2 * h / 1000
+        x1, x2 = _to_pixels(x1, w), _to_pixels(x2, w)
+        y1, y2 = _to_pixels(y1, h), _to_pixels(y2, h)
         x1, x2 = sorted((max(0, min(w, x1)), max(0, min(w, x2))))
         y1, y2 = sorted((max(0, min(h, y1)), max(0, min(h, y2))))
         if x2 - x1 < 2 or y2 - y1 < 2:
             continue
+        # Keep the label to a requested target if we can match one.
+        if allowed and label not in allowed:
+            label = next((t for t in allowed if t in label or label in t), label)
         out.append({"label": label, "bbox": [x1, y1, x2, y2]})
     return out
 
