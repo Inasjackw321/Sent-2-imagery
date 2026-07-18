@@ -9,22 +9,17 @@ ships and aircraft.
 - Only the window you ask for is downloaded, not whole 100 km scenes.
 - AI detection runs fully locally through Ollama.
 
-## Setup
-
-```bash
-pip install -r requirements.txt
-
-# for AI detection (optional but the fun part):
-ollama pull qwen2.5vl:7b
-```
-
 ## Run
 
-```bash
-python app.py
-```
+**Just double-click `app.py`** (or run `python app.py`). On first launch it
+installs any missing dependencies automatically, then opens the app in your
+browser.
 
-Your browser opens automatically. Then:
+For AI detection (optional but the fun part), also pull the model once:
+
+```bash
+ollama pull qwen2.5vl:7b
+``` Then:
 
 1. **Click** anywhere on the map (harbours and airports are the good stuff).
 2. **Fetch latest imagery** — pulls the newest low-cloud Sentinel-2 scene and overlays it.

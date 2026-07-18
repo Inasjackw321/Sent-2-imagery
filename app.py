@@ -2,13 +2,30 @@
 map it, and let a local Ollama qwen2.5vl model highlight boats, ships and
 aircraft.
 
-Just run:  python app.py
+Just double-click this file (or run:  python app.py) — missing
+dependencies are installed automatically on first launch.
 """
 
+import importlib.util
 import os
+import subprocess
+import sys
 import threading
 import uuid
 import webbrowser
+
+
+def _ensure_deps():
+    # module name -> pip package name
+    needed = {"flask": "flask", "requests": "requests", "rasterio": "rasterio",
+              "numpy": "numpy", "PIL": "Pillow"}
+    missing = [pkg for mod, pkg in needed.items() if importlib.util.find_spec(mod) is None]
+    if missing:
+        print(f"First run — installing dependencies: {', '.join(missing)}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *missing])
+
+
+_ensure_deps()
 
 from flask import Flask, jsonify, request, send_from_directory
 from PIL import Image, ImageDraw, ImageFont
@@ -158,4 +175,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Keep the console window open when launched by double-click,
+        # so the error is readable instead of the window flashing closed.
+        import traceback
+        traceback.print_exc()
+        input("\nSomething went wrong — press Enter to close...")
