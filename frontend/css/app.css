@@ -72,6 +72,26 @@ html, body {
 }
 .badge-demo { background: rgba(255,180,84,.14); color: var(--warn); border-color: rgba(255,180,84,.4); font-weight: 600; }
 
+.btn-install {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  background: transparent; color: var(--accent);
+  border: 1px solid rgba(76,194,255,.45);
+  font: inherit; font-size: 12px; font-weight: 550; transition: .15s;
+}
+.btn-install:hover { background: rgba(76,194,255,.12); }
+.btn-install span { font-size: 13px; line-height: 1; }
+
+/* Installed / app-window mode: the OS supplies the title bar, so reclaim room
+   and let the header act as a drag handle. */
+.is-app .topbar { height: 48px; -webkit-app-region: drag; app-region: drag; }
+.is-app .topbar button,
+.is-app .topbar .badge { -webkit-app-region: no-drag; app-region: no-drag; }
+.is-app .layout { height: calc(100% - 48px); }
+@media (display-mode: window-controls-overlay) {
+  .topbar { padding-left: env(titlebar-area-x, 16px); }
+}
+
 /* ── Layout ────────────────────────────────────────────────── */
 
 .layout { display: flex; height: calc(100% - 54px); }

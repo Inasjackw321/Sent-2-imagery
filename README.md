@@ -12,9 +12,47 @@ pip install -r requirements.txt
 python run.py
 ```
 
-Then open http://localhost:8000 (it opens by itself). To try the interface
+It opens in its own app window — no address bar, no tabs. To try the interface
 without downloading anything, `python run.py --demo` serves synthetic imagery
 instead — see [Demo mode](#demo-mode).
+
+## Opening it as an app
+
+Three ways, pick whichever suits:
+
+**Double-click a launcher.** `launchers/Sent-2.command` on macOS and Linux,
+`launchers/Sent-2.bat` on Windows. First run creates a `.venv` and installs
+dependencies; after that it just opens.
+
+**Add it to your applications.** One command puts it where you'd expect:
+
+```bash
+python run.py --install-shortcut
+```
+
+- macOS — a real `Sent-2.app` in `~/Applications`, with its own icon, ready to
+  drag to the Dock
+- Windows — shortcuts on the Desktop and in the Start menu, launched via
+  `pythonw` so no console window appears
+- Linux — a `.desktop` entry in your applications menu
+
+**Install from the browser.** Sent-2 is a progressive web app: open it in a tab
+and use the **Install app** button in the header (or your browser's install
+action). You get a dock/taskbar icon and a standalone window, and the interface
+is cached so it starts instantly — and still opens if you're offline.
+
+How the window is opened:
+
+| Flag | Behaviour |
+| --- | --- |
+| *(none)* or `--app` | Stand-alone app window via an installed Chromium-family browser |
+| `--native` | A native OS window — needs `pip install pywebview` |
+| `--tab` | An ordinary browser tab |
+| `--headless` | Serve only; open the URL yourself |
+
+The app picks a free port if 8000 is taken, and launching it a second time
+brings the running copy up instead of starting another. Closing the app window
+shuts the server down. Set `SENT2_BROWSER` to force a particular browser.
 
 ---
 
@@ -154,11 +192,15 @@ backend/
   service.py     render and change-detection orchestration, caching
   animate.py     GIF / WebP / APNG assembly and contact sheets
   geo.py         AOI handling, geodesic area, output grid
+  launcher.py    port choice, app windows, desktop shortcuts
 frontend/
-  index.html, css/app.css
+  index.html, css/app.css, manifest.webmanifest, sw.js
   js/            map, capture, adjust, editor, overlay, timelapse, graphic
+  icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
-tests/           pytest suite over the real raster path
+launchers/       double-clickable launchers for macOS, Linux and Windows
+tools/           icon generator
+tests/           pytest suite over the real raster path and the launcher
 ```
 
 ## Tests
@@ -172,6 +214,8 @@ The suite writes Sentinel-2-like GeoTIFFs in a UTM projection and runs the real
 (non-demo) reading path over them, covering reprojection onto the output grid,
 mixed band resolutions, the reflectance offset, cloud masking, shape clipping,
 index maths, stretch modes, GeoTIFF export, change detection and STAC parsing.
+It also covers the desktop-app plumbing: port selection, app-window arguments,
+the generated shortcuts, and the web-app manifest and service worker.
 
 ## Requirements
 

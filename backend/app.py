@@ -231,7 +231,26 @@ if FRONTEND.exists():
     app.mount("/js", StaticFiles(directory=FRONTEND / "js"), name="js")
     app.mount("/css", StaticFiles(directory=FRONTEND / "css"), name="css")
     app.mount("/vendor", StaticFiles(directory=FRONTEND / "vendor"), name="vendor")
+    app.mount("/icons", StaticFiles(directory=FRONTEND / "icons"), name="icons")
 
     @app.get("/")
     def index():
         return FileResponse(FRONTEND / "index.html")
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        return FileResponse(FRONTEND / "manifest.webmanifest",
+                            media_type="application/manifest+json")
+
+    @app.get("/sw.js")
+    def service_worker():
+        # Must be served from the root for the worker to control the whole app.
+        return FileResponse(
+            FRONTEND / "sw.js",
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+        )
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return FileResponse(FRONTEND / "icons" / "favicon.ico")

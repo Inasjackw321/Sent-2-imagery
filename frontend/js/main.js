@@ -8,6 +8,7 @@ import { initCapture } from './capture.js';
 import { initEditor, refreshEditor } from './editor.js';
 import { initTimelapse, refreshTimelapse } from './timelapse.js';
 import { initGraphic, refreshGraphic } from './graphic.js';
+import { initInstall } from './install.js';
 
 const REFRESH = {
   capture: invalidateMap,
@@ -27,6 +28,10 @@ function initTabs() {
 }
 
 async function main() {
+  // Do this first, so the install button and offline shell work even if the
+  // backend is slow or unreachable.
+  initInstall();
+
   try {
     store.config = await api.config();
   } catch (err) {

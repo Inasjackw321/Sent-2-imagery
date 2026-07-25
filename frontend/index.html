@@ -4,9 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sent-2 · Satellite imagery studio</title>
+<meta name="description" content="Circle a region, download Sentinel-2 satellite imagery, edit it, and build timelapses and informative graphics.">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/css/app.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<meta name="theme-color" content="#0d1015">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sent-2">
+<meta name="mobile-web-app-capable" content="yes">
 </head>
 <body>
 
@@ -21,6 +30,9 @@
   <div class="topbar-right">
     <span class="badge badge-demo" id="demoBadge" hidden>Demo data — synthetic</span>
     <span class="badge" id="sourceBadge">Sentinel-2 L2A</span>
+    <button class="btn-install" id="installBtn" hidden title="Install Sent-2 as an app">
+      <span>↓</span> Install app
+    </button>
   </div>
 </header>
 
