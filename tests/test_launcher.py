@@ -121,7 +121,7 @@ def test_linux_desktop_entry_is_valid(monkeypatch, tmp_path):
     text = entry.read_text()
     assert text.startswith("[Desktop Entry]")
     assert "Type=Application" in text
-    assert "run.py" in text and "--app" in text
+    assert "app.py" in text          # the self-installing entry point
     assert "Terminal=false" in text
     assert str(entry) in note
 
@@ -138,6 +138,7 @@ def test_macos_bundle_has_the_pieces_finder_needs(monkeypatch, tmp_path):
     assert "CFBundleExecutable" in plist.read_text()
     assert binary.stat().st_mode & 0o111, "launcher must be executable"
     assert binary.read_text().startswith("#!/bin/bash")
+    assert "app.py" in binary.read_text()
     if (FRONTEND / "icons" / "icon.icns").exists():
         assert (bundle / "Contents" / "Resources" / "icon.icns").exists()
 

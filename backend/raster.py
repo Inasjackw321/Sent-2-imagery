@@ -1,4 +1,4 @@
-"""Reading Sentinel-2 bands onto the output grid (and synthesising them in demo mode)."""
+"""Reading any supported satellite's bands onto the output grid."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from rasterio.features import rasterize
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import transform_geom
 
-from . import config, stac
+from . import config, sources, stac
 from .geo import WGS84, Grid
 
 
@@ -22,56 +22,75 @@ class BandReadError(RuntimeError):
     pass
 
 
-def read_bands(scene: dict, grid: Grid, keys: list[str], mask_clouds: bool = False):
-    """Return {band_key: masked float32 reflectance array} on the grid.
+def read_bands(scene: dict, grid: Grid, aliases: list[str], source=None,
+               mask_clouds: bool = False):
+    """Return {alias: masked float32 array} on the grid, in physical units.
 
-    Cloudy pixels are masked out when ``mask_clouds`` is set; the fraction of
-    pixels dropped comes back alongside the arrays.
+    Values come back as reflectance, decibels, kelvin or metres depending on
+    the satellite. The fraction of pixels dropped by cloud masking comes back
+    alongside.
     """
-    keys = list(dict.fromkeys(keys))
+    source = source or sources.get(scene.get("source"))
+    aliases = list(dict.fromkeys(aliases))
+
     if scene.get("demo"):
-        return _demo_bands(scene, grid, keys, mask_clouds)
+        return _demo_bands(scene, grid, aliases, source, mask_clouds)
 
-    missing = [k for k in keys if k not in scene.get("assets", {})]
-    if missing:
-        raise BandReadError(f"Scene {scene['id']} is missing bands: {', '.join(missing)}")
+    unknown = [a for a in aliases if a not in source.bands]
+    if unknown:
+        raise BandReadError(
+            f"{source.label} has no {', '.join(unknown)} band"
+        )
 
-    offset = stac.boa_offset(scene)
+    targets = {}
+    for alias in aliases:
+        asset, index = sources.resolve_band(source, alias)
+        if asset not in scene.get("assets", {}):
+            raise BandReadError(f"Scene {scene['id']} is missing its {asset} asset")
+        targets[alias] = (scene["assets"][asset], index)
+
+    mask_spec = sources.CLOUD_MASKS.get(source.cloud_mask) if mask_clouds else None
+    if mask_spec and mask_spec["asset"] not in scene.get("assets", {}):
+        mask_spec = None
 
     with rasterio.Env(**config.GDAL_ENV):
-        with ThreadPoolExecutor(max_workers=min(6, len(keys) + 1)) as pool:
-            futures = {k: pool.submit(_read_one, scene["assets"][k], grid, False) for k in keys}
-            scl_future = None
-            if mask_clouds and config.SCL_ASSET in scene.get("assets", {}):
-                scl_future = pool.submit(
-                    _read_one, scene["assets"][config.SCL_ASSET], grid, True
+        with ThreadPoolExecutor(max_workers=min(8, len(targets) + 1)) as pool:
+            futures = {
+                alias: pool.submit(_read_one, stac.sign_href(source, href), grid, index, False)
+                for alias, (href, index) in targets.items()
+            }
+            mask_future = None
+            if mask_spec:
+                mask_future = pool.submit(
+                    _read_one,
+                    stac.sign_href(source, scene["assets"][mask_spec["asset"]]),
+                    grid, 1, True,
                 )
 
-            bands = {}
-            for key, fut in futures.items():
-                raw = fut.result()
-                data = (raw.astype("float32") + offset) * config.REFLECTANCE_SCALE
-                bands[key] = np.ma.masked_array(data, mask=np.ma.getmaskarray(raw))
-
-            scl = scl_future.result() if scl_future else None
+            bands = {alias: _to_physical(fut.result(), scene, source)
+                     for alias, fut in futures.items()}
+            qa = mask_future.result() if mask_future else None
 
     cloud_fraction = 0.0
-    if scl is not None:
-        scl_data = np.ma.filled(scl, 0).astype("uint8")
-        cloudy = np.isin(scl_data, config.CLOUD_CLASSES)
+    if qa is not None:
+        cloudy = _cloudy_pixels(qa, mask_spec)
         cloud_fraction = float(cloudy.mean())
-        for key in bands:
-            bands[key] = np.ma.masked_array(
-                bands[key].data, mask=np.ma.getmaskarray(bands[key]) | cloudy
+        for alias in bands:
+            bands[alias] = np.ma.masked_array(
+                bands[alias].data,
+                mask=np.ma.getmaskarray(bands[alias]) | cloudy,
             )
 
     return bands, cloud_fraction
 
 
-def _read_one(href: str, grid: Grid, categorical: bool):
+def _read_one(href: str, grid: Grid, index: int, categorical: bool):
     resampling = Resampling.nearest if categorical else Resampling.bilinear
     try:
         with rasterio.open(href) as src:
+            if index > src.count:
+                raise BandReadError(
+                    f"{href.rsplit('/', 1)[-1]} has {src.count} band(s), needed {index}")
             nodata = 0 if src.nodata is None else src.nodata
             with WarpedVRT(
                 src,
@@ -83,13 +102,50 @@ def _read_one(href: str, grid: Grid, categorical: bool):
                 src_nodata=nodata,
                 nodata=nodata,
             ) as vrt:
-                return vrt.read(1, masked=True)
+                return vrt.read(index, masked=True)
     except rasterio.RasterioIOError as exc:
         raise BandReadError(f"Could not read {href.rsplit('/', 1)[-1]}: {exc}") from exc
 
 
+def _to_physical(raw, scene: dict, source) -> np.ma.MaskedArray:
+    """Apply the satellite's own scaling to get physical units."""
+    spec = sources.SCALES[source.scale]
+    mask = np.ma.getmaskarray(raw)
+    data = raw.astype("float32")
+
+    if spec["kind"] == "db":
+        # Radar: work in decibels, where the dynamic range is readable.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            power = np.ma.filled(data, 0.0)
+            if source.scale == "amplitude_db":
+                power = power ** 2
+            out = 10.0 * np.log10(np.where(power > 0, power, np.nan))
+        mask = mask | ~np.isfinite(out)
+        out = np.nan_to_num(out, nan=-40.0, posinf=0.0, neginf=-40.0)
+        return np.ma.masked_array(out.astype("float32"), mask=mask)
+
+    offset = stac.boa_offset(scene, source)
+    out = (np.ma.filled(data, 0.0) + offset) * spec["mul"] + spec["add"]
+    return np.ma.masked_array(out.astype("float32"), mask=mask)
+
+
+def _cloudy_pixels(qa, spec) -> np.ndarray:
+    """Turn a quality band into a boolean cloud mask."""
+    data = np.ma.filled(qa, 0).astype("uint32")
+    if spec["kind"] == "classes":
+        return np.isin(data, spec["cloudy"])
+
+    cloudy = np.zeros(data.shape, dtype=bool)
+    for bit in spec["cloudy_bits"]:
+        cloudy |= (data & (1 << bit)) > 0
+    return cloudy
+
+
+# ── Area of interest ───────────────────────────────────────────
+
+
 def aoi_mask(geometry: dict, grid: Grid) -> np.ndarray:
-    """Boolean array, True *outside* the AOI polygon."""
+    """Boolean array, True *outside* the drawn shape."""
     projected = transform_geom(WGS84, grid.crs, geometry)
     inside = rasterize(
         [(projected, 1)],
@@ -109,32 +165,33 @@ def apply_clip(bands: dict, outside: np.ndarray) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Synthetic bands for DEMO_MODE
-# ---------------------------------------------------------------------------
+# ── Synthetic bands for DEMO_MODE ──────────────────────────────
 
-# Reflectance endmembers, roughly typical Sentinel-2 surface values.
 _ENDMEMBERS = {
     "water": dict(coastal=.06, blue=.055, green=.048, red=.032, rededge1=.028,
                   rededge2=.022, rededge3=.018, nir=.014, nir08=.013, nir09=.010,
-                  swir16=.008, swir22=.006),
+                  swir16=.008, swir22=.006, cirrus=.002, pan=.045, lwir=288.0,
+                  vv=-22.0, vh=-28.0, elevation=0.0, classification=80),
     "veg": dict(coastal=.035, blue=.032, green=.062, red=.038, rededge1=.11,
                 rededge2=.30, rededge3=.36, nir=.40, nir08=.42, nir09=.38,
-                swir16=.20, swir22=.09),
+                swir16=.20, swir22=.09, cirrus=.004, pan=.075, lwir=298.0,
+                vv=-9.0, vh=-15.0, elevation=180.0, classification=10),
     "soil": dict(coastal=.10, blue=.11, green=.145, red=.19, rededge1=.22,
                  rededge2=.25, rededge3=.26, nir=.28, nir08=.29, nir09=.29,
-                 swir16=.33, swir22=.29),
+                 swir16=.33, swir22=.29, cirrus=.006, pan=.17, lwir=310.0,
+                 vv=-12.0, vh=-19.0, elevation=240.0, classification=60),
     "urban": dict(coastal=.12, blue=.13, green=.142, red=.155, rededge1=.165,
                   rededge2=.175, rededge3=.18, nir=.19, nir08=.195, nir09=.20,
-                  swir16=.225, swir22=.205),
+                  swir16=.225, swir22=.205, cirrus=.007, pan=.15, lwir=316.0,
+                  vv=-5.0, vh=-12.0, elevation=210.0, classification=50),
     "snow": dict(coastal=.85, blue=.88, green=.90, red=.89, rededge1=.86,
                  rededge2=.82, rededge3=.78, nir=.72, nir08=.66, nir09=.55,
-                 swir16=.08, swir22=.04),
+                 swir16=.08, swir22=.04, cirrus=.05, pan=.88, lwir=270.0,
+                 vv=-16.0, vh=-23.0, elevation=1400.0, classification=70),
 }
 
 
 def _fbm(x: np.ndarray, y: np.ndarray, seed: float, octaves: int = 5) -> np.ndarray:
-    """Cheap band-limited noise: summed rotated sinusoids. Deterministic in world space."""
     total = np.zeros_like(x)
     amp, freq = 1.0, 1.0
     norm = 0.0
@@ -153,17 +210,14 @@ def _fbm(x: np.ndarray, y: np.ndarray, seed: float, octaves: int = 5) -> np.ndar
     return total / norm
 
 
-def _demo_bands(scene: dict, grid: Grid, keys: list[str], mask_clouds: bool):
+def _demo_bands(scene: dict, grid: Grid, aliases: list[str], source, mask_clouds: bool):
     h, w = grid.shape
     x0, y0, x1, y1 = grid.bounds3857
-    # World-space coordinates in units of ~2 km so patterns stay put while panning.
     xs = np.linspace(x0, x1, w, dtype="float32") / 2000.0
     ys = np.linspace(y1, y0, h, dtype="float32") / 2000.0
     X, Y = np.meshgrid(xs, ys)
 
     seed = int(hashlib.sha1(b"sent2-demo").hexdigest()[:6], 16) % 1000 / 10.0
-    # Rank-normalised so the land-cover mix is sensible anywhere on Earth, and
-    # identical between dates over the same AOI (these fields are date-free).
     elevation = _rank01(_fbm(X * 0.35, Y * 0.35, seed, 6))
     moisture = _rank01(_fbm(X * 0.6 + 11, Y * 0.6 - 7, seed + 3.3, 4))
     fields = _rank01(_fbm(X * 3.1, Y * 3.1, seed + 9.1, 2))
@@ -171,10 +225,10 @@ def _demo_bands(scene: dict, grid: Grid, keys: list[str], mask_clouds: bool):
 
     day = dt.date.fromisoformat(scene["date"])
     doy = day.timetuple().tm_yday
-    season = 0.5 - 0.5 * math.cos(2 * math.pi * (doy - 20) / 365.25)  # 0 winter, 1 summer
+    season = 0.5 - 0.5 * math.cos(2 * math.pi * (doy - 20) / 365.25)
     if grid.center_lat < 0:
         season = 1.0 - season
-    year_drift = (day.year - 2017) * 0.015  # slow, visible change over time
+    year_drift = (day.year - 2017) * 0.015
 
     water = 1.0 - _smoothstep(0.06, 0.15, elevation - 0.08 * moisture + 0.04)
     urban = _smoothstep(0.74 - year_drift, 0.86 - year_drift, builtup) * (1 - water)
@@ -190,33 +244,66 @@ def _demo_bands(scene: dict, grid: Grid, keys: list[str], mask_clouds: bool):
     date_seed = int(hashlib.sha1(scene["date"].encode()).hexdigest()[:6], 16) % 997
     grain = 1.0 + 0.05 * _fbm(X * 9.0, Y * 9.0, seed + date_seed * 0.37, 2)
 
+    # Coarser satellites see a blurrier world; the pan band sees a sharper one.
+    softness = max(0.0, math.log2(max(source.resolution, 1.0) / 10.0)) * 1.1
+
     bands = {}
-    for key in keys:
-        if key not in config.BANDS:
+    for alias in aliases:
+        if alias not in source.bands:
             continue
         acc = np.zeros((h, w), dtype="float32")
         for name, frac in fractions.items():
-            acc += frac * _ENDMEMBERS[name][key]
-        bands[key] = np.ma.masked_array(np.clip(acc * grain, 0, 1.2).astype("float32"),
-                                        mask=np.zeros((h, w), dtype=bool))
+            acc += frac * _ENDMEMBERS[name].get(alias, 0.1)
+
+        if alias == "classification":
+            # Hard-label each pixel with whichever cover type dominates it.
+            names = list(fractions)
+            stacked = np.stack([fractions[n] for n in names])
+            winner = stacked.argmax(axis=0)
+            codes = np.array([_ENDMEMBERS[n]["classification"] for n in names],
+                             dtype="float32")
+            bands[alias] = np.ma.masked_array(codes[winner],
+                                              mask=np.zeros((h, w), bool))
+            continue
+
+        if alias == "elevation":
+            acc = elevation * 900.0 + fields * 60.0
+        elif alias in ("vv", "vh"):
+            acc = acc + 2.0 * (grain - 1.0) * 30.0     # radar speckle
+        elif alias == "lwir":
+            acc = acc + (season - 0.5) * 8.0
+        else:
+            acc = acc * grain
+
+        if softness > 0.2 and alias != "pan":
+            from scipy import ndimage
+            acc = ndimage.gaussian_filter(acc, sigma=softness)
+
+        bands[alias] = np.ma.masked_array(acc.astype("float32"),
+                                          mask=np.zeros((h, w), dtype=bool))
 
     cloud_fraction = 0.0
     cover = float(scene.get("cloud") or 0.0) / 100.0
-    if cover > 0.01:
-        # Rank-normalised so the cloudy fraction actually matches the scene's
-        # reported cloud cover.
+    if cover > 0.01 and source.kind in ("optical", "thermal"):
         cloud_field = _rank01(_fbm(X * 0.8 + 31, Y * 0.8 + 13, seed + date_seed * 0.53, 4))
         clouds = _smoothstep(1.0 - cover - 0.10, 1.0 - cover + 0.04, cloud_field)
         shadow = np.roll(np.roll(clouds, 8, axis=0), 10, axis=1) * (clouds < 0.15)
-        for key in bands:
-            data = bands[key].data * (1 - 0.75 * shadow)
-            data = data * (1 - clouds) + clouds * (0.62 if key != "swir22" else 0.45)
-            bands[key] = np.ma.masked_array(data.astype("float32"), mask=bands[key].mask)
-        cloudy = clouds > 0.5
+        for alias in bands:
+            if alias in ("elevation", "classification"):
+                continue
+            data = bands[alias].data * (1 - 0.75 * shadow)
+            bright = 0.62 if alias != "lwir" else 250.0
+            data = data * (1 - clouds) + clouds * bright
+            bands[alias] = np.ma.masked_array(data.astype("float32"),
+                                              mask=bands[alias].mask)
+        # Mask everything the cloud touched, not just the solid centres --
+        # a real scene classification flags thin edges and shadows too, and
+        # leaving them in would streak any multi-date composite.
+        cloudy = (clouds > 0.15) | (shadow > 0.15)
         cloud_fraction = float(cloudy.mean())
         if mask_clouds:
-            for key in bands:
-                bands[key] = np.ma.masked_array(bands[key].data, mask=cloudy)
+            for alias in bands:
+                bands[alias] = np.ma.masked_array(bands[alias].data, mask=cloudy)
 
     return bands, cloud_fraction
 
@@ -227,7 +314,6 @@ def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
 
 
 def _rank01(field: np.ndarray) -> np.ndarray:
-    """Map a field onto 0-1 by its own distribution, estimated from a subsample."""
     flat = field.ravel()
     step = max(1, flat.size // 200_000)
     quantiles = np.percentile(flat[::step], np.linspace(0, 100, 33))

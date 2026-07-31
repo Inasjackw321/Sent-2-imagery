@@ -2,5 +2,10 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 rasterio>=1.3.9
 numpy>=1.24
+scipy>=1.11
 Pillow>=10.0
 requests>=2.31
+
+# Optional: gives the studio a real desktop window instead of a browser one.
+# app.py installs this on first run; remove it if you prefer a browser.
+pywebview>=5.0

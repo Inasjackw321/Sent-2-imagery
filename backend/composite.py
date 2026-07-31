@@ -123,6 +123,14 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
 
 def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:
     b = {k: v.astype("float32") for k, v in bands.items()}
+    needed = config.INDICES[name]["bands"]
+
+    # Single-band "indices" (temperature, elevation, backscatter) are the band.
+    if len(needed) == 1:
+        band = b[needed[0]]
+        return np.ma.masked_array(np.ma.filled(band, 0.0),
+                                  mask=np.ma.getmaskarray(band))
+
     with np.errstate(divide="ignore", invalid="ignore"):
         if name == "evi":
             num = b["nir"] - b["red"]
@@ -164,6 +172,40 @@ def render_index(index: np.ma.MaskedArray, name: str, opts: dict):
 
 def _hex(rgb) -> str:
     return "#%02x%02x%02x" % (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
+
+def render_categorical(band: np.ma.MaskedArray, table: dict, pixel_area_m2: float = 0.0):
+    """Paint a classified map (land cover) with its own legend and class areas."""
+    codes = np.ma.filled(band, 0).astype("int32")
+    valid = ~np.ma.getmaskarray(band)
+    rgb = np.zeros((*codes.shape, 3), dtype="uint8")
+
+    entries = []
+    total = max(int(valid.sum()), 1)
+    for code, (label, colour) in table.items():
+        selected = (codes == code) & valid
+        count = int(selected.sum())
+        rgb[selected] = _rgb_from_hex(colour)
+        if count:
+            entries.append({
+                "label": label,
+                "color": colour,
+                "percent": round(100.0 * count / total, 2),
+                "area_km2": round(count * pixel_area_m2 / 1e6, 4),
+            })
+
+    known = np.isin(codes, list(table)) | ~valid
+    legend = {
+        "type": "categorical",
+        "label": "Land cover",
+        "classes": sorted(entries, key=lambda e: -e["percent"]),
+    }
+    return rgb, valid & known, legend
+
+
+def _rgb_from_hex(value: str):
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
 
 
 # ---------------------------------------------------------------------------

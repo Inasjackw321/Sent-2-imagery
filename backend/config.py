@@ -62,6 +62,17 @@ BANDS = {
     "nir09": {"s2": "B09", "res": 60, "nm": 945, "label": "Water vapour"},
     "swir16": {"s2": "B11", "res": 20, "nm": 1610, "label": "SWIR 1"},
     "swir22": {"s2": "B12", "res": 20, "nm": 2190, "label": "SWIR 2"},
+    # Bands that other satellites bring to the table.
+    "cirrus": {"s2": "B10", "res": 60, "nm": 1375, "label": "Cirrus"},
+    "pan": {"s2": None, "res": 15, "nm": 590, "label": "Panchromatic"},
+    "lwir": {"s2": None, "res": 100, "nm": 10900, "label": "Thermal infrared"},
+    "vv": {"s2": None, "res": 10, "nm": None, "label": "Radar VV"},
+    "vh": {"s2": None, "res": 10, "nm": None, "label": "Radar VH"},
+    "hh": {"s2": None, "res": 10, "nm": None, "label": "Radar HH"},
+    "hv": {"s2": None, "res": 10, "nm": None, "label": "Radar HV"},
+    "ratio": {"s2": None, "res": 10, "nm": None, "label": "VV / VH ratio"},
+    "elevation": {"s2": None, "res": 30, "nm": None, "label": "Elevation"},
+    "classification": {"s2": None, "res": 10, "nm": None, "label": "Land-cover class"},
 }
 
 SCL_ASSET = "scl"
@@ -143,7 +154,22 @@ COMPOSITES = {
         "hint": "Sees through haze; no visible light at all.",
         "default_stretch": {"mode": "percentile_linked", "low": 2, "high": 98, "gamma": 1.05},
     },
+    "radar": {
+        "label": "Radar (VV / VH)",
+        "bands": ["vv", "vh", "ratio"],
+        "hint": "Radar backscatter: smooth water is dark, buildings are bright.",
+        "default_stretch": {"mode": "percentile", "low": 2, "high": 98, "gamma": 1.0},
+    },
+    "radar_water": {
+        "label": "Radar flood view",
+        "bands": ["vh", "vv", "vv"],
+        "hint": "Tuned for open water and flooding under cloud.",
+        "default_stretch": {"mode": "percentile", "low": 1, "high": 99, "gamma": 1.0},
+    },
 }
+
+# Channels that are computed from other bands rather than read from a file.
+DERIVED_BANDS = {"ratio": ("vv", "vh")}
 
 # ---------------------------------------------------------------------------
 # Spectral indices
@@ -205,6 +231,33 @@ INDICES = {
         "range": [-0.2, 1.0],
         "colormap": "ndvi",
         "hint": "Like NDVI but resists soil and haze effects.",
+    },
+    "surface_temp": {
+        "label": "Surface temperature",
+        "bands": ["lwir"],
+        "formula": "thermal band, kelvin",
+        "range": [280, 320],
+        "colormap": "inferno",
+        "hint": "Ground temperature in kelvin — urban heat and fire scars.",
+        "unit": "K",
+    },
+    "elevation": {
+        "label": "Elevation",
+        "bands": ["elevation"],
+        "formula": "height above sea level",
+        "range": [0, 1500],
+        "colormap": "terrain",
+        "hint": "Terrain height in metres.",
+        "unit": "m",
+    },
+    "backscatter": {
+        "label": "Radar backscatter (VV)",
+        "bands": ["vv"],
+        "formula": "10·log10(VV)",
+        "range": [-25, 0],
+        "colormap": "gray",
+        "hint": "Single-polarisation radar brightness in decibels.",
+        "unit": "dB",
     },
     "savi": {
         "label": "SAVI - soil adjusted",
@@ -268,6 +321,11 @@ COLORMAPS = {
         (0.75, 67, 147, 195), (1.00, 5, 48, 97),
     ],
     "gray": [(0.00, 0, 0, 0), (1.00, 255, 255, 255)],
+    "terrain": [
+        (0.00, 26, 82, 118), (0.06, 60, 130, 90), (0.20, 118, 168, 92),
+        (0.42, 200, 190, 120), (0.62, 160, 128, 96), (0.82, 130, 110, 105),
+        (1.00, 250, 250, 252),
+    ],
     # Diverging map for change detection: loss (red) - stable - gain (green).
     "change": [
         (0.00, 120, 10, 20), (0.25, 214, 96, 77), (0.50, 245, 245, 240),

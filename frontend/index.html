@@ -64,7 +64,13 @@
       </div>
 
       <div class="group">
-        <h3>2 · Find imagery</h3>
+        <h3>2 · Satellite</h3>
+        <select id="satellite" class="field-select"></select>
+        <div class="sat-info" id="satelliteInfo"></div>
+      </div>
+
+      <div class="group">
+        <h3>3 · Find imagery</h3>
         <div class="field-row">
           <label>From<input type="date" id="dateStart"></label>
           <label>To<input type="date" id="dateEnd"></label>
@@ -75,7 +81,7 @@
       </div>
 
       <div class="group">
-        <h3>3 · Render</h3>
+        <h3>4 · Render</h3>
         <label class="field">Visualisation
           <select id="renderMode">
             <optgroup label="Band combinations" id="optComposites"></optgroup>
@@ -99,6 +105,28 @@
           <button class="btn btn-ghost btn-sm" id="downloadTif" disabled>GeoTIFF</button>
           <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>PNG</button>
         </div>
+      </div>
+
+      <div class="group">
+        <h3>5 · Make it look better</h3>
+        <label class="check" title="Merge the ticked scenes, dropping cloud from each">
+          <input type="checkbox" id="useComposite"> Cloud-free composite of ticked scenes
+        </label>
+        <label class="field" id="compositeMethodRow" hidden>Merge by
+          <select id="compositeMethod">
+            <option value="median" selected>Median — removes cloud best</option>
+            <option value="mean">Mean — smoothest</option>
+            <option value="first">Newest clear pixel</option>
+            <option value="max">Brightest</option>
+            <option value="min">Darkest</option>
+          </select>
+        </label>
+        <label class="check" id="pansharpenRow" hidden>
+          <input type="checkbox" id="pansharpen"> Pan-sharpen <span class="pill" id="panPill"></span>
+        </label>
+        <div class="presets presets-wide" id="enhancePresets"></div>
+        <div id="enhanceSliders"></div>
+        <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset enhancements</button>
       </div>
 
       <div class="group">

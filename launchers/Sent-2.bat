@@ -26,7 +26,7 @@ if not exist ".venv\.deps-installed" (
   echo. > .venv\.deps-installed
 )
 
-start "" pythonw run.py --app %*
+start "" pythonw app.py %*
 exit /b 0
 
 :failed

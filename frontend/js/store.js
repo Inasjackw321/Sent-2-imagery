@@ -4,6 +4,7 @@ const listeners = new Map();
 
 export const store = {
   config: null,          // /api/config payload
+  source: null,          // selected satellite key
   aoi: null,             // GeoJSON polygon
   aoiInfo: null,         // { area_km2, bounds, center }
   scenes: [],            // search results

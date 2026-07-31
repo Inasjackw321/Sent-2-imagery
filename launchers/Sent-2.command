@@ -29,4 +29,4 @@ if [ ! -f "$STAMP" ] || [ requirements.txt -nt "$STAMP" ]; then
   touch "$STAMP"
 fi
 
-exec python run.py --app "$@"
+exec python app.py "$@"

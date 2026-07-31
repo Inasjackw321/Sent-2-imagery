@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import animate, composite, config, service, stac
+from . import animate, composite, config, service, sources, stac
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -37,12 +37,63 @@ def _fail(exc: Exception, status: int = 502) -> HTTPException:
 # ---------------------------------------------------------------------------
 
 
+def _source_payload(source) -> dict:
+    """What a satellite can do, so the UI only offers what it really supports."""
+    composites = {k: v for k, v in config.COMPOSITES.items()
+                  if sources.supports(source, _composite_needs(v))}
+    indices = {k: v for k, v in config.INDICES.items()
+               if sources.supports(source, v["bands"])}
+    return {
+        "key": source.key,
+        "label": source.label,
+        "platform": source.platform,
+        "kind": source.kind,
+        "resolution": source.resolution,
+        "since": source.since,
+        "revisit": source.revisit,
+        "swath_hint": source.swath_hint,
+        "notes": source.notes,
+        "attribution": source.attribution,
+        "provider": sources.PROVIDERS[source.provider]["label"],
+        "has_cloud": bool(source.cloud_property),
+        "has_cloud_mask": bool(source.cloud_mask),
+        "pan": source.pan,
+        "pan_resolution": source.pan_resolution,
+        "bands": sorted(source.bands),
+        "composites": sorted(composites),
+        "indices": sorted(indices),
+        "default_composite": (source.default_composite
+                              if source.default_composite in composites
+                              else (sorted(composites)[0] if composites else None)),
+        "default_size": source.default_size_hint,
+        "categorical": source.kind == "landcover",
+    }
+
+
+def _composite_needs(spec: dict) -> list[str]:
+    wanted = []
+    for alias in spec["bands"]:
+        wanted.extend(config.DERIVED_BANDS.get(alias, (alias,)))
+    return list(dict.fromkeys(wanted))
+
+
+@app.get("/api/sources")
+def get_sources() -> dict[str, Any]:
+    return {
+        "default": sources.DEFAULT_SOURCE,
+        "sources": [_source_payload(s) for s in sources.SOURCES.values()],
+        "providers": sources.PROVIDERS,
+    }
+
+
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
     return {
         "demo": config.DEMO_MODE,
         "stac_url": config.STAC_URL,
         "collection": config.STAC_COLLECTION,
+        "default_source": sources.DEFAULT_SOURCE,
+        "sources": [_source_payload(s) for s in sources.SOURCES.values()],
         "composites": {
             k: {"label": v["label"], "bands": v["bands"], "hint": v["hint"],
                 "band_labels": [config.BANDS[b]["label"] for b in v["bands"]]}
@@ -95,6 +146,7 @@ def search(body: dict = Body(...)) -> dict:
         geom = normalise_aoi(body.get("aoi") or body.get("geometry"))
         return stac.search_scenes(
             geom,
+            source_key=body.get("source"),
             start=body.get("start"),
             end=body.get("end"),
             max_cloud=float(body.get("max_cloud", 30)),

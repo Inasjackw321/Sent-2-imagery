@@ -154,16 +154,26 @@ def open_app_window(url: str, width: int = 1500, height: int = 950):
 
 
 def open_native_window(url: str, width: int = 1500, height: int = 950) -> bool:
-    """Optional: a native OS window via pywebview, if the user installed it."""
+    """A real OS window via pywebview. Blocks until the window is closed.
+
+    Returns False if pywebview is absent or has no GUI toolkit to talk to, so
+    the caller can fall back to a browser window.
+    """
     try:
         import webview
     except ImportError:
         return False
     try:
-        webview.create_window(APP_NAME, url, width=width, height=height)
+        webview.create_window(
+            f"{APP_NAME} imagery studio", url,
+            width=width, height=height, min_size=(900, 600),
+            background_color="#0d1015",
+        )
         webview.start()
         return True
-    except Exception:
+    except Exception as exc:            # no GTK/Qt/WebKit backend, or no display
+        log_reason = str(exc).split("\n", 1)[0]
+        print(f"  Native window unavailable ({log_reason}); using a browser window.")
         return False
 
 
@@ -187,7 +197,8 @@ def install_shortcut() -> str:
 
 
 def _launch_command() -> list[str]:
-    return [sys.executable, str(ROOT / "run.py"), "--app"]
+    """app.py is the double-click entry point: it self-installs, then opens."""
+    return [sys.executable, str(ROOT / "app.py")]
 
 
 def _install_linux_desktop() -> str:
@@ -199,7 +210,7 @@ def _install_linux_desktop() -> str:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={APP_NAME} imagery studio\n"
-        "Comment=Download, edit and animate Sentinel-2 satellite imagery\n"
+        "Comment=Download, edit and animate free satellite imagery\n"
         f"Exec={exec_line}\n"
         f"Icon={ROOT / 'frontend' / 'icons' / 'icon-512.png'}\n"
         f"Path={ROOT}\n"
@@ -249,7 +260,7 @@ def _install_macos_app() -> str:
     launcher.write_text(
         "#!/bin/bash\n"
         f'cd "{ROOT}" || exit 1\n'
-        f'exec {_quote(sys.executable)} "{ROOT / "run.py"}" --app\n'
+        f'exec {_quote(sys.executable)} "{ROOT / "app.py"}"\n'
     )
     launcher.chmod(0o755)
 
@@ -273,12 +284,12 @@ def _install_windows_shortcut() -> str:
         script = (
             "$s=(New-Object -COM WScript.Shell).CreateShortcut('{link}');"
             "$s.TargetPath='{python}';"
-            "$s.Arguments='\"{script_path}\" --app';"
+            "$s.Arguments='\"{script_path}\"';"
             "$s.WorkingDirectory='{root}';"
             "$s.IconLocation='{icon}';"
             "$s.Description='Sentinel-2 imagery studio';"
             "$s.Save()"
-        ).format(link=link, python=_pythonw(), script_path=ROOT / "run.py",
+        ).format(link=link, python=_pythonw(), script_path=ROOT / "app.py",
                  root=ROOT, icon=icon)
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],

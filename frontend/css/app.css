@@ -335,3 +335,22 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   .sidebar { width: 100%; flex: 0 0 46%; border-right: 0; border-bottom: 1px solid var(--line); }
   .tab span { display: none; }
 }
+
+/* Satellite picker and enhancement controls */
+.sat-info {
+  padding: 9px 11px; font-size: 12px; line-height: 1.5;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--ink-dim);
+}
+.sat-info b { color: var(--ink); }
+.sat-info .dim { color: var(--ink-faint); }
+.presets-wide { grid-template-columns: repeat(3, 1fr); margin-bottom: 6px; }
+.pill {
+  margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 10.5px;
+  background: rgba(76,194,255,.14); color: var(--accent); white-space: nowrap;
+}
+.scene-cloud.dim { color: var(--ink-faint); }
+.map-legend .swatch {
+  display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+  margin-right: 4px; vertical-align: -1px;
+}

@@ -128,8 +128,11 @@ function statRows(capture) {
       rows.push([cls.label, `${cls.percent}% · ${fmt.area(cls.area_km2)}`]);
     }
   } else {
+    if (meta.source?.platform) rows.push(['Satellite', meta.source.platform]);
+    if (meta.scenes?.length > 1) rows.push(['Composite of', `${meta.scenes.length} dates`]);
     if (meta.scene?.date) rows.push(['Acquired', fmt.date(meta.scene.date)]);
     if (meta.scene?.cloud != null) rows.push(['Scene cloud', `${meta.scene.cloud}%`]);
+    if (meta.enhancements?.length) rows.push(['Processing', meta.enhancements.join(', ')]);
     if (meta.stats) {
       rows.push(['Mean', meta.stats.mean]);
       rows.push(['Median', meta.stats.median]);
@@ -197,10 +200,17 @@ export function compose(scale = 1) {
           { size: 13 * s, colour: theme.dim, shadow: null })),
     });
   }
-  if ($('#gLegend').checked && primary?.meta?.legend) {
+  const legend = primary?.meta?.legend;
+  if ($('#gLegend').checked && legend?.type === 'categorical') {
+    const classes = legend.classes.slice(0, 8);
+    blocks.push({
+      h: (12 + classes.length * 17) * s,
+      draw: (x, yy, w) => chrome.drawClassLegend(g, classes, x, yy, w, theme, s),
+    });
+  } else if ($('#gLegend').checked && legend) {
     blocks.push({
       h: 46 * s,
-      draw: (x, yy, w) => chrome.drawLegend(g, primary.meta.legend, x, yy, w, theme, s),
+      draw: (x, yy, w) => chrome.drawLegend(g, legend, x, yy, w, theme, s),
     });
   }
   if (primary?.meta?.mode === 'change') {
@@ -337,9 +347,12 @@ export function compose(scale = 1) {
   g.stroke();
   g.restore();
 
+  const attributions = [...new Set(captures
+    .map((c) => c.meta?.source?.attribution)
+    .filter(Boolean))];
   const source = isDemo(captures)
     ? 'SYNTHETIC DEMO DATA — not real satellite imagery'
-    : 'Contains modified Copernicus Sentinel-2 data · processed with Sent-2';
+    : `${attributions.join(' · ') || 'Free and open satellite imagery'} · processed with Sent-2`;
   chrome.shadowText(g, credit || source, pad, footY,
     { size: 11 * s, colour: isDemo(captures) ? '#ffb454' : theme.dim, shadow: null });
   if (credit) {

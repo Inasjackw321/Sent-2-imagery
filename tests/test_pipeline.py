@@ -22,7 +22,7 @@ from rasterio.crs import CRS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import composite, config, raster, service, stac  # noqa: E402
+from backend import composite, config, raster, service, sources, stac  # noqa: E402
 from backend.geo import Grid, circle_to_polygon, geodesic_area_km2, normalise_aoi  # noqa: E402
 
 UTM = CRS.from_epsg(32630)          # a zone covering the Greenwich meridian
@@ -340,24 +340,29 @@ def test_scene_summary_flattens_a_stac_item():
             "thumbnail": {"href": "https://x/thumb.jpg"},
         },
     }
-    summary = stac.scene_summary(item)
+    summary = stac.scene_summary(item, sources.get('sentinel-2-l2a'))
     assert summary["date"] == "2023-06-15"
     assert summary["cloud"] == 7.5
     assert summary["tile"] == "31UCT"
     assert summary["assets"]["red"].endswith("B04.tif")
-    assert stac.boa_offset(summary) == 0
+    assert stac.boa_offset(summary, sources.get('sentinel-2-l2a')) == 0
 
 
 def test_boa_offset_depends_on_processing_baseline():
-    assert stac.boa_offset({"date": "2021-12-01", "boa_offset_applied": False}) == 0
-    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": False}) == -1000
-    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": True}) == 0
+    s2 = sources.get("sentinel-2-l2a")
+    assert stac.boa_offset({"date": "2021-12-01", "boa_offset_applied": False}, s2) == 0
+    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": False}, s2) == -1000
+    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": True}, s2) == 0
+    # Only Sentinel-2 carries that offset; Landsat has its own scaling.
+    landsat = sources.get("landsat-c2-l2")
+    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": False}, landsat) == 0
 
 
 def test_demo_scene_id_round_trips_cloud_cover():
     scenes = stac.search_scenes(
         normalise_aoi({"bbox": [-0.2, 51.4, 0.0, 51.6]}),
-        "2024-01-01", "2024-03-01", max_cloud=100, limit=6, demo=True)["scenes"]
+        "sentinel-2-l2a", "2024-01-01", "2024-03-01",
+        max_cloud=100, limit=6, demo=True)["scenes"]
     assert scenes
     for original in scenes:
         assert stac.get_scene(original["id"])["cloud"] == original["cloud"]
@@ -367,7 +372,8 @@ def test_demo_bands_are_stable_across_calls():
     """Frames of a timelapse must not shimmer between processes."""
     aoi = normalise_aoi({"bbox": [-0.2, 51.4, 0.0, 51.6]})
     grid = Grid((-0.2, 51.4, 0.0, 51.6), 128)
-    scene = {"id": "demo-2024-06-01-1-0", "date": "2024-06-01", "cloud": 0.0, "demo": True}
+    scene = {"id": "demo-2024-06-01-1-0", "date": "2024-06-01", "cloud": 0.0,
+             "demo": True, "source": "sentinel-2-l2a"}
     first, _ = raster.read_bands(scene, grid, ["red", "nir"])
     second, _ = raster.read_bands(scene, grid, ["red", "nir"])
     assert np.array_equal(first["red"].data, second["red"].data)
