@@ -90,7 +90,7 @@ does the work that matters, in the right order and in the right units.
 
 **Merging dates** — the big one, and the only thing here that adds detail
 rather than presenting existing detail better. See
-[below](#merging-dates-the-one-control-that-matters).
+[below](#one-date-or-many-merged).
 
 **Haze removal** — dark-object subtraction. Deep shadow and clear water should
 read near zero; whatever they actually read is atmosphere. Subtracting it per
@@ -111,12 +111,18 @@ appears, so a picture always says how it was made.
 
 ---
 
-## Merging dates: the one control that matters
+## One date, or many merged
 
-Tick more than one date and they are merged. That is the whole instruction —
-there is no switch to find and no multiplier to choose, because more dates are
-better in two ways at once and you should not have to ask for each of them
-separately:
+The first choice in the app, because the two answer different questions.
+
+**One date** is what the satellite saw on a day: a single pass, exactly as
+recorded, cloud and all. Pick the date and look at it. This is what you want
+when the day itself matters — a flood, a fire, the state of a field last
+Tuesday.
+
+**Merge dates** is what the ground looks like, put together from several
+passes. It is better in two ways at once, which is why it is one button and
+not two:
 
 - **Higher definition.** The merge is sampled two to four times finer than the
   satellite's own 10 m, with detail measured off the ground rather than
@@ -125,9 +131,9 @@ separately:
   others, so the picture is clearer than any single pass and often has no gaps
   at all.
 
-How much finer follows from how many dates you gave it — 2 dates earn 2×,
-5 earn 3×, 9 earn 4× — and the button says which you are getting before you
-press it: *"Merge 6 dates → 3×"*.
+How much finer follows from how many dates you ticked — 2 earn 2×, 5 earn 3×,
+9 earn 4× — and the button says which you are getting before you press it:
+*"Merge 6 dates → 3×"*.
 
 **Why there is anything to recover.** A satellite never samples the same ground
 twice in the same place. Orbits repeat to within a few tens of metres and each
@@ -177,10 +183,11 @@ render's metadata.
 
 ## The screen
 
-One map, one sidebar, four steps down it.
+One map, one sidebar, three steps down it, and a button at the bottom that is
+always in reach and always says exactly what it will do.
 
-**1 · Where.** Type a place name to fly there, then pick a shape — **box**,
-**circle**, **lasso** or **polygon** — and drag it out on the map.
+**1 · Pick a place.** Type a place name to fly there, then pick a shape —
+**box**, **circle**, **lasso** or **polygon** — and drag it out on the map.
 
 The map is yours the rest of the time: dragging pans, the wheel zooms, and
 nothing is ever drawn by accident. A shape tool has to be picked deliberately,
@@ -188,13 +195,18 @@ it lights the hint bar orange while it is armed, and it disarms itself the
 moment you finish a shape — so the drag after the one that drew your area pans
 the map like any other.
 
-**2 · When.** Set a date range and a cloud ceiling, and every Sentinel-2 pass
-over your area is listed, newest first, with how cloudy each was. The six
-clearest are ticked for you; tick more or fewer whenever you like. Two or more
-ticked means a [merge](#merging-dates-the-one-control-that-matters), and the
-panel says what you will get out of it.
+Drawing an area is a clear enough request for the dates over it, so the search
+runs on its own.
 
-**3 · Show.** Nine band combinations and eight indices:
+**2 · One date, or many merged.** The choice
+[described above](#one-date-or-many-merged), made before anything else so that
+the list below it means the right thing: radio buttons for one date, tick boxes
+for a merge. Every Sentinel-2 pass over your area is listed, newest first, with
+how cloudy each was; the clearest is chosen for you, or the six clearest ticked,
+and the list scrolls to show you which. The dates searched and the cloud ceiling
+fold away into a line you can open when you want to change them.
+
+**3 · How it looks.** Nine band combinations and eight indices:
 
 | Band combination | What it shows |
 | --- | --- |
@@ -221,16 +233,18 @@ panel says what you will get out of it.
 
 Indices come with a colour scale and a legend on the map. Also here: cloud and
 shadow masking from the scene classification band, clipping to the exact shape
-you drew, sizes up to 4096 px before the merge multiplies them, and export as
-PNG or as a georeferenced **GeoTIFF** that drops straight into QGIS.
+you drew, and sizes up to 4096 px before a merge multiplies them. **Fine
+tuning** folds away the rest — tone mapping, gamma, haze removal, adaptive
+contrast, denoise, detail, vibrance, white balance, and five presets — and says
+how many of them you have moved.
 
-Press **Show imagery** — or **Merge N dates → 3×** — and the result lands on
-the map, which flies to it. Fade it against the basemap, or hide it, with the
-slider at the bottom left.
-
-**4 · Make it look better.** Tone mapping and gamma, then haze removal,
-adaptive contrast, denoise, detail, vibrance and white balance — or one of the
-five presets.
+**The button.** It sits below the panel where it cannot scroll away, with a
+line above it saying what pressing it will produce: *"6 dates → 3× detail ·
+1536 px · 9 dates would reach 4×"*. Press it and the imagery lands on the map,
+which flies to it. Once it is showing, the button reads **Showing this now**
+and greys out until you change something — so it always tells you whether what
+you are looking at is what your settings say. Save the result as a PNG or as a
+georeferenced **GeoTIFF** that drops straight into QGIS.
 
 ## Demo mode
 

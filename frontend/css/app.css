@@ -83,19 +83,49 @@ html, body {
 .sidebar {
   width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
   background: var(--bg-2); border-right: 1px solid var(--line);
-  overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; min-height: 0;
 }
-.sidebar::-webkit-scrollbar, .scene-list::-webkit-scrollbar { width: 9px; }
-.sidebar::-webkit-scrollbar-thumb, .scene-list::-webkit-scrollbar-thumb {
+/* The steps scroll; the button that acts on them never leaves the screen. */
+.sidebar-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.sidebar-scroll::-webkit-scrollbar, .scene-list::-webkit-scrollbar { width: 9px; }
+.sidebar-scroll::-webkit-scrollbar-thumb, .scene-list::-webkit-scrollbar-thumb {
   background: #2b3547; border-radius: 9px; border: 2px solid var(--bg-2);
 }
+.sidebar-foot {
+  padding: 12px 16px 14px; border-top: 1px solid var(--line);
+  background: var(--bg-2); box-shadow: 0 -10px 20px -14px rgba(0,0,0,.9);
+}
+.plan {
+  margin-bottom: 9px; font-size: 12px; line-height: 1.45; color: var(--ink-dim);
+  min-height: 17px;
+}
+.plan b { color: var(--ink); }
+.plan .dim { color: var(--ink-faint); }
 
 .group { padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .group h3 {
+  display: flex; align-items: center; gap: 8px;
   margin: 0 0 10px; font-size: 11px; font-weight: 650;
   text-transform: uppercase; letter-spacing: .09em; color: var(--ink-faint);
 }
+.step {
+  display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%;
+  background: var(--bg-3); border: 1px solid var(--line);
+  font-size: 10px; letter-spacing: 0; color: var(--ink-dim);
+}
+/* A step that cannot be used yet says so by fading, rather than by failing.
+   The heading, the hint and the mode picker stay live: choosing one date or a
+   merge is the first decision, and it should be available before there is an
+   area to apply it to. */
+.group.is-locked > *:not(h3):not(.modes):not(.hint):not(.empty) {
+  opacity: .4; pointer-events: none;
+}
 .hint { margin: -2px 0 10px; font-size: 12px; color: var(--ink-faint); line-height: 1.4; }
+.empty {
+  margin: 10px 0 0; padding: 14px 12px; text-align: center;
+  border: 1px dashed var(--line); border-radius: 9px;
+  font-size: 12px; color: var(--ink-faint);
+}
 
 .stage { flex: 1; position: relative; min-width: 0; display: flex; background: #0a0d12; }
 
@@ -157,6 +187,35 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .tool:hover { color: var(--ink); border-color: #3a4a66; }
 .tool.is-active { background: var(--accent); color: #06121b; border-color: var(--accent); font-weight: 600; }
+
+/* One date or many: the choice that changes what everything below means. */
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.mode {
+  padding: 10px 9px; text-align: left; cursor: pointer;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 9px;
+  color: var(--ink-dim); font: inherit;
+}
+.mode b { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.mode small { display: block; margin-top: 2px; font-size: 10.5px; line-height: 1.3; }
+.mode:hover { border-color: #3a4a66; }
+.mode.is-active {
+  border-color: var(--accent); background: rgba(76,194,255,.10);
+}
+.mode.is-active b { color: var(--accent); }
+
+.advanced { margin: 10px 0 2px; border-top: 1px solid var(--line); padding-top: 8px; }
+.advanced summary {
+  display: flex; align-items: center; gap: 6px; cursor: pointer;
+  font-size: 12px; color: var(--ink-dim); list-style: none; white-space: nowrap;
+}
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary::before { content: '▸'; font-size: 10px; color: var(--ink-faint); }
+.advanced[open] summary::before { content: '▾'; }
+.advanced summary:hover { color: var(--ink); }
+.summary-value {
+  margin-left: auto; font-size: 11px; color: var(--ink-faint);
+  overflow: hidden; text-overflow: ellipsis;
+}
 
 .presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .preset {

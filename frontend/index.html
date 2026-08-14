@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sent-2 · Sentinel-2 imagery</title>
-<meta name="description" content="Look at any place on Earth in free Sentinel-2 satellite imagery, merged from several dates into one sharper, cloud-free picture.">
+<meta name="description" content="Look at any place on Earth in free Sentinel-2 satellite imagery, from one date or merged from several into one sharper, cloud-free picture.">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/css/app.css">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -32,79 +32,99 @@
 
 <main class="layout">
   <aside class="sidebar" id="sidebar">
+    <div class="sidebar-scroll">
 
-    <div class="group">
-      <h3>1 · Where</h3>
-      <div class="search-row">
-        <input type="search" id="placeSearch" placeholder="Find a place…" autocomplete="off">
-        <button class="btn btn-ghost" id="placeSearchBtn" title="Search">Go</button>
+      <div class="group">
+        <h3><span class="step">1</span> Pick a place</h3>
+        <div class="search-row">
+          <input type="search" id="placeSearch" placeholder="Search for a place…" autocomplete="off">
+          <button class="btn btn-ghost" id="placeSearchBtn" title="Search">Go</button>
+        </div>
+        <div class="results" id="placeResults" hidden></div>
+        <p class="hint">The map pans and zooms freely. Pick a shape to draw an
+          area — it switches itself off again once you have drawn one.</p>
+        <div class="toolbar" id="drawTools">
+          <button class="tool" data-draw="rect" title="Drag a box">▭ Box</button>
+          <button class="tool" data-draw="circle" title="Drag out from the centre">◯ Circle</button>
+          <button class="tool" data-draw="lasso" title="Freehand — drag to circle a region">✎ Lasso</button>
+          <button class="tool" data-draw="polygon" title="Click corners, double-click to close">⬠ Polygon</button>
+        </div>
+        <div class="aoi-summary" id="aoiSummary">
+          <em>Pick a shape, then draw on the map.</em>
+        </div>
+        <div class="row">
+          <button class="btn btn-ghost btn-sm" id="clearAoi">Clear</button>
+          <button class="btn btn-ghost btn-sm" id="zoomAoi">Zoom to area</button>
+        </div>
       </div>
-      <div class="results" id="placeResults" hidden></div>
-      <p class="hint">Drag and scroll the map freely. To choose an area, pick a
-        shape below — it disarms itself once you have drawn one.</p>
-      <div class="toolbar" id="drawTools">
-        <button class="tool" data-draw="rect" title="Drag a box">▭ Box</button>
-        <button class="tool" data-draw="circle" title="Drag out from the centre">◯ Circle</button>
-        <button class="tool" data-draw="lasso" title="Freehand — drag to circle a region">✎ Lasso</button>
-        <button class="tool" data-draw="polygon" title="Click corners, double-click to close">⬠ Polygon</button>
+
+      <div class="group" id="stepDates">
+        <h3><span class="step">2</span> One date, or many merged</h3>
+        <div class="modes" id="modePicker">
+          <button class="mode is-active" data-mode="single">
+            <b>One date</b><small>A single pass, as taken</small>
+          </button>
+          <button class="mode" data-mode="merge">
+            <b>Merge dates</b><small>Sharper, cloud removed</small>
+          </button>
+        </div>
+        <p class="hint" id="modeHint"></p>
+
+        <details class="advanced" id="whenAdvanced">
+          <summary>Dates searched<span class="summary-value" id="whenSummary"></span></summary>
+          <div class="field-row">
+            <label>From<input type="date" id="dateStart"></label>
+            <label>To<input type="date" id="dateEnd"></label>
+          </div>
+          <div id="cloudSlider"></div>
+          <button class="btn btn-ghost btn-sm" id="searchDates" disabled>Search again</button>
+        </details>
+
+        <div class="scene-list" id="dateList"></div>
+        <p class="empty" id="dateEmpty">Draw an area and the dates appear here.</p>
+        <div class="row" id="tickRow" hidden>
+          <button class="btn btn-ghost btn-sm" id="selectClearest">Tick 6 clearest</button>
+          <button class="btn btn-ghost btn-sm" id="selectNone">Untick all</button>
+        </div>
       </div>
-      <div class="aoi-summary" id="aoiSummary">
-        <em>Pick a shape, then draw on the map.</em>
-      </div>
-      <div class="row">
-        <button class="btn btn-ghost btn-sm" id="clearAoi">Clear</button>
-        <button class="btn btn-ghost btn-sm" id="zoomAoi">Zoom to area</button>
+
+      <div class="group" id="stepLook">
+        <h3><span class="step">3</span> How it looks</h3>
+        <label class="field">Visualisation
+          <select id="renderMode">
+            <optgroup label="Band combinations" id="optComposites"></optgroup>
+            <optgroup label="Spectral indices" id="optIndices"></optgroup>
+          </select>
+        </label>
+        <p class="hint" id="renderHint"></p>
+        <label class="field">Size
+          <select id="renderSize">
+            <option value="512">512 px — quick look</option>
+            <option value="1024" selected>1024 px — standard</option>
+            <option value="2048">2048 px — detailed</option>
+            <option value="4096">4096 px — maximum (slow)</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="maskClouds" checked> Mask clouds &amp; shadows</label>
+        <label class="check"><input type="checkbox" id="clipShape" checked> Clip to my shape</label>
+
+        <details class="advanced">
+          <summary>Fine tuning<span class="summary-value" id="tuningSummary">off</span></summary>
+          <div class="presets presets-wide" id="enhancePresets"></div>
+          <div id="enhanceSliders"></div>
+          <div id="renderSliders"></div>
+          <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset</button>
+        </details>
       </div>
     </div>
 
-    <div class="group">
-      <h3>2 · When</h3>
-      <div class="field-row">
-        <label>From<input type="date" id="dateStart"></label>
-        <label>To<input type="date" id="dateEnd"></label>
-      </div>
-      <div id="cloudSlider"></div>
-      <button class="btn btn-primary" id="searchDates" disabled>Find dates</button>
-      <div class="row">
-        <button class="btn btn-ghost btn-sm" id="selectClearest">Tick 6 clearest</button>
-        <button class="btn btn-ghost btn-sm" id="selectNone">Untick all</button>
-      </div>
-      <div class="scene-list" id="dateList"></div>
-      <p class="hint" id="mergeHint"></p>
-    </div>
-
-    <div class="group">
-      <h3>3 · Show</h3>
-      <label class="field">Visualisation
-        <select id="renderMode">
-          <optgroup label="Band combinations" id="optComposites"></optgroup>
-          <optgroup label="Spectral indices" id="optIndices"></optgroup>
-        </select>
-      </label>
-      <p class="hint" id="renderHint"></p>
-      <label class="field">Size
-        <select id="renderSize">
-          <option value="512">512 px — quick look</option>
-          <option value="1024" selected>1024 px — standard</option>
-          <option value="2048">2048 px — detailed</option>
-          <option value="4096">4096 px — maximum (slow)</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" id="maskClouds" checked> Mask clouds &amp; shadows</label>
-      <label class="check"><input type="checkbox" id="clipShape" checked> Clip to my shape</label>
+    <div class="sidebar-foot">
+      <div class="plan" id="planSummary"></div>
       <button class="btn btn-primary btn-big" id="showBtn" disabled>Show imagery</button>
       <div class="row">
+        <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>Save PNG</button>
         <button class="btn btn-ghost btn-sm" id="downloadTif" disabled>GeoTIFF</button>
-        <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>PNG</button>
       </div>
-    </div>
-
-    <div class="group">
-      <h3>4 · Make it look better</h3>
-      <div id="renderSliders"></div>
-      <div class="presets presets-wide" id="enhancePresets"></div>
-      <div id="enhanceSliders"></div>
-      <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset</button>
     </div>
   </aside>
 

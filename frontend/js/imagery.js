@@ -1,13 +1,19 @@
-// The whole app: find dates over an area, merge them, look at the imagery.
+// The whole app: pick a place, pick dates, look at the imagery.
+//
+// Two ways to look at it, chosen up front because they are genuinely different
+// questions. One date is what the satellite saw on a day. A merge is what the
+// ground looks like, put together from several passes: sharper, and without
+// the cloud any single pass happened to have over it.
 
 import { api } from './api.js';
-import { store, emit, on, setImage } from './store.js';
+import { store, on, setImage } from './store.js';
 import { $, $$, el, toast, withBusy, download, loadImage, fmt, sliderBank } from './ui.js';
 
 let renderControls = {};
 let enhanceControls = {};
 let cloudControl = null;
 let lastRequest = null;
+let mode = 'single';                     // 'single' | 'merge'
 
 const ENHANCE_SPECS = [
   { key: 'haze_removal', label: 'Haze removal', min: 0, max: 1, step: 0.05, value: 0,
@@ -33,6 +39,12 @@ const ENHANCE_PRESETS = {
   Natural: { haze_removal: 0.5, white_balance: 0.35 },
 };
 
+const MODE_HINTS = {
+  single: 'One pass, exactly as the satellite recorded it. Pick the date you want.',
+  merge: 'Several passes solved into one picture — finer than 10 m, and with the '
+    + 'cloud from any one date taken out by the others. Tick the dates to use.',
+};
+
 export function initImagery() {
   const today = new Date();
   const yearAgo = new Date(today.getTime() - 365 * 864e5);
@@ -41,12 +53,14 @@ export function initImagery() {
 
   cloudControl = sliderBank($('#cloudSlider'), [{
     key: 'cloud', label: 'Maximum cloud cover', min: 0, max: 100, step: 5, value: 30, unit: '%',
-  }]);
+  }], sync);
 
   buildVisualisationOptions();
   buildRenderSliders();
   buildEnhanceControls();
 
+  $$('#modePicker .mode').forEach((btn) =>
+    btn.addEventListener('click', () => setMode(btn.dataset.mode)));
   $('#searchDates').addEventListener('click', runSearch);
   $('#showBtn').addEventListener('click', showImagery);
   $('#downloadPng').addEventListener('click', () => downloadImagery('png'));
@@ -54,15 +68,69 @@ export function initImagery() {
   $('#renderMode').addEventListener('change', () => {
     buildRenderSliders();
     updateHint();
+    sync();
   });
   $('#renderSize').addEventListener('change', sync);
+  $('#maskClouds').addEventListener('change', sync);
   $('#selectClearest').addEventListener('click', () => tickBest(6));
   $('#selectNone').addEventListener('click', () => tickBest(0));
+  for (const id of ['#dateStart', '#dateEnd']) $(id).addEventListener('change', sync);
 
-  on('aoi', sync);
-  on('dates', renderDateList);
+  // Drawing an area is a clear enough request for the dates over it.
+  on('aoi', (info) => {
+    sync();
+    if (info) runSearch();
+  });
+  setMode('single');
+}
+
+// ── One date, or several merged ────────────────────────────────
+
+function setMode(next) {
+  mode = next;
+  $$('#modePicker .mode').forEach((b) => b.classList.toggle('is-active', b.dataset.mode === next));
+  $('#modeHint').textContent = MODE_HINTS[next];
+  $('#tickRow').hidden = next !== 'merge' || !store.dates.length;
+
+  if (next === 'merge' && store.selected.size < 2) {
+    tickBest(Math.min(6, store.dates.length));
+  } else if (next === 'single') {
+    // Carry the choice over: the clearest ticked date becomes the single one.
+    const kept = store.dates.filter((d) => store.selected.has(d.id))
+      .sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100))[0];
+    store.activeDateId = kept?.id ?? store.activeDateId ?? store.dates[0]?.id ?? null;
+    store.selected = new Set(store.activeDateId ? [store.activeDateId] : []);
+    renderDateList();
+  }
   sync();
 }
+
+/** The dates this render will use, newest first. */
+function chosenDates() {
+  if (mode === 'single') {
+    const one = store.dates.find((d) => d.id === store.activeDateId);
+    return one ? [one] : [];
+  }
+  return store.dates.filter((d) => store.selected.has(d.id))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+/**
+ * How much finer a merge of `count` dates will be sampled.
+ *
+ * The same rule the backend applies, so the panel can promise what the render
+ * will actually deliver -- including the cap that stops a big area from asking
+ * for more pixels than an image is allowed to have.
+ */
+function mergeScale(count) {
+  if (count < 2) return 1;
+  const steps = store.config.superres_steps ?? [[9, 4], [5, 3], [2, 2]];
+  const wanted = steps.find(([needed]) => count >= needed)?.[1] ?? 1;
+  const fits = Math.max(1, Math.floor((store.config.max_size ?? 4096) / renderSize()));
+  return Math.min(wanted, fits);
+}
+
+const renderSize = () => parseInt($('#renderSize').value, 10);
 
 // ── What to show ───────────────────────────────────────────────
 
@@ -83,22 +151,22 @@ function buildVisualisationOptions() {
 }
 
 function currentMode() {
-  const [mode, key] = $('#renderMode').value.split(':');
-  return { mode, key };
+  const [kind, key] = $('#renderMode').value.split(':');
+  return { kind, key };
 }
 
 function updateHint() {
-  const { mode, key } = currentMode();
-  const spec = mode === 'index' ? store.config.indices[key] : store.config.composites[key];
+  const { kind, key } = currentMode();
+  const spec = kind === 'index' ? store.config.indices[key] : store.config.composites[key];
   if (!spec) { $('#renderHint').textContent = ''; return; }
-  const detail = mode === 'index' ? spec.formula : `Bands: ${spec.band_labels.join(' · ')}`;
+  const detail = kind === 'index' ? spec.formula : `Bands: ${spec.band_labels.join(' · ')}`;
   $('#renderHint').innerHTML = `${spec.hint}<br><span style="opacity:.7">${detail}</span>`;
 }
 
 function buildRenderSliders() {
-  const { mode, key } = currentMode();
+  const { kind, key } = currentMode();
   const host = $('#renderSliders');
-  if (mode === 'index') {
+  if (kind === 'index') {
     const [lo, hi] = store.config.indices[key].range;
     renderControls = sliderBank(host, [
       { key: 'index_min', label: 'Scale minimum', min: -1, max: 1, step: 0.05, value: lo,
@@ -130,7 +198,7 @@ function buildRenderSliders() {
 }
 
 function buildEnhanceControls() {
-  enhanceControls = sliderBank($('#enhanceSliders'), ENHANCE_SPECS);
+  enhanceControls = sliderBank($('#enhanceSliders'), ENHANCE_SPECS, sync);
 
   const host = $('#enhancePresets');
   host.innerHTML = '';
@@ -154,6 +222,7 @@ function applyEnhancePreset(name) {
   for (const spec of ENHANCE_SPECS) {
     enhanceControls[spec.key]?.set(preset[spec.key] ?? 0);
   }
+  sync();
 }
 
 function enhancementValues() {
@@ -165,58 +234,12 @@ function enhancementValues() {
   return values;
 }
 
-// ── Merging ────────────────────────────────────────────────────
-
-/** The dates ticked for merging, newest first. */
-function mergeDates() {
-  return store.dates.filter((d) => store.selected.has(d.id))
-    .sort((a, b) => b.date.localeCompare(a.date));
-}
-
-/**
- * How much finer a merge of `count` dates will be sampled.
- *
- * The same rule the backend applies, so the panel can promise what the render
- * will actually deliver -- including the cap that stops a big area from asking
- * for more pixels than an image is allowed to have.
- */
-function mergeScale(count) {
-  if (count < 2) return 1;
-  const steps = store.config.superres_steps ?? [[9, 4], [5, 3], [2, 2]];
-  const wanted = steps.find(([needed]) => count >= needed)?.[1] ?? 1;
-  const size = parseInt($('#renderSize').value, 10);
-  const fits = Math.max(1, Math.floor((store.config.max_size ?? 4096) / size));
-  return Math.min(wanted, fits);
-}
-
-function describeMerge() {
-  const count = store.selected.size;
-  const box = $('#mergeHint');
-  if (count < 2) {
-    box.innerHTML = 'Tick two or more dates and they are merged into one picture: '
-      + 'sharper, and with the cloud taken out.';
-    return;
-  }
-  const scale = mergeScale(count);
-  const size = parseInt($('#renderSize').value, 10);
-  const next = (store.config.superres_steps ?? []).find(([, s]) => s === scale + 1);
-  const bits = [
-    `<b>${count} dates → ${scale}× detail</b>, ${size * scale} px across.`,
-    'Cloud in any one date is taken out by the others, and the sub-pixel '
-    + 'differences between them are solved for detail no single date holds.',
-  ];
-  if (next && scale < (store.config.max_superres ?? 4)) {
-    bits.push(`<span class="dim">${next[0]} dates would reach ${next[1]}×.</span>`);
-  }
-  box.innerHTML = bits.join(' ');
-}
-
-// ── Search ─────────────────────────────────────────────────────
+// ── Dates ──────────────────────────────────────────────────────
 
 async function runSearch() {
   if (!store.aoi) return;
   try {
-    const data = await withBusy('Searching Sentinel-2…', () => api.search({
+    const data = await withBusy('Looking for Sentinel-2 passes…', () => api.search({
       aoi: store.aoi,
       start: $('#dateStart').value,
       end: $('#dateEnd').value,
@@ -226,13 +249,23 @@ async function runSearch() {
     store.dates = data.scenes;
     store.selected.clear();
     store.activeDateId = data.scenes[0]?.id ?? null;
-    emit('dates', data.scenes);
-    // Most people want the best few merged, so start them there.
-    tickBest(Math.min(6, data.scenes.length));
-    toast(data.scenes.length
-      ? `${data.scenes.length} date${data.scenes.length === 1 ? '' : 's'} found`
-      : 'Nothing found — widen the dates or allow more cloud',
-    data.scenes.length ? 'ok' : '');
+
+    if (!data.scenes.length) {
+      renderDateList();
+      sync();
+      toast('No passes matched — widen the dates or allow more cloud');
+      return;
+    }
+    // Land on something sensible: the clearest date, or the best few to merge.
+    if (mode === 'merge') tickBest(Math.min(6, data.scenes.length));
+    else {
+      store.activeDateId = [...data.scenes]
+        .sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100))[0].id;
+      store.selected = new Set([store.activeDateId]);
+      renderDateList();
+      sync();
+    }
+    toast(`${data.scenes.length} date${data.scenes.length === 1 ? '' : 's'} found`, 'ok');
   } catch (err) {
     toast(`Search failed: ${err.message}`, 'err');
   }
@@ -240,37 +273,35 @@ async function runSearch() {
 
 /** Tick the `n` least cloudy dates, and untick everything else. */
 function tickBest(n) {
-  const best = [...store.dates]
+  store.selected = new Set([...store.dates]
     .sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100))
     .slice(0, n)
-    .map((d) => d.id);
-  store.selected = new Set(best);
-  renderDateList(store.dates);
+    .map((d) => d.id));
+  renderDateList();
   sync();
 }
 
-function renderDateList(dates) {
+function renderDateList() {
   const list = $('#dateList');
   list.innerHTML = '';
-  for (const date of dates) {
-    const check = el('input', {
-      type: 'checkbox',
-      checked: store.selected.has(date.id),
+  for (const date of store.dates) {
+    const chosen = mode === 'single'
+      ? date.id === store.activeDateId
+      : store.selected.has(date.id);
+    const input = el('input', {
+      type: mode === 'single' ? 'radio' : 'checkbox',
+      name: 'date',
+      checked: chosen,
       onclick: (e) => {
         e.stopPropagation();
-        if (e.target.checked) store.selected.add(date.id);
-        else store.selected.delete(date.id);
-        store.activeDateId = date.id;
-        sync();
+        pick(date, e.target.checked);
       },
     });
     list.append(el('div', {
-      class: `scene ${store.selected.has(date.id) ? 'is-active' : ''}`,
-      onclick: (e) => {
-        if (e.target !== check) check.click();
-      },
+      class: `scene ${chosen ? 'is-active' : ''}`,
+      onclick: () => pick(date, mode === 'single' ? true : !store.selected.has(date.id)),
     },
-      check,
+      input,
       el('div', {},
         el('div', { class: 'scene-date' }, fmt.date(date.date)),
         el('div', { class: 'scene-meta' }, date.tile || date.platform)),
@@ -279,40 +310,93 @@ function renderDateList(dates) {
         `${date.cloud ?? 0}%`),
     ));
   }
+  $('#dateEmpty').hidden = store.dates.length > 0 || !store.aoi;
+  $('#tickRow').hidden = mode !== 'merge' || !store.dates.length;
+  // The clearest date is rarely the newest, so it is rarely at the top: show
+  // the user what has been picked for them rather than leaving it off-screen.
+  list.querySelector('.scene.is-active')?.scrollIntoView({ block: 'nearest' });
+}
+
+function pick(date, on) {
+  if (mode === 'single') {
+    store.activeDateId = date.id;
+    store.selected = new Set([date.id]);
+  } else if (on) {
+    store.selected.add(date.id);
+  } else {
+    store.selected.delete(date.id);
+  }
+  renderDateList();
+  sync();
 }
 
 const cloudColour = (pct) => (pct < 10 ? '#37e0a0' : pct < 30 ? '#ffd166' : '#ff8a5b');
 
-// ── Showing the imagery ────────────────────────────────────────
+// ── Keeping the panel honest ───────────────────────────────────
 
 function sync() {
   const hasAoi = Boolean(store.aoi);
-  const count = store.selected.size;
+  const dates = chosenDates();
+
+  $('#stepDates').classList.toggle('is-locked', !hasAoi);
+  $('#stepLook').classList.toggle('is-locked', !store.dates.length);
   $('#searchDates').disabled = !hasAoi;
-  $('#showBtn').disabled = !hasAoi || (!count && !store.activeDateId);
-  $('#showBtn').textContent = count > 1
-    ? `Merge ${count} dates → ${mergeScale(count)}×`
-    : 'Show imagery';
+  $('#dateEmpty').hidden = store.dates.length > 0 || !hasAoi;
+  $('#whenSummary').textContent =
+    `${$('#dateStart').value} → ${$('#dateEnd').value} · under ${cloudControl.cloud.get()}% cloud`;
+
+  const tuned = Object.keys(enhancementValues()).length;
+  $('#tuningSummary').textContent = tuned ? `${tuned} adjusted` : 'off';
+
+  const scale = mode === 'merge' ? mergeScale(dates.length) : 1;
+  const ready = mode === 'merge' ? dates.length > 1 : dates.length === 1;
+  const current = ready && lastRequest
+    && JSON.stringify(buildRequest(dates)) === JSON.stringify(lastRequest);
+
+  $('#showBtn').disabled = !ready || current;
+  $('#showBtn').textContent = current
+    ? 'Showing this now'
+    : mode === 'merge'
+      ? (ready ? `Merge ${dates.length} dates → ${scale}×` : 'Tick at least two dates')
+      : (ready ? (store.image ? 'Show this date' : 'Show imagery') : 'Pick a date');
+  $('#planSummary').innerHTML = planSummary(dates, scale);
   $('#downloadPng').disabled = $('#downloadTif').disabled = !lastRequest;
-  $$('#dateList .scene').forEach((row, i) =>
-    row.classList.toggle('is-active', store.selected.has(store.dates[i]?.id)));
-  describeMerge();
 }
 
+/** One line above the button saying exactly what pressing it will produce. */
+function planSummary(dates, scale) {
+  if (!store.aoi) return 'Draw an area on the map to begin.';
+  if (!store.dates.length) return 'No dates yet.';
+  if (!dates.length) {
+    return mode === 'merge' ? 'Tick the dates you want merged.' : 'Pick a date.';
+  }
+  const px = `${renderSize() * scale} px`;
+  if (mode === 'single') return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass`;
+  if (dates.length < 2) return 'A merge needs at least two dates.';
+
+  const steps = store.config.superres_steps ?? [];
+  const next = steps.find(([, s]) => s === scale + 1);
+  const more = next && scale < (store.config.max_superres ?? 4)
+    ? ` · <span class="dim">${next[0]} dates would reach ${next[1]}×</span>` : '';
+  return `<b>${dates.length} dates → ${scale}× detail</b> · ${px}${more}`;
+}
+
+// ── Showing the imagery ────────────────────────────────────────
+
 function buildRequest(dates) {
-  const { mode, key } = currentMode();
+  const { kind, key } = currentMode();
   const body = {
     aoi: store.aoi,
     scene: dates[0],
-    mode,
-    size: parseInt($('#renderSize').value, 10),
+    mode: kind,
+    size: renderSize(),
     mask_clouds: $('#maskClouds').checked,
     clip: $('#clipShape').checked,
     ...(renderControls.values ? renderControls.values() : {}),
     ...enhancementValues(),
   };
   if (dates.length > 1) body.scenes = dates;
-  if (mode === 'index') {
+  if (kind === 'index') {
     body.index = key;
     body.colormap = renderControls.colormap?.get();
   } else {
@@ -324,12 +408,8 @@ function buildRequest(dates) {
 }
 
 async function showImagery() {
-  if (!store.aoi) return;
-  const merged = mergeDates();
-  const dates = merged.length > 1
-    ? merged
-    : [store.dates.find((d) => d.id === store.activeDateId) ?? merged[0] ?? store.dates[0]];
-  if (!dates[0]) return;
+  const dates = chosenDates();
+  if (!store.aoi || !dates.length) return;
 
   const body = buildRequest(dates);
   const what = dates.length > 1
@@ -351,7 +431,7 @@ async function showImagery() {
 function describeResult(meta) {
   const size = `${meta.grid.width}×${meta.grid.height} px at ${meta.grid.ground_res_m} m/px`;
   const sr = meta.superres;
-  if (!sr) return `${size} from ${fmt.date(meta.scene.date)}`;
+  if (!sr) return `${fmt.date(meta.scene.date)} — ${size}`;
 
   const bits = [`${sr.scale}× merge of ${sr.scenes} dates — ${size}`];
   if (sr.sharpness_gain_pct > 0) bits.push(`+${sr.sharpness_gain_pct}% detail`);
@@ -365,7 +445,7 @@ function describeResult(meta) {
 async function downloadImagery(format) {
   if (!lastRequest) return;
   try {
-    const blob = await withBusy('Preparing download…', () =>
+    const blob = await withBusy('Preparing the file…', () =>
       api.renderFile({ ...lastRequest, format }));
     const ext = format === 'geotiff' ? 'tif' : 'png';
     const when = lastRequest.scenes?.length
