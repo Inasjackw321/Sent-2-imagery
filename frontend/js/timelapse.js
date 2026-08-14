@@ -60,7 +60,7 @@ async function buildFrames() {
     .filter((s) => store.selected.has(s.id))
     .sort((a, b) => a.date.localeCompare(b.date));
   if (scenes.length < 2) {
-    toast('Tick at least two scenes on the Capture tab', 'err');
+    toast('Tick at least two dates on the Capture tab', 'err');
     return;
   }
 
@@ -192,7 +192,7 @@ function drawFrame(index) {
   const label = $('#animLabel');
   if (!store.frames.length) {
     canvas.width = canvas.height = 0;
-    label.textContent = 'Tick scenes on the Capture tab, then render them here.';
+    label.textContent = 'Tick dates on the Capture tab, then render them here.';
     return;
   }
   const composed = composeFrame(cursor);

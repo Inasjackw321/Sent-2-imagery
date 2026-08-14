@@ -31,7 +31,6 @@ const ENHANCE_PRESETS = {
   Balanced: { haze_removal: 0.8, adaptive_contrast: 1.5, sharpen: 0.25, vibrance: 0.2 },
   Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.5, vibrance: 0.45 },
   Hazy_day: { haze_removal: 1, adaptive_contrast: 2, white_balance: 0.6, sharpen: 0.3 },
-  Radar: { denoise: 0.8, adaptive_contrast: 2, sharpen: 0.2 },
   Natural: { haze_removal: 0.5, white_balance: 0.35 },
 };
 
@@ -45,7 +44,6 @@ export function initCapture() {
     key: 'cloud', label: 'Maximum cloud cover', min: 0, max: 100, step: 5, value: 30, unit: '%',
   }]);
 
-  buildSatellitePicker();
   buildVisualisationOptions();
   buildRenderSliders();
   buildEnhanceControls();
@@ -66,12 +64,11 @@ export function initCapture() {
     updateHint();
   });
   $('#renderSize').addEventListener('change', syncEnabled);
-  $('#satellite').addEventListener('change', () => selectSource($('#satellite').value));
   $('#useComposite').addEventListener('change', (e) => {
     $('#compositeMethodRow').hidden = !e.target.checked;
     // Compositing removes cloud by dropping the cloudy pixels first, so it is
     // pointless without the mask. Turn it on rather than quietly doing nothing.
-    if (e.target.checked && currentSource().has_cloud_mask && !$('#maskClouds').checked) {
+    if (e.target.checked && !$('#maskClouds').checked) {
       $('#maskClouds').checked = true;
       toast('Cloud masking switched on — that is what the composite merges around');
     }
@@ -94,92 +91,21 @@ export function initCapture() {
   syncEnabled();
 }
 
-function currentSource() {
-  return store.config.sources.find((s) => s.key === store.source)
-    ?? store.config.sources[0];
-}
-
-function buildSatellitePicker() {
-  const select = $('#satellite');
-  select.innerHTML = '';
-  const groups = new Map();
-  for (const source of store.config.sources) {
-    const kind = { optical: 'Optical', sar: 'Radar', dem: 'Terrain',
-                   landcover: 'Land cover', thermal: 'Thermal' }[source.kind] ?? 'Other';
-    if (!groups.has(kind)) groups.set(kind, el('optgroup', { label: kind }));
-    groups.get(kind).append(el('option', { value: source.key }, source.label));
-  }
-  for (const group of groups.values()) select.append(group);
-
-  store.source = store.config.default_source;
-  select.value = store.source;
-  describeSource();
-}
-
-function selectSource(key) {
-  store.source = key;
-  const source = currentSource();
-  describeSource();
-  buildVisualisationOptions();
-  buildRenderSliders();
-  updateHint();
-
-  // A different satellite means different scenes.
-  store.scenes = [];
-  store.selected.clear();
-  store.activeSceneId = null;
-  emit('scenes', []);
-
-  $('#renderSize').value = String(source.default_size || 1024);
-  $('#pansharpenRow').hidden = !source.pan;
-  $('#panPill').textContent = source.pan_resolution
-    ? `${source.resolution} m → ${source.pan_resolution} m` : '';
-  $('#maskClouds').disabled = !source.has_cloud_mask;
-  $('#maskClouds').parentElement.style.opacity = source.has_cloud_mask ? '1' : '.45';
-  syncEnabled();
-}
-
-function describeSource() {
-  const source = currentSource();
-  const bits = [
-    `${source.resolution} m`,
-    source.revisit,
-    `from ${source.since.slice(0, 4)}`,
-  ].filter(Boolean);
-  $('#satelliteInfo').innerHTML = `
-    <div><b>${source.platform}</b> · ${bits.join(' · ')}</div>
-    ${source.swath_hint ? `<div class="dim">${source.swath_hint}</div>` : ''}
-    ${source.notes ? `<div class="dim">${source.notes}</div>` : ''}
-    <div class="dim">via ${source.provider}</div>`;
-}
-
 function buildVisualisationOptions() {
-  const { composites, indices } = store.config;
-  const source = currentSource();
+  const { composites, indices, satellite } = store.config;
   const compGroup = $('#optComposites');
   const idxGroup = $('#optIndices');
   const changeSel = $('#changeIndex');
   compGroup.innerHTML = idxGroup.innerHTML = changeSel.innerHTML = '';
 
-  // Only offer what this satellite actually carries the bands for.
-  for (const key of source.composites) {
-    compGroup.append(el('option', { value: `composite:${key}` }, composites[key].label));
+  for (const [key, spec] of Object.entries(composites)) {
+    compGroup.append(el('option', { value: `composite:${key}` }, spec.label));
   }
-  for (const key of source.indices) {
-    idxGroup.append(el('option', { value: `index:${key}` }, indices[key].label));
-    changeSel.append(el('option', { value: key }, indices[key].label));
+  for (const [key, spec] of Object.entries(indices)) {
+    idxGroup.append(el('option', { value: `index:${key}` }, spec.label));
+    changeSel.append(el('option', { value: key }, spec.label));
   }
-  compGroup.hidden = !source.composites.length;
-  idxGroup.hidden = !source.indices.length;
-
-  if (source.categorical) {
-    compGroup.append(el('option', { value: 'categorical:landcover' }, 'Land-cover classes'));
-    compGroup.hidden = false;
-  }
-  const preferred = source.categorical ? 'categorical:landcover'
-    : source.default_composite ? `composite:${source.default_composite}`
-      : `index:${source.indices[0]}`;
-  $('#renderMode').value = preferred;
+  $('#renderMode').value = `composite:${satellite.default_composite}`;
   updateHint();
 }
 
@@ -190,10 +116,6 @@ function currentMode() {
 
 function updateHint() {
   const { mode, key } = currentMode();
-  if (mode === 'categorical') {
-    $('#renderHint').textContent = 'Eleven land-cover classes, with the area of each.';
-    return;
-  }
   const spec = mode === 'index' ? store.config.indices[key] : store.config.composites[key];
   if (!spec) { $('#renderHint').textContent = ''; return; }
   const detail = mode === 'index'
@@ -205,11 +127,6 @@ function updateHint() {
 function buildRenderSliders() {
   const { mode, key } = currentMode();
   const host = $('#renderSliders');
-  if (mode === 'categorical') {
-    host.innerHTML = '';
-    renderControls = {};
-    return;
-  }
   if (mode === 'index') {
     const [lo, hi] = store.config.indices[key].range;
     renderControls = sliderBank(host, [
@@ -274,7 +191,6 @@ function enhancementValues() {
     const value = enhanceControls[spec.key]?.get() ?? 0;
     if (value > 0) values[spec.key] = value;
   }
-  if ($('#pansharpen').checked && currentSource().pan) values.pansharpen = 1.0;
   return values;
 }
 
@@ -329,9 +245,9 @@ function syncEnabled() {
     || (compositing ? store.selected.size < 2 : !store.activeSceneId);
   const scale = superresScale();
   $('#renderBtn').textContent = scale > 1
-    ? `Fuse ${store.selected.size} scenes at ${scale}×`
+    ? `Fuse ${store.selected.size} dates at ${scale}×`
     : compositing
-      ? `Build composite of ${store.selected.size} scenes`
+      ? `Merge ${store.selected.size} dates`
       : 'Download imagery';
   describeSuperres();
   $('#changeBtn').disabled = !hasAoi || store.selected.size !== 2;
@@ -343,10 +259,8 @@ function syncEnabled() {
 async function runSearch() {
   if (!store.aoi) return;
   try {
-    const source = currentSource();
-    const data = await withBusy(`Searching ${source.label}…`, () => api.search({
+    const data = await withBusy('Searching Sentinel-2…', () => api.search({
       aoi: store.aoi,
-      source: store.source,
       start: $('#dateStart').value,
       end: $('#dateEnd').value,
       max_cloud: cloudControl.cloud.get(),
@@ -358,8 +272,8 @@ async function runSearch() {
     emit('scenes', data.scenes);
     syncEnabled();
     toast(data.scenes.length
-      ? `${data.scenes.length} scene${data.scenes.length === 1 ? '' : 's'} found`
-      : 'No scenes matched — widen the dates or allow more cloud', data.scenes.length ? 'ok' : '');
+      ? `${data.scenes.length} date${data.scenes.length === 1 ? '' : 's'} found`
+      : 'Nothing matched — widen the dates or allow more cloud', data.scenes.length ? 'ok' : '');
   } catch (err) {
     toast(`Search failed: ${err.message}`, 'err');
   }
@@ -395,11 +309,9 @@ function renderSceneList(scenes) {
       el('div', {},
         el('div', { class: 'scene-date' }, fmt.date(scene.date)),
         el('div', { class: 'scene-meta' }, `${scene.platform}${scene.tile ? ` · ${scene.tile}` : ''}`)),
-      scene.cloud == null
-        ? el('div', { class: 'scene-cloud dim' }, scene.instrument ?? '')
-        : el('div', { class: 'scene-cloud' },
-          el('span', { class: 'cloud-dot', style: `background:${cloudColour(scene.cloud)}` }),
-          `${scene.cloud}%`),
+      el('div', { class: 'scene-cloud' },
+        el('span', { class: 'cloud-dot', style: `background:${cloudColour(scene.cloud ?? 0)}` }),
+        `${scene.cloud ?? 0}%`),
     );
     list.append(row);
   }
@@ -414,7 +326,6 @@ export function buildRenderRequest(scene, overrides = {}) {
   const values = renderControls.values ? renderControls.values() : {};
   const body = {
     aoi: store.aoi,
-    source: store.source,
     scene,
     mode,
     size: parseInt($('#renderSize').value, 10),
@@ -427,8 +338,6 @@ export function buildRenderRequest(scene, overrides = {}) {
   if (mode === 'index') {
     body.index = key;
     body.colormap = renderControls.colormap?.get();
-  } else if (mode === 'categorical') {
-    body.mode = 'categorical';
   } else {
     body.preset = key;
     const stretch = renderControls.stretch?.get();
@@ -447,7 +356,7 @@ function describeGain(sr) {
   return `no detail gained${cleaner} — the dates differ too much, try ones closer together`;
 }
 
-/** Scenes to merge when the cloud-free composite is switched on. */
+/** Dates to merge when the cloud-free composite is switched on. */
 function compositeScenes() {
   if (!$('#useComposite').checked || store.selected.size < 2) return null;
   return store.scenes
@@ -468,9 +377,9 @@ async function runRender() {
     if (scale > 1) body.superres = scale;
   }
   const what = scale > 1
-    ? `Fusing ${merged.length} scenes at ${scale}×…`
+    ? `Fusing ${merged.length} dates at ${scale}×…`
     : merged
-      ? `Merging ${merged.length} scenes…`
+      ? `Merging ${merged.length} dates…`
       : `Downloading imagery for ${fmt.date(scene.date)}…`;
   try {
     const data = await withBusy(what, () => api.render(body));
@@ -484,7 +393,7 @@ async function runRender() {
       ? `${sr.scale}× from ${sr.scenes} dates — ${data.meta.grid.width}×${data.meta.grid.height} px `
         + `at ${data.meta.grid.ground_res_m} m/px · ${describeGain(sr)}`
       : report
-        ? `Composite of ${report.scenes} scenes — ${report.combined_pct}% clear `
+        ? `Composite of ${report.scenes} dates — ${report.combined_pct}% clear `
           + `(best single date: ${report.best_single_pct}%)`
         : `Rendered ${data.meta.grid.width}×${data.meta.grid.height} px `
           + `at ${data.meta.grid.ground_res_m} m/px`, 'ok');
@@ -513,13 +422,12 @@ async function downloadRender(format) {
 
 async function runChange() {
   if (store.selected.size !== 2) {
-    toast('Tick exactly two scenes to compare', 'err');
+    toast('Tick exactly two dates to compare', 'err');
     return;
   }
   const [a, b] = [...store.selected].map((id) => store.scenes.find((s) => s.id === id));
   const body = {
     aoi: store.aoi,
-    source: store.source,
     scene_a: a,
     scene_b: b,
     index: $('#changeIndex').value,

@@ -340,7 +340,7 @@ def test_the_scale_is_clamped_to_what_the_output_can_hold():
 
 def test_render_fuses_the_dates_onto_a_finer_grid(dates, aoi):
     result = service.render({
-        "aoi": aoi, "scenes": dates, "scene": dates[0], "source": "sentinel-2-l2a",
+        "aoi": aoi, "scenes": dates, "scene": dates[0],
         "preset": "true_color", "size": 256, "superres": 2, "clip": False,
     })
     meta = result["meta"]
@@ -355,7 +355,7 @@ def test_render_fuses_the_dates_onto_a_finer_grid(dates, aoi):
 
 def test_render_without_super_resolution_keeps_the_requested_grid(dates, aoi):
     result = service.render({
-        "aoi": aoi, "scenes": dates, "scene": dates[0], "source": "sentinel-2-l2a",
+        "aoi": aoi, "scenes": dates, "scene": dates[0],
         "preset": "true_color", "size": 256, "clip": False,
     })
     assert result["meta"]["grid"]["width"] == 256
@@ -368,7 +368,7 @@ def test_fused_imagery_resolves_more_of_the_ground_than_one_date(dates, aoi):
     from backend.geo import geometry_bounds
 
     grid = Grid(geometry_bounds(aoi), 256).refined(2)
-    request = {"aoi": aoi, "source": "sentinel-2-l2a", "mask_clouds": False}
+    request = {"aoi": aoi, "mask_clouds": False}
     single, _ = service.load_bands(dates[0], aoi, grid, ["red"], request)
     fused, _ = superres.fuse(
         [service.load_bands(scene, aoi, grid, ["red"], request)[0] for scene in dates],

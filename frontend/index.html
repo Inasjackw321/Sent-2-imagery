@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sent-2 · Satellite imagery studio</title>
-<meta name="description" content="Circle a region, download Sentinel-2 satellite imagery, edit it, and build timelapses and informative graphics.">
+<meta name="description" content="Circle a region, download Sentinel-2 imagery from several dates, fuse it into one sharper picture, edit it, and build timelapses and graphics.">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/css/app.css">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -64,24 +64,20 @@
       </div>
 
       <div class="group">
-        <h3>2 · Satellite</h3>
-        <select id="satellite" class="field-select"></select>
-        <div class="sat-info" id="satelliteInfo"></div>
-      </div>
-
-      <div class="group">
-        <h3>3 · Find imagery</h3>
+        <h3>2 · Find imagery</h3>
+        <p class="hint">Sentinel-2 passes over every point on Earth about every
+          five days, at 10 m, free, back to 2015.</p>
         <div class="field-row">
           <label>From<input type="date" id="dateStart"></label>
           <label>To<input type="date" id="dateEnd"></label>
         </div>
         <div id="cloudSlider"></div>
-        <button class="btn btn-primary" id="searchScenes" disabled>Search scenes</button>
+        <button class="btn btn-primary" id="searchScenes" disabled>Find dates</button>
         <div class="scene-list" id="sceneList"></div>
       </div>
 
       <div class="group">
-        <h3>4 · Render</h3>
+        <h3>3 · Render</h3>
         <label class="field">Visualisation
           <select id="renderMode">
             <optgroup label="Band combinations" id="optComposites"></optgroup>
@@ -108,9 +104,9 @@
       </div>
 
       <div class="group">
-        <h3>5 · Make it look better</h3>
-        <label class="check" title="Merge the ticked scenes, dropping cloud from each">
-          <input type="checkbox" id="useComposite"> Cloud-free composite of ticked scenes
+        <h3>4 · Make it look better</h3>
+        <label class="check" title="Merge the ticked dates, dropping cloud from each">
+          <input type="checkbox" id="useComposite"> Cloud-free composite of ticked dates
         </label>
         <label class="field" id="compositeMethodRow" hidden>Merge by
           <select id="compositeMethod">
@@ -132,9 +128,6 @@
           </select>
         </label>
         <p class="hint" id="superresHint" hidden></p>
-        <label class="check" id="pansharpenRow" hidden>
-          <input type="checkbox" id="pansharpen"> Pan-sharpen <span class="pill" id="panPill"></span>
-        </label>
         <div class="presets presets-wide" id="enhancePresets"></div>
         <div id="enhanceSliders"></div>
         <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset enhancements</button>
@@ -142,7 +135,7 @@
 
       <div class="group">
         <h3>Change detection</h3>
-        <p class="hint">Pick exactly two scenes above, then compare them.</p>
+        <p class="hint">Tick exactly two dates above, then compare them.</p>
         <label class="field">Index
           <select id="changeIndex"></select>
         </label>
@@ -198,8 +191,8 @@
     <section class="panel" data-panel="timelapse" hidden>
       <div class="group">
         <h3>Frames</h3>
-        <p class="hint">Tick scenes on the Capture tab, then render them all as frames.</p>
-        <button class="btn btn-primary" id="buildFrames" disabled>Render selected scenes</button>
+        <p class="hint">Tick dates on the Capture tab, then render them all as frames.</p>
+        <button class="btn btn-primary" id="buildFrames" disabled>Render ticked dates</button>
         <div class="progress" id="frameProgress" hidden><div></div><span></span></div>
         <div class="frame-list" id="frameList"></div>
       </div>

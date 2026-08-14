@@ -205,13 +205,7 @@ export function compose(scale = 1) {
     });
   }
   const legend = primary?.meta?.legend;
-  if ($('#gLegend').checked && legend?.type === 'categorical') {
-    const classes = legend.classes.slice(0, 8);
-    blocks.push({
-      h: (12 + classes.length * 17) * s,
-      draw: (x, yy, w) => chrome.drawClassLegend(g, classes, x, yy, w, theme, s),
-    });
-  } else if ($('#gLegend').checked && legend) {
+  if ($('#gLegend').checked && legend) {
     blocks.push({
       h: 46 * s,
       draw: (x, yy, w) => chrome.drawLegend(g, legend, x, yy, w, theme, s),

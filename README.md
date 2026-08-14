@@ -1,7 +1,7 @@
 # Sent-2 · satellite imagery studio
 
-Circle a region on a map, pull imagery from fourteen free satellites, fuse
-several dates into one sharper picture than any satellite took, edit it, and
+Circle a region on a map, pull free Sentinel-2 imagery from as many dates as
+you like, fuse them into one picture sharper than any single pass, edit it, and
 turn it into timelapse GIFs and annotated informative graphics.
 
 It is a desktop app: run one Python file and it opens in its own window.
@@ -56,32 +56,29 @@ the running copy up instead of starting another. Closing the window quits.
 
 ---
 
-## The satellites
+## The satellite
 
-Fourteen sources, all free and open, reached through two public catalogues that
-need no account. Every one of them is read the same way — only the parts your
-area needs, straight out of cloud-optimised GeoTIFFs.
+**Sentinel-2**, and only Sentinel-2 — the best free optical imagery there is,
+and the reason the app is called Sent-2.
 
-| Satellite | Resolution | Since | Revisit | Good for |
-| --- | --- | --- | --- | --- |
-| **Sentinel-2** L2A | 10 m | 2015 | ~5 days | The default: best free optical imagery |
-| Sentinel-2 L1C | 10 m | 2015 | ~5 days | Top-of-atmosphere, when L2A misbehaves |
-| **Landsat 4–9** C2 L2 | 30 m (15 m pan) | **1982** | ~8 days | Four decades of history; pan-sharpens to 15 m |
-| Landsat thermal | 30 m | 2013 | ~8 days | Ground temperature in kelvin |
-| Harmonised L–S (S30/L30) | 30 m | 2013 | 2–3 days | Landsat and Sentinel on one grid |
-| **Sentinel-1** radar (RTC/GRD) | 10 m | 2014 | 6–12 days | Sees through cloud and at night; floods |
-| **NAIP** aerial | 0.6 m | 2010 | 2–3 years | Sub-metre detail (United States) |
-| MODIS surface reflectance | 500 m | 2000 | Daily | Continent-scale change since 2000 |
-| ASTER | 15 m | 2000 | On request | Multispectral with thermal |
-| Copernicus DEM | 30 m | static | — | Terrain, elevation tints and hillshade |
-| ESA WorldCover | 10 m | 2020 | yearly | Eleven land-cover classes with areas |
+| | |
+| --- | --- |
+| Resolution | 10 m visible and near-infrared, 20 m red-edge and short-wave infrared |
+| Revisit | About every five days, everywhere on Earth |
+| Archive | June 2015 to this morning |
+| Bands | Twelve, from coastal aerosol at 443 nm to short-wave infrared at 2190 nm |
+| Level | L2A surface reflectance, atmospherically corrected |
+| Cost | Free, no account, no key |
 
-Pick one from the **Satellite** menu and the rest of the interface adapts: only
-the band combinations and indices that satellite can actually produce are
-offered, cloud controls disappear for radar, and the resolution default follows
-the sensor. Each source declares its own unit conversion (Sentinel-2's
-reflectance offset, Landsat's scale and offset, radar's decibels) so numbers are
-physically correct whichever one you use.
+It comes from [Earth Search](https://earth-search.aws.element84.com/v1), a
+public catalogue in front of the Sentinel-2 archive on AWS Open Data. Only the
+bands and the pixels your area needs are read, by HTTP range request straight
+out of the cloud-optimised GeoTIFFs, so a small area is quick even though a
+source tile runs to a gigabyte.
+
+Stored numbers become surface reflectance on the way in, including the -1000
+offset that scenes from January 2022 onwards carry, so the values behind every
+picture are physically correct.
 
 ## Making the imagery look better
 
@@ -90,17 +87,13 @@ does the work that matters, in the right order and in the right units.
 
 **Cloud-free composite** — the big one. Tick several dates and Sent-2 masks the
 cloud out of each, then takes the median through the stack. A pixel only has to
-be clear in half the scenes, so a place that is never cloud-free on any single
-day comes out clean. The result reports how much it rescued: *"8 scenes —
+be clear in half the dates, so a place that is never cloud-free on any single
+day comes out clean. The result reports how much it rescued: *"8 dates —
 100% clear (best single date: 84%)"*.
 
 **Super-resolution from several dates** — the other big one, and the only tool
 here that adds detail rather than presenting existing detail better. See
 [below](#super-resolution-many-dates-into-one-sharper-image).
-
-**Pan-sharpening** — Landsat carries a 15 m panchromatic band alongside its 30 m
-colour bands. Sent-2 injects that band's detail into the colour ones, weighted
-so hue survives. Genuinely twice the detail, not just sharpening.
 
 **Haze removal** — dark-object subtraction. Deep shadow and clear water should
 read near zero; whatever they actually read is atmosphere. Subtracting it per
@@ -111,10 +104,10 @@ brightness only. A single stretch has to compromise between a bright desert and
 a dark forest in one frame; this equalises within tiles and blends them, so both
 read properly and no seams show.
 
-Plus **denoise** (median filtering — radar is unreadable until despeckled),
-**white balance**, **vibrance**, and **detail** with overshoot clamping so
-strong settings do not draw halos around coastlines. Six one-click presets
-(Balanced, Punchy, Hazy day, Radar, Natural) set sensible combinations.
+Plus **denoise** (median filtering, edges intact), **white balance**,
+**vibrance**, and **detail** with overshoot clamping so strong settings do not
+draw halos around coastlines. Five one-click presets — Off, Balanced, Punchy,
+Hazy day, Natural — set sensible combinations.
 
 Everything applied is recorded and shown in the graphic's statistics panel, so a
 figure always says how its imagery was processed.
@@ -158,28 +151,21 @@ assumes every date saw the same ground, so a year of crop growth averages into
 *less* detail, not more, and the report says so plainly when that is what
 happened. The multiplier is capped so the fused grid stays within 4096 px.
 
-It composes with everything else — pan-sharpening, haze removal and the rest
-run afterwards on the fused image, in physical units.
+It composes with everything else — haze removal, adaptive contrast and the
+rest run afterwards on the fused image, in reflectance.
 
 ---
 
 ## Where the imagery comes from
 
-Two public STAC catalogues, both free and neither needing an account:
+[Earth Search](https://earth-search.aws.element84.com/v1), Element 84's free
+STAC API in front of the `sentinel-2-l2a` collection on AWS Open Data. No
+account, no key, no token — a search is one anonymous HTTP request, and so is
+every band read after it.
 
-- **[Earth Search](https://earth-search.aws.element84.com/v1)** (Element 84) —
-  Sentinel-2, Sentinel-1 and Copernicus DEM on AWS Open Data, entirely anonymous.
-- **[Planetary Computer](https://planetarycomputer.microsoft.com)** (Microsoft) —
-  Landsat, HLS, MODIS, NAIP, ASTER and WorldCover. Assets are signed with an
-  anonymous token that Sent-2 fetches and refreshes for you.
-
-Only the bands and the pixels your area needs are read, by HTTP range request
-straight out of the cloud-optimised GeoTIFFs, so a small area is quick even
-though a source tile can be over a gigabyte.
-
-Each satellite carries its own licence and attribution — Copernicus for the
-Sentinels, USGS for Landsat, and so on — and the graphic composer writes the
-right line for whatever went into the figure.
+The imagery is licensed for any use, including commercially, with attribution:
+*Contains modified Copernicus Sentinel data*. The graphic composer writes that
+line onto every figure for you.
 
 ## The four tabs
 
@@ -189,11 +175,11 @@ right line for whatever went into the figure.
 **circle**, **box** and **polygon**. Or type a place name to fly there. The
 panel shows the area in km², the ground extent and the centre coordinates.
 
-**Pick a satellite,** then **find imagery**: set a date range and a cloud-cover
-ceiling, and the scene list shows every pass over your area.
+**Find imagery.** Set a date range and a cloud-cover ceiling, and the list
+shows every Sentinel-2 pass over your area, newest first, with how cloudy each
+one was.
 
-**Render.** Eleven band combinations and eleven indices, filtered to what the
-chosen satellite supports:
+**Render.** Nine band combinations and eight indices:
 
 | Band combination | What it shows |
 | --- | --- |
@@ -207,10 +193,6 @@ chosen satellite supports:
 | Bathymetric | Shallow sea floor and sediment plumes |
 | Atmospheric penetration | Sees through haze |
 
-Radar adds a VV/VH composite and a flood view; Landsat adds pan-sharpened true
-colour; the DEM adds elevation tints with hillshade; WorldCover adds classified
-land cover with the area of every class.
-
 | Index | What it measures |
 | --- | --- |
 | NDVI | Green biomass and vigour |
@@ -221,9 +203,6 @@ land cover with the area of every class.
 | NDSI | Snow and ice |
 | EVI | Vegetation, resistant to soil and haze |
 | SAVI | Vegetation over sparse or bright soils |
-| Surface temperature | Ground temperature in kelvin (Landsat thermal) |
-| Elevation | Height in metres (Copernicus DEM) |
-| Backscatter | Radar brightness in decibels (Sentinel-1) |
 
 Indices come with a colour scale (twelve colour maps), statistics and a
 histogram. Also on this tab: cloud and shadow masking from the scene
@@ -251,7 +230,7 @@ other image you have captured — handy before building a timelapse.
 
 ### 3 · Timelapse
 
-Tick a run of scenes on the Capture tab and render them all as frames, then
+Tick a run of dates on the Capture tab and render them all as frames, then
 scrub or play them back. Overlays are burnt into each frame: date stamp,
 progress bar, scale bar and a title. Export as animated **GIF**, **WebP** or
 **APNG** — with a single shared palette so colours do not shimmer between
@@ -276,10 +255,10 @@ stays tight no matter which features you switch on.
 
 ## Demo mode
 
-`python run.py --demo` replaces the catalogue with synthetic scenes generated
+`python run.py --demo` replaces the catalogue with synthetic dates generated
 from noise fields: plausible water, vegetation, soil, urban and snow cover, a
 seasonal cycle, slow urban growth over the years, and clouds matching each
-scene's stated cover. It is there so the interface can be explored, tested and
+date's stated cover. It is there so the interface can be explored, tested and
 demonstrated offline.
 
 It is not real imagery, and the app says so everywhere it could matter: a badge
@@ -311,12 +290,11 @@ attribution.
 app.py           the desktop app — double-click this
 run.py           the same thing with more command-line options
 backend/
-  sources.py     the satellite catalogue: bands, scaling, cloud masks
-  enhance.py     compositing, haze, pan-sharpening, CLAHE, denoise, hillshade
+  enhance.py     compositing, haze removal, CLAHE, denoise, white balance
   superres.py    sub-pixel registration, multi-frame fusion, deconvolution
   app.py         FastAPI routes and static hosting
-  config.py      band table, composites, indices, colour maps
-  stac.py        catalogue search and asset signing, plus synthetic scenes
+  config.py      the satellite, band table, composites, indices, colour maps
+  stac.py        catalogue search, plus synthetic scenes for demo mode
   raster.py      windowed COG reads, reprojection, cloud masking, demo bands
   composite.py   stretches, indices, colour maps, statistics, encoding
   service.py     render and change-detection orchestration, caching
@@ -330,7 +308,11 @@ frontend/
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
 tools/           icon generator
-tests/           pytest suite over the real raster path and the launcher
+tests/
+  test_pipeline.py   reading, reprojection, cloud masking, indices, export
+  test_superres.py   registration, fusion, restoration, the resolution gain
+  test_enhance.py    compositing and the image-quality tools
+  test_launcher.py   ports, windows, shortcuts, manifest and service worker
 ```
 
 ## Tests
@@ -340,12 +322,12 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-The suite writes GeoTIFFs that match each satellite's real storage convention —
-Sentinel-2's DN offset, Landsat's scale and offset and QA_PIXEL bitfield, radar
-power, metres of elevation — and runs the live (non-demo) reading path over
-them. That covers reprojection onto the output grid, mixed band resolutions,
-unit conversion, cloud masking, shape clipping, index maths, stretch modes,
-GeoTIFF export, change detection and STAC parsing.
+The suite writes GeoTIFFs that match how Sentinel-2 really stores itself — the
+DN offset from baseline 04.00, 10 m and 20 m bands side by side, the scene
+classification layer — and runs the live (non-demo) reading path over them.
+That covers reprojection onto the output grid, mixed band resolutions,
+reflectance conversion, cloud masking, shape clipping, index maths, stretch
+modes, GeoTIFF export, change detection and STAC parsing.
 
 Super-resolution gets its own file. The scenes there are one fixed patch of
 ground, held on a grid four times finer than any date samples it, with each
@@ -357,11 +339,11 @@ difference in brightness, refuses an implausible or ambiguous match, that the
 fusion throws out a cloud the mask missed but keeps a pixel any date saw, and
 that the deconvolution sharpens an edge without ringing around it.
 
-It also covers the image-quality tools (compositing fills gaps, haze removal
-finds the right floor, pan-sharpening adds real detail without shifting hue,
-CLAHE is locally adaptive, hillshade lights the correct slopes) and the
-desktop-app plumbing (port selection, window arguments, generated shortcuts,
-the web-app manifest and service worker).
+It also covers the image-quality tools (compositing fills the gaps, haze
+removal finds the right floor, adaptive contrast really is local, denoise
+removes speckle, white balance neutralises a cast) and the desktop-app plumbing
+(port selection, window arguments, generated shortcuts, the web-app manifest
+and service worker).
 
 ## Requirements
 

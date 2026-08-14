@@ -43,8 +43,6 @@ async function main() {
     $('#demoBadge').hidden = false;
     $('#sourceBadge').textContent = 'Synthetic imagery';
     toast('Demo mode: imagery is synthetic, not real Sentinel-2 data.');
-  } else {
-    $('#sourceBadge').textContent = `${store.config.collection} · ${new URL(store.config.stac_url).host}`;
   }
 
   initTabs();

@@ -4,11 +4,10 @@ const listeners = new Map();
 
 export const store = {
   config: null,          // /api/config payload
-  source: null,          // selected satellite key
   aoi: null,             // GeoJSON polygon
   aoiInfo: null,         // { area_km2, bounds, center }
   scenes: [],            // search results
-  selected: new Set(),   // scene ids ticked for timelapse / comparison
+  selected: new Set(),   // dates ticked for merging, comparison or timelapse
   activeSceneId: null,
   captures: [],          // rendered images: { id, name, src, image, meta }
   activeCaptureId: null,

@@ -231,26 +231,15 @@ function drawMapLegend(meta) {
     box.hidden = true;
     return;
   }
+  const stops = legend.stops.map((stop) => `${stop.color} ${stop.pos * 100}%`).join(', ');
   box.innerHTML = '';
-  if (legend.type === 'categorical') {
-    box.append(el('div', {}, legend.label));
-    for (const cls of legend.classes.slice(0, 8)) {
-      box.append(el('div', { class: 'ends' },
-        el('span', {},
-          el('i', { class: 'swatch', style: `background:${cls.color}` }),
-          ` ${cls.label}`),
-        el('span', {}, `${cls.percent}%`)));
-    }
-  } else {
-    const stops = legend.stops.map((s) => `${s.color} ${s.pos * 100}%`).join(', ');
-    box.append(
-      el('div', {}, `${legend.label}${legend.unit ? ` (${legend.unit})` : ''}`),
-      el('div', { class: 'bar', style: `background: linear-gradient(90deg, ${stops})` }),
-      el('div', { class: 'ends' },
-        el('span', {}, legend.vmin.toFixed(2)),
-        el('span', {}, legend.vmax.toFixed(2))),
-    );
-  }
+  box.append(
+    el('div', {}, legend.label),
+    el('div', { class: 'bar', style: `background: linear-gradient(90deg, ${stops})` }),
+    el('div', { class: 'ends' },
+      el('span', {}, legend.vmin.toFixed(2)),
+      el('span', {}, legend.vmax.toFixed(2))),
+  );
   box.hidden = false;
 }
 

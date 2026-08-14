@@ -1,4 +1,4 @@
-"""Render orchestration: area + satellite + options -> image bytes and metadata."""
+"""Render orchestration: area + dates + options -> image bytes and metadata."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from . import composite, config, enhance, raster, sources, stac, superres
+from . import composite, config, enhance, raster, stac, superres
 from .geo import Grid, geodesic_area_km2, geometry_bounds, normalise_aoi
 
 
@@ -53,36 +53,9 @@ def _needed_bands(mode: str, preset: str, index: str) -> list[str]:
         if index not in config.INDICES:
             raise RenderError(f"Unknown index {index!r}")
         return list(config.INDICES[index]["bands"])
-    if mode == "categorical":
-        return ["classification"]
     if preset not in config.COMPOSITES:
         raise RenderError(f"Unknown composite {preset!r}")
-    wanted = []
-    for alias in config.COMPOSITES[preset]["bands"]:
-        wanted.extend(config.DERIVED_BANDS.get(alias, (alias,)))
-    return list(dict.fromkeys(wanted))
-
-
-def _check_support(source, aliases: list[str], what: str) -> None:
-    missing = [a for a in aliases if a not in source.bands]
-    if missing:
-        raise RenderError(
-            f"{source.label} does not carry {', '.join(missing)} — {what} needs it"
-        )
-
-
-def _add_derived(bands: dict, preset: str) -> dict:
-    """Fill in channels computed from other bands, such as the radar ratio."""
-    for alias in config.COMPOSITES.get(preset, {}).get("bands", []):
-        if alias in bands or alias not in config.DERIVED_BANDS:
-            continue
-        left, right = config.DERIVED_BANDS[alias]
-        if left in bands and right in bands:
-            bands[alias] = np.ma.masked_array(
-                (bands[left].data - bands[right].data).astype("float32"),
-                mask=np.ma.getmaskarray(bands[left]) | np.ma.getmaskarray(bands[right]),
-            )
-    return bands
+    return list(dict.fromkeys(config.COMPOSITES[preset]["bands"]))
 
 
 def prepare(req: dict):
@@ -94,19 +67,16 @@ def prepare(req: dict):
 # ── Band loading, with enhancement applied in physical units ───
 
 
-def load_bands(scene: dict, geometry: dict, grid: Grid, keys: list[str], req: dict,
-               source=None):
-    source = source or sources.get(scene.get("source"))
-    key = _cache_key("bands", scene["id"], source.key, grid.bounds3857, grid.shape,
-                     sorted(keys), bool(req.get("mask_clouds")), bool(req.get("clip")),
+def load_bands(scene: dict, geometry: dict, grid: Grid, names: list[str], req: dict):
+    key = _cache_key("bands", scene["id"], grid.bounds3857, grid.shape,
+                     sorted(names), bool(req.get("mask_clouds")), bool(req.get("clip")),
                      geometry if req.get("clip") else None)
     hit = _cache.get(key)
     if hit is not None:
         return hit
 
     bands, cloud_fraction = raster.read_bands(
-        scene, grid, keys, source=source, mask_clouds=bool(req.get("mask_clouds"))
-    )
+        scene, grid, names, mask_clouds=bool(req.get("mask_clouds")))
     if req.get("clip"):
         bands = raster.apply_clip(bands, raster.aoi_mask(geometry, grid))
 
@@ -130,7 +100,7 @@ def superres_scale(req: dict, grid: Grid, scenes: list[dict]) -> int:
     return scale
 
 
-def _gather(scenes: list[dict], geometry, grid, keys, req, source):
+def _gather(scenes: list[dict], geometry, grid, names, req):
     """Read every scene the render needs, merging them if there is more than one.
 
     Two ways of merging, and they answer different questions. The composite
@@ -145,12 +115,12 @@ def _gather(scenes: list[dict], geometry, grid, keys, req, source):
     stacks = []
     clouds = []
     for scene in scenes:
-        bands, cloud = load_bands(scene, geometry, fine, keys, req, source)
+        bands, cloud = load_bands(scene, geometry, fine, names, req)
         stacks.append(bands)
         clouds.append(cloud)
 
     cloud_fraction = min(clouds) if clouds else 0.0
-    report = enhance.composite_report(stacks, keys[0]) if len(stacks) > 1 else None
+    report = enhance.composite_report(stacks, names[0]) if len(stacks) > 1 else None
 
     if scale > 1:
         merged, sr_report = superres.fuse(
@@ -166,29 +136,17 @@ def _gather(scenes: list[dict], geometry, grid, keys, req, source):
     return merged, cloud_fraction, report, None, fine
 
 
-def _enhance_bands(bands: dict, req: dict, source, grid: Grid, scenes: list[dict],
-                   geometry, applied: list[str]) -> dict:
-    """Corrections that belong in physical units, before any stretch."""
+def _enhance_bands(bands: dict, req: dict, applied: list[str]) -> dict:
+    """Corrections that belong in reflectance, before any stretch."""
     if req.get("haze_removal"):
         bands = enhance.dark_object_subtraction(
             bands, percentile=float(req.get("haze_percentile", 1.0)),
             strength=float(req.get("haze_removal")))
         applied.append("haze removal")
 
-    denoise_strength = float(req.get("denoise") or 0)
-    if denoise_strength > 0:
-        bands = enhance.denoise(bands, denoise_strength)
+    if float(req.get("denoise") or 0) > 0:
+        bands = enhance.denoise(bands, float(req["denoise"]))
         applied.append("denoise")
-
-    if req.get("pansharpen") and source.pan:
-        pan_bands, _ = load_bands(scenes[0], geometry, grid, ["pan"], req, source)
-        colour_keys = [k for k in bands if k in
-                       ("red", "green", "blue", "nir", "nir08", "swir16", "swir22")]
-        bands = enhance.pansharpen(
-            bands, pan_bands.get("pan"), colour_keys,
-            strength=float(req.get("pansharpen")),
-            method=req.get("pansharpen_method", "highpass"))
-        applied.append("pan-sharpening")
 
     return bands
 
@@ -227,64 +185,42 @@ def _enhance_rgb(rgb: np.ndarray, req: dict, applied: list[str]) -> np.ndarray:
 
 def render(req: dict) -> dict:
     geometry, grid = prepare(req)
-    source = sources.get(req.get("source"))
 
-    scenes = req.get("scenes") or [req.get("scene") or stac.get_scene(
-        req["scene_id"], source.key)]
+    scenes = req.get("scenes") or [req.get("scene") or stac.get_scene(req["scene_id"])]
     if not scenes:
-        raise RenderError("No scene selected")
+        raise RenderError("No date selected")
 
     mode = req.get("mode", "composite")
-    preset = req.get("preset") or source.default_composite
+    preset = req.get("preset") or config.SATELLITE["default_composite"]
     index_name = req.get("index", "ndvi")
-
-    if mode == "categorical" or source.kind == "landcover":
-        mode = "categorical"
-    keys = _needed_bands(mode, preset, index_name)
-    _check_support(source, keys, "this visualisation")
+    names = _needed_bands(mode, preset, index_name)
 
     applied: list[str] = []
     bands, cloud_fraction, composite_report, sr_report, grid = _gather(
-        scenes, geometry, grid, keys, req, source)
+        scenes, geometry, grid, names, req)
     if sr_report:
         applied.append(
             f"{sr_report['scale']}× super-resolution from {sr_report['scenes']} dates")
     elif len(scenes) > 1:
         applied.append(f"{len(scenes)}-scene {req.get('composite_method', 'median')} composite")
 
-    bands = _enhance_bands(bands, req, source, grid, scenes, geometry, applied)
-    bands = _add_derived(dict(bands), preset)
+    bands = _enhance_bands(bands, req, applied)
 
     legend = None
     stats = None
     hist = None
     index_arr = None
-    classes = None
     stretch_bounds = None
     pixel_area = grid.ground_res_m ** 2
 
-    if mode == "categorical":
-        rgb, valid, legend = composite.render_categorical(
-            bands["classification"], sources.WORLDCOVER_CLASSES, pixel_area)
-        classes = legend["classes"]
-    elif mode == "index":
+    if mode == "index":
         index_arr = composite.compute_index(bands, index_name)
         rgb, valid, legend = composite.render_index(index_arr, index_name, req)
         stats = composite.array_stats(index_arr)
         hist = composite.histogram(index_arr, span=config.INDICES[index_name]["range"])
-        legend["unit"] = config.INDICES[index_name].get("unit", "")
     else:
         rgb, valid, stretch_bounds = composite.render_composite(bands, preset, req)
         rgb = _enhance_rgb(rgb, req, applied)
-
-    if req.get("hillshade") and "elevation" in bands:
-        shade = enhance.hillshade(bands["elevation"], grid.ground_res_m,
-                                 azimuth=float(req.get("sun_azimuth", 315)),
-                                 altitude=float(req.get("sun_altitude", 45)),
-                                 exaggeration=float(req.get("exaggeration", 1.0)))
-        blend = float(req.get("hillshade") if req.get("hillshade") is not True else 0.6)
-        rgb = np.clip(rgb * (1 - blend + blend * shade[..., None] * 1.6), 0, 255).astype("uint8")
-        applied.append("hillshade")
 
     rgba = composite.to_rgba(rgb, valid)
 
@@ -299,25 +235,23 @@ def render(req: dict) -> dict:
         payload, media = composite.encode_png(rgba), "image/png"
 
     label = (config.INDICES[index_name]["label"] if mode == "index"
-             else "Land cover" if mode == "categorical"
              else config.COMPOSITES[preset]["label"])
 
     meta = {
         "scene": {k: v for k, v in scenes[0].items() if k != "assets"},
         "scenes": [{"id": s["id"], "date": s["date"], "cloud": s.get("cloud")} for s in scenes],
-        "source": _source_meta(source),
+        "source": satellite_meta(),
         "grid": grid.as_dict(),
         "mode": mode,
         "preset": preset if mode == "composite" else None,
         "index": index_name if mode == "index" else None,
         "label": label,
-        "bands": keys,
-        "band_labels": [config.BANDS.get(k, {}).get("label", k.upper()) for k in keys],
+        "bands": names,
+        "band_labels": [config.BANDS[b]["label"] for b in names],
         "stretch": stretch_bounds,
         "legend": legend,
         "stats": stats,
         "histogram": hist,
-        "classes": classes,
         "enhancements": applied,
         "composite_report": composite_report,
         "superres": sr_report,
@@ -330,16 +264,10 @@ def render(req: dict) -> dict:
     return {"bytes": payload, "media_type": media, "meta": meta}
 
 
-def _source_meta(source) -> dict:
-    return {
-        "key": source.key,
-        "label": source.label,
-        "platform": source.platform,
-        "kind": source.kind,
-        "resolution": source.resolution,
-        "attribution": source.attribution,
-        "provider": sources.PROVIDERS[source.provider]["label"],
-    }
+def satellite_meta() -> dict:
+    """Who took the picture — carried on every render for the credit line."""
+    return {k: config.SATELLITE[k] for k in
+            ("label", "platform", "resolution", "attribution", "provider")}
 
 
 # ── Change detection ───────────────────────────────────────────
@@ -347,21 +275,19 @@ def _source_meta(source) -> dict:
 
 def change_detection(req: dict) -> dict:
     geometry, grid = prepare(req)
-    source = sources.get(req.get("source"))
-    scene_a = req.get("scene_a") or stac.get_scene(req["scene_a_id"], source.key)
-    scene_b = req.get("scene_b") or stac.get_scene(req["scene_b_id"], source.key)
+    scene_a = req.get("scene_a") or stac.get_scene(req["scene_a_id"])
+    scene_b = req.get("scene_b") or stac.get_scene(req["scene_b_id"])
     if scene_a["date"] > scene_b["date"]:
         scene_a, scene_b = scene_b, scene_a
 
     index_name = req.get("index", "ndvi")
-    keys = _needed_bands("index", "", index_name)
-    _check_support(source, keys, "this comparison")
+    names = _needed_bands("index", "", index_name)
 
     applied: list[str] = []
-    bands_a, cloud_a = load_bands(scene_a, geometry, grid, keys, req, source)
-    bands_b, cloud_b = load_bands(scene_b, geometry, grid, keys, req, source)
-    bands_a = _enhance_bands(bands_a, req, source, grid, [scene_a], geometry, applied)
-    bands_b = _enhance_bands(bands_b, req, source, grid, [scene_b], geometry, [])
+    bands_a, cloud_a = load_bands(scene_a, geometry, grid, names, req)
+    bands_b, cloud_b = load_bands(scene_b, geometry, grid, names, req)
+    bands_a = _enhance_bands(bands_a, req, applied)
+    bands_b = _enhance_bands(bands_b, req, [])
 
     idx_a = composite.compute_index(bands_a, index_name)
     idx_b = composite.compute_index(bands_b, index_name)
@@ -403,7 +329,7 @@ def change_detection(req: dict) -> dict:
     meta = {
         "scene_a": {k: v for k, v in scene_a.items() if k != "assets"},
         "scene_b": {k: v for k, v in scene_b.items() if k != "assets"},
-        "source": _source_meta(source),
+        "source": satellite_meta(),
         "grid": grid.as_dict(),
         "index": index_name,
         "label": f"Change in {spec['label']}",

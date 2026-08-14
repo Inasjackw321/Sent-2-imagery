@@ -1,4 +1,4 @@
-"""Static configuration: data source, band presets, spectral indices, colormaps."""
+"""Static configuration: the satellite, band presets, spectral indices, colormaps."""
 
 from __future__ import annotations
 
@@ -12,6 +12,21 @@ import os
 # Sentinel-2 Cloud-Optimised GeoTIFF archive on AWS Open Data.
 STAC_URL = os.environ.get("STAC_URL", "https://earth-search.aws.element84.com/v1")
 STAC_COLLECTION = os.environ.get("STAC_COLLECTION", "sentinel-2-l2a")
+
+# The satellite, in one place. Sentinel-2 is the whole app: 10 m optical,
+# every five days, free, worldwide, and the best free imagery there is.
+SATELLITE = {
+    "label": "Sentinel-2 · surface reflectance",
+    "platform": "Sentinel-2 A/B/C",
+    "resolution": 10,
+    "since": "2015-06-23",
+    "revisit": "≈5 days",
+    "swath_hint": "10 m visible and near-infrared, 20 m red-edge and short-wave infrared",
+    "attribution": "Contains modified Copernicus Sentinel data",
+    "provider": "Earth Search (AWS Open Data)",
+    "notes": "Level-2A surface reflectance, atmospherically corrected.",
+    "default_composite": "true_color",
+}
 
 # Synthetic imagery instead of live downloads. Everything the app produces in
 # this mode is watermarked and flagged as fake -- it exists so the UI can be
@@ -52,33 +67,28 @@ BOA_OFFSET = -1000
 REFLECTANCE_SCALE = 1e-4
 
 # ---------------------------------------------------------------------------
-# Bands. Keys are Earth Search asset names; values describe the physical band.
+# Bands. The key is the name used everywhere in the app; "asset" is what the
+# band is called in the catalogue, and "s2" is its name on the satellite.
 # ---------------------------------------------------------------------------
 
 BANDS = {
-    "coastal": {"s2": "B01", "res": 60, "nm": 443, "label": "Coastal aerosol"},
-    "blue": {"s2": "B02", "res": 10, "nm": 490, "label": "Blue"},
-    "green": {"s2": "B03", "res": 10, "nm": 560, "label": "Green"},
-    "red": {"s2": "B04", "res": 10, "nm": 665, "label": "Red"},
-    "rededge1": {"s2": "B05", "res": 20, "nm": 705, "label": "Red edge 1"},
-    "rededge2": {"s2": "B06", "res": 20, "nm": 740, "label": "Red edge 2"},
-    "rededge3": {"s2": "B07", "res": 20, "nm": 783, "label": "Red edge 3"},
-    "nir": {"s2": "B08", "res": 10, "nm": 842, "label": "NIR"},
-    "nir08": {"s2": "B8A", "res": 20, "nm": 865, "label": "NIR narrow"},
-    "nir09": {"s2": "B09", "res": 60, "nm": 945, "label": "Water vapour"},
-    "swir16": {"s2": "B11", "res": 20, "nm": 1610, "label": "SWIR 1"},
-    "swir22": {"s2": "B12", "res": 20, "nm": 2190, "label": "SWIR 2"},
-    # Bands that other satellites bring to the table.
-    "cirrus": {"s2": "B10", "res": 60, "nm": 1375, "label": "Cirrus"},
-    "pan": {"s2": None, "res": 15, "nm": 590, "label": "Panchromatic"},
-    "lwir": {"s2": None, "res": 100, "nm": 10900, "label": "Thermal infrared"},
-    "vv": {"s2": None, "res": 10, "nm": None, "label": "Radar VV"},
-    "vh": {"s2": None, "res": 10, "nm": None, "label": "Radar VH"},
-    "hh": {"s2": None, "res": 10, "nm": None, "label": "Radar HH"},
-    "hv": {"s2": None, "res": 10, "nm": None, "label": "Radar HV"},
-    "ratio": {"s2": None, "res": 10, "nm": None, "label": "VV / VH ratio"},
-    "elevation": {"s2": None, "res": 30, "nm": None, "label": "Elevation"},
-    "classification": {"s2": None, "res": 10, "nm": None, "label": "Land-cover class"},
+    "coastal": {"asset": "coastal", "s2": "B01", "res": 60, "nm": 443,
+                "label": "Coastal aerosol"},
+    "blue": {"asset": "blue", "s2": "B02", "res": 10, "nm": 490, "label": "Blue"},
+    "green": {"asset": "green", "s2": "B03", "res": 10, "nm": 560, "label": "Green"},
+    "red": {"asset": "red", "s2": "B04", "res": 10, "nm": 665, "label": "Red"},
+    "rededge1": {"asset": "rededge1", "s2": "B05", "res": 20, "nm": 705,
+                 "label": "Red edge 1"},
+    "rededge2": {"asset": "rededge2", "s2": "B06", "res": 20, "nm": 740,
+                 "label": "Red edge 2"},
+    "rededge3": {"asset": "rededge3", "s2": "B07", "res": 20, "nm": 783,
+                 "label": "Red edge 3"},
+    "nir": {"asset": "nir", "s2": "B08", "res": 10, "nm": 842, "label": "NIR"},
+    "nir08": {"asset": "nir08", "s2": "B8A", "res": 20, "nm": 865, "label": "NIR narrow"},
+    "nir09": {"asset": "nir09", "s2": "B09", "res": 60, "nm": 945,
+              "label": "Water vapour"},
+    "swir16": {"asset": "swir16", "s2": "B11", "res": 20, "nm": 1610, "label": "SWIR 1"},
+    "swir22": {"asset": "swir22", "s2": "B12", "res": 20, "nm": 2190, "label": "SWIR 2"},
 }
 
 SCL_ASSET = "scl"
@@ -160,22 +170,7 @@ COMPOSITES = {
         "hint": "Sees through haze; no visible light at all.",
         "default_stretch": {"mode": "percentile_linked", "low": 2, "high": 98, "gamma": 1.05},
     },
-    "radar": {
-        "label": "Radar (VV / VH)",
-        "bands": ["vv", "vh", "ratio"],
-        "hint": "Radar backscatter: smooth water is dark, buildings are bright.",
-        "default_stretch": {"mode": "percentile", "low": 2, "high": 98, "gamma": 1.0},
-    },
-    "radar_water": {
-        "label": "Radar flood view",
-        "bands": ["vh", "vv", "vv"],
-        "hint": "Tuned for open water and flooding under cloud.",
-        "default_stretch": {"mode": "percentile", "low": 1, "high": 99, "gamma": 1.0},
-    },
 }
-
-# Channels that are computed from other bands rather than read from a file.
-DERIVED_BANDS = {"ratio": ("vv", "vh")}
 
 # ---------------------------------------------------------------------------
 # Spectral indices
@@ -237,33 +232,6 @@ INDICES = {
         "range": [-0.2, 1.0],
         "colormap": "ndvi",
         "hint": "Like NDVI but resists soil and haze effects.",
-    },
-    "surface_temp": {
-        "label": "Surface temperature",
-        "bands": ["lwir"],
-        "formula": "thermal band, kelvin",
-        "range": [280, 320],
-        "colormap": "inferno",
-        "hint": "Ground temperature in kelvin — urban heat and fire scars.",
-        "unit": "K",
-    },
-    "elevation": {
-        "label": "Elevation",
-        "bands": ["elevation"],
-        "formula": "height above sea level",
-        "range": [0, 1500],
-        "colormap": "terrain",
-        "hint": "Terrain height in metres.",
-        "unit": "m",
-    },
-    "backscatter": {
-        "label": "Radar backscatter (VV)",
-        "bands": ["vv"],
-        "formula": "10·log10(VV)",
-        "range": [-25, 0],
-        "colormap": "gray",
-        "hint": "Single-polarisation radar brightness in decibels.",
-        "unit": "dB",
     },
     "savi": {
         "label": "SAVI - soil adjusted",
@@ -327,11 +295,6 @@ COLORMAPS = {
         (0.75, 67, 147, 195), (1.00, 5, 48, 97),
     ],
     "gray": [(0.00, 0, 0, 0), (1.00, 255, 255, 255)],
-    "terrain": [
-        (0.00, 26, 82, 118), (0.06, 60, 130, 90), (0.20, 118, 168, 92),
-        (0.42, 200, 190, 120), (0.62, 160, 128, 96), (0.82, 130, 110, 105),
-        (1.00, 250, 250, 252),
-    ],
     # Diverging map for change detection: loss (red) - stable - gain (green).
     "change": [
         (0.00, 120, 10, 20), (0.25, 214, 96, 77), (0.50, 245, 245, 240),
