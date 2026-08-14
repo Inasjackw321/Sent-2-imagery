@@ -23,6 +23,10 @@ export const DEFAULTS = {
 
 export const PRESETS = {
   Natural: {},
+  // The look of commercial aerial imagery: warm sand, deep shadows, hard
+  // edges, and colour that is present rather than washed out.
+  Aerial: { clarity: 60, contrast: 16, saturation: 16, highlights: -10,
+            shadows: -6, temperature: 14, gamma: 0.98 },
   Punchy: { contrast: 22, saturation: 18, clarity: 25, shadows: 8 },
   Soft: { contrast: -12, saturation: -6, highlights: -14, shadows: 14, gamma: 1.08 },
   Vivid: { saturation: 42, contrast: 14, exposure: 4 },

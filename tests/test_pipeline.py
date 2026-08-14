@@ -218,10 +218,49 @@ def test_fixed_stretch_is_comparable_between_scenes(scene, aoi):
         {"red": bands["red"], "green": bands["green"], "blue": bands["green"]},
         "true_color", opts)
     assert info["mode"] == "fixed"
-    # 0.2 / 0.6 of the way up a 0-0.6 window -> 85 and 255.
+    # 0.2 of the way up a 0-0.6 window is well below the roll-off knee, so it
+    # is still exactly linear: 1/3 of 255.
     assert int(rgb[:, :40, 0].mean()) == pytest.approx(85, abs=2)
-    assert int(rgb[:, -40:, 0].mean()) == pytest.approx(255, abs=2)
+    # The top of the window lands high but short of pure white, which is the
+    # point: it leaves somewhere for anything brighter to go.
+    assert 215 <= int(rgb[:, -40:, 0].mean()) <= 245
     assert valid.all()
+
+
+def test_bright_ground_keeps_its_texture_and_colour():
+    """Sand, concrete and rooftops must not all come out as the same white.
+
+    Clipping is what makes bright scenes look bleached: three channels pinned
+    at 255 have no hue left and no variation between them, so a desert reads as
+    a sheet of paper. Rolling the highlights off keeps both.
+    """
+    def ground(red, green, blue):
+        shape = (8, 8)
+        return {name: np.ma.masked_array(np.full(shape, value, dtype="float32"),
+                                         np.zeros(shape, bool))
+                for name, value in (("red", red), ("green", green), ("blue", blue))}
+
+    window = {"stretch": "fixed", "vmin": 0.0, "vmax": 0.30, "gamma": 1.0}
+    bright, _, _ = composite.render_composite(ground(0.34, 0.30, 0.26), "true_color", window)
+    brighter, _, _ = composite.render_composite(ground(0.46, 0.41, 0.35), "true_color", window)
+
+    # Both are past the top of the window; neither is flattened into white.
+    assert bright.max() < 255 and brighter.max() < 255
+    # And they stay apart, so the ground still has texture.
+    assert int(brighter[..., 0].mean()) > int(bright[..., 0].mean()) + 4
+    # Warm ground still reads warm rather than washing out to neutral.
+    assert int(bright[..., 0].mean()) > int(bright[..., 2].mean()) + 10
+
+
+def test_the_roll_off_can_be_switched_off():
+    """A caller who wants the plain linear window can still have it."""
+    flat = {name: np.ma.masked_array(np.full((4, 4), 0.30, dtype="float32"),
+                                     np.zeros((4, 4), bool))
+            for name in ("red", "green", "blue")}
+    opts = {"stretch": "fixed", "vmin": 0.0, "vmax": 0.30, "gamma": 1.0}
+    assert composite.render_composite(flat, "true_color", opts)[0].max() < 255
+    assert composite.render_composite(
+        flat, "true_color", {**opts, "highlight_knee": 1.0})[0].max() == 255
 
 
 def test_percentile_linked_keeps_channels_on_one_scale(scene, aoi):

@@ -84,6 +84,13 @@ export function initImagery() {
   buildEnhanceControls();
   buildAdjustControls();
 
+  // Raw Sentinel-2 reads milky and blue-grey: the atmosphere is still in it.
+  // Balanced takes that out and gives the colour back, which is what the
+  // imagery should look like before anyone touches a slider.
+  applyEnhancePreset('Balanced');
+  $$('#enhancePresets .preset')
+    .find((b) => b.textContent === 'Balanced')?.classList.add('is-active');
+
   $$('#modePicker .mode').forEach((btn) =>
     btn.addEventListener('click', () => setMode(btn.dataset.mode)));
   $('#searchDates').addEventListener('click', runSearch);
@@ -456,15 +463,19 @@ function planSummary(dates, scale) {
   if (!dates.length) {
     return mode === 'merge' ? 'Tick the dates you want merged.' : 'Pick a date.';
   }
+  const native = store.config.satellite.resolution;
   const px = `${renderSize() * scale} px`;
-  if (mode === 'single') return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass`;
+  if (mode === 'single') {
+    return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass at ${native} m`;
+  }
   if (dates.length < 2) return 'A merge needs at least two dates.';
 
   const steps = store.config.superres_steps ?? [];
   const next = steps.find(([, s]) => s === scale + 1);
   const more = next && scale < (store.config.max_superres ?? 4)
     ? ` · <span class="dim">${next[0]} dates would reach ${next[1]}×</span>` : '';
-  return `<b>${dates.length} dates → ${scale}× detail</b> · ${px}${more}`;
+  return `<b>${dates.length} dates → ${scale}× detail</b> · ${px} · `
+    + `~${(native / scale).toFixed(1)} m from ${native} m data${more}`;
 }
 
 // ── Showing the imagery ────────────────────────────────────────
@@ -513,14 +524,20 @@ async function showImagery() {
   }
 }
 
-/** What came back, in one line: how big, how sharp, how clear. */
+/**
+ * What came back, in one line: how big, how sharp, how clear.
+ *
+ * Pixel size is deliberately not the headline. A small area rendered at 2048 px
+ * has half-metre pixels and still cannot show anything Sentinel-2 did not see,
+ * so what gets reported is the resolution the imagery actually has.
+ */
 function describeResult(meta) {
-  const size = `${meta.grid.width}×${meta.grid.height} px at ${meta.grid.ground_res_m} m/px`;
+  const size = `${meta.grid.width}×${meta.grid.height} px · ~${meta.effective_res_m} m detail`;
   const sr = meta.superres;
   if (!sr) return `${fmt.date(meta.scene.date)} — ${size}`;
 
   const bits = [`${sr.scale}× merge of ${sr.scenes} dates — ${size}`];
-  if (sr.sharpness_gain_pct > 0) bits.push(`+${sr.sharpness_gain_pct}% detail`);
+  if (sr.sharpness_gain_pct > 0) bits.push(`+${sr.sharpness_gain_pct}% sharper`);
   else bits.push('no detail gained — try dates closer together');
   if (sr.noise_drop_pct > 0) bits.push(`${sr.noise_drop_pct}% less noise`);
   const clear = meta.composite_report?.combined_pct;

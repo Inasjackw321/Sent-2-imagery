@@ -45,7 +45,14 @@ def stretch_band(
     high: float = 98.0,
     vmin: float | None = None,
     vmax: float | None = None,
+    ceiling: float = 1.0,
 ) -> tuple[np.ndarray, float, float]:
+    """Normalise a band to 0-1.
+
+    `ceiling` above 1 keeps what is brighter than the window instead of
+    flattening it, so a highlight roll-off downstream still has something left
+    to work with.
+    """
     valid = band.compressed()
     if valid.size == 0:
         return np.zeros(band.shape, dtype="float32"), 0.0, 1.0
@@ -60,7 +67,7 @@ def stretch_band(
 
     if hi - lo < 1e-6:
         hi = lo + 1e-6
-    out = np.clip((np.ma.filled(band, lo) - lo) / (hi - lo), 0, 1).astype("float32")
+    out = np.clip((np.ma.filled(band, lo) - lo) / (hi - lo), 0, ceiling).astype("float32")
     return out, lo, hi
 
 
@@ -68,6 +75,20 @@ def apply_gamma(x: np.ndarray, gamma: float) -> np.ndarray:
     if abs(gamma - 1.0) < 1e-3:
         return x
     return np.power(np.clip(x, 0, 1), 1.0 / max(gamma, 0.05)).astype("float32")
+
+
+def soft_highlights(x: np.ndarray, knee: float = 0.72) -> np.ndarray:
+    """Roll the highlights off instead of clipping them flat.
+
+    A hard clip turns every bright surface -- sand, concrete, rooftops -- into
+    the same pure white, and takes the colour with it: once all three channels
+    are pinned at 255 the pixel has no hue left. Compressing the top of the
+    range instead keeps both the texture and the tint, the way film does with
+    a shoulder rather than a wall.
+    """
+    span = max(1.0 - knee, 1e-6)
+    rolled = knee + span * (1.0 - np.exp(-(np.asarray(x, dtype="float32") - knee) / span))
+    return np.clip(np.where(x <= knee, x, rolled), 0, 1).astype("float32")
 
 
 # ---------------------------------------------------------------------------
@@ -106,19 +127,29 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
     else:
         per_band = [None] * 3
 
+    # Anything brighter than the window is kept rather than flattened, so the
+    # roll-off below has room to compress it. Done per channel and identically,
+    # which is what stops the compression from shifting hue.
+    knee = float(opts.get("highlight_knee", 0.72))
+    rolloff = knee < 1.0
+    ceiling = 2.2 if rolloff else 1.0
+
     channels = []
     bounds = {}
     for key, fixed in zip(keys, per_band):
         if fixed is None:
-            stretched, lo_b, hi_b = stretch_band(bands[key], mode, low, high)
+            stretched, lo_b, hi_b = stretch_band(bands[key], mode, low, high, ceiling=ceiling)
         else:
-            stretched, lo_b, hi_b = stretch_band(bands[key], "fixed", vmin=fixed[0], vmax=fixed[1])
+            stretched, lo_b, hi_b = stretch_band(bands[key], "fixed", vmin=fixed[0],
+                                                 vmax=fixed[1], ceiling=ceiling)
+        if rolloff:
+            stretched = soft_highlights(stretched, knee)
         channels.append(apply_gamma(stretched, gamma))
         bounds[key] = [round(lo_b, 5), round(hi_b, 5)]
 
     rgb = (np.stack(channels, axis=-1) * 255).round().astype("uint8")
     valid = ~np.logical_or.reduce([np.ma.getmaskarray(bands[k]) for k in keys])
-    return rgb, valid, {"mode": mode, "gamma": gamma, "bands": bounds}
+    return rgb, valid, {"mode": mode, "gamma": gamma, "knee": knee, "bands": bounds}
 
 
 def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:

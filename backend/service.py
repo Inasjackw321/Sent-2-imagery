@@ -269,6 +269,12 @@ def render(req: dict) -> dict:
         "enhancements": applied,
         "composite_report": composite_report,
         "superres": sr_report,
+        # Pixel size is not resolution. A small area asked for at 2048 px has
+        # tiny pixels and still cannot resolve anything Sentinel-2 did not: the
+        # honest figure is the satellite's 10 m, divided by what the merge won.
+        "native_res_m": config.SATELLITE["resolution"],
+        "effective_res_m": round(
+            config.SATELLITE["resolution"] / (sr_report["scale"] if sr_report else 1), 2),
         "cloud_masked_pct": round(cloud_fraction * 100, 2) if req.get("mask_clouds") else 0.0,
         "valid_pct": round(float(valid.mean()) * 100, 2),
         "aoi_area_km2": round(geodesic_area_km2(geometry), 4),

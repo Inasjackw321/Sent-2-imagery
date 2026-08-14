@@ -93,13 +93,28 @@ satellite measured, so they happen server-side and changing one fetches the
 imagery again. This is where the corrections that have a physically right
 answer belong.
 
+**Highlight roll-off** — always on, and the reason bright ground has colour at
+all. A plain linear stretch clips everything above its window to pure white:
+on a sandy or built-up scene that was 61% of the frame, and a pixel with all
+three channels pinned at 255 has lost its texture and its hue together.
+Compressing the top of the range instead of walling it off keeps both. Measured
+on a scene of sand, roads and scrub, it takes clipping from 61% to none and
+lifts saturation from 8.6 to 15.3 on its own.
+
+**Haze removal is on by default** — dark-object subtraction, and the other
+half of the colour. Raw Sentinel-2 does not look like the ground; it looks like
+the ground through fifty kilometres of atmosphere. Deep shadow and clear water
+should read near zero, so whatever they actually read is scattering, and it is
+strongest in blue — which is exactly what makes untreated imagery read milky
+and blue-grey. Subtracting it per band takes saturation from 15 to 34 and turns
+flat grey sand back into sand, without shifting hue. The app opens on the
+**Balanced** preset (haze removal, a little adaptive contrast, detail and
+vibrance) so the first picture already looks right; **Off** gives you the
+untouched stretch.
+
 **Merging dates** — the big one, and the only thing here that adds detail
 rather than presenting existing detail better. See
 [below](#one-date-or-many-merged).
-
-**Haze removal** — dark-object subtraction. Deep shadow and clear water should
-read near zero; whatever they actually read is atmosphere. Subtracting it per
-band lifts the blue-grey veil without shifting colour.
 
 **Adaptive contrast** — contrast-limited histogram equalisation, applied to
 brightness only. A single stretch has to compromise between a bright desert and
@@ -117,7 +132,10 @@ warmth, tint, midtones and vignette — applied to the imagery already on the
 map. They run on the pixels in front of you, so they take effect as you drag
 the slider with nothing to re-fetch and nothing to undo. Nine one-click looks
 (Natural, Punchy, Soft, Vivid, Crisp, Mono, Cold, Warm, Faded) are starting
-points; **Back to the original** returns the untouched render.
+points — **Aerial** is the one that reads most like commercial aerial
+photography: warm sand, deep shadows, hard edges and colour that is actually
+present. **Back to the original** returns the
+untouched render.
 
 Both are non-destructive. The processing applied in the render is recorded in
 the imagery's metadata and reported when it appears, and the adjustments live
@@ -171,10 +189,20 @@ carrying its own sampling phase, and then:
 | **Fuse** | Each pixel is the mean of the dates that agree about it, centred on the median and rejecting anything beyond a few robust deviations — the noise reduction of a mean with the cloud immunity of a median. |
 | **Restore** | Van Cittert deconvolution of the sampling blur, clamped into the local range of the input on every pass, so edges sharpen and do not ring. |
 
-**What it reports.** How big the result is, how much finer it reads, how much
-of the noise went, and how much of the frame came out clear:
-*"3× merge of 6 dates — 1536×1116 px at 3.6 m/px · +31% detail · 12% less
-noise · 100% clear"*.
+**What it reports.** How big the result is, what it can actually resolve, how
+much sharper it reads, how much of the noise went, and how much of the frame
+came out clear: *"3× merge of 6 dates — 1536×1116 px · ~3.3 m detail · +31%
+sharper · 12% less noise · 100% clear"*.
+
+**Pixel size is not resolution, and Sent-2 will not pretend otherwise.** Ask
+for a small area at 2048 px and the pixels come out under a metre across — but
+they are interpolated from 10 m data and cannot show anything Sentinel-2 did
+not see. So the figure reported is the honest one: the satellite's 10 m divided
+by what the merge won. Four dates give ~5 m, nine give ~2.5 m, and that is the
+floor. Imagery showing individual cars and fence posts is 0.3–0.5 m, six times
+finer again, and it comes from commercial satellites (Maxar, Planet SkySat,
+Airbus Pléiades) or aircraft — no amount of processing gets Sentinel-2 there,
+because the detail was never recorded.
 
 **Getting the best out of it.** Dates close together work best: the method
 assumes every date saw the same ground, so a year of crop growth averages into
