@@ -111,6 +111,7 @@ def get_config() -> dict[str, Any]:
         },
         "bands": config.BANDS,
         "max_size": config.MAX_SIZE,
+        "max_superres": config.MAX_SUPERRES,
         "max_frames": animate.MAX_FRAMES,
     }
 

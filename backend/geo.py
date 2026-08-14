@@ -117,6 +117,26 @@ class Grid:
         self.center_lat = (south + north) / 2.0
         self.center_lon = (west + east) / 2.0
 
+    def refined(self, factor: int) -> "Grid":
+        """The same ground, sampled `factor` times more finely.
+
+        Multi-frame super-resolution reads every date straight onto this finer
+        grid: each one then arrives with its own sub-pixel sampling phase,
+        which is the raw material the fusion works from.
+        """
+        factor = max(1, int(factor))
+        if factor == 1:
+            return self
+        clone = object.__new__(Grid)
+        clone.__dict__.update(self.__dict__)
+        clone.width = self.width * factor
+        clone.height = self.height * factor
+        x0, y0, x1, y1 = self.bounds3857
+        clone.transform = Affine(
+            (x1 - x0) / clone.width, 0, x0, 0, -(y1 - y0) / clone.height, y1
+        )
+        return clone
+
     @property
     def shape(self) -> tuple[int, int]:
         return self.height, self.width

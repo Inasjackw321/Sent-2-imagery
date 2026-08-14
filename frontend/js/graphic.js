@@ -130,6 +130,10 @@ function statRows(capture) {
   } else {
     if (meta.source?.platform) rows.push(['Satellite', meta.source.platform]);
     if (meta.scenes?.length > 1) rows.push(['Composite of', `${meta.scenes.length} dates`]);
+    if (meta.superres) {
+      rows.push(['Super-resolution',
+        `${meta.superres.scale}× from ${meta.superres.scenes} dates`]);
+    }
     if (meta.scene?.date) rows.push(['Acquired', fmt.date(meta.scene.date)]);
     if (meta.scene?.cloud != null) rows.push(['Scene cloud', `${meta.scene.cloud}%`]);
     if (meta.enhancements?.length) rows.push(['Processing', meta.enhancements.join(', ')]);

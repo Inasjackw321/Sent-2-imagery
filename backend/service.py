@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from . import composite, config, enhance, raster, sources, stac
+from . import composite, config, enhance, raster, sources, stac, superres
 from .geo import Grid, geodesic_area_km2, geometry_bounds, normalise_aoi
 
 
@@ -114,19 +114,56 @@ def load_bands(scene: dict, geometry: dict, grid: Grid, keys: list[str], req: di
     return bands, cloud_fraction
 
 
+def superres_scale(req: dict, grid: Grid, scenes: list[dict]) -> int:
+    """How much finer the fusion can actually go for this request.
+
+    Asking for more detail than the output grid can hold would only cost time,
+    so the factor is clamped to what fits, and to nothing at all when there is
+    only one date to fuse.
+    """
+    scale = int(req.get("superres") or 1)
+    if scale <= 1 or len(scenes) < 2:
+        return 1
+    scale = min(scale, config.MAX_SUPERRES)
+    while scale > 1 and max(grid.width, grid.height) * scale > config.MAX_SIZE:
+        scale -= 1
+    return scale
+
+
 def _gather(scenes: list[dict], geometry, grid, keys, req, source):
-    """Read every scene the render needs, compositing them if there is more than one."""
+    """Read every scene the render needs, merging them if there is more than one.
+
+    Two ways of merging, and they answer different questions. The composite
+    asks *what is under the cloud* and answers it by taking the middle of the
+    stack. Super-resolution asks *what is smaller than a pixel* and answers it
+    by reading every date onto a finer grid, where each one lands its samples
+    at a slightly different place, and solving for the detail they jointly saw.
+    """
+    scale = superres_scale(req, grid, scenes)
+    fine = grid.refined(scale)
+
     stacks = []
     clouds = []
     for scene in scenes:
-        bands, cloud = load_bands(scene, geometry, grid, keys, req, source)
+        bands, cloud = load_bands(scene, geometry, fine, keys, req, source)
         stacks.append(bands)
         clouds.append(cloud)
 
+    cloud_fraction = min(clouds) if clouds else 0.0
+    report = enhance.composite_report(stacks, keys[0]) if len(stacks) > 1 else None
+
+    if scale > 1:
+        merged, sr_report = superres.fuse(
+            stacks, scale=scale,
+            restore=float(req.get("superres_restore", 0.75)),
+            register=req.get("superres_register", True) is not False,
+            dates=[s.get("date") for s in scenes],
+        )
+        return merged, cloud_fraction, report, sr_report, fine
+
     method = req.get("composite_method", "median")
     merged = enhance.composite(stacks, method) if len(stacks) > 1 else stacks[0]
-    report = enhance.composite_report(stacks, keys[0]) if len(stacks) > 1 else None
-    return merged, (min(clouds) if clouds else 0.0), report
+    return merged, cloud_fraction, report, None, fine
 
 
 def _enhance_bands(bands: dict, req: dict, source, grid: Grid, scenes: list[dict],
@@ -207,8 +244,12 @@ def render(req: dict) -> dict:
     _check_support(source, keys, "this visualisation")
 
     applied: list[str] = []
-    bands, cloud_fraction, composite_report = _gather(scenes, geometry, grid, keys, req, source)
-    if len(scenes) > 1:
+    bands, cloud_fraction, composite_report, sr_report, grid = _gather(
+        scenes, geometry, grid, keys, req, source)
+    if sr_report:
+        applied.append(
+            f"{sr_report['scale']}× super-resolution from {sr_report['scenes']} dates")
+    elif len(scenes) > 1:
         applied.append(f"{len(scenes)}-scene {req.get('composite_method', 'median')} composite")
 
     bands = _enhance_bands(bands, req, source, grid, scenes, geometry, applied)
@@ -279,6 +320,7 @@ def render(req: dict) -> dict:
         "classes": classes,
         "enhancements": applied,
         "composite_report": composite_report,
+        "superres": sr_report,
         "cloud_masked_pct": round(cloud_fraction * 100, 2) if req.get("mask_clouds") else 0.0,
         "valid_pct": round(float(valid.mean()) * 100, 2),
         "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
