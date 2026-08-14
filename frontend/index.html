@@ -121,6 +121,17 @@
             <option value="min">Darkest</option>
           </select>
         </label>
+        <label class="check" title="Fuse the ticked dates onto a finer grid, sub-pixel aligned">
+          <input type="checkbox" id="superres"> Super-resolution from multiple dates
+        </label>
+        <label class="field" id="superresScaleRow" hidden>Detail multiplier
+          <select id="superresScale">
+            <option value="2" selected>2× — 4 dates or more</option>
+            <option value="3">3× — 9 dates or more</option>
+            <option value="4">4× — 16 dates or more</option>
+          </select>
+        </label>
+        <p class="hint" id="superresHint" hidden></p>
         <label class="check" id="pansharpenRow" hidden>
           <input type="checkbox" id="pansharpen"> Pan-sharpen <span class="pill" id="panPill"></span>
         </label>

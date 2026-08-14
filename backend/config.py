@@ -40,6 +40,12 @@ GDAL_ENV = {
 MIN_SIZE, MAX_SIZE = 128, 4096
 DEFAULT_SIZE = 1024
 
+# Multi-frame super-resolution: how many times finer than the requested grid
+# the fusion may sample. Past 4x there are never enough repeat passes of the
+# same ground to support the extra pixels, so the limit is honest rather than
+# arbitrary. The fused grid is still capped at MAX_SIZE.
+MAX_SUPERRES = 4
+
 # Sentinel-2 scenes processed with baseline 04.00+ carry a -1000 DN offset.
 BOA_OFFSET_DATE = "2022-01-25"
 BOA_OFFSET = -1000

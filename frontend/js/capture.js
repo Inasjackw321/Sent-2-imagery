@@ -65,6 +65,7 @@ export function initCapture() {
     buildRenderSliders();
     updateHint();
   });
+  $('#renderSize').addEventListener('change', syncEnabled);
   $('#satellite').addEventListener('change', () => selectSource($('#satellite').value));
   $('#useComposite').addEventListener('change', (e) => {
     $('#compositeMethodRow').hidden = !e.target.checked;
@@ -76,6 +77,16 @@ export function initCapture() {
     }
     syncEnabled();
   });
+  $('#superres').addEventListener('change', (e) => {
+    // Super-resolution has nothing to fuse without several dates, so it turns
+    // the composite on rather than quietly doing nothing.
+    if (e.target.checked && !$('#useComposite').checked) {
+      $('#useComposite').checked = true;
+      $('#useComposite').dispatchEvent(new Event('change'));
+    }
+    syncEnabled();
+  });
+  $('#superresScale').addEventListener('change', syncEnabled);
   on('selection', syncEnabled);
 
   on('aoi', syncEnabled);
@@ -267,15 +278,62 @@ function enhancementValues() {
   return values;
 }
 
+/** The super-resolution factor asked for, once it is actually usable. */
+function superresScale() {
+  if (!$('#superres').checked || !$('#useComposite').checked) return 1;
+  if (store.selected.size < 2) return 1;
+  const wanted = parseInt($('#superresScale').value, 10);
+  const size = parseInt($('#renderSize').value, 10);
+  const max = store.config.max_size ?? 4096;
+  const capped = Math.min(wanted, store.config.max_superres ?? 4,
+    Math.max(1, Math.floor(max / size)));
+  return capped;
+}
+
+function describeSuperres() {
+  const on = $('#superres').checked;
+  $('#superresScaleRow').hidden = !on;
+  $('#superresHint').hidden = !on;
+  if (!on) return;
+
+  const wanted = parseInt($('#superresScale').value, 10);
+  const scale = superresScale();
+  const size = parseInt($('#renderSize').value, 10);
+  const dates = store.selected.size;
+  const needed = wanted * wanted;
+  if (dates < 2 || !$('#useComposite').checked) {
+    $('#superresHint').textContent =
+      'Tick at least two dates above — the detail comes from the differences between them.';
+    return;
+  }
+  const bits = [];
+  if (scale < wanted) {
+    bits.push(`Capped at ${scale}× — ${wanted}× of ${size} px would pass the `
+      + `${store.config.max_size ?? 4096} px limit.`);
+  }
+  bits.push(dates >= needed
+    ? `${dates} dates ticked — enough to fill a ${wanted}× finer grid.`
+    : `${dates} of the ${needed} dates a ${wanted}× grid wants. Fewer still sharpens, `
+      + 'with less to work from.');
+  bits.push(`Output ${size * scale} px. Each date is read onto the fine grid, `
+    + 'aligned to a fraction of a pixel, then fused. Dates close together work '
+    + 'best — the ground has to still be the same ground.');
+  $('#superresHint').innerHTML = bits.join('<br>');
+}
+
 function syncEnabled() {
   const hasAoi = Boolean(store.aoi);
   $('#searchScenes').disabled = !hasAoi;
   const compositing = $('#useComposite').checked;
   $('#renderBtn').disabled = !hasAoi
     || (compositing ? store.selected.size < 2 : !store.activeSceneId);
-  $('#renderBtn').textContent = compositing
-    ? `Build composite of ${store.selected.size} scenes`
-    : 'Download imagery';
+  const scale = superresScale();
+  $('#renderBtn').textContent = scale > 1
+    ? `Fuse ${store.selected.size} scenes at ${scale}×`
+    : compositing
+      ? `Build composite of ${store.selected.size} scenes`
+      : 'Download imagery';
+  describeSuperres();
   $('#changeBtn').disabled = !hasAoi || store.selected.size !== 2;
   $('#downloadPng').disabled = $('#downloadTif').disabled = !lastRequest;
 }
@@ -380,6 +438,15 @@ export function buildRenderRequest(scene, overrides = {}) {
   return body;
 }
 
+/** What the fusion measured, said plainly — including when it did not help. */
+function describeGain(sr) {
+  const cleaner = sr.noise_drop_pct > 0 ? `, ${sr.noise_drop_pct}% less noise` : '';
+  if (sr.sharpness_gain_pct > 0) return `+${sr.sharpness_gain_pct}% detail${cleaner}`;
+  // The dates disagreed about the ground rather than about its sampling: a
+  // year of growth averages out into less detail, not more.
+  return `no detail gained${cleaner} — the dates differ too much, try ones closer together`;
+}
+
 /** Scenes to merge when the cloud-free composite is switched on. */
 function compositeScenes() {
   if (!$('#useComposite').checked || store.selected.size < 2) return null;
@@ -394,13 +461,17 @@ async function runRender() {
   if (!scene || !store.aoi) return;
 
   const body = buildRenderRequest(scene);
+  const scale = superresScale();
   if (merged) {
     body.scenes = merged;
     body.composite_method = $('#compositeMethod').value;
+    if (scale > 1) body.superres = scale;
   }
-  const what = merged
-    ? `Merging ${merged.length} scenes…`
-    : `Downloading imagery for ${fmt.date(scene.date)}…`;
+  const what = scale > 1
+    ? `Fusing ${merged.length} scenes at ${scale}×…`
+    : merged
+      ? `Merging ${merged.length} scenes…`
+      : `Downloading imagery for ${fmt.date(scene.date)}…`;
   try {
     const data = await withBusy(what, () => api.render(body));
     const image = await loadImage(data.image);
@@ -408,11 +479,15 @@ async function runRender() {
     addCapture({ src: data.image, image, meta: data.meta });
     syncEnabled();
     const report = data.meta.composite_report;
-    toast(report
-      ? `Composite of ${report.scenes} scenes — ${report.combined_pct}% clear `
-        + `(best single date: ${report.best_single_pct}%)`
-      : `Rendered ${data.meta.grid.width}×${data.meta.grid.height} px `
-        + `at ${data.meta.grid.ground_res_m} m/px`, 'ok');
+    const sr = data.meta.superres;
+    toast(sr
+      ? `${sr.scale}× from ${sr.scenes} dates — ${data.meta.grid.width}×${data.meta.grid.height} px `
+        + `at ${data.meta.grid.ground_res_m} m/px · ${describeGain(sr)}`
+      : report
+        ? `Composite of ${report.scenes} scenes — ${report.combined_pct}% clear `
+          + `(best single date: ${report.best_single_pct}%)`
+        : `Rendered ${data.meta.grid.width}×${data.meta.grid.height} px `
+          + `at ${data.meta.grid.ground_res_m} m/px`, 'ok');
   } catch (err) {
     toast(`Render failed: ${err.message}`, 'err');
   }

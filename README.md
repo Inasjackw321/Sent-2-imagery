@@ -1,7 +1,8 @@
 # Sent-2 · satellite imagery studio
 
-Circle a region on a map, pull imagery from fourteen free satellites, clean it
-up, edit it, and turn it into timelapse GIFs and annotated informative graphics.
+Circle a region on a map, pull imagery from fourteen free satellites, fuse
+several dates into one sharper picture than any satellite took, edit it, and
+turn it into timelapse GIFs and annotated informative graphics.
 
 It is a desktop app: run one Python file and it opens in its own window.
 
@@ -93,6 +94,10 @@ be clear in half the scenes, so a place that is never cloud-free on any single
 day comes out clean. The result reports how much it rescued: *"8 scenes —
 100% clear (best single date: 84%)"*.
 
+**Super-resolution from several dates** — the other big one, and the only tool
+here that adds detail rather than presenting existing detail better. See
+[below](#super-resolution-many-dates-into-one-sharper-image).
+
 **Pan-sharpening** — Landsat carries a 15 m panchromatic band alongside its 30 m
 colour bands. Sent-2 injects that band's detail into the colour ones, weighted
 so hue survives. Genuinely twice the detail, not just sharpening.
@@ -113,6 +118,48 @@ strong settings do not draw halos around coastlines. Six one-click presets
 
 Everything applied is recorded and shown in the graphic's statistics panel, so a
 figure always says how its imagery was processed.
+
+---
+
+## Super-resolution: many dates into one sharper image
+
+Tick several dates, switch on **Super-resolution from multiple dates**, pick a
+multiplier, and Sent-2 returns an image at two to four times the resolution the
+satellite nominally has — with detail that is measured off the ground, not
+invented by a model.
+
+**Why there is anything to recover.** A satellite never samples the same ground
+twice in the same place. Orbits repeat to within a few tens of metres and each
+pass lands its pixel grid at a different sub-pixel phase, so every date reports
+a *different average* of the same ground. Ten dates are ten different equations
+about what lies under one pixel. Solve them together and the answer is finer
+than any one of them could be.
+
+**How it works.** Nothing is upscaled and then sharpened. Every date is read
+straight onto the finer grid from its own native pixels, so each arrives
+carrying its own sampling phase, and then:
+
+| Step | What happens |
+| --- | --- |
+| **Register** | Sub-pixel alignment by phase correlation with an upsampled DFT — accurate to about a twentieth of a pixel. Only frequencies below the native Nyquist are compared, because above it the phase turns with the sampling grid rather than with the ground. A peak that does not stand clear of its rivals is refused: the dates arrive georeferenced, so leaving one where the satellite put it beats moving it on a guess. |
+| **Fuse** | Each pixel is the mean of the dates that agree about it, centred on the median and rejecting anything beyond a few robust deviations — the noise reduction of a mean with the cloud immunity of a median. |
+| **Restore** | Van Cittert deconvolution of the sampling blur, clamped into the local range of the input on every pass, so edges sharpen and do not ring. |
+
+**What it reports.** The shift found for each date, how many dates survived per
+pixel, and two measurements against a single date on the same grid: the change
+in fine detail and the change in noise. *"2× from 8 dates — 2048×1536 px at
+4.3 m/px · +31% detail, 22% less noise"*.
+
+**Getting the best out of it.** Four dates support 2×, nine support 3×, sixteen
+support 4× — a grid with N² times the pixels wants N² looks to fill it, and
+below that the fusion is interpolating between too few samples. Sent-2 says so
+in the panel rather than pretending. Dates close together work best: the method
+assumes every date saw the same ground, so a year of crop growth averages into
+*less* detail, not more, and the report says so plainly when that is what
+happened. The multiplier is capped so the fused grid stays within 4096 px.
+
+It composes with everything else — pan-sharpening, haze removal and the rest
+run afterwards on the fused image, in physical units.
 
 ---
 
@@ -183,6 +230,12 @@ histogram. Also on this tab: cloud and shadow masking from the scene
 classification band, clipping to the exact shape you drew, resolution up to
 4096 px, and export as PNG or as a georeferenced **GeoTIFF** that drops
 straight into QGIS.
+
+**Make it look better.** Tick several dates for a cloud-free composite, or for
+[super-resolution](#super-resolution-many-dates-into-one-sharper-image) at two
+to four times the satellite's own resolution, then set haze removal, adaptive
+contrast, denoise, detail, vibrance and white balance — or take one of the
+presets.
 
 **Change detection.** Tick two dates and compare them: the index difference is
 mapped on a red–green scale, with the gained, stable and lost areas quantified
@@ -260,6 +313,7 @@ run.py           the same thing with more command-line options
 backend/
   sources.py     the satellite catalogue: bands, scaling, cloud masks
   enhance.py     compositing, haze, pan-sharpening, CLAHE, denoise, hillshade
+  superres.py    sub-pixel registration, multi-frame fusion, deconvolution
   app.py         FastAPI routes and static hosting
   config.py      band table, composites, indices, colour maps
   stac.py        catalogue search and asset signing, plus synthetic scenes
@@ -292,6 +346,16 @@ power, metres of elevation — and runs the live (non-demo) reading path over
 them. That covers reprojection onto the output grid, mixed band resolutions,
 unit conversion, cloud masking, shape clipping, index maths, stretch modes,
 GeoTIFF export, change detection and STAC parsing.
+
+Super-resolution gets its own file. The scenes there are one fixed patch of
+ground, held on a grid four times finer than any date samples it, with each
+date averaging that ground over its own footprint a quarter of a pixel from the
+last — which is what makes the tests able to ask the only question that
+matters: is the fused image closer to the ground than any single date was? They
+also check that registration recovers a known sub-pixel shift, ignores a
+difference in brightness, refuses an implausible or ambiguous match, that the
+fusion throws out a cloud the mask missed but keeps a pixel any date saw, and
+that the deconvolution sharpens an edge without ringing around it.
 
 It also covers the image-quality tools (compositing fills gaps, haze removal
 finds the right floor, pan-sharpening adds real detail without shifting hue,
