@@ -9,7 +9,7 @@ export const store = {
   dates: [],             // search results, newest first
   selected: new Set(),   // ids of the dates ticked for merging
   activeDateId: null,    // the one date shown when nothing is merged
-  image: null,           // the imagery on screen: { src, meta }
+  image: null,           // the imagery on screen: { src, meta, element }
 };
 
 export function on(event, fn) {

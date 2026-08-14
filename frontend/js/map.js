@@ -60,6 +60,11 @@ export function initMap() {
 
 export const getMap = () => map;
 
+/** Swap the overlay's pixels in place — used while adjustments are dragged. */
+export function updateOverlay(url) {
+  overlay?.setUrl(url);
+}
+
 // ── Drawing ────────────────────────────────────────────────────
 
 function bindDrawTools() {

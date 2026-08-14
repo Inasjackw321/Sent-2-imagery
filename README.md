@@ -85,8 +85,13 @@ picture are physically correct.
 
 ## Making the imagery look better
 
-Satellite imagery rarely looks its best raw. The **Make it look better** panel
-does the work that matters, in the right order and in the right units.
+Satellite imagery rarely looks its best raw, and there are two quite different
+places to improve it.
+
+**In the reflectance, before the picture exists.** These need the numbers the
+satellite measured, so they happen server-side and changing one fetches the
+imagery again. This is where the corrections that have a physically right
+answer belong.
 
 **Merging dates** — the big one, and the only thing here that adds detail
 rather than presenting existing detail better. See
@@ -106,8 +111,22 @@ Plus **denoise** (median filtering, edges intact), **white balance**,
 draw halos around coastlines. Five one-click presets — Off, Balanced, Punchy,
 Hazy day, Natural — set sensible combinations.
 
-Everything applied is recorded in the imagery's metadata and reported when it
-appears, so a picture always says how it was made.
+**On the finished picture, in the browser.** Ordinary photographic
+adjustments — **contrast**, exposure, saturation, clarity, highlights, shadows,
+warmth, tint, midtones and vignette — applied to the imagery already on the
+map. They run on the pixels in front of you, so they take effect as you drag
+the slider with nothing to re-fetch and nothing to undo. Nine one-click looks
+(Natural, Punchy, Soft, Vivid, Crisp, Mono, Cold, Warm, Faded) are starting
+points; **Back to the original** returns the untouched render.
+
+Both are non-destructive. The processing applied in the render is recorded in
+the imagery's metadata and reported when it appears, and the adjustments live
+only in the view until you save.
+
+**Saving.** *Save PNG* writes what you are looking at, at full render size,
+adjustments included. *GeoTIFF* writes the georeferenced measurement as the
+satellite had it — adjustments are a way of looking at data, not a change to
+it, and a file destined for QGIS should not carry them.
 
 ---
 
@@ -238,6 +257,11 @@ tuning** folds away the rest — tone mapping, gamma, haze removal, adaptive
 contrast, denoise, detail, vibrance, white balance, and five presets — and says
 how many of them you have moved.
 
+**4 · Adjust the picture.** Contrast, exposure, saturation, clarity,
+highlights, shadows, warmth, tint, midtones and vignette, plus nine looks.
+Unlike step 3 these work on the picture already on the map, so they apply as
+you drag.
+
 **The button.** It sits below the panel where it cannot scroll away, with a
 line above it saying what pressing it will produce: *"6 dates → 3× detail ·
 1536 px · 9 dates would reach 4×"*. Press it and the imagery lands on the map,
@@ -294,7 +318,7 @@ backend/
   launcher.py    port choice, app windows, desktop shortcuts
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
-  js/            map, imagery, store, ui, api, install
+  js/            map, imagery, adjust, store, ui, api, install
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
