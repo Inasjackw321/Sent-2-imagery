@@ -20,7 +20,7 @@ export function el(tag, attrs = {}, ...children) {
 }
 
 /** A labelled range input that reports its value live. */
-export function slider(host, spec, onInput) {
+function slider(host, spec, onInput) {
   const { key, label, min, max, step = 1, value, unit = '', format } = spec;
   const readout = el('b');
   const input = el('input', { type: 'range', min, max, step, value });
@@ -66,7 +66,7 @@ export function toast(message, kind = '') {
 }
 
 let busyDepth = 0;
-export function busy(on, text = 'Working…') {
+function busy(on, text = 'Working…') {
   busyDepth = Math.max(0, busyDepth + (on ? 1 : -1));
   const node = $('#busy');
   $('#busyText').textContent = text;
@@ -124,8 +124,3 @@ export const fmt = {
     return `${(n / 1024 ** 2).toFixed(1)} MB`;
   },
 };
-
-export function debounce(fn, ms = 120) {
-  let t = 0;
-  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-}

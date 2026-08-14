@@ -1,4 +1,10 @@
-// Leaflet map, AOI drawing tools (lasso / circle / box / polygon) and the render overlay.
+// Leaflet map: panning and zooming by default, drawing only when a tool is
+// armed, plus the imagery overlay.
+//
+// The map belongs to the mouse. Nothing is drawn unless a tool has been picked
+// deliberately, and the tool disarms itself the moment a shape is finished --
+// so a drag is a pan, a wheel is a zoom, and the only way to plot an area is
+// to have just asked for one.
 
 import { api } from './api.js';
 import { store, emit, on } from './store.js';
@@ -9,17 +15,18 @@ let aoiLayer = null;
 let sketchLayer = null;
 let overlay = null;
 let overlayVisible = true;
-let mode = 'lasso';
+let mode = 'none';
 let drawing = null;
 
 const AOI_STYLE = { color: '#4cc2ff', weight: 2, fillColor: '#4cc2ff', fillOpacity: 0.10, dashArray: null };
 const SKETCH_STYLE = { color: '#ffd166', weight: 2, dashArray: '5,5', fill: false };
 
 const HINTS = {
-  lasso: 'Drag on the map to circle your region',
-  circle: 'Drag out from the centre of your area',
-  rect: 'Drag a box around your area',
-  polygon: 'Click each corner — double-click to finish',
+  none: 'Drag to pan, scroll to zoom. Pick a shape when you want an area.',
+  lasso: 'Drag to circle your region — Esc to cancel',
+  circle: 'Drag out from the centre of your area — Esc to cancel',
+  rect: 'Drag a box around your area — Esc to cancel',
+  polygon: 'Click each corner, double-click to finish — Esc to cancel',
 };
 
 export function initMap() {
@@ -47,7 +54,7 @@ export function initMap() {
   bindDrawTools();
   bindOverlayDock();
 
-  on('activeCapture', showOverlay);
+  on('image', showOverlay);
   return map;
 }
 
@@ -57,8 +64,8 @@ export const getMap = () => map;
 
 function bindDrawTools() {
   $$('#drawTools .tool').forEach((btn) => btn.addEventListener('click', () => {
-    $$('#drawTools .tool').forEach((b) => b.classList.toggle('is-active', b === btn));
-    setMode(btn.dataset.draw);
+    // Clicking the armed tool again puts the map back to navigating.
+    setMode(btn.dataset.draw === mode ? 'none' : btn.dataset.draw);
   }));
 
   map.on('mousedown', onDown);
@@ -67,25 +74,33 @@ function bindDrawTools() {
   map.on('click', onClick);
   map.on('dblclick', onDblClick);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') cancelSketch();
+    if (e.key === 'Escape') setMode('none');
   });
 
   $('#clearAoi').addEventListener('click', clearAoi);
   $('#zoomAoi').addEventListener('click', () => {
     if (aoiLayer) map.fitBounds(aoiLayer.getBounds(), { padding: [40, 40] });
   });
+  setMode('none');
 }
 
+/** Arm a drawing tool, or 'none' to hand the map back to panning and zooming. */
 function setMode(next) {
   cancelSketch();
   mode = next;
+  const drawingNow = mode !== 'none';
+  $$('#drawTools .tool').forEach((b) =>
+    b.classList.toggle('is-active', b.dataset.draw === mode));
   $('#mapHint').textContent = HINTS[mode];
+  $('#mapHint').classList.toggle('is-armed', drawingNow);
+  document.getElementById('map').classList.toggle('is-drawing', drawingNow);
+  // While a tool is armed the drag belongs to it; otherwise it pans the map.
+  map.dragging[drawingNow ? 'disable' : 'enable']();
   map.doubleClickZoom[mode === 'polygon' ? 'disable' : 'enable']();
 }
 
 function onDown(e) {
-  if (mode === 'polygon' || drawing) return;
-  map.dragging.disable();
+  if (mode === 'none' || mode === 'polygon' || drawing) return;
   drawing = { mode, start: e.latlng, points: [e.latlng], lastPoint: e.containerPoint };
   sketchLayer?.remove();
   sketchLayer = (mode === 'circle'
@@ -111,16 +126,17 @@ function onMove(e) {
 function onUp(e) {
   if (!drawing) return;
   const sketch = drawing;
-  cancelSketch();
+  // Finished or abandoned, the tool is done: the map goes back to navigating
+  // so the next drag pans instead of drawing over the area just chosen.
+  setMode('none');
 
   if (sketch.mode === 'circle') {
     const radius = map.distance(sketch.start, e.latlng);
     if (radius < 20) return;
     setAoi({ type: 'circle', lon: sketch.start.lng, lat: sketch.start.lat, radius });
   } else if (sketch.mode === 'rect') {
-    const ring = boxRing(sketch.start, e.latlng);
     if (map.distance(sketch.start, e.latlng) < 20) return;
-    setAoi(ringToPolygon(ring));
+    setAoi(ringToPolygon(boxRing(sketch.start, e.latlng)));
   } else if (sketch.mode === 'lasso') {
     if (sketch.points.length < 4) return;
     setAoi(ringToPolygon(sketch.points));
@@ -140,7 +156,7 @@ function onClick(e) {
 function onDblClick() {
   if (mode !== 'polygon' || !drawing) return;
   const points = drawing.points;
-  cancelSketch();
+  setMode('none');
   if (points.length >= 3) setAoi(ringToPolygon(points));
 }
 
@@ -148,7 +164,6 @@ function cancelSketch() {
   drawing = null;
   sketchLayer?.remove();
   sketchLayer = null;
-  map.dragging.enable();
 }
 
 const boxRing = (a, b) => [a, L.latLng(a.lat, b.lng), b, L.latLng(b.lat, a.lng), a];
@@ -189,7 +204,7 @@ export function clearAoi() {
   aoiLayer = null;
   store.aoi = null;
   store.aoiInfo = null;
-  $('#aoiSummary').innerHTML = '<em>Draw on the map to define your area.</em>';
+  $('#aoiSummary').innerHTML = '<em>Pick a shape, then draw on the map.</em>';
   emit('aoi', null);
 }
 
@@ -205,15 +220,15 @@ function renderAoiSummary(info) {
 
 // ── Overlay of the rendered image ──────────────────────────────
 
-function showOverlay(capture) {
+function showOverlay(image) {
   overlay?.remove();
   overlay = null;
   $('#mapLegend').hidden = true;
   $('#opacityDock').hidden = true;
-  if (!capture?.meta?.grid) return;
+  if (!image?.meta?.grid) return;
 
-  const [w, s, e, n] = capture.meta.grid.bounds;
-  overlay = L.imageOverlay(capture.src, [[s, w], [n, e]], {
+  const [w, s, e, n] = image.meta.grid.bounds;
+  overlay = L.imageOverlay(image.src, [[s, w], [n, e]], {
     opacity: $('#overlayOpacity').valueAsNumber / 100,
     interactive: false,
     className: 'render-overlay',
@@ -221,7 +236,9 @@ function showOverlay(capture) {
   overlayVisible = true;
   $('#toggleOverlay').textContent = 'Hide';
   $('#opacityDock').hidden = false;
-  drawMapLegend(capture.meta);
+  drawMapLegend(image.meta);
+  // Looking at the imagery is the whole point, so go and look at it.
+  map.fitBounds([[s, w], [n, e]], { padding: [28, 28] });
 }
 
 function drawMapLegend(meta) {
@@ -231,26 +248,15 @@ function drawMapLegend(meta) {
     box.hidden = true;
     return;
   }
+  const stops = legend.stops.map((stop) => `${stop.color} ${stop.pos * 100}%`).join(', ');
   box.innerHTML = '';
-  if (legend.type === 'categorical') {
-    box.append(el('div', {}, legend.label));
-    for (const cls of legend.classes.slice(0, 8)) {
-      box.append(el('div', { class: 'ends' },
-        el('span', {},
-          el('i', { class: 'swatch', style: `background:${cls.color}` }),
-          ` ${cls.label}`),
-        el('span', {}, `${cls.percent}%`)));
-    }
-  } else {
-    const stops = legend.stops.map((s) => `${s.color} ${s.pos * 100}%`).join(', ');
-    box.append(
-      el('div', {}, `${legend.label}${legend.unit ? ` (${legend.unit})` : ''}`),
-      el('div', { class: 'bar', style: `background: linear-gradient(90deg, ${stops})` }),
-      el('div', { class: 'ends' },
-        el('span', {}, legend.vmin.toFixed(2)),
-        el('span', {}, legend.vmax.toFixed(2))),
-    );
-  }
+  box.append(
+    el('div', {}, legend.label),
+    el('div', { class: 'bar', style: `background: linear-gradient(90deg, ${stops})` }),
+    el('div', { class: 'ends' },
+      el('span', {}, legend.vmin.toFixed(2)),
+      el('span', {}, legend.vmax.toFixed(2))),
+  );
   box.hidden = false;
 }
 
@@ -264,10 +270,6 @@ function bindOverlayDock() {
     overlay.setOpacity(overlayVisible ? $('#overlayOpacity').valueAsNumber / 100 : 0);
     e.target.textContent = overlayVisible ? 'Hide' : 'Show';
   });
-}
-
-export function invalidateMap() {
-  setTimeout(() => map?.invalidateSize(), 60);
 }
 
 // ── Place search ───────────────────────────────────────────────

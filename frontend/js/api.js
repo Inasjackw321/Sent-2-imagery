@@ -24,8 +24,4 @@ export const api = {
   geocode: (q) => request(`/api/geocode?q=${encodeURIComponent(q)}`, { method: 'GET' }),
   render: (body) => request('/api/render', { body }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
-  change: (body) => request('/api/change', { body }),
-  changeFile: (body) => request('/api/change?download=1', { body, raw: true }),
-  animate: (body) => request('/api/animate', { body, raw: true }),
-  contactSheet: (body) => request('/api/contact-sheet', { body, raw: true }),
 };

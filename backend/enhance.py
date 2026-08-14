@@ -5,14 +5,12 @@ stretch, or on the normalised 0-1 image just after it -- the two places where
 each correction actually belongs.
 
 Before the stretch:
-    cloud-free compositing, haze removal, pan-sharpening, denoising
+    cloud-free compositing, haze removal, denoising
 After it:
     adaptive contrast, white balance, detail (unsharp mask)
 """
 
 from __future__ import annotations
-
-import math
 
 import numpy as np
 from scipy import ndimage
@@ -111,57 +109,6 @@ def dark_object_subtraction(bands: dict[str, MaskedArray], percentile: float = 1
             np.clip(corrected, 0.0, None).astype("float32"),
             mask=np.ma.getmaskarray(band),
         )
-    return out
-
-
-# ── Pan-sharpening ─────────────────────────────────────────────
-
-
-def pansharpen(bands: dict[str, MaskedArray], pan: MaskedArray, keys: list[str],
-               strength: float = 1.0, method: str = "highpass") -> dict:
-    """Push the panchromatic band's detail into the colour bands.
-
-    Landsat's pan band is 15 m against 30 m for everything else, so this really
-    does double the visible detail rather than just sharpening edges.
-    """
-    if pan is None or strength <= 0:
-        return bands
-
-    pan_data = np.ma.filled(pan.astype("float32"), 0.0)
-    present = [k for k in keys if k in bands]
-    if not present:
-        return bands
-
-    intensity = np.mean([np.ma.filled(bands[k], 0.0) for k in present], axis=0)
-    out = dict(bands)
-
-    if method == "brovey":
-        # Classic ratio transform: bright and punchy, can shift colour.
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ratio = np.where(intensity > 1e-6, pan_data / intensity, 1.0)
-        ratio = np.clip(np.nan_to_num(ratio, nan=1.0), 0.5, 2.0)
-        ratio = 1.0 + (ratio - 1.0) * strength
-        for key in present:
-            out[key] = np.ma.masked_array(
-                (np.ma.filled(bands[key], 0.0) * ratio).astype("float32"),
-                mask=np.ma.getmaskarray(bands[key]))
-        return out
-
-    # High-pass injection: take only what the pan band knows and the colour
-    # bands do not. Pan and the colour bands are both reflectance, so the
-    # detail goes in directly -- weighting each band by its share of the total
-    # brightness is what keeps hue intact.
-    smoothed = ndimage.gaussian_filter(pan_data, sigma=1.2)
-    detail = pan_data - smoothed
-    for key in present:
-        base = np.ma.filled(bands[key], 0.0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            share = np.where(intensity > 1e-6, base / intensity, 1.0)
-        share = np.clip(np.nan_to_num(share, nan=1.0), 0.25, 4.0)
-        sharpened = base + detail * share * strength
-        out[key] = np.ma.masked_array(
-            np.clip(sharpened, 0.0, None).astype("float32"),
-            mask=np.ma.getmaskarray(bands[key]))
     return out
 
 
@@ -295,33 +242,3 @@ def vibrance(rgb: np.ndarray, amount: float = 0.0) -> np.ndarray:
     spread = np.abs(rgb - luma).max(axis=2, keepdims=True)
     weight = 1.0 - np.clip(spread * 2.0, 0, 1)          # least saturated gain most
     return np.clip(luma + (rgb - luma) * (1 + amount * weight), 0, 1).astype("float32")
-
-
-# ── Terrain ────────────────────────────────────────────────────
-
-
-def hillshade(elevation: MaskedArray, resolution: float, azimuth: float = 315.0,
-              altitude: float = 45.0, exaggeration: float = 1.0) -> np.ndarray:
-    """Shaded relief: how much light a surface catches from the sun's direction.
-
-    Done with explicit vectors rather than the usual slope/aspect trigonometry,
-    because the sign conventions there are easy to get backwards -- rows run
-    southwards while the compass runs clockwise from north.
-    """
-    data = ndimage.gaussian_filter(np.ma.filled(elevation, 0.0).astype("float32"), 0.6)
-    d_row, d_col = np.gradient(data * max(exaggeration, 0.01), max(resolution, 1e-3))
-    dz_dx = d_col            # rising towards the east
-    dz_dy = -d_row           # rising towards the north (rows count southwards)
-
-    # Surface normal, then the unit vector pointing at the sun.
-    nx, ny, nz = -dz_dx, -dz_dy, np.ones_like(dz_dx)
-    length = np.sqrt(nx * nx + ny * ny + 1.0)
-
-    az = np.radians(azimuth % 360.0)
-    alt = np.radians(altitude)
-    lx = math.sin(az) * math.cos(alt)
-    ly = math.cos(az) * math.cos(alt)
-    lz = math.sin(alt)
-
-    shade = (nx * lx + ny * ly + nz * lz) / length
-    return np.clip(shade, 0, 1).astype("float32")

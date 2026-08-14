@@ -22,7 +22,7 @@ from rasterio.crs import CRS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import composite, config, raster, service, sources, stac  # noqa: E402
+from backend import composite, raster, service, stac  # noqa: E402
 from backend.geo import Grid, circle_to_polygon, geodesic_area_km2, normalise_aoi  # noqa: E402
 
 UTM = CRS.from_epsg(32630)          # a zone covering the Greenwich meridian
@@ -241,15 +241,6 @@ def test_colormap_lut_is_monotonic_and_full_range():
     assert tuple(lut[0]) != tuple(lut[-1])
 
 
-def test_class_areas_sum_to_the_valid_area():
-    data = np.ma.masked_array(np.linspace(-1, 1, 10000).reshape(100, 100),
-                              mask=np.zeros((100, 100), bool))
-    classes = composite.class_areas(data, [-0.1, 0.1], ["loss", "stable", "gain"], 100.0)
-    assert sum(c["pixels"] for c in classes) == 10000
-    assert sum(c["percent"] for c in classes) == pytest.approx(100.0, abs=0.1)
-    assert sum(c["area_km2"] for c in classes) == pytest.approx(10000 * 100 / 1e6, rel=1e-6)
-
-
 # ── End to end through the service layer ───────────────────────
 
 
@@ -294,26 +285,6 @@ def test_float_geotiff_preserves_index_values(scene, aoi):
         assert np.nanmin(data) >= -1.0 and np.nanmax(data) <= 1.0
 
 
-def test_change_detection_reports_gain_loss_and_areas(scene, aoi):
-    later = {**scene, "id": "LATER", "date": "2023-08-20",
-             "datetime": "2023-08-20T11:00:00Z"}
-    # Same imagery on both dates -> everything must land in the stable class.
-    result = service.change_detection({"aoi": aoi, "scene_a": scene, "scene_b": later,
-                                       "index": "ndvi", "size": 128, "threshold": 0.1})
-    meta = result["meta"]
-    stable = next(c for c in meta["classes"] if c["label"] == "Stable")
-    assert stable["percent"] == pytest.approx(100.0, abs=0.1)
-    assert meta["days_apart"] == 66
-    assert meta["scene_a"]["date"] < meta["scene_b"]["date"]
-
-
-def test_change_detection_orders_scenes_by_date(scene, aoi):
-    later = {**scene, "id": "LATER", "date": "2023-08-20"}
-    result = service.change_detection({"aoi": aoi, "scene_a": later, "scene_b": scene,
-                                       "index": "ndvi", "size": 64})
-    assert result["meta"]["scene_a"]["date"] == "2023-06-15"
-
-
 def test_unknown_visualisation_is_rejected(scene, aoi):
     with pytest.raises(service.RenderError):
         service.render({"aoi": aoi, "scene": scene, "mode": "index", "index": "nope"})
@@ -340,29 +311,24 @@ def test_scene_summary_flattens_a_stac_item():
             "thumbnail": {"href": "https://x/thumb.jpg"},
         },
     }
-    summary = stac.scene_summary(item, sources.get('sentinel-2-l2a'))
+    summary = stac.scene_summary(item)
     assert summary["date"] == "2023-06-15"
     assert summary["cloud"] == 7.5
     assert summary["tile"] == "31UCT"
     assert summary["assets"]["red"].endswith("B04.tif")
-    assert stac.boa_offset(summary, sources.get('sentinel-2-l2a')) == 0
+    assert stac.boa_offset(summary) == 0
 
 
 def test_boa_offset_depends_on_processing_baseline():
-    s2 = sources.get("sentinel-2-l2a")
-    assert stac.boa_offset({"date": "2021-12-01", "boa_offset_applied": False}, s2) == 0
-    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": False}, s2) == -1000
-    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": True}, s2) == 0
-    # Only Sentinel-2 carries that offset; Landsat has its own scaling.
-    landsat = sources.get("landsat-c2-l2")
-    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": False}, landsat) == 0
+    assert stac.boa_offset({"date": "2021-12-01", "boa_offset_applied": False}) == 0
+    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": False}) == -1000
+    assert stac.boa_offset({"date": "2022-06-01", "boa_offset_applied": True}) == 0
 
 
 def test_demo_scene_id_round_trips_cloud_cover():
     scenes = stac.search_scenes(
         normalise_aoi({"bbox": [-0.2, 51.4, 0.0, 51.6]}),
-        "sentinel-2-l2a", "2024-01-01", "2024-03-01",
-        max_cloud=100, limit=6, demo=True)["scenes"]
+        "2024-01-01", "2024-03-01", max_cloud=100, limit=6, demo=True)["scenes"]
     assert scenes
     for original in scenes:
         assert stac.get_scene(original["id"])["cloud"] == original["cloud"]
@@ -370,10 +336,9 @@ def test_demo_scene_id_round_trips_cloud_cover():
 
 def test_demo_bands_are_stable_across_calls():
     """Frames of a timelapse must not shimmer between processes."""
-    aoi = normalise_aoi({"bbox": [-0.2, 51.4, 0.0, 51.6]})
     grid = Grid((-0.2, 51.4, 0.0, 51.6), 128)
     scene = {"id": "demo-2024-06-01-1-0", "date": "2024-06-01", "cloud": 0.0,
-             "demo": True, "source": "sentinel-2-l2a"}
+             "demo": True}
     first, _ = raster.read_bands(scene, grid, ["red", "nir"])
     second, _ = raster.read_bands(scene, grid, ["red", "nir"])
     assert np.array_equal(first["red"].data, second["red"].data)
