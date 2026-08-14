@@ -210,7 +210,7 @@ def _install_linux_desktop() -> str:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={APP_NAME} imagery studio\n"
-        "Comment=Download, edit and animate free satellite imagery\n"
+        "Comment=Look at free Sentinel-2 satellite imagery\n"
         f"Exec={exec_line}\n"
         f"Icon={ROOT / 'frontend' / 'icons' / 'icon-512.png'}\n"
         f"Path={ROOT}\n"

@@ -1,28 +1,60 @@
 {
   "id": "sent-2-imagery",
-  "name": "Sent-2 imagery studio",
+  "name": "Sent-2 \u00b7 Sentinel-2 imagery",
   "short_name": "Sent-2",
-  "description": "Circle a region, download Sentinel-2 satellite imagery, edit it, and build timelapses and informative graphics.",
+  "description": "Look at any place on Earth in free Sentinel-2 satellite imagery, merged from several dates into one sharper, cloud-free picture.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
   "orientation": "any",
   "background_color": "#0d1015",
   "theme_color": "#0d1015",
-  "categories": ["productivity", "utilities", "education"],
-  "icons": [
-    { "src": "/icons/icon-64.png", "sizes": "64x64", "type": "image/png" },
-    { "src": "/icons/icon-128.png", "sizes": "128x128", "type": "image/png" },
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icons/icon-256.png", "sizes": "256x256", "type": "image/png" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "/icons/icon-1024.png", "sizes": "1024x1024", "type": "image/png" },
-    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  "categories": [
+    "utilities",
+    "education",
+    "photo"
   ],
-  "shortcuts": [
-    { "name": "New capture", "url": "/?tab=capture" },
-    { "name": "Timelapse studio", "url": "/?tab=timelapse" },
-    { "name": "Graphic composer", "url": "/?tab=graphic" }
+  "icons": [
+    {
+      "src": "/icons/icon-64.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-128.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

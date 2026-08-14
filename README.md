@@ -1,8 +1,11 @@
-# Sent-2 · satellite imagery studio
+# Sent-2 · Sentinel-2 imagery
 
-Circle a region on a map, pull free Sentinel-2 imagery from as many dates as
-you like, fuse them into one picture sharper than any single pass, edit it, and
-turn it into timelapse GIFs and annotated informative graphics.
+Look at any place on Earth in free Sentinel-2 imagery — and, because one pass
+is never the best picture available, merge several dates into one that is
+sharper than any single pass and has the cloud taken out.
+
+That is the whole app. One screen: a map, the dates over your area, and the
+imagery.
 
 It is a desktop app: run one Python file and it opens in its own window.
 
@@ -11,7 +14,7 @@ python app.py
 ```
 
 That's it — `app.py` installs anything missing on first run, starts the local
-engine and opens the studio in a desktop window. No account, no API key, no
+engine and opens Sent-2 in a desktop window. No account, no API key, no
 terminal needed afterwards. Add `--demo` to explore the interface offline with
 synthetic imagery (see [Demo mode](#demo-mode)).
 
@@ -85,15 +88,9 @@ picture are physically correct.
 Satellite imagery rarely looks its best raw. The **Make it look better** panel
 does the work that matters, in the right order and in the right units.
 
-**Cloud-free composite** — the big one. Tick several dates and Sent-2 masks the
-cloud out of each, then takes the median through the stack. A pixel only has to
-be clear in half the dates, so a place that is never cloud-free on any single
-day comes out clean. The result reports how much it rescued: *"8 dates —
-100% clear (best single date: 84%)"*.
-
-**Super-resolution from several dates** — the other big one, and the only tool
-here that adds detail rather than presenting existing detail better. See
-[below](#super-resolution-many-dates-into-one-sharper-image).
+**Merging dates** — the big one, and the only thing here that adds detail
+rather than presenting existing detail better. See
+[below](#merging-dates-the-one-control-that-matters).
 
 **Haze removal** — dark-object subtraction. Deep shadow and clear water should
 read near zero; whatever they actually read is atmosphere. Subtracting it per
@@ -109,17 +106,28 @@ Plus **denoise** (median filtering, edges intact), **white balance**,
 draw halos around coastlines. Five one-click presets — Off, Balanced, Punchy,
 Hazy day, Natural — set sensible combinations.
 
-Everything applied is recorded and shown in the graphic's statistics panel, so a
-figure always says how its imagery was processed.
+Everything applied is recorded in the imagery's metadata and reported when it
+appears, so a picture always says how it was made.
 
 ---
 
-## Super-resolution: many dates into one sharper image
+## Merging dates: the one control that matters
 
-Tick several dates, switch on **Super-resolution from multiple dates**, pick a
-multiplier, and Sent-2 returns an image at two to four times the resolution the
-satellite nominally has — with detail that is measured off the ground, not
-invented by a model.
+Tick more than one date and they are merged. That is the whole instruction —
+there is no switch to find and no multiplier to choose, because more dates are
+better in two ways at once and you should not have to ask for each of them
+separately:
+
+- **Higher definition.** The merge is sampled two to four times finer than the
+  satellite's own 10 m, with detail measured off the ground rather than
+  invented by a model.
+- **More of the ground.** Cloud sitting over one date is taken out by the
+  others, so the picture is clearer than any single pass and often has no gaps
+  at all.
+
+How much finer follows from how many dates you gave it — 2 dates earn 2×,
+5 earn 3×, 9 earn 4× — and the button says which you are getting before you
+press it: *"Merge 6 dates → 3×"*.
 
 **Why there is anything to recover.** A satellite never samples the same ground
 twice in the same place. Orbits repeat to within a few tens of metres and each
@@ -138,21 +146,21 @@ carrying its own sampling phase, and then:
 | **Fuse** | Each pixel is the mean of the dates that agree about it, centred on the median and rejecting anything beyond a few robust deviations — the noise reduction of a mean with the cloud immunity of a median. |
 | **Restore** | Van Cittert deconvolution of the sampling blur, clamped into the local range of the input on every pass, so edges sharpen and do not ring. |
 
-**What it reports.** The shift found for each date, how many dates survived per
-pixel, and two measurements against a single date on the same grid: the change
-in fine detail and the change in noise. *"2× from 8 dates — 2048×1536 px at
-4.3 m/px · +31% detail, 22% less noise"*.
+**What it reports.** How big the result is, how much finer it reads, how much
+of the noise went, and how much of the frame came out clear:
+*"3× merge of 6 dates — 1536×1116 px at 3.6 m/px · +31% detail · 12% less
+noise · 100% clear"*.
 
-**Getting the best out of it.** Four dates support 2×, nine support 3×, sixteen
-support 4× — a grid with N² times the pixels wants N² looks to fill it, and
-below that the fusion is interpolating between too few samples. Sent-2 says so
-in the panel rather than pretending. Dates close together work best: the method
+**Getting the best out of it.** Dates close together work best: the method
 assumes every date saw the same ground, so a year of crop growth averages into
-*less* detail, not more, and the report says so plainly when that is what
-happened. The multiplier is capped so the fused grid stays within 4096 px.
+*less* detail, not more — and the report says so plainly when that is what
+happened, rather than claiming a gain it did not make. More dates always help
+the cloud, even when they are too few to earn the next multiplier. The
+multiplier is capped so the merged grid stays within 4096 px, so a large area
+at 2048 px gets 2× rather than 3×.
 
 It composes with everything else — haze removal, adaptive contrast and the
-rest run afterwards on the fused image, in reflectance.
+rest run afterwards on the merged image, in reflectance.
 
 ---
 
@@ -164,22 +172,29 @@ account, no key, no token — a search is one anonymous HTTP request, and so is
 every band read after it.
 
 The imagery is licensed for any use, including commercially, with attribution:
-*Contains modified Copernicus Sentinel data*. The graphic composer writes that
-line onto every figure for you.
+*Contains modified Copernicus Sentinel data*. That line rides along with every
+render's metadata.
 
-## The four tabs
+## The screen
 
-### 1 · Capture
+One map, one sidebar, four steps down it.
 
-**Draw an area.** Four tools: freehand **lasso** (drag to circle a region),
-**circle**, **box** and **polygon**. Or type a place name to fly there. The
-panel shows the area in km², the ground extent and the centre coordinates.
+**1 · Where.** Type a place name to fly there, then pick a shape — **box**,
+**circle**, **lasso** or **polygon** — and drag it out on the map.
 
-**Find imagery.** Set a date range and a cloud-cover ceiling, and the list
-shows every Sentinel-2 pass over your area, newest first, with how cloudy each
-one was.
+The map is yours the rest of the time: dragging pans, the wheel zooms, and
+nothing is ever drawn by accident. A shape tool has to be picked deliberately,
+it lights the hint bar orange while it is armed, and it disarms itself the
+moment you finish a shape — so the drag after the one that drew your area pans
+the map like any other.
 
-**Render.** Nine band combinations and eight indices:
+**2 · When.** Set a date range and a cloud ceiling, and every Sentinel-2 pass
+over your area is listed, newest first, with how cloudy each was. The six
+clearest are ticked for you; tick more or fewer whenever you like. Two or more
+ticked means a [merge](#merging-dates-the-one-control-that-matters), and the
+panel says what you will get out of it.
+
+**3 · Show.** Nine band combinations and eight indices:
 
 | Band combination | What it shows |
 | --- | --- |
@@ -204,54 +219,18 @@ one was.
 | EVI | Vegetation, resistant to soil and haze |
 | SAVI | Vegetation over sparse or bright soils |
 
-Indices come with a colour scale (twelve colour maps), statistics and a
-histogram. Also on this tab: cloud and shadow masking from the scene
-classification band, clipping to the exact shape you drew, resolution up to
-4096 px, and export as PNG or as a georeferenced **GeoTIFF** that drops
-straight into QGIS.
+Indices come with a colour scale and a legend on the map. Also here: cloud and
+shadow masking from the scene classification band, clipping to the exact shape
+you drew, sizes up to 4096 px before the merge multiplies them, and export as
+PNG or as a georeferenced **GeoTIFF** that drops straight into QGIS.
 
-**Make it look better.** Tick several dates for a cloud-free composite, or for
-[super-resolution](#super-resolution-many-dates-into-one-sharper-image) at two
-to four times the satellite's own resolution, then set haze removal, adaptive
-contrast, denoise, detail, vibrance and white balance — or take one of the
-presets.
+Press **Show imagery** — or **Merge N dates → 3×** — and the result lands on
+the map, which flies to it. Fade it against the basemap, or hide it, with the
+slider at the bottom left.
 
-**Change detection.** Tick two dates and compare them: the index difference is
-mapped on a red–green scale, with the gained, stable and lost areas quantified
-in km² and percent.
-
-### 2 · Edit
-
-Non-destructive adjustments on the rendered image: exposure, contrast,
-saturation, highlights, shadows, temperature, tint, gamma, clarity (unsharp
-mask) and vignette, plus nine one-click looks. Rotate, flip and crop. Undo and
-redo throughout. Save as PNG or JPEG, or push the same adjustments onto every
-other image you have captured — handy before building a timelapse.
-
-### 3 · Timelapse
-
-Tick a run of dates on the Capture tab and render them all as frames, then
-scrub or play them back. Overlays are burnt into each frame: date stamp,
-progress bar, scale bar and a title. Export as animated **GIF**, **WebP** or
-**APNG** — with a single shared palette so colours do not shimmer between
-frames — or as a contact sheet of all frames in a grid.
-
-### 4 · Graphic
-
-Compose a finished figure from one or more captures.
-
-- **Layouts** — single, side by side, stacked, grid of four, before/after swipe
-- **Themes** — dark, light, paper, or the bare image
-- **Text** — title, subtitle, caption, credit line
-- **Map furniture** — scale bar, north arrow (which follows any rotation you
-  applied), coordinates, graticule, colour legend, statistics panel, histogram,
-  date labels and a position-on-Earth diagram
-- **Annotations** — text labels, arrows, rectangles, ellipses and lines, in any
-  colour and weight; drag to reposition
-- **Export** — PNG at 1×, 2× or 3×
-
-Caption and information cards flow into two balanced columns, so the figure
-stays tight no matter which features you switch on.
+**4 · Make it look better.** Tone mapping and gamma, then haze removal,
+adaptive contrast, denoise, detail, vibrance and white balance — or one of the
+five presets.
 
 ## Demo mode
 
@@ -262,9 +241,8 @@ date's stated cover. It is there so the interface can be explored, tested and
 demonstrated offline.
 
 It is not real imagery, and the app says so everywhere it could matter: a badge
-in the header, a flag on every render, a diagonal watermark on exported
-graphics and animation frames, and a footer line in place of the Copernicus
-attribution.
+in the header, a second badge in place of the collection name, a warning when
+it starts, and a flag on every render's metadata.
 
 ## Details worth knowing
 
@@ -297,13 +275,12 @@ backend/
   stac.py        catalogue search, plus synthetic scenes for demo mode
   raster.py      windowed COG reads, reprojection, cloud masking, demo bands
   composite.py   stretches, indices, colour maps, statistics, encoding
-  service.py     render and change-detection orchestration, caching
-  animate.py     GIF / WebP / APNG assembly and contact sheets
+  service.py     render orchestration: merging, enhancement, caching
   geo.py         AOI handling, geodesic area, output grid
   launcher.py    port choice, app windows, desktop shortcuts
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
-  js/            map, capture, adjust, editor, overlay, timelapse, graphic
+  js/            map, imagery, store, ui, api, install
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
@@ -327,9 +304,9 @@ DN offset from baseline 04.00, 10 m and 20 m bands side by side, the scene
 classification layer — and runs the live (non-demo) reading path over them.
 That covers reprojection onto the output grid, mixed band resolutions,
 reflectance conversion, cloud masking, shape clipping, index maths, stretch
-modes, GeoTIFF export, change detection and STAC parsing.
+modes, GeoTIFF export and STAC parsing.
 
-Super-resolution gets its own file. The scenes there are one fixed patch of
+Merging gets its own file. The scenes there are one fixed patch of
 ground, held on a grid four times finer than any date samples it, with each
 date averaging that ground over its own footprint a quarter of a pixel from the
 last — which is what makes the tests able to ask the only question that
@@ -337,7 +314,9 @@ matters: is the fused image closer to the ground than any single date was? They
 also check that registration recovers a known sub-pixel shift, ignores a
 difference in brightness, refuses an implausible or ambiguous match, that the
 fusion throws out a cloud the mask missed but keeps a pixel any date saw, and
-that the deconvolution sharpens an edge without ringing around it.
+that the deconvolution sharpens an edge without ringing around it — and that
+merging two or more dates sharpens by default, at the multiplier the number of
+dates has earned.
 
 It also covers the image-quality tools (compositing fills the gaps, haze
 removal finds the right floor, adaptive contrast really is local, denoise
@@ -350,7 +329,7 @@ and service worker).
 Python 3.10+. Everything else installs itself on first run: `rasterio` ships
 GDAL in its wheels, and `pywebview` uses the window toolkit your OS already has
 (WebView2 on Windows, WebKit on macOS, GTK or Qt on Linux). If no native
-toolkit is available the studio falls back to a chrome-less browser window.
+toolkit is available Sent-2 falls back to a chrome-less browser window.
 
 Internet access is needed for imagery, map tiles and place search — but not in
 `--demo` mode.

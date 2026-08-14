@@ -84,17 +84,31 @@ def load_bands(scene: dict, geometry: dict, grid: Grid, names: list[str], req: d
     return bands, cloud_fraction
 
 
-def superres_scale(req: dict, grid: Grid, scenes: list[dict]) -> int:
-    """How much finer the fusion can actually go for this request.
+def auto_scale(dates: int) -> int:
+    """How much finer a merge of this many dates can honestly be sampled."""
+    for needed, scale in config.SUPERRES_STEPS:
+        if dates >= needed:
+            return scale
+    return 1
 
-    Asking for more detail than the output grid can hold would only cost time,
-    so the factor is clamped to what fits, and to nothing at all when there is
-    only one date to fuse.
+
+def superres_scale(req: dict, grid: Grid, scenes: list[dict]) -> int:
+    """How much finer the fusion will actually go for this request.
+
+    Merging is one thing rather than two: several dates always mean both a
+    cleaner picture and a sharper one, so the multiplier follows from how many
+    dates there are unless the caller insists on a number. It is then clamped
+    to what the output grid can hold, since asking for more pixels than the
+    image is allowed to have would only cost time.
     """
-    scale = int(req.get("superres") or 1)
-    if scale <= 1 or len(scenes) < 2:
+    if len(scenes) < 2:
         return 1
-    scale = min(scale, config.MAX_SUPERRES)
+    asked = req.get("superres", "auto")
+    # `is True` rather than `== True`: 1 equals True in Python, and a caller
+    # asking for 1x means "leave it alone", not "choose for me".
+    automatic = asked is None or asked is True or asked == "auto"
+    scale = auto_scale(len(scenes)) if automatic else int(asked)
+    scale = min(max(scale, 1), config.MAX_SUPERRES)
     while scale > 1 and max(grid.width, grid.height) * scale > config.MAX_SIZE:
         scale -= 1
     return scale
@@ -131,8 +145,9 @@ def _gather(scenes: list[dict], geometry, grid, names, req):
         )
         return merged, cloud_fraction, report, sr_report, fine
 
-    method = req.get("composite_method", "median")
-    merged = enhance.composite(stacks, method) if len(stacks) > 1 else stacks[0]
+    # One date, or a grid already at the size limit: there is nothing to fuse,
+    # so the middle of the stack is the best answer available.
+    merged = enhance.composite(stacks, "median") if len(stacks) > 1 else stacks[0]
     return merged, cloud_fraction, report, None, fine
 
 
@@ -199,10 +214,9 @@ def render(req: dict) -> dict:
     bands, cloud_fraction, composite_report, sr_report, grid = _gather(
         scenes, geometry, grid, names, req)
     if sr_report:
-        applied.append(
-            f"{sr_report['scale']}× super-resolution from {sr_report['scenes']} dates")
+        applied.append(f"{sr_report['scale']}× merge of {sr_report['scenes']} dates")
     elif len(scenes) > 1:
-        applied.append(f"{len(scenes)}-scene {req.get('composite_method', 'median')} composite")
+        applied.append(f"median merge of {len(scenes)} dates")
 
     bands = _enhance_bands(bands, req, applied)
 
@@ -268,99 +282,3 @@ def satellite_meta() -> dict:
     """Who took the picture — carried on every render for the credit line."""
     return {k: config.SATELLITE[k] for k in
             ("label", "platform", "resolution", "attribution", "provider")}
-
-
-# ── Change detection ───────────────────────────────────────────
-
-
-def change_detection(req: dict) -> dict:
-    geometry, grid = prepare(req)
-    scene_a = req.get("scene_a") or stac.get_scene(req["scene_a_id"])
-    scene_b = req.get("scene_b") or stac.get_scene(req["scene_b_id"])
-    if scene_a["date"] > scene_b["date"]:
-        scene_a, scene_b = scene_b, scene_a
-
-    index_name = req.get("index", "ndvi")
-    names = _needed_bands("index", "", index_name)
-
-    applied: list[str] = []
-    bands_a, cloud_a = load_bands(scene_a, geometry, grid, names, req)
-    bands_b, cloud_b = load_bands(scene_b, geometry, grid, names, req)
-    bands_a = _enhance_bands(bands_a, req, applied)
-    bands_b = _enhance_bands(bands_b, req, [])
-
-    idx_a = composite.compute_index(bands_a, index_name)
-    idx_b = composite.compute_index(bands_b, index_name)
-    diff = np.ma.masked_array(
-        idx_b.data - idx_a.data,
-        mask=np.ma.getmaskarray(idx_a) | np.ma.getmaskarray(idx_b),
-    )
-
-    limit = float(req.get("diff_limit") or 0.4)
-    threshold = float(req.get("threshold") or 0.1)
-    norm = np.clip((np.ma.filled(diff, 0.0) + limit) / (2 * limit), 0, 1)
-    rgb = composite.apply_colormap(norm, req.get("colormap") or "change")
-    valid = ~np.ma.getmaskarray(diff)
-
-    if req.get("highlight_only"):
-        valid = valid & (np.abs(np.ma.filled(diff, 0.0)) >= threshold)
-
-    rgba = composite.to_rgba(rgb, valid)
-
-    fmt = req.get("format", "png")
-    if fmt == "geotiff":
-        payload, media = composite.encode_geotiff(rgba, grid), "image/tiff"
-    elif fmt == "float_geotiff":
-        payload, media = composite.encode_float_geotiff(diff, grid), "image/tiff"
-    elif fmt == "jpeg":
-        payload, media = composite.encode_jpeg(rgba), "image/jpeg"
-    else:
-        payload, media = composite.encode_png(rgba), "image/png"
-
-    pixel_area = grid.ground_res_m ** 2
-    classes = composite.class_areas(
-        diff, [-threshold, threshold],
-        [f"Loss (< -{threshold:g})", "Stable", f"Gain (> +{threshold:g})"],
-        pixel_area,
-    )
-
-    spec = config.INDICES[index_name]
-    colormap = req.get("colormap") or "change"
-    meta = {
-        "scene_a": {k: v for k, v in scene_a.items() if k != "assets"},
-        "scene_b": {k: v for k, v in scene_b.items() if k != "assets"},
-        "source": satellite_meta(),
-        "grid": grid.as_dict(),
-        "index": index_name,
-        "label": f"Change in {spec['label']}",
-        "mode": "change",
-        "stats": composite.array_stats(diff),
-        "histogram": composite.histogram(diff, span=(-limit, limit)),
-        "classes": classes,
-        "threshold": threshold,
-        "enhancements": applied,
-        "cloud_masked_pct": (round(max(cloud_a, cloud_b) * 100, 2)
-                             if req.get("mask_clouds") else 0.0),
-        "valid_pct": round(float(valid.mean()) * 100, 2),
-        "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
-        "days_apart": _days_between(scene_a["date"], scene_b["date"]),
-        "legend": {
-            "type": "continuous",
-            "colormap": colormap,
-            "vmin": -limit,
-            "vmax": limit,
-            "label": f"Δ {spec['label'].split(' - ')[0]}",
-            "stops": [
-                {"pos": p, "color": composite._hex(composite.colormap_lut(colormap)[int(p * 255)])}
-                for p in (0.0, 0.25, 0.5, 0.75, 1.0)
-            ],
-        },
-        "demo": bool(scene_a.get("demo") or scene_b.get("demo")),
-    }
-    return {"bytes": payload, "media_type": media, "meta": meta}
-
-
-def _days_between(a: str, b: str) -> int:
-    import datetime as dt
-
-    return abs((dt.date.fromisoformat(b) - dt.date.fromisoformat(a)).days)

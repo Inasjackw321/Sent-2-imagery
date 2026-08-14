@@ -205,26 +205,6 @@ def histogram(arr: np.ma.MaskedArray, bins: int = 48, span=None) -> dict:
     }
 
 
-def class_areas(index: np.ma.MaskedArray, thresholds: list[float], labels: list[str],
-                pixel_area_m2: float) -> list[dict]:
-    """Bucket an index into classes and report the ground area of each."""
-    valid = ~np.ma.getmaskarray(index)
-    data = np.ma.filled(index, np.nan)
-    edges = [-np.inf, *thresholds, np.inf]
-    out = []
-    total = max(int(valid.sum()), 1)
-    for i, label in enumerate(labels):
-        sel = valid & (data >= edges[i]) & (data < edges[i + 1])
-        n = int(sel.sum())
-        out.append({
-            "label": label,
-            "pixels": n,
-            "percent": round(100.0 * n / total, 2),
-            "area_km2": round(n * pixel_area_m2 / 1e6, 4),
-        })
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Encoding
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import animate, composite, config, service, stac
+from . import composite, config, service, stac
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -63,7 +63,7 @@ def get_config() -> dict[str, Any]:
         "bands": config.BANDS,
         "max_size": config.MAX_SIZE,
         "max_superres": config.MAX_SUPERRES,
-        "max_frames": animate.MAX_FRAMES,
+        "superres_steps": [list(step) for step in config.SUPERRES_STEPS],
     }
 
 
@@ -169,62 +169,6 @@ def render(body: dict = Body(...), download: bool = Query(False)):
     stem = (f"sentinel2_{meta['scene'].get('date', 'scene')}"
             f"_{meta.get('index') or meta.get('preset')}")
     return _render_response(result, download, stem)
-
-
-@app.post("/api/change")
-def change(body: dict = Body(...), download: bool = Query(False)):
-    try:
-        result = service.change_detection(body)
-    except (ValueError, service.RenderError) as exc:
-        raise _fail(exc, 400)
-    except (BandReadError, stac.SceneSearchError) as exc:
-        raise _fail(exc)
-    meta = result["meta"]
-    stem = f"change_{meta['index']}_{meta['scene_a']['date']}_to_{meta['scene_b']['date']}"
-    return _render_response(result, download, stem)
-
-
-# ---------------------------------------------------------------------------
-# Animation / export
-# ---------------------------------------------------------------------------
-
-
-@app.post("/api/animate")
-def build_animation(body: dict = Body(...)):
-    try:
-        data, media, ext = animate.build(
-            frames=body.get("frames") or [],
-            fps=float(body.get("fps", 2)),
-            loop=int(body.get("loop", 0)),
-            boomerang=bool(body.get("boomerang")),
-            fmt=str(body.get("format", "gif")),
-            hold_last_ms=int(body.get("hold_last_ms", 0)),
-            colors=int(body.get("colors", 256)),
-        )
-    except animate.AnimationError as exc:
-        raise _fail(exc, 400)
-    name = body.get("filename") or f"timelapse_{dt.date.today().isoformat()}"
-    return Response(
-        content=data,
-        media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{name}.{ext}"'},
-    )
-
-
-@app.post("/api/contact-sheet")
-def build_contact_sheet(body: dict = Body(...)):
-    try:
-        data = animate.contact_sheet(
-            body.get("frames") or [], columns=int(body.get("columns", 3))
-        )
-    except animate.AnimationError as exc:
-        raise _fail(exc, 400)
-    name = body.get("filename") or "contact_sheet"
-    return Response(
-        content=data,
-        media_type="image/png",
-        headers={"Content-Disposition": f'attachment; filename="{name}.png"'},
-    )
 
 
 # ---------------------------------------------------------------------------

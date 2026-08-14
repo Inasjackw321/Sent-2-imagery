@@ -48,22 +48,6 @@ html, body {
   color: var(--ink-faint); letter-spacing: .06em; text-transform: uppercase;
 }
 
-.tabs { display: flex; gap: 4px; }
-.tab {
-  display: flex; align-items: center; gap: 7px;
-  background: transparent; border: 1px solid transparent; color: var(--ink-dim);
-  padding: 7px 14px; border-radius: 999px; cursor: pointer;
-  font: inherit; font-weight: 500; transition: .15s;
-}
-.tab b {
-  display: grid; place-items: center; width: 18px; height: 18px;
-  border-radius: 50%; background: var(--bg-3); color: var(--ink-faint);
-  font-size: 11px; font-weight: 600;
-}
-.tab:hover { color: var(--ink); background: var(--bg-2); }
-.tab.is-active { color: #06121b; background: var(--accent); border-color: var(--accent); }
-.tab.is-active b { background: rgba(0,0,0,.22); color: #06121b; }
-
 .topbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .badge {
   font-size: 11px; padding: 4px 10px; border-radius: 999px;
@@ -101,8 +85,8 @@ html, body {
   background: var(--bg-2); border-right: 1px solid var(--line);
   overflow-y: auto; overscroll-behavior: contain;
 }
-.sidebar::-webkit-scrollbar, .scene-list::-webkit-scrollbar, .frame-list::-webkit-scrollbar { width: 9px; }
-.sidebar::-webkit-scrollbar-thumb, .scene-list::-webkit-scrollbar-thumb, .frame-list::-webkit-scrollbar-thumb {
+.sidebar::-webkit-scrollbar, .scene-list::-webkit-scrollbar { width: 9px; }
+.sidebar::-webkit-scrollbar-thumb, .scene-list::-webkit-scrollbar-thumb {
   background: #2b3547; border-radius: 9px; border: 2px solid var(--bg-2);
 }
 
@@ -113,8 +97,7 @@ html, body {
 }
 .hint { margin: -2px 0 10px; font-size: 12px; color: var(--ink-faint); line-height: 1.4; }
 
-.stage { flex: 1; position: relative; min-width: 0; background: #0a0d12; }
-.stage-view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.stage { flex: 1; position: relative; min-width: 0; display: flex; background: #0a0d12; }
 
 /* ── Controls ──────────────────────────────────────────────── */
 
@@ -131,18 +114,17 @@ html, body {
 .btn-primary:hover:not(:disabled) { background: #6bcfff; border-color: #6bcfff; }
 .btn-ghost { background: transparent; }
 .btn-sm { padding: 6px 10px; font-size: 12.5px; }
+.btn-big { padding: 12px 14px; font-size: 14px; font-weight: 650; }
 
 .row { display: flex; gap: 8px; }
 .row .btn { flex: 1; }
 
 .field, .check { display: block; margin: 8px 0; font-size: 12.5px; color: var(--ink-dim); }
-.field select, .field input, .field-input, .field-select, .search-row input {
+.field select, .field input, .search-row input {
   display: block; width: 100%; margin-top: 5px; padding: 8px 10px;
   background: var(--bg-3); color: var(--ink);
   border: 1px solid var(--line); border-radius: 8px; font: inherit;
 }
-.field-input, .field-select { margin-bottom: 8px; }
-textarea.field-input { resize: vertical; }
 select[multiple] { padding: 4px; }
 select[multiple] option { padding: 4px 6px; border-radius: 4px; }
 input:focus, select:focus, textarea:focus, button:focus-visible {
@@ -185,14 +167,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .preset:hover { color: var(--ink); border-color: #3a4a66; }
 .preset.is-active { border-color: var(--accent); color: var(--accent); }
 
-.swatch-label { flex: 1; font-size: 12px; color: var(--ink-dim); }
-.swatch-label input[type=color] {
-  display: block; width: 100%; height: 30px; margin-top: 4px; padding: 2px;
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px;
-}
-.swatch-label input[type=range] { width: 100%; margin-top: 8px; accent-color: var(--accent); }
-
-/* ── AOI + scenes ──────────────────────────────────────────── */
+/* ── Area and dates ──────────────────────────────────────────── */
 
 .aoi-summary {
   margin: 10px 0 4px; padding: 9px 11px; font-size: 12.5px;
@@ -210,7 +185,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .results button:last-child { border-bottom: 0; }
 .results button:hover { background: #212b3c; color: var(--ink); }
 
-.scene-list, .frame-list { margin-top: 10px; max-height: 300px; overflow-y: auto; display: grid; gap: 5px; }
+.scene-list { margin-top: 10px; max-height: 320px; overflow-y: auto; display: grid; gap: 5px; }
 .scene {
   display: flex; align-items: center; gap: 9px; padding: 7px 9px;
   background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px;
@@ -224,31 +199,11 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .scene-cloud { margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; }
 .cloud-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
 
-.frame-item {
-  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px; font-size: 12px;
-}
-.frame-item img { width: 38px; height: 38px; object-fit: cover; border-radius: 5px; background: #000; }
-.frame-item .x { margin-left: auto; background: none; border: 0; color: var(--ink-faint); cursor: pointer; font-size: 15px; }
-.frame-item .x:hover { color: var(--danger); }
-
-.progress { position: relative; height: 6px; margin-top: 10px; background: var(--bg-3); border-radius: 999px; overflow: hidden; }
-.progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-.progress > span { position: absolute; top: 10px; left: 0; font-size: 11px; color: var(--ink-faint); }
-
-.layout-picker { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
-.layout-opt {
-  padding: 9px 6px; text-align: center; font-size: 11.5px;
-  background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px;
-  color: var(--ink-dim); cursor: pointer;
-}
-.layout-opt span { display: block; font-size: 17px; line-height: 1.1; margin-bottom: 3px; }
-.layout-opt:hover { color: var(--ink); }
-.layout-opt.is-active { border-color: var(--accent); color: var(--accent); }
-
 /* ── Stage furniture ───────────────────────────────────────── */
 
 #map { flex: 1; background: #10141b; }
+/* A drawing tool is armed: the pointer says so, and the map will not pan. */
+#map.is-drawing, #map.is-drawing .leaflet-grab { cursor: crosshair; }
 .leaflet-container { background: #10141b; font: inherit; }
 .leaflet-control-attribution { background: rgba(13,16,21,.78) !important; color: var(--ink-faint) !important; }
 .leaflet-control-attribution a { color: var(--ink-dim) !important; }
@@ -260,7 +215,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   z-index: 500; padding: 7px 15px; border-radius: 999px; font-size: 12.5px;
   background: rgba(13,16,21,.86); border: 1px solid var(--line);
   color: var(--ink-dim); pointer-events: none; backdrop-filter: blur(6px);
+  transition: color .15s, border-color .15s;
 }
+.map-hint.is-armed { color: #06121b; background: var(--warn); border-color: var(--warn); font-weight: 600; }
 .map-legend {
   position: absolute; left: 14px; bottom: 86px; z-index: 500;
   padding: 10px 12px; border-radius: 10px; font-size: 11.5px;
@@ -278,38 +235,10 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .opacity-dock input { accent-color: var(--accent); width: 110px; }
 .opacity-dock .btn { width: auto; margin: 0; }
 
-.canvas-wrap {
-  flex: 1; display: grid; place-items: center; padding: 22px; min-height: 0;
-  background-image: linear-gradient(45deg, #12161d 25%, transparent 25%),
-    linear-gradient(-45deg, #12161d 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #12161d 75%),
-    linear-gradient(-45deg, transparent 75%, #12161d 75%);
-  background-size: 22px 22px;
-  background-position: 0 0, 0 11px, 11px -11px, -11px 0;
-  overflow: auto;
-}
-.canvas-wrap canvas {
-  max-width: 100%; max-height: 100%; object-fit: contain;
-  border-radius: 6px; box-shadow: 0 12px 40px rgba(0,0,0,.55);
-  background: #000;
-}
-#editCanvas.is-cropping { cursor: crosshair; }
-#graphicCanvas.is-drawing { cursor: crosshair; }
-
-.stage-foot {
-  display: flex; align-items: center; gap: 14px;
-  padding: 9px 18px; border-top: 1px solid var(--line);
-  background: var(--bg-2); font-size: 12px; color: var(--ink-dim);
-  min-height: 40px;
-}
-.stage-foot input[type=range] { flex: 1; accent-color: var(--accent); }
-.stage-foot b { color: var(--ink); font-variant-numeric: tabular-nums; }
-.stat-chip { padding: 3px 9px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--line); white-space: nowrap; }
-
 /* ── Feedback ──────────────────────────────────────────────── */
 
-/* Clear of the stage footer and the map's attribution strip. */
-.toast-dock { position: fixed; right: 16px; bottom: 56px; z-index: 3000; display: grid; gap: 8px; max-width: 380px; }
+/* Clear of the map's attribution strip. */
+.toast-dock { position: fixed; right: 16px; bottom: 44px; z-index: 3000; display: grid; gap: 8px; max-width: 380px; }
 .toast {
   padding: 10px 14px; border-radius: 9px; font-size: 13px;
   background: var(--bg-3); border: 1px solid var(--line); color: var(--ink);
@@ -333,9 +262,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 @media (max-width: 900px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; flex: 0 0 46%; border-right: 0; border-bottom: 1px solid var(--line); }
-  .tab span { display: none; }
 }
 
 /* Enhancement controls */
 .presets-wide { grid-template-columns: repeat(3, 1fr); margin-bottom: 6px; }
-.scene-cloud.dim { color: var(--ink-faint); }

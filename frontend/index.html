@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sent-2 · Satellite imagery studio</title>
-<meta name="description" content="Circle a region, download Sentinel-2 imagery from several dates, fuse it into one sharper picture, edit it, and build timelapses and graphics.">
+<title>Sent-2 · Sentinel-2 imagery</title>
+<meta name="description" content="Look at any place on Earth in free Sentinel-2 satellite imagery, merged from several dates into one sharper, cloud-free picture.">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/css/app.css">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -20,13 +20,7 @@
 <body>
 
 <header class="topbar">
-  <div class="brand"><span class="brand-mark">🛰️</span><span>Sent-2<small>imagery studio</small></span></div>
-  <nav class="tabs" id="tabs">
-    <button class="tab is-active" data-tab="capture"><b>1</b> Capture</button>
-    <button class="tab" data-tab="edit"><b>2</b> Edit</button>
-    <button class="tab" data-tab="timelapse"><b>3</b> Timelapse</button>
-    <button class="tab" data-tab="graphic"><b>4</b> Graphic</button>
-  </nav>
+  <div class="brand"><span class="brand-mark">🛰️</span><span>Sent-2<small>sentinel-2 imagery</small></span></div>
   <div class="topbar-right">
     <span class="badge badge-demo" id="demoBadge" hidden>Demo data — synthetic</span>
     <span class="badge" id="sourceBadge">Sentinel-2 L2A</span>
@@ -39,289 +33,88 @@
 <main class="layout">
   <aside class="sidebar" id="sidebar">
 
-    <!-- ── Capture ───────────────────────────────────────────── -->
-    <section class="panel" data-panel="capture">
-      <div class="group">
-        <h3>1 · Choose an area</h3>
-        <div class="search-row">
-          <input type="search" id="placeSearch" placeholder="Find a place…" autocomplete="off">
-          <button class="btn btn-ghost" id="placeSearchBtn" title="Search">Go</button>
-        </div>
-        <div class="results" id="placeResults" hidden></div>
-        <div class="toolbar" id="drawTools">
-          <button class="tool is-active" data-draw="lasso" title="Freehand — drag to circle a region">✎ Lasso</button>
-          <button class="tool" data-draw="circle" title="Drag from the centre">◯ Circle</button>
-          <button class="tool" data-draw="rect" title="Drag a box">▭ Box</button>
-          <button class="tool" data-draw="polygon" title="Click corners, double-click to close">⬠ Polygon</button>
-        </div>
-        <div class="aoi-summary" id="aoiSummary">
-          <em>Draw on the map to define your area.</em>
-        </div>
-        <div class="row">
-          <button class="btn btn-ghost btn-sm" id="clearAoi">Clear</button>
-          <button class="btn btn-ghost btn-sm" id="zoomAoi">Zoom to area</button>
-        </div>
+    <div class="group">
+      <h3>1 · Where</h3>
+      <div class="search-row">
+        <input type="search" id="placeSearch" placeholder="Find a place…" autocomplete="off">
+        <button class="btn btn-ghost" id="placeSearchBtn" title="Search">Go</button>
       </div>
+      <div class="results" id="placeResults" hidden></div>
+      <p class="hint">Drag and scroll the map freely. To choose an area, pick a
+        shape below — it disarms itself once you have drawn one.</p>
+      <div class="toolbar" id="drawTools">
+        <button class="tool" data-draw="rect" title="Drag a box">▭ Box</button>
+        <button class="tool" data-draw="circle" title="Drag out from the centre">◯ Circle</button>
+        <button class="tool" data-draw="lasso" title="Freehand — drag to circle a region">✎ Lasso</button>
+        <button class="tool" data-draw="polygon" title="Click corners, double-click to close">⬠ Polygon</button>
+      </div>
+      <div class="aoi-summary" id="aoiSummary">
+        <em>Pick a shape, then draw on the map.</em>
+      </div>
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" id="clearAoi">Clear</button>
+        <button class="btn btn-ghost btn-sm" id="zoomAoi">Zoom to area</button>
+      </div>
+    </div>
 
-      <div class="group">
-        <h3>2 · Find imagery</h3>
-        <p class="hint">Sentinel-2 passes over every point on Earth about every
-          five days, at 10 m, free, back to 2015.</p>
-        <div class="field-row">
-          <label>From<input type="date" id="dateStart"></label>
-          <label>To<input type="date" id="dateEnd"></label>
-        </div>
-        <div id="cloudSlider"></div>
-        <button class="btn btn-primary" id="searchScenes" disabled>Find dates</button>
-        <div class="scene-list" id="sceneList"></div>
+    <div class="group">
+      <h3>2 · When</h3>
+      <div class="field-row">
+        <label>From<input type="date" id="dateStart"></label>
+        <label>To<input type="date" id="dateEnd"></label>
       </div>
+      <div id="cloudSlider"></div>
+      <button class="btn btn-primary" id="searchDates" disabled>Find dates</button>
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" id="selectClearest">Tick 6 clearest</button>
+        <button class="btn btn-ghost btn-sm" id="selectNone">Untick all</button>
+      </div>
+      <div class="scene-list" id="dateList"></div>
+      <p class="hint" id="mergeHint"></p>
+    </div>
 
-      <div class="group">
-        <h3>3 · Render</h3>
-        <label class="field">Visualisation
-          <select id="renderMode">
-            <optgroup label="Band combinations" id="optComposites"></optgroup>
-            <optgroup label="Spectral indices" id="optIndices"></optgroup>
-          </select>
-        </label>
-        <p class="hint" id="renderHint"></p>
-        <div id="renderSliders"></div>
-        <label class="field">Detail
-          <select id="renderSize">
-            <option value="512">512 px — quick look</option>
-            <option value="1024" selected>1024 px — standard</option>
-            <option value="2048">2048 px — detailed</option>
-            <option value="4096">4096 px — maximum (slow)</option>
-          </select>
-        </label>
-        <label class="check"><input type="checkbox" id="maskClouds"> Mask clouds &amp; shadows</label>
-        <label class="check"><input type="checkbox" id="clipShape" checked> Clip to my shape</label>
-        <button class="btn btn-primary" id="renderBtn" disabled>Download imagery</button>
-        <div class="row">
-          <button class="btn btn-ghost btn-sm" id="downloadTif" disabled>GeoTIFF</button>
-          <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>PNG</button>
-        </div>
+    <div class="group">
+      <h3>3 · Show</h3>
+      <label class="field">Visualisation
+        <select id="renderMode">
+          <optgroup label="Band combinations" id="optComposites"></optgroup>
+          <optgroup label="Spectral indices" id="optIndices"></optgroup>
+        </select>
+      </label>
+      <p class="hint" id="renderHint"></p>
+      <label class="field">Size
+        <select id="renderSize">
+          <option value="512">512 px — quick look</option>
+          <option value="1024" selected>1024 px — standard</option>
+          <option value="2048">2048 px — detailed</option>
+          <option value="4096">4096 px — maximum (slow)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="maskClouds" checked> Mask clouds &amp; shadows</label>
+      <label class="check"><input type="checkbox" id="clipShape" checked> Clip to my shape</label>
+      <button class="btn btn-primary btn-big" id="showBtn" disabled>Show imagery</button>
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" id="downloadTif" disabled>GeoTIFF</button>
+        <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>PNG</button>
       </div>
+    </div>
 
-      <div class="group">
-        <h3>4 · Make it look better</h3>
-        <label class="check" title="Merge the ticked dates, dropping cloud from each">
-          <input type="checkbox" id="useComposite"> Cloud-free composite of ticked dates
-        </label>
-        <label class="field" id="compositeMethodRow" hidden>Merge by
-          <select id="compositeMethod">
-            <option value="median" selected>Median — removes cloud best</option>
-            <option value="mean">Mean — smoothest</option>
-            <option value="first">Newest clear pixel</option>
-            <option value="max">Brightest</option>
-            <option value="min">Darkest</option>
-          </select>
-        </label>
-        <label class="check" title="Fuse the ticked dates onto a finer grid, sub-pixel aligned">
-          <input type="checkbox" id="superres"> Super-resolution from multiple dates
-        </label>
-        <label class="field" id="superresScaleRow" hidden>Detail multiplier
-          <select id="superresScale">
-            <option value="2" selected>2× — 4 dates or more</option>
-            <option value="3">3× — 9 dates or more</option>
-            <option value="4">4× — 16 dates or more</option>
-          </select>
-        </label>
-        <p class="hint" id="superresHint" hidden></p>
-        <div class="presets presets-wide" id="enhancePresets"></div>
-        <div id="enhanceSliders"></div>
-        <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset enhancements</button>
-      </div>
-
-      <div class="group">
-        <h3>Change detection</h3>
-        <p class="hint">Tick exactly two dates above, then compare them.</p>
-        <label class="field">Index
-          <select id="changeIndex"></select>
-        </label>
-        <div id="changeSliders"></div>
-        <button class="btn" id="changeBtn" disabled>Compare two dates</button>
-      </div>
-    </section>
-
-    <!-- ── Edit ──────────────────────────────────────────────── -->
-    <section class="panel" data-panel="edit" hidden>
-      <div class="group">
-        <h3>Image</h3>
-        <select id="editSource" class="field-select"></select>
-        <div class="row">
-          <button class="btn btn-ghost btn-sm" id="editUndo" disabled>↶ Undo</button>
-          <button class="btn btn-ghost btn-sm" id="editRedo" disabled>↷ Redo</button>
-          <button class="btn btn-ghost btn-sm" id="editReset">Reset</button>
-        </div>
-      </div>
-      <div class="group">
-        <h3>Looks</h3>
-        <div class="presets" id="editPresets"></div>
-      </div>
-      <div class="group">
-        <h3>Adjustments</h3>
-        <div id="editSliders"></div>
-      </div>
-      <div class="group">
-        <h3>Geometry</h3>
-        <div class="toolbar">
-          <button class="tool" data-transform="rot-left" title="Rotate left">⟲</button>
-          <button class="tool" data-transform="rot-right" title="Rotate right">⟳</button>
-          <button class="tool" data-transform="flip-h" title="Flip horizontally">⇋</button>
-          <button class="tool" data-transform="flip-v" title="Flip vertically">⇵</button>
-          <button class="tool" data-transform="crop" title="Drag on the image to crop">⬚ Crop</button>
-        </div>
-        <div class="row" id="cropActions" hidden>
-          <button class="btn btn-primary btn-sm" id="cropApply">Apply crop</button>
-          <button class="btn btn-ghost btn-sm" id="cropCancel">Cancel</button>
-        </div>
-      </div>
-      <div class="group">
-        <h3>Export</h3>
-        <div class="row">
-          <button class="btn btn-primary" id="editExport">Save PNG</button>
-          <button class="btn btn-ghost" id="editExportJpg">JPEG</button>
-        </div>
-        <button class="btn btn-ghost btn-sm" id="editApplyAll">Apply these edits to every frame</button>
-      </div>
-    </section>
-
-    <!-- ── Timelapse ─────────────────────────────────────────── -->
-    <section class="panel" data-panel="timelapse" hidden>
-      <div class="group">
-        <h3>Frames</h3>
-        <p class="hint">Tick dates on the Capture tab, then render them all as frames.</p>
-        <button class="btn btn-primary" id="buildFrames" disabled>Render ticked dates</button>
-        <div class="progress" id="frameProgress" hidden><div></div><span></span></div>
-        <div class="frame-list" id="frameList"></div>
-      </div>
-      <div class="group">
-        <h3>Playback</h3>
-        <div id="animSliders"></div>
-        <label class="check"><input type="checkbox" id="animBoomerang"> Ping-pong (play back and forth)</label>
-        <label class="check"><input type="checkbox" id="animLoop" checked> Loop forever</label>
-        <div class="row">
-          <button class="btn btn-ghost btn-sm" id="animPlay">▶ Play</button>
-          <button class="btn btn-ghost btn-sm" id="animStop">■ Stop</button>
-        </div>
-      </div>
-      <div class="group">
-        <h3>Overlays</h3>
-        <label class="check"><input type="checkbox" id="animDate" checked> Date stamp</label>
-        <label class="check"><input type="checkbox" id="animBar" checked> Timeline bar</label>
-        <label class="check"><input type="checkbox" id="animScale" checked> Scale bar</label>
-        <label class="check"><input type="checkbox" id="animTitleOn"> Title</label>
-        <input type="text" id="animTitle" placeholder="Animation title" class="field-input">
-        <label class="check"><input type="checkbox" id="animEdits" checked> Apply my edits to all frames</label>
-      </div>
-      <div class="group">
-        <h3>Export</h3>
-        <label class="field">Format
-          <select id="animFormat">
-            <option value="gif" selected>Animated GIF</option>
-            <option value="webp">Animated WebP (smaller)</option>
-            <option value="apng">Animated PNG (best quality)</option>
-          </select>
-        </label>
-        <button class="btn btn-primary" id="animExport" disabled>Build animation</button>
-        <button class="btn btn-ghost btn-sm" id="sheetExport" disabled>Contact sheet (PNG)</button>
-      </div>
-    </section>
-
-    <!-- ── Graphic ───────────────────────────────────────────── -->
-    <section class="panel" data-panel="graphic" hidden>
-      <div class="group">
-        <h3>Layout</h3>
-        <div class="layout-picker" id="layoutPicker"></div>
-        <label class="field">Theme
-          <select id="gTheme">
-            <option value="dark" selected>Dark</option>
-            <option value="light">Light</option>
-            <option value="paper">Paper</option>
-            <option value="none">Image only</option>
-          </select>
-        </label>
-        <label class="field">Panels
-          <select id="gPanels" multiple size="5"></select>
-        </label>
-      </div>
-      <div class="group">
-        <h3>Text</h3>
-        <input type="text" id="gTitle" class="field-input" placeholder="Title">
-        <input type="text" id="gSubtitle" class="field-input" placeholder="Subtitle">
-        <textarea id="gCaption" class="field-input" rows="3" placeholder="Caption / findings…"></textarea>
-        <input type="text" id="gCredit" class="field-input" placeholder="Credit line">
-      </div>
-      <div class="group">
-        <h3>Features</h3>
-        <label class="check"><input type="checkbox" id="gScale" checked> Scale bar</label>
-        <label class="check"><input type="checkbox" id="gNorth" checked> North arrow</label>
-        <label class="check"><input type="checkbox" id="gCoords" checked> Coordinates</label>
-        <label class="check"><input type="checkbox" id="gLegend" checked> Colour legend</label>
-        <label class="check"><input type="checkbox" id="gStats" checked> Statistics panel</label>
-        <label class="check"><input type="checkbox" id="gHisto"> Histogram</label>
-        <label class="check"><input type="checkbox" id="gDates" checked> Date labels on panels</label>
-        <label class="check"><input type="checkbox" id="gGrid"> Graticule</label>
-        <label class="check"><input type="checkbox" id="gInset" checked> Locator inset</label>
-      </div>
-      <div class="group">
-        <h3>Annotate</h3>
-        <div class="toolbar" id="annotTools">
-          <button class="tool is-active" data-annot="none" title="Select / move">✥</button>
-          <button class="tool" data-annot="text" title="Text label">T</button>
-          <button class="tool" data-annot="arrow" title="Arrow">↗</button>
-          <button class="tool" data-annot="rect" title="Rectangle">▭</button>
-          <button class="tool" data-annot="ellipse" title="Ellipse">◯</button>
-          <button class="tool" data-annot="line" title="Line">╱</button>
-        </div>
-        <div class="row">
-          <label class="swatch-label">Colour<input type="color" id="annotColor" value="#ffd166"></label>
-          <label class="swatch-label">Size<input type="range" id="annotSize" min="1" max="8" step="0.5" value="3"></label>
-        </div>
-        <div class="row">
-          <button class="btn btn-ghost btn-sm" id="annotUndo">Remove last</button>
-          <button class="btn btn-ghost btn-sm" id="annotClear">Clear all</button>
-        </div>
-      </div>
-      <div class="group">
-        <h3>Export</h3>
-        <label class="field">Resolution
-          <select id="gScaleFactor">
-            <option value="1">1× — screen</option>
-            <option value="2" selected>2× — print / retina</option>
-            <option value="3">3× — poster</option>
-          </select>
-        </label>
-        <button class="btn btn-primary" id="gExport">Save graphic (PNG)</button>
-      </div>
-    </section>
+    <div class="group">
+      <h3>4 · Make it look better</h3>
+      <div id="renderSliders"></div>
+      <div class="presets presets-wide" id="enhancePresets"></div>
+      <div id="enhanceSliders"></div>
+      <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset</button>
+    </div>
   </aside>
 
   <section class="stage">
-    <div class="stage-view" data-view="capture">
-      <div id="map"></div>
-      <div class="map-hint" id="mapHint">Drag on the map to circle your region</div>
-      <div class="map-legend" id="mapLegend" hidden></div>
-      <div class="opacity-dock" id="opacityDock" hidden>
-        <label>Overlay <input type="range" id="overlayOpacity" min="0" max="100" value="100"></label>
-        <button class="btn btn-ghost btn-sm" id="toggleOverlay">Hide</button>
-      </div>
-    </div>
-    <div class="stage-view" data-view="edit" hidden>
-      <div class="canvas-wrap"><canvas id="editCanvas"></canvas></div>
-      <div class="stage-foot" id="editFoot"></div>
-    </div>
-    <div class="stage-view" data-view="timelapse" hidden>
-      <div class="canvas-wrap"><canvas id="animCanvas"></canvas></div>
-      <div class="stage-foot">
-        <input type="range" id="animScrub" min="0" max="0" value="0" step="1">
-        <span id="animLabel"></span>
-      </div>
-    </div>
-    <div class="stage-view" data-view="graphic" hidden>
-      <div class="canvas-wrap"><canvas id="graphicCanvas"></canvas></div>
-      <div class="stage-foot" id="graphicFoot"></div>
+    <div id="map"></div>
+    <div class="map-hint" id="mapHint"></div>
+    <div class="map-legend" id="mapLegend" hidden></div>
+    <div class="opacity-dock" id="opacityDock" hidden>
+      <label>Imagery <input type="range" id="overlayOpacity" min="0" max="100" value="100"></label>
+      <button class="btn btn-ghost btn-sm" id="toggleOverlay">Hide</button>
     </div>
   </section>
 </main>

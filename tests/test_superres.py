@@ -323,16 +323,30 @@ def test_a_refined_grid_covers_the_same_ground_more_finely():
     assert grid.refined(1) is grid
 
 
+def test_more_dates_earn_a_finer_grid():
+    """Merging is one thing: the multiplier follows from how many dates there are."""
+    assert service.auto_scale(1) == 1
+    assert service.auto_scale(2) == 2
+    assert service.auto_scale(4) == 2
+    assert service.auto_scale(5) == 3
+    assert service.auto_scale(9) == 4
+    assert service.auto_scale(40) == config.MAX_SUPERRES
+
+
 def test_the_scale_is_clamped_to_what_the_output_can_hold():
-    scenes = [{"id": "a"}, {"id": "b"}]
+    scenes = [{"id": chr(97 + i)} for i in range(9)]
     small = Grid((-0.1, 51.4, 0.1, 51.6), 512)
     assert service.superres_scale({"superres": 4}, small, scenes) == 4
     big = Grid((-0.1, 51.4, 0.1, 51.6), config.MAX_SIZE // 2)
     assert service.superres_scale({"superres": 4}, big, scenes) == 2
-    # Beyond the honest limit, and with nothing to fuse, it stays switched off.
+    # Beyond the honest limit, and with nothing to merge, it stays switched off.
     assert service.superres_scale({"superres": 9}, small, scenes) == config.MAX_SUPERRES
     assert service.superres_scale({"superres": 3}, small, scenes[:1]) == 1
-    assert service.superres_scale({}, small, scenes) == 1
+    # Left to itself, a merge of nine dates takes the finest step it has earned.
+    assert service.superres_scale({}, small, scenes) == 4
+    assert service.superres_scale({"superres": "auto"}, small, scenes[:2]) == 2
+    # And a caller can still turn it off outright.
+    assert service.superres_scale({"superres": 1}, small, scenes) == 1
 
 
 # ── End to end ─────────────────────────────────────────────────
@@ -349,13 +363,26 @@ def test_render_fuses_the_dates_onto_a_finer_grid(dates, aoi):
     report = meta["superres"]
     assert report["scale"] == 2 and report["scenes"] == len(dates)
     assert report["sub_pixel_dates"] >= 1                  # the passes really differ
-    assert any("super-resolution" in e for e in meta["enhancements"])
+    assert any("2× merge" in e for e in meta["enhancements"])
     assert result["media_type"] == "image/png"
 
 
-def test_render_without_super_resolution_keeps_the_requested_grid(dates, aoi):
+def test_merging_several_dates_sharpens_by_default(dates, aoi):
+    """Ticking more than one date is the whole instruction: no switch needed."""
     result = service.render({
         "aoi": aoi, "scenes": dates, "scene": dates[0],
+        "preset": "true_color", "size": 256, "clip": False,
+    })
+    meta = result["meta"]
+    assert meta["superres"]["scale"] == service.auto_scale(len(dates))
+    assert meta["grid"]["width"] == 256 * meta["superres"]["scale"]
+    # And the same merge reports how much of the frame the extra dates rescued.
+    assert meta["composite_report"]["scenes"] == len(dates)
+
+
+def test_super_resolution_can_be_turned_off(dates, aoi):
+    result = service.render({
+        "aoi": aoi, "scenes": dates, "scene": dates[0], "superres": 1,
         "preset": "true_color", "size": 256, "clip": False,
     })
     assert result["meta"]["grid"]["width"] == 256

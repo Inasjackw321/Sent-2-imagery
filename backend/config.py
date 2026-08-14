@@ -29,8 +29,7 @@ SATELLITE = {
 }
 
 # Synthetic imagery instead of live downloads. Everything the app produces in
-# this mode is watermarked and flagged as fake -- it exists so the UI can be
-# exercised offline.
+# this mode is flagged as fake -- it exists so the UI can be exercised offline.
 DEMO_MODE = os.environ.get("DEMO_MODE", "0").lower() in ("1", "true", "yes", "on")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -60,6 +59,13 @@ DEFAULT_SIZE = 1024
 # same ground to support the extra pixels, so the limit is honest rather than
 # arbitrary. The fused grid is still capped at MAX_SIZE.
 MAX_SUPERRES = 4
+
+# How much finer a merge samples, given the number of dates it has to work
+# with: (dates needed, multiplier), most demanding first. More dates mean more
+# differently-phased looks at the same ground, and so more detail that can
+# honestly be recovered -- nobody should have to work that out for themselves,
+# so the app picks from this table and says what it picked.
+SUPERRES_STEPS = ((9, 4), (5, 3), (2, 2))
 
 # Sentinel-2 scenes processed with baseline 04.00+ carry a -1000 DN offset.
 BOA_OFFSET_DATE = "2022-01-25"
@@ -295,9 +301,4 @@ COLORMAPS = {
         (0.75, 67, 147, 195), (1.00, 5, 48, 97),
     ],
     "gray": [(0.00, 0, 0, 0), (1.00, 255, 255, 255)],
-    # Diverging map for change detection: loss (red) - stable - gain (green).
-    "change": [
-        (0.00, 120, 10, 20), (0.25, 214, 96, 77), (0.50, 245, 245, 240),
-        (0.75, 90, 175, 90), (1.00, 10, 90, 30),
-    ],
 }

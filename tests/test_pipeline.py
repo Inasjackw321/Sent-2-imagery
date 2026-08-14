@@ -241,15 +241,6 @@ def test_colormap_lut_is_monotonic_and_full_range():
     assert tuple(lut[0]) != tuple(lut[-1])
 
 
-def test_class_areas_sum_to_the_valid_area():
-    data = np.ma.masked_array(np.linspace(-1, 1, 10000).reshape(100, 100),
-                              mask=np.zeros((100, 100), bool))
-    classes = composite.class_areas(data, [-0.1, 0.1], ["loss", "stable", "gain"], 100.0)
-    assert sum(c["pixels"] for c in classes) == 10000
-    assert sum(c["percent"] for c in classes) == pytest.approx(100.0, abs=0.1)
-    assert sum(c["area_km2"] for c in classes) == pytest.approx(10000 * 100 / 1e6, rel=1e-6)
-
-
 # ── End to end through the service layer ───────────────────────
 
 
@@ -292,26 +283,6 @@ def test_float_geotiff_preserves_index_values(scene, aoi):
         data = src.read(1)
         assert src.dtypes[0] == "float32"
         assert np.nanmin(data) >= -1.0 and np.nanmax(data) <= 1.0
-
-
-def test_change_detection_reports_gain_loss_and_areas(scene, aoi):
-    later = {**scene, "id": "LATER", "date": "2023-08-20",
-             "datetime": "2023-08-20T11:00:00Z"}
-    # Same imagery on both dates -> everything must land in the stable class.
-    result = service.change_detection({"aoi": aoi, "scene_a": scene, "scene_b": later,
-                                       "index": "ndvi", "size": 128, "threshold": 0.1})
-    meta = result["meta"]
-    stable = next(c for c in meta["classes"] if c["label"] == "Stable")
-    assert stable["percent"] == pytest.approx(100.0, abs=0.1)
-    assert meta["days_apart"] == 66
-    assert meta["scene_a"]["date"] < meta["scene_b"]["date"]
-
-
-def test_change_detection_orders_scenes_by_date(scene, aoi):
-    later = {**scene, "id": "LATER", "date": "2023-08-20"}
-    result = service.change_detection({"aoi": aoi, "scene_a": later, "scene_b": scene,
-                                       "index": "ndvi", "size": 64})
-    assert result["meta"]["scene_a"]["date"] == "2023-06-15"
 
 
 def test_unknown_visualisation_is_rejected(scene, aoi):

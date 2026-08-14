@@ -2,7 +2,7 @@
 // (and offline). Imagery always comes from the network -- never cached.
 
 // Bumped whenever the shell changes, so an installed copy picks the new one up.
-const VERSION = 'sent2-v2';
+const VERSION = 'sent2-v3';
 const SHELL = [
   '/',
   '/css/app.css',
@@ -10,13 +10,8 @@ const SHELL = [
   '/js/api.js',
   '/js/store.js',
   '/js/ui.js',
+  '/js/imagery.js',
   '/js/map.js',
-  '/js/capture.js',
-  '/js/adjust.js',
-  '/js/editor.js',
-  '/js/overlay.js',
-  '/js/timelapse.js',
-  '/js/graphic.js',
   '/js/install.js',
   '/vendor/leaflet/leaflet.js',
   '/vendor/leaflet/leaflet.css',
