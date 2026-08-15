@@ -114,6 +114,43 @@ def from_decibels(band: np.ma.MaskedArray) -> np.ma.MaskedArray:
         mask=np.ma.getmaskarray(band))
 
 
+LUMA = (0.2126, 0.7152, 0.0722)
+
+
+def tone_map(rgb: np.ndarray, gamma: float = 1.0, knee: float = 0.72) -> np.ndarray:
+    """Bring a stretched image into range without bending its colour.
+
+    Gamma and a highlight roll-off applied to each channel on its own are what
+    make satellite imagery drift in colour as it brightens. The three channels
+    are curved separately, so they climb at different rates and the ratios
+    between them -- which is what colour *is* -- come out somewhere else. A red
+    roof lit brightly turns orange; a bright green field turns yellow. Push
+    hard enough and everything converges on white, because each channel
+    saturates in turn.
+
+    Doing it once, to the pixel, avoids all of that. The curve is applied to
+    the brightest of the three channels, and all three are then scaled by the
+    single factor that one changed by. Scaling together leaves their ratios
+    exactly as they were, and the ratios are the colour: both the hue and the
+    saturation come out mathematically untouched, with only the brightness
+    moved.
+
+    The brightest channel rather than the luminance, because the brightest is
+    the one that would have hit white first. Curving that keeps the result
+    inside the gamut by construction -- nothing ever needs clipping, and no
+    colour has to be given up to fit.
+    """
+    rgb = np.asarray(rgb, dtype="float32")
+    peak = rgb.max(axis=-1)
+    safe = np.maximum(peak, 1e-6)
+
+    curved = soft_highlights(peak, knee) if knee < 1.0 else np.clip(peak, 0, 1)
+    curved = apply_gamma(curved, gamma)
+
+    out = rgb * (curved / safe)[..., None]
+    return np.clip(out, 0, 1).astype("float32")
+
+
 def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, np.ndarray, dict]:
     """RGB uint8 + valid mask + per-channel stretch bounds.
 
@@ -172,12 +209,14 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
         else:
             stretched, lo_b, hi_b = stretch_band(bands[key], "fixed", vmin=fixed[0],
                                                  vmax=fixed[1], ceiling=ceiling)
-        if rolloff:
-            stretched = soft_highlights(stretched, knee)
-        channels.append(apply_gamma(stretched, gamma))
+        channels.append(stretched)
         bounds[key] = [round(lo_b, 5), round(hi_b, 5)]
 
-    rgb = (np.stack(channels, axis=-1) * 255).round().astype("uint8")
+    # The curve is applied once, to the whole pixel, rather than three times to
+    # three channels -- which is what keeps the colour where the ground put it.
+    toned = tone_map(np.stack(channels, axis=-1), gamma=gamma,
+                     knee=knee if rolloff else 1.0)
+    rgb = (toned * 255).round().astype("uint8")
     valid = ~np.logical_or.reduce([np.ma.getmaskarray(bands[k]) for k in keys])
     return rgb, valid, {"mode": mode, "gamma": gamma, "knee": knee, "bands": bounds}
 

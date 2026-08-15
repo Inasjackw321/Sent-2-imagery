@@ -738,7 +738,7 @@ async function showImagery() {
     const data = await withBusy(what, () => api.render(body));
     const element = await loadImage(data.image);   // decoded before the map is told
     lastRequest = body;
-    setImage({ src: data.image, meta: data.meta, element });
+    setImage({ src: data.image, meta: data.meta, element, request: body });
     sync();
     toast(describeResult(data.meta), 'ok');
   } catch (err) {

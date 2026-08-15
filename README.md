@@ -9,10 +9,11 @@ Two satellites cover the same ground and answer different questions.
 **Sentinel-1** measures it with radar, through cloud and at night. Either can
 be shown, and both can sit on the map at once so you can fade between them.
 
-Right-click anywhere to find out when each of them next flies over. Switch on
-**live clouds** for today's sky and **active fires** for every thermal
-detection NASA has published in the last day. Highlight part of the imagery to
-take it away as a picture, marked `@Kaldockhi`.
+Click the imagery to read what the satellite actually measured there.
+Right-click for when each satellite next flies over. Switch on **live clouds**
+for today's sky and **active fires** for every thermal detection NASA has
+published in the last day. Put two layers side by side under a divider you
+drag. Highlight part of the picture to take it away, marked `@Kaldockhi`.
 
 That is the whole app. One screen: a map, the dates over your area, and the
 imagery.
@@ -197,6 +198,22 @@ flat grey sand back into sand, without shifting hue. The app opens on the
 **Balanced** preset (haze removal, a little adaptive contrast, detail and
 vibrance) so the first picture already looks right; **Off** gives you the
 untouched stretch.
+
+**The tone curve runs on the pixel, not on the channels** — and it is the
+reason colours stay where the ground put them. Gamma and a highlight roll-off
+applied to red, green and blue separately curve each at a different rate, so
+the ratios between them drift as the ground brightens; and the ratios are what
+colour *is*. A warm roof turns orange, then yellow, then white, because each
+channel saturates in turn. Measured on one surface photographed at rising
+exposure, the hue wandered **21.9°** and the saturation fell from 0.53 to 0.24.
+
+Curving once fixes it. The curve is applied to the brightest of the three
+channels and all three are scaled by the single factor that one changed by:
+scaling together leaves the ratios untouched, so hue and saturation both come
+out exactly as measured — **0.0° of drift**, saturation held at the ground's
+own 0.58 at every exposure. Using the brightest channel rather than the
+luminance also keeps the result inside the gamut by construction, so nothing
+is ever clipped and no colour has to be given up to fit.
 
 **Merging dates** — the big one, and the only thing here that adds detail
 rather than presenting existing detail better. See
@@ -399,6 +416,21 @@ hour of the day you are looking at. One pass a day, and none of the night side.
 Ask for today's mosaic before it has been assembled and the app steps back a
 day and says why, rather than showing you an empty layer.
 
+**Only the cloud arrives.** The tiles are a picture of the whole Earth — land
+and sea as well — so each one is taken apart and everything that is not cloud
+is made transparent before it reaches the map. Two things separate them and it
+takes both: cloud is bright, but so is desert; cloud is also close to
+colourless, because it reflects every visible wavelength about equally, while
+bright ground almost never is. Bright *and* grey is cloud; bright and coloured
+is ground. Checked against known colours, ocean and forest come out at 0.00,
+desert sand at 0.06, thin and thick cloud at 1.00. The **Catch** slider moves
+the brightness needed, so haze can be let in or kept out.
+
+Snow is the honest exception: it is bright and grey too, and nothing written on
+a true-colour picture can tell it from cloud. The panel says so. And because
+only the cloud is drawn, the layer sits *above* the imagery — weather over your
+ground rather than a second basemap under it.
+
 The useful trick is **Match the imagery**: set the cloud layer to the date of
 the Sentinel scene you are looking at, and you can see the weather that pass
 was flying through — why a scene is hazy on one side, or what the cloud your
@@ -555,6 +587,21 @@ haze removal and white balance entirely: those are corrections to light, and
 radar is not light, so leaving them in doing nothing would be a lie about what
 the controls do.
 
+**Click the imagery to read it.** The picture on screen has been stretched,
+curved and coloured to be looked at; underneath it are numbers with units. A
+click goes back to those — reflectance per band and NDVI, NDWI and NDBI for
+Sentinel-2; backscatter in decibels and the VV/VH ratio for Sentinel-1 — so
+ground that looks green can be asked how green it is, and in what. It reads a
+small neighbourhood rather than a lone pixel, which costs the same in HTTP
+range requests and lets it say how uniform the surroundings are.
+
+**Compare side by side.** With two layers on the map, a divider you drag splits
+them. Fading two renders over each other is the obvious thing and the wrong
+one — at 50% you are looking at neither. A hard edge shows both at full
+strength and lets the eye carry detail across it, which is what makes a
+difference obvious: the same field before and after, or the radar answer beside
+the optical one.
+
 Two more layers live in the corner of the map rather than in the sidebar,
 because they are context for the imagery rather than part of building it:
 **Live clouds** and **Active fires**, each with its own fade, time window and
@@ -640,6 +687,7 @@ backend/
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
   js/            map, imagery, fires, clouds, capture, adjust, store, ui, api, install
+                 (map carries the probe, the compare divider and the layer stack)
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows

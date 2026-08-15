@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import config, enhance, service  # noqa: E402
+from backend import composite, config, enhance, service  # noqa: E402
 
 # ── Compositing ────────────────────────────────────────────────
 
@@ -197,3 +197,51 @@ def test_an_unknown_visualisation_is_rejected():
         service.render({**request, "preset": "infrared_sausages"})
     with pytest.raises(service.RenderError, match="Unknown index"):
         service.render({**request, "mode": "index", "index": "ndxyz"})
+
+
+# ── Tone mapping ───────────────────────────────────────────────
+
+
+def _hsv(rgb):
+    import colorsys
+
+    return colorsys.rgb_to_hsv(*[float(v) for v in rgb])
+
+
+def test_the_tone_curve_does_not_bend_the_colour():
+    """Ground of one colour must not change hue as it gets brighter.
+
+    Curving each channel on its own is what makes bright surfaces drift --
+    the three climb at different rates, so the ratios between them, which are
+    the colour, come out somewhere else. Warm sand turns orange, then yellow,
+    then white. Curving the pixel once instead leaves the ratios alone.
+    """
+    ground = np.array([0.62, 0.42, 0.26], dtype="float32")
+    true_hue, true_sat, _ = _hsv(ground)
+
+    for exposure in (0.6, 1.2, 1.6, 2.1, 2.8):
+        pixel = (ground * exposure).astype("float32")[None, None, :]
+        hue, sat, val = _hsv(composite.tone_map(pixel, gamma=1.15, knee=0.72)[0, 0])
+        assert hue == pytest.approx(true_hue, abs=1e-3), f"hue moved at {exposure}x"
+        assert sat == pytest.approx(true_sat, abs=1e-3), f"saturation moved at {exposure}x"
+        assert 0.0 <= val <= 1.0
+
+
+def test_the_tone_curve_still_orders_bright_ground_by_brightness():
+    """Preserving colour must not cost the ability to tell bright from brighter."""
+    dim = composite.tone_map(np.float32([[[0.9, 0.6, 0.4]]]), 1.15, 0.72)[0, 0]
+    bright = composite.tone_map(np.float32([[[1.4, 0.95, 0.62]]]), 1.15, 0.72)[0, 0]
+    assert bright.max() > dim.max()
+    assert bright.max() <= 1.0
+
+
+def test_nothing_ever_needs_clipping():
+    """The brightest channel is the one curved, so the result cannot overflow."""
+    rng = np.random.default_rng(3)
+    wild = (rng.random((32, 32, 3)) * 4).astype("float32")
+    out = composite.tone_map(wild, gamma=1.3, knee=0.7)
+    assert out.max() <= 1.0 and out.min() >= 0.0
+    # And the hue survives even the wildest of it.
+    for a, b in zip(wild.reshape(-1, 3)[:40], out.reshape(-1, 3)[:40]):
+        if a.max() > 1e-3:
+            assert _hsv(a)[0] == pytest.approx(_hsv(b)[0], abs=1e-3)

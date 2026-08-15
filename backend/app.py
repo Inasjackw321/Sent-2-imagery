@@ -135,6 +135,17 @@ def overpasses(
         raise _fail(exc)
 
 
+@app.post("/api/probe")
+def probe(body: dict = Body(...)) -> dict:
+    """What the satellite measured at one point, in its own units."""
+    try:
+        return service.probe(body)
+    except (KeyError, ValueError, service.RenderError) as exc:
+        raise _fail(exc, 400)
+    except (BandReadError, stac.SceneSearchError) as exc:
+        raise _fail(exc)
+
+
 @app.get("/api/fires")
 def active_fires(
     west: float = Query(..., ge=-180, le=180),
