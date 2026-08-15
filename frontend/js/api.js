@@ -22,6 +22,7 @@ export const api = {
   describeAoi: (aoi) => request('/api/aoi', { body: { aoi } }),
   search: (body) => request('/api/search', { body }),
   geocode: (q) => request(`/api/geocode?q=${encodeURIComponent(q)}`, { method: 'GET' }),
+  passes: (lon, lat) => request(`/api/passes?lon=${lon}&lat=${lat}`, { method: 'GET' }),
   render: (body) => request('/api/render', { body }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
 };

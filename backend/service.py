@@ -48,14 +48,34 @@ def _cache_key(*parts) -> str:
 # ── What a render needs ────────────────────────────────────────
 
 
-def _needed_bands(mode: str, preset: str, index: str) -> list[str]:
+def _needed_bands(mode: str, preset: str, index: str, sat: dict) -> list[str]:
     if mode == "index":
-        if index not in config.INDICES:
+        spec = config.INDICES.get(index)
+        if not spec:
             raise RenderError(f"Unknown index {index!r}")
-        return list(config.INDICES[index]["bands"])
-    if preset not in config.COMPOSITES:
+        if spec["sat"] != sat["key"]:
+            raise RenderError(f"{spec['label']} needs {config.satellite(spec['sat'])['short']}")
+        return list(spec["bands"])
+    spec = config.COMPOSITES.get(preset)
+    if not spec:
         raise RenderError(f"Unknown composite {preset!r}")
-    return list(dict.fromkeys(config.COMPOSITES[preset]["bands"]))
+    if spec["sat"] != sat["key"]:
+        raise RenderError(f"{spec['label']} needs {config.satellite(spec['sat'])['short']}")
+    return list(dict.fromkeys(spec["bands"]))
+
+
+def satellite_of(scenes: list[dict]) -> dict:
+    """The satellite a render is about, refusing to mix two of them.
+
+    An optical picture and a radar measurement cannot be averaged together:
+    they are different physical quantities in different units, and the result
+    would mean nothing. Merging is always within one satellite.
+    """
+    keys = {s.get("satellite") or config.DEFAULT_SATELLITE for s in scenes}
+    if len(keys) > 1:
+        names = ", ".join(sorted(config.satellite(k)["short"] for k in keys))
+        raise RenderError(f"One satellite at a time: this mixes {names}")
+    return config.satellite(next(iter(keys), None))
 
 
 def prepare(req: dict):
@@ -93,8 +113,8 @@ def auto_scale(dates: int) -> int:
     return 1
 
 
-def oversampling(grid: Grid) -> float:
-    """How many output pixels the satellite's own 10 m sample spans.
+def oversampling(grid: Grid, resolution: float | None = None) -> float:
+    """How many output pixels the satellite's own resolution cell spans.
 
     This is what decides whether there is anything to super-resolve. Detail
     recoverable by merging lives *between* the satellite's samples, so it only
@@ -104,18 +124,27 @@ def oversampling(grid: Grid) -> float:
     each 10 m measurement covers several output pixels, which is exactly the
     gap the merge fills in.
     """
-    return config.SATELLITE["resolution"] / max(grid.ground_res_m, 1e-6)
+    native = config.SATELLITE["resolution"] if resolution is None else resolution
+    return native / max(grid.ground_res_m, 1e-6)
 
 
-def merge_plan(req: dict, grid: Grid, scenes: list[dict]) -> dict:
+def merge_plan(req: dict, grid: Grid, scenes: list[dict], sat: dict | None = None) -> dict:
     """What merging these dates onto this grid can and cannot do.
 
     The output is always the size that was asked for. Merging makes that size
     *real* rather than making it bigger: the same picture, resolving detail
     that one pass could not, instead of the same detail spread over more
     pixels.
+
+    Radar is the exception, and it is a physical one. Sentinel-1 GRD arrives on
+    a 10 m grid but resolves about 20 m, so it is already over-sampled: there
+    is nothing hiding between its samples to solve for. What merging radar
+    dates does instead is average out the speckle, which is the thing that
+    actually stops a single radar image being readable.
     """
-    over = oversampling(grid)
+    if sat is None:
+        sat = satellite_of(scenes) if scenes else config.satellite()
+    over = oversampling(grid, sat["resolution"])
     supported = auto_scale(len(scenes)) if len(scenes) > 1 else 1
     asked = req.get("superres", "auto")
     # `is True` rather than `== True`: 1 equals True in Python, and a caller
@@ -126,18 +155,21 @@ def merge_plan(req: dict, grid: Grid, scenes: list[dict]) -> dict:
     # Below this the grid is at or coarser than the satellite's own sampling,
     # so the dates have nothing finer to contribute and a plain composite is
     # the honest answer.
-    sharpening = len(scenes) > 1 and supported > 1 and over > 1.2
+    sharpening = (sat["can_superres"] and len(scenes) > 1
+                  and supported > 1 and over > 1.2)
     return {
         "sharpening": sharpening,
         "oversampling": round(over, 2),
-        "supported": supported,
+        "supported": supported if sat["can_superres"] else 1,
+        # Merging radar still buys something worth saying out loud.
+        "despeckling": not sat["can_superres"] and len(scenes) > 1,
         # What the result can actually resolve: the finer of what the grid can
         # hold and what the number of dates justifies.
         "resolves": min(over, supported) if sharpening else 1.0,
     }
 
 
-def _gather(scenes: list[dict], geometry, grid, names, req):
+def _gather(scenes: list[dict], geometry, grid, names, req, sat=None):
     """Read every scene the render needs, merging them if there is more than one.
 
     Two ways of merging, and they answer different questions. The composite
@@ -146,7 +178,7 @@ def _gather(scenes: list[dict], geometry, grid, names, req):
     by reading every date onto a finer grid, where each one lands its samples
     at a slightly different place, and solving for the detail they jointly saw.
     """
-    plan = merge_plan(req, grid, scenes)
+    plan = merge_plan(req, grid, scenes, sat)
 
     stacks = []
     clouds = []
@@ -174,13 +206,24 @@ def _gather(scenes: list[dict], geometry, grid, names, req):
 
     # One date, or a grid no finer than the satellite sampled it: nothing to
     # sharpen, so the middle of the stack is the best answer available.
-    merged = enhance.composite(stacks, "median") if len(stacks) > 1 else stacks[0]
+    #
+    # Radar takes the mean instead. Speckle is a random multiplier on every
+    # pixel, which in decibels is an additive error with no bias -- averaging
+    # divides it by the square root of the number of dates, where the median
+    # would only throw away the extremes. There is no cloud to reject, so
+    # nothing is lost by preferring the average.
+    method = "mean" if plan.get("despeckling") else "median"
+    merged = enhance.composite(stacks, method) if len(stacks) > 1 else stacks[0]
     return merged, cloud_fraction, report, None, grid
 
 
-def _enhance_bands(bands: dict, req: dict, applied: list[str]) -> dict:
+def _enhance_bands(bands: dict, req: dict, applied: list[str],
+                   optical: bool = True) -> dict:
     """Corrections that belong in reflectance, before any stretch."""
-    if req.get("haze_removal"):
+    # Haze is an atmospheric effect on light. Radar goes straight through the
+    # atmosphere, so subtracting a dark object from a decibel figure would not
+    # be removing anything -- it would just be moving the numbers.
+    if req.get("haze_removal") and optical:
         bands = enhance.dark_object_subtraction(
             bands, percentile=float(req.get("haze_percentile", 1.0)),
             strength=float(req.get("haze_removal")))
@@ -237,24 +280,30 @@ def _enhance_rgb(rgb: np.ndarray, req: dict, applied: list[str],
 def render(req: dict) -> dict:
     geometry, grid = prepare(req)
 
-    scenes = req.get("scenes") or [req.get("scene") or stac.get_scene(req["scene_id"])]
+    scenes = req.get("scenes") or [
+        req.get("scene")
+        or stac.get_scene(req["scene_id"], req.get("satellite"))
+    ]
     if not scenes:
         raise RenderError("No date selected")
 
+    sat = satellite_of(scenes)
     mode = req.get("mode", "composite")
-    preset = req.get("preset") or config.SATELLITE["default_composite"]
-    index_name = req.get("index", "ndvi")
-    names = _needed_bands(mode, preset, index_name)
+    preset = req.get("preset") or sat["default_composite"]
+    index_name = req.get("index") or ("radar_ratio" if sat["kind"] == "radar" else "ndvi")
+    names = _needed_bands(mode, preset, index_name, sat)
 
     applied: list[str] = []
     bands, cloud_fraction, composite_report, sr_report, grid = _gather(
-        scenes, geometry, grid, names, req)
+        scenes, geometry, grid, names, req, sat)
     if sr_report:
         applied.append(f"{sr_report['scale']}× merge of {sr_report['scenes']} dates")
     elif len(scenes) > 1:
-        applied.append(f"median merge of {len(scenes)} dates")
+        applied.append(
+            f"speckle-averaged over {len(scenes)} passes" if sat["kind"] == "radar"
+            else f"median merge of {len(scenes)} dates")
 
-    bands = _enhance_bands(bands, req, applied)
+    bands = _enhance_bands(bands, req, applied, optical=sat["kind"] == "optical")
 
     legend = None
     stats = None
@@ -290,7 +339,8 @@ def render(req: dict) -> dict:
     meta = {
         "scene": {k: v for k, v in scenes[0].items() if k != "assets"},
         "scenes": [{"id": s["id"], "date": s["date"], "cloud": s.get("cloud")} for s in scenes],
-        "source": satellite_meta(),
+        "satellite": sat["key"],
+        "source": satellite_meta(sat["key"]),
         "grid": grid.as_dict(),
         "mode": mode,
         "preset": preset if mode == "composite" else None,
@@ -308,9 +358,9 @@ def render(req: dict) -> dict:
         # Pixel size is not resolution. A small area asked for at 2048 px has
         # tiny pixels and still cannot resolve anything Sentinel-2 did not: the
         # honest figure is the satellite's 10 m, divided by what the merge won.
-        "native_res_m": config.SATELLITE["resolution"],
+        "native_res_m": sat["resolution"],
         "effective_res_m": round(
-            config.SATELLITE["resolution"] / (sr_report["scale"] if sr_report else 1), 2),
+            sat["resolution"] / (sr_report["scale"] if sr_report else 1), 2),
         "cloud_masked_pct": round(cloud_fraction * 100, 2) if req.get("mask_clouds") else 0.0,
         "valid_pct": round(float(valid.mean()) * 100, 2),
         "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
@@ -320,7 +370,9 @@ def render(req: dict) -> dict:
     return {"bytes": payload, "media_type": media, "meta": meta}
 
 
-def satellite_meta() -> dict:
+def satellite_meta(key: str | None = None) -> dict:
     """Who took the picture — carried on every render for the credit line."""
-    return {k: config.SATELLITE[k] for k in
-            ("label", "platform", "resolution", "attribution", "provider")}
+    sat = config.satellite(key)
+    return {k: sat[k] for k in
+            ("key", "short", "label", "kind", "platform", "resolution",
+             "units", "attribution", "provider")}

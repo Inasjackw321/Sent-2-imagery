@@ -10,6 +10,8 @@ export const store = {
   selected: new Set(),   // ids of the dates ticked for merging
   activeDateId: null,    // the one date shown when nothing is merged
   image: null,           // the imagery on screen: { src, meta, element }
+  images: new Map(),     // the latest render from each satellite, by key
+  adjustments: {},       // the picture adjustments currently on screen
 };
 
 export function on(event, fn) {

@@ -23,7 +23,7 @@ class BandReadError(RuntimeError):
     pass
 
 
-def sampling_for(grid: Grid, merging: bool) -> Resampling:
+def sampling_for(grid: Grid, merging: bool, resolution: float | None = None) -> Resampling:
     """How to land the satellite's pixels on the output grid.
 
     The choice matters more than it looks. Going the other way -- a wide area
@@ -35,36 +35,72 @@ def sampling_for(grid: Grid, merging: bool) -> Resampling:
     the fusion does the rest. For one date there is nothing to fuse, so cubic
     gives the smoothest honest enlargement.
     """
-    if grid.ground_res_m >= config.SATELLITE["resolution"]:
+    native = config.SATELLITE["resolution"] if resolution is None else resolution
+    if grid.ground_res_m >= native:
         return Resampling.bilinear                  # downsampling: average
     return Resampling.nearest if merging else Resampling.cubic
 
 
-def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = False,
-               merging: bool = False):
-    """Return {band: masked float32 array} on the grid, as reflectance.
+def _resolve_assets(scene: dict, bands: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Which bands must be read, and where each one lives.
 
-    Each band is read only over the area asked for, straight out of the
-    cloud-optimised GeoTIFF, and reprojected onto the output grid as it is
-    read -- so a 20 m band and a 10 m one land on the same pixels. The
-    fraction of pixels dropped by cloud masking comes back alongside.
+    A derived band is not on the satellite: it is arithmetic on two that are,
+    so its inputs get read in its place and it is worked out afterwards.
     """
-    bands = list(dict.fromkeys(bands))
-    sampling = sampling_for(grid, merging)
-
-    if scene.get("demo"):
-        return _demo_bands(scene, grid, bands, mask_clouds, sampling)
-
+    sat = config.satellite(scene.get("satellite"))
     unknown = [b for b in bands if b not in config.BANDS]
     if unknown:
-        raise BandReadError(f"Sentinel-2 has no {', '.join(unknown)} band")
+        raise BandReadError(f"{sat['short']} has no {', '.join(unknown)} band")
+
+    wrong = [b for b in bands if config.BANDS[b]["sat"] != sat["key"]]
+    if wrong:
+        raise BandReadError(
+            f"{', '.join(wrong)} is not a {sat['short']} band")
+
+    needed: list[str] = []
+    for band in bands:
+        needed.extend(config.BANDS[band].get("derive") or (band,))
+    needed = list(dict.fromkeys(needed))
 
     targets = {}
-    for band in bands:
+    for band in needed:
         asset = config.BANDS[band]["asset"]
         if asset not in scene.get("assets", {}):
             raise BandReadError(f"Scene {scene['id']} is missing its {asset} asset")
         targets[band] = scene["assets"][asset]
+    return needed, targets
+
+
+def _add_derived(out: dict, bands: list[str]) -> dict:
+    for band in bands:
+        parts = config.BANDS[band].get("derive")
+        if not parts or band in out:
+            continue
+        first, second = (out[p] for p in parts)
+        out[band] = np.ma.masked_array(
+            (first.data - second.data).astype("float32"),
+            mask=np.ma.getmaskarray(first) | np.ma.getmaskarray(second))
+    return {band: out[band] for band in bands}
+
+
+def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = False,
+               merging: bool = False):
+    """Return {band: masked float32 array} on the grid, in physical units.
+
+    Each band is read only over the area asked for, straight out of the
+    cloud-optimised GeoTIFF, and reprojected onto the output grid as it is
+    read -- so a 20 m band and a 10 m one land on the same pixels. Sentinel-2
+    comes back as surface reflectance and Sentinel-1 as decibels. The fraction
+    of pixels dropped by cloud masking comes back alongside.
+    """
+    bands = list(dict.fromkeys(bands))
+    sat = config.satellite(scene.get("satellite"))
+    sampling = sampling_for(grid, merging, sat["resolution"])
+
+    if scene.get("demo"):
+        return _demo_bands(scene, grid, bands, mask_clouds, sampling)
+
+    needed, targets = _resolve_assets(scene, bands)
 
     want_mask = mask_clouds and config.SCL_ASSET in scene.get("assets", {})
 
@@ -76,9 +112,11 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
             mask_future = (pool.submit(_read_one, scene["assets"][config.SCL_ASSET],
                                        grid, Resampling.nearest) if want_mask else None)
 
-            out = {band: _to_reflectance(fut.result(), scene)
+            out = {band: _to_physical(fut.result(), scene)
                    for band, fut in futures.items()}
             scl = mask_future.result() if mask_future else None
+
+    out = _add_derived(out, bands)
 
     cloud_fraction = 0.0
     if scl is not None:
@@ -110,11 +148,29 @@ def _read_one(href: str, grid: Grid, resampling: Resampling):
         raise BandReadError(f"Could not read {href.rsplit('/', 1)[-1]}: {exc}") from exc
 
 
-def _to_reflectance(raw, scene: dict) -> np.ma.MaskedArray:
-    """Stored numbers to surface reflectance, 0 to 1."""
+def _to_physical(raw, scene: dict) -> np.ma.MaskedArray:
+    """Stored numbers to the units the band is actually in."""
+    if config.satellite(scene.get("satellite"))["kind"] == "radar":
+        return _to_decibels(raw)
     data = np.ma.filled(raw.astype("float32"), 0.0) + stac.boa_offset(scene)
     return np.ma.masked_array((data * config.REFLECTANCE_SCALE).astype("float32"),
                               mask=np.ma.getmaskarray(raw))
+
+
+def _to_decibels(raw) -> np.ma.MaskedArray:
+    """Sentinel-1 GRD amplitude to decibels.
+
+    The stored number is amplitude; squaring it gives power, and radar is
+    always looked at on a log scale because backscatter spans four orders of
+    magnitude between still water and a city. Working in decibels is also what
+    makes averaging dates behave: speckle is multiplicative noise, so in the
+    log it is additive and simply averages out.
+    """
+    amplitude = np.ma.filled(raw.astype("float32"), 0.0)
+    zero = amplitude <= 0                      # no data, not a silent target
+    power = np.maximum(amplitude, config.S1_FLOOR_DN) ** 2
+    db = (10.0 * np.log10(power)).astype("float32")
+    return np.ma.masked_array(db, mask=np.ma.getmaskarray(raw) | zero)
 
 
 # ── Area of interest ───────────────────────────────────────────
@@ -163,6 +219,17 @@ _ENDMEMBERS = {
                  swir16=.08, swir22=.04),
 }
 
+# The same ground seen by radar, in decibels. Still water reflects the pulse
+# away from the satellite and comes back almost black; buildings line up
+# corners with it and come back brightest of all.
+_RADAR_ENDMEMBERS = {
+    "water": dict(vv=-22.0, vh=-28.0),
+    "veg": dict(vv=-8.5, vh=-14.5),
+    "soil": dict(vv=-12.0, vh=-20.0),
+    "urban": dict(vv=-2.5, vh=-9.0),
+    "snow": dict(vv=-14.0, vh=-20.0),
+}
+
 
 def _fbm(x: np.ndarray, y: np.ndarray, seed: float, octaves: int = 5) -> np.ndarray:
     total = np.zeros_like(x)
@@ -184,7 +251,8 @@ def _fbm(x: np.ndarray, y: np.ndarray, seed: float, octaves: int = 5) -> np.ndar
 
 
 def _as_the_satellite_saw_it(field: np.ndarray, grid: Grid, phase: float,
-                             sampling: Resampling) -> np.ndarray:
+                             sampling: Resampling,
+                             resolution: float | None = None) -> np.ndarray:
     """Put a synthetic field through the satellite's sampling.
 
     Without this the demo would generate its imagery straight onto whatever
@@ -195,7 +263,8 @@ def _as_the_satellite_saw_it(field: np.ndarray, grid: Grid, phase: float,
     the demo behave like the real thing, including the part where each date
     lands its footprint in a slightly different place.
     """
-    span = config.SATELLITE["resolution"] / max(grid.ground_res_m, 1e-6)
+    native = config.SATELLITE["resolution"] if resolution is None else resolution
+    span = native / max(grid.ground_res_m, 1e-6)
     if span <= 1.2:                        # grid already coarser than the sensor
         return field
 
@@ -258,6 +327,9 @@ def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool,
     # place, which is the whole reason merging them can recover detail.
     phase = (date_seed % 97) / 97.0
 
+    if config.satellite(scene.get("satellite"))["kind"] == "radar":
+        return _demo_radar(fractions, grid, phase, sampling, bands, date_seed), 0.0
+
     out = {}
     for band in bands:
         acc = np.zeros((h, w), dtype="float32")
@@ -287,6 +359,35 @@ def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool,
                 out[band] = np.ma.masked_array(out[band].data, mask=cloudy)
 
     return out, cloud_fraction
+
+
+def _demo_radar(fractions: dict, grid: Grid, phase: float, sampling: Resampling,
+                bands: list[str], date_seed: int) -> dict:
+    """The same synthetic ground, measured by radar instead of photographed.
+
+    The part that matters for the demo is the speckle. Radar illuminates the
+    ground with a coherent pulse, so scatterers inside one resolution cell
+    interfere and every pixel comes back multiplied by a random factor -- the
+    grain that makes a single radar image hard to read. It is independent from
+    one pass to the next, which is why merging dates cleans it up, and the demo
+    has to have it or merging Sentinel-1 would look pointless.
+    """
+    h, w = grid.shape
+    out = {}
+    rng = np.random.default_rng(date_seed)
+    for band in ("vv", "vh"):
+        acc = np.zeros((h, w), dtype="float32")
+        for name, frac in fractions.items():
+            acc += frac * _RADAR_ENDMEMBERS[name][band]
+        # Radar resolves about 20 m however fine the grid it is delivered on,
+        # which is exactly why merging its passes cannot sharpen it.
+        acc = _as_the_satellite_saw_it(acc, grid, phase, sampling,
+                                       config.satellite("sentinel-1")["resolution"])
+        # Multi-looked speckle: near-Gaussian in the log, about 1.7 dB wide.
+        acc = acc + rng.normal(0.0, 1.7, size=(h, w)).astype("float32")
+        out[band] = np.ma.masked_array(acc.astype("float32"),
+                                       mask=np.zeros((h, w), dtype=bool))
+    return _add_derived(out, bands)
 
 
 def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:

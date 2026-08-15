@@ -117,7 +117,7 @@ html, body {
    The heading, the hint and the mode picker stay live: choosing one date or a
    merge is the first decision, and it should be available before there is an
    area to apply it to. */
-.group.is-locked > *:not(h3):not(.modes):not(.hint):not(.empty) {
+.group.is-locked > *:not(h3):not(.modes):not(.sats):not(.hint):not(.empty) {
   opacity: .4; pointer-events: none;
 }
 .hint { margin: -2px 0 10px; font-size: 12px; color: var(--ink-faint); line-height: 1.4; }
@@ -285,14 +285,63 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .map-legend .bar { height: 9px; border-radius: 3px; margin: 6px 0 4px; }
 .map-legend .ends { display: flex; justify-content: space-between; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
-.opacity-dock {
+/* One row per satellite on the map, so radar and optical can be faded against
+   each other over the same ground. */
+.layer-dock {
   position: absolute; left: 14px; bottom: 34px; z-index: 500;
-  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+  display: grid; gap: 6px; padding: 8px 10px;
   border-radius: 10px; background: rgba(13,16,21,.88); border: 1px solid var(--line);
   font-size: 12px; color: var(--ink-dim); backdrop-filter: blur(6px);
 }
-.opacity-dock input { accent-color: var(--accent); width: 110px; }
-.opacity-dock .btn { width: auto; margin: 0; }
+.layer-row { display: flex; align-items: center; gap: 9px; }
+.layer-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.layer-name { min-width: 92px; color: var(--ink); }
+.layer-name small { display: block; color: var(--ink-faint); font-size: 10.5px; }
+.layer-row input { accent-color: var(--accent); width: 104px; }
+.layer-x {
+  background: transparent; border: 0; color: var(--ink-faint);
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.layer-x:hover { color: var(--danger); }
+
+/* Right-click anywhere: when each satellite next comes over. */
+.pass-popup .leaflet-popup-content-wrapper {
+  background: rgba(13,16,21,.95); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.6);
+}
+.pass-popup .leaflet-popup-tip { background: rgba(13,16,21,.95); border: 1px solid var(--line); }
+.pass-popup .leaflet-popup-content { margin: 11px 13px; font-size: 12.5px; }
+.pass-popup a.leaflet-popup-close-button { color: var(--ink-faint); }
+.passes-head {
+  font-variant-numeric: tabular-nums; color: var(--ink-faint);
+  font-size: 11px; letter-spacing: .04em; margin-bottom: 8px;
+}
+.passes-wait { color: var(--ink-dim); }
+.pass { padding: 7px 0; border-top: 1px solid var(--line); }
+.pass-name { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.pass-next { margin-top: 2px; color: var(--ink-dim); }
+.pass-next b { color: var(--accent-2); }
+.pass-last { margin-top: 2px; font-size: 11px; color: var(--ink-faint); }
+.passes-foot {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 10.5px; line-height: 1.4; color: var(--ink-faint);
+}
+
+/* Which satellite: the choice above everything else in step 2. */
+.sats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+.sat {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 4px; cursor: pointer; font: inherit; font-size: 12px;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--ink-dim);
+}
+.sat:hover { color: var(--ink); border-color: #3a4a66; }
+.sat.is-active { color: var(--ink); background: #17273a; }
+.sat .layer-dot { width: 7px; height: 7px; }
+.sat-dots { display: inline-flex; gap: 3px; }
+
+.scene-sat { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+.scene-cloud.is-radar { color: var(--ink-faint); }
 
 /* ── Feedback ──────────────────────────────────────────────── */
 
@@ -325,3 +374,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 
 /* Enhancement controls */
 .presets-wide { grid-template-columns: repeat(3, 1fr); margin-bottom: 6px; }
+
+/* A control that cannot bite on the current satellite: shown, but faded, so
+   its setting is not mistaken for something that is being applied. */
+.is-moot { opacity: .4; }

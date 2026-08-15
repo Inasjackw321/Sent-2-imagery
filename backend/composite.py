@@ -157,7 +157,10 @@ def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:
     b = {k: v.astype("float32") for k, v in bands.items()}
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        if name == "evi":
+        if name == "radar_ratio":
+            # Already in decibels, so subtracting is dividing.
+            out = b["vv"] - b["vh"]
+        elif name == "evi":
             num = b["nir"] - b["red"]
             den = b["nir"] + 6.0 * b["red"] - 7.5 * b["blue"] + 1.0
             out = 2.5 * num / den

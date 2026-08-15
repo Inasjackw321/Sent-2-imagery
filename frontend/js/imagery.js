@@ -1,9 +1,13 @@
-// The whole app: pick a place, pick dates, look at the imagery.
+// The whole app: pick a place, pick a satellite and dates, look at the imagery.
 //
-// Two ways to look at it, chosen up front because they are genuinely different
-// questions. One date is what the satellite saw on a day. A merge is what the
-// ground looks like, put together from several passes: sharper, and without
-// the cloud any single pass happened to have over it.
+// Two satellites fly over the same ground and answer different questions.
+// Sentinel-2 photographs it, in daylight, when there is no cloud in the way.
+// Sentinel-1 measures it with radar, through cloud and at night. Either can be
+// shown, and both can sit on the map at once.
+//
+// Then two ways to look at whichever one you picked, because they too are
+// genuinely different questions. One date is what the satellite saw on a day.
+// A merge is what the ground looks like, put together from several passes.
 
 import { api } from './api.js';
 import { store, on, setImage } from './store.js';
@@ -19,13 +23,18 @@ let adjustControls = {};
 let cloudControl = null;
 let lastRequest = null;
 let mode = 'single';                     // 'single' | 'merge'
+let satFilter = 'sentinel-2';            // which satellites the dates come from
+let satShown = 'sentinel-2';             // which one the next render is of
 
 // The map never shows more than a screenful, so the live preview is built at
 // this size however big the render is. Saving uses the full thing.
 const PREVIEW_MAX = 1600;
 
 const ENHANCE_SPECS = [
+  // Haze and white balance are corrections to light. Radar is not light, so
+  // these two are left out of its panel rather than left in doing nothing.
   { key: 'haze_removal', label: 'Haze removal', min: 0, max: 1, step: 0.05, value: 0,
+    opticalOnly: true,
     format: (v) => (v ? `${Math.round(v * 100)}%` : 'off') },
   { key: 'adaptive_contrast', label: 'Adaptive contrast', min: 0, max: 5, step: 0.25, value: 0,
     format: (v) => (v ? v.toFixed(2) : 'off') },
@@ -34,6 +43,7 @@ const ENHANCE_SPECS = [
   { key: 'vibrance', label: 'Vibrance', min: 0, max: 1, step: 0.05, value: 0,
     format: (v) => (v ? v.toFixed(2) : 'off') },
   { key: 'white_balance', label: 'White balance', min: 0, max: 1, step: 0.05, value: 0,
+    opticalOnly: true,
     format: (v) => (v ? `${Math.round(v * 100)}%` : 'off') },
   { key: 'denoise', label: 'Denoise', min: 0, max: 1, step: 0.05, value: 0,
     format: (v) => (v ? v.toFixed(2) : 'off') },
@@ -54,23 +64,65 @@ const ADJUST_SPECS = [
   { key: 'vignette', label: 'Vignette', min: 0, max: 80, step: 1, value: 0 },
 ];
 
-// Starting points that suit different jobs.
+// Starting points that suit different jobs. Radar gets its own set: haze
+// removal and white balance are corrections to light, and radar is not light.
 const ENHANCE_PRESETS = {
-  Off: {},
-  Balanced: { haze_removal: 0.8, adaptive_contrast: 1.8, sharpen: 0.45, vibrance: 0.2 },
-  Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.7, vibrance: 0.45 },
-  Detail: { haze_removal: 0.9, adaptive_contrast: 2.5, sharpen: 0.9, vibrance: 0.15 },
-  Hazy_day: { haze_removal: 1, adaptive_contrast: 2, white_balance: 0.6, sharpen: 0.3 },
-  Natural: { haze_removal: 0.5, white_balance: 0.35 },
+  optical: {
+    Off: {},
+    Balanced: { haze_removal: 0.8, adaptive_contrast: 1.8, sharpen: 0.45, vibrance: 0.2 },
+    Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.7, vibrance: 0.45 },
+    Detail: { haze_removal: 0.9, adaptive_contrast: 2.5, sharpen: 0.9, vibrance: 0.15 },
+    Hazy_day: { haze_removal: 1, adaptive_contrast: 2, white_balance: 0.6, sharpen: 0.3 },
+    Natural: { haze_removal: 0.5, white_balance: 0.35 },
+  },
+  radar: {
+    Off: {},
+    Smooth: { denoise: 0.55, adaptive_contrast: 1.2 },
+    Balanced: { denoise: 0.35, adaptive_contrast: 1.8, sharpen: 0.3 },
+    Detail: { denoise: 0.15, adaptive_contrast: 2.5, sharpen: 0.6 },
+  },
 };
+
+const DEFAULT_PRESET = { optical: 'Balanced', radar: 'Balanced' };
 
 const MODE_HINTS = {
-  single: 'One pass, exactly as the satellite recorded it. Pick the date you want.',
-  merge: 'Several passes solved into one picture — finer than 10 m, and with the '
-    + 'cloud from any one date taken out by the others. Tick the dates to use.',
+  optical: {
+    single: 'One pass, exactly as the satellite recorded it. Pick the date you want.',
+    merge: 'Several passes solved into one picture — finer than 10 m, and with the '
+      + 'cloud from any one date taken out by the others. Tick the dates to use.',
+  },
+  radar: {
+    single: 'One radar pass, exactly as it was measured. Cloud makes no difference to it.',
+    merge: 'Several passes averaged. Radar speckle is different every pass, so '
+      + 'averaging cancels it — the picture gets cleaner, not finer.',
+  },
 };
 
+// The one-line promise on each mode card. Merging radar buys something real,
+// but not the thing merging optical buys, and the card must not say otherwise.
+const MODE_SUB = {
+  optical: { single: 'A single pass, as taken', merge: 'Sharper, cloud removed' },
+  radar: { single: 'A single pass, as measured', merge: 'Cleaner, speckle averaged' },
+};
+
+const SAT_HINTS = {
+  'sentinel-2': 'Optical, 10 m, daylight only — and only where there is no cloud.',
+  'sentinel-1': 'Radar, ~20 m, through cloud and at night. Brightness is roughness, '
+    + 'not colour: still water is black, towns are white.',
+  both: 'Every pass from both, newest first. A render uses one satellite; put the '
+    + 'other on the map too and fade between them.',
+};
+
+/** The satellite the next render will be of, and its record from the config. */
+export const activeSat = () => store.config.satellites[satShown]
+  ?? store.config.satellites[store.config.default_satellite];
+
+const isRadar = () => activeSat().kind === 'radar';
+const family = () => (isRadar() ? 'radar' : 'optical');
+
 export function initImagery() {
+  satFilter = satShown = store.config.default_satellite ?? 'sentinel-2';
+
   const today = new Date();
   const yearAgo = new Date(today.getTime() - 365 * 864e5);
   $('#dateEnd').value = today.toISOString().slice(0, 10);
@@ -80,6 +132,7 @@ export function initImagery() {
     key: 'cloud', label: 'Maximum cloud cover', min: 0, max: 100, step: 5, value: 30, unit: '%',
   }], sync);
 
+  buildSatellitePicker();
   buildVisualisationOptions();
   buildRenderSliders();
   buildEnhanceControls();
@@ -88,9 +141,7 @@ export function initImagery() {
   // Raw Sentinel-2 reads milky and blue-grey: the atmosphere is still in it.
   // Balanced takes that out and gives the colour back, which is what the
   // imagery should look like before anyone touches a slider.
-  applyEnhancePreset('Balanced');
-  $$('#enhancePresets .preset')
-    .find((b) => b.textContent === 'Balanced')?.classList.add('is-active');
+  applyEnhancePreset(DEFAULT_PRESET[family()]);
 
   $$('#modePicker .mode').forEach((btn) =>
     btn.addEventListener('click', () => setMode(btn.dataset.mode)));
@@ -116,7 +167,72 @@ export function initImagery() {
   });
   // A new render is a new picture: the adjustments stay, and are re-applied.
   on('image', applyAdjustments);
+  // A layer taken off the map changes what there is left to save or copy.
+  on('layers', sync);
   setMode('single');
+}
+
+// ── Which satellite ────────────────────────────────────────────
+
+function buildSatellitePicker() {
+  const host = $('#satPicker');
+  host.innerHTML = '';
+  const keys = Object.keys(store.config.satellites);
+  const options = [...keys.map((k) => ({ key: k, label: store.config.satellites[k].short })),
+    { key: 'both', label: 'Both' }];
+
+  for (const opt of options) {
+    const dots = opt.key === 'both'
+      ? keys.map((k) => el('span', { class: 'layer-dot',
+        style: `background:${store.config.satellites[k].colour}` }))
+      : [el('span', { class: 'layer-dot',
+        style: `background:${store.config.satellites[opt.key].colour}` })];
+    host.append(el('button', {
+      class: 'sat', dataset: { sat: opt.key },
+      onclick: () => setSatellite(opt.key),
+    }, el('span', { class: 'sat-dots' }, ...dots), opt.label));
+  }
+  markSatellite();
+}
+
+function setSatellite(key) {
+  if (key === satFilter) return;
+  satFilter = key;
+  // "Both" lists everything but a render is still of one satellite, so the
+  // one on show only changes when the choice actually names one.
+  if (key !== 'both') satShown = key;
+  markSatellite();
+  onSatelliteChanged();
+  if (store.aoi) runSearch();
+  else { store.dates = []; renderDateList(); sync(); }
+}
+
+function markSatellite() {
+  $$('#satPicker .sat').forEach((b) =>
+    b.classList.toggle('is-active', b.dataset.sat === satFilter));
+  $('#satHint').textContent = SAT_HINTS[satFilter] ?? '';
+}
+
+/** What each mode card promises, which depends on the satellite. */
+function paintModeCards() {
+  for (const card of $$('#modePicker .mode')) {
+    card.querySelector('small').textContent = MODE_SUB[family()][card.dataset.mode];
+  }
+  $('#modeHint').textContent = MODE_HINTS[family()][mode];
+}
+
+/** Everything downstream of the satellite: what to show, and how to tune it. */
+function onSatelliteChanged() {
+  buildVisualisationOptions();
+  buildRenderSliders();
+  buildEnhanceControls();
+  applyEnhancePreset(DEFAULT_PRESET[family()]);
+  paintModeCards();
+  // Cloud is a property of light. Filtering radar by it would be meaningless,
+  // so the control says so rather than quietly doing nothing.
+  $('#cloudSlider').classList.toggle('is-moot', satFilter === 'sentinel-1');
+  updateHint();
+  sync();
 }
 
 // ── One date, or several merged ────────────────────────────────
@@ -124,7 +240,7 @@ export function initImagery() {
 function setMode(next) {
   mode = next;
   $$('#modePicker .mode').forEach((b) => b.classList.toggle('is-active', b.dataset.mode === next));
-  $('#modeHint').textContent = MODE_HINTS[next];
+  paintModeCards();
   $('#tickRow').hidden = next !== 'merge' || !store.dates.length;
 
   if (next === 'merge' && store.selected.size < 2) {
@@ -150,6 +266,21 @@ function chosenDates() {
     .sort((a, b) => b.date.localeCompare(a.date));
 }
 
+const satOf = (date) => date?.satellite ?? store.config.default_satellite;
+
+/**
+ * Follow the dates: whichever satellite took them is the one being shown.
+ *
+ * With both satellites listed, picking a radar date is itself the choice of
+ * radar, and everything downstream -- the visualisations on offer, the tuning
+ * presets, what a merge is even for -- has to follow it.
+ */
+function useSatellite(key) {
+  if (!key || key === satShown) return;
+  satShown = key;
+  onSatelliteChanged();
+}
+
 /**
  * What a merge of `count` dates would resolve at the current size.
  *
@@ -157,22 +288,29 @@ function chosenDates() {
  * render will actually deliver. A merge does not make the picture bigger; it
  * makes the size you asked for real. What it can resolve is limited by two
  * things at once: how many dates there are, and whether the output grid is
- * even finer than the satellite's own 10 m -- there is nothing hiding between
- * the satellite's samples if a pixel covers more ground than one of them.
+ * even finer than the satellite's own resolution -- there is nothing hiding
+ * between the samples if a pixel covers more ground than one of them.
+ *
+ * Radar never sharpens. Sentinel-1 is delivered on a grid finer than it can
+ * resolve, so there is nothing between its samples to solve for; merging its
+ * passes averages the speckle out instead, which is worth just as much.
  */
 function mergePlan(count) {
-  const native = store.config.satellite.resolution;
+  const sat = activeSat();
+  const native = sat.resolution;
   const extent = store.aoiInfo?.extent_m;
   const metresPerPixel = extent ? Math.max(...extent) / renderSize() : native;
   const over = native / metresPerPixel;
 
   const steps = store.config.superres_steps ?? [[9, 4], [5, 3], [2, 2]];
-  const supported = count >= 2 ? (steps.find(([needed]) => count >= needed)?.[1] ?? 1) : 1;
+  const supported = count >= 2 && sat.can_superres
+    ? (steps.find(([needed]) => count >= needed)?.[1] ?? 1) : 1;
   const sharpening = count >= 2 && supported > 1 && over > 1.2;
   return {
     sharpening,
     supported,
     metresPerPixel,
+    despeckling: count >= 2 && !sat.can_superres,
     resolves: sharpening ? Math.min(over, supported) : 1,
     // What raising the size would buy, when the grid is the limit.
     sizeLimited: count >= 2 && supported > 1 && over < supported,
@@ -183,19 +321,30 @@ const renderSize = () => parseInt($('#renderSize').value, 10);
 
 // ── What to show ───────────────────────────────────────────────
 
+/** Only what this satellite's bands can actually make. */
 function buildVisualisationOptions() {
-  const { composites, indices, satellite } = store.config;
+  const { composites, indices } = store.config;
+  const sat = activeSat();
+  const wanted = $('#renderMode').value;
   const compGroup = $('#optComposites');
   const idxGroup = $('#optIndices');
   compGroup.innerHTML = idxGroup.innerHTML = '';
 
   for (const [key, spec] of Object.entries(composites)) {
+    if (spec.sat !== sat.key) continue;
     compGroup.append(el('option', { value: `composite:${key}` }, spec.label));
   }
   for (const [key, spec] of Object.entries(indices)) {
+    if (spec.sat !== sat.key) continue;
     idxGroup.append(el('option', { value: `index:${key}` }, spec.label));
   }
-  $('#renderMode').value = `composite:${satellite.default_composite}`;
+  idxGroup.hidden = !idxGroup.children.length;
+
+  // Keep the choice across a satellite change where it still exists; fall back
+  // to the satellite's own default rather than to whatever sorts first.
+  const select = $('#renderMode');
+  select.value = wanted;
+  if (!select.value) select.value = `composite:${sat.default_composite}`;
   updateHint();
 }
 
@@ -247,11 +396,12 @@ function buildRenderSliders() {
 }
 
 function buildEnhanceControls() {
-  enhanceControls = sliderBank($('#enhanceSliders'), ENHANCE_SPECS, sync);
+  const specs = ENHANCE_SPECS.filter((s) => !isRadar() || !s.opticalOnly);
+  enhanceControls = sliderBank($('#enhanceSliders'), specs, sync);
 
   const host = $('#enhancePresets');
   host.innerHTML = '';
-  for (const name of Object.keys(ENHANCE_PRESETS)) {
+  for (const name of Object.keys(ENHANCE_PRESETS[family()])) {
     host.append(el('button', {
       class: 'preset',
       onclick: (e) => {
@@ -260,17 +410,19 @@ function buildEnhanceControls() {
       },
     }, name.replace('_', ' ')));
   }
-  $('#enhanceReset').addEventListener('click', () => {
+  $('#enhanceReset').onclick = () => {
     applyEnhancePreset('Off');
     $$('#enhancePresets .preset').forEach((b) => b.classList.remove('is-active'));
-  });
+  };
 }
 
 function applyEnhancePreset(name) {
-  const preset = ENHANCE_PRESETS[name] ?? {};
+  const preset = ENHANCE_PRESETS[family()][name] ?? {};
   for (const spec of ENHANCE_SPECS) {
     enhanceControls[spec.key]?.set(preset[spec.key] ?? 0);
   }
+  $$('#enhancePresets .preset').forEach((b) =>
+    b.classList.toggle('is-active', b.textContent === name.replace('_', ' ')));
   sync();
 }
 
@@ -317,8 +469,11 @@ function adjustmentValues() {
  */
 function applyAdjustments() {
   const source = store.image?.element;
-  if (!source) return;
   const values = adjustmentValues();
+  // Kept where anything else that renders the picture can find them -- copying
+  // a region has to come out looking like what is on the screen.
+  store.adjustments = values;
+  if (!source) return;
   if (adjust.isNeutral(values)) {
     updateOverlay(store.image.src);
   } else {
@@ -344,12 +499,14 @@ function enhancementValues() {
 
 async function runSearch() {
   if (!store.aoi) return;
+  const who = satFilter === 'both' ? 'Sentinel' : activeSat().short;
   try {
-    const data = await withBusy('Looking for Sentinel-2 passes…', () => api.search({
+    const data = await withBusy(`Looking for ${who} passes…`, () => api.search({
       aoi: store.aoi,
       start: $('#dateStart').value,
       end: $('#dateEnd').value,
       max_cloud: cloudControl.cloud.get(),
+      satellites: satFilter === 'both' ? null : [satFilter],
       limit: 60,
     }));
     store.dates = data.scenes;
@@ -377,12 +534,20 @@ async function runSearch() {
   }
 }
 
-/** Tick the `n` least cloudy dates, and untick everything else. */
+/**
+ * Tick the `n` best dates, and untick everything else.
+ *
+ * Best means least cloudy, and for radar it means most recent, because radar
+ * has no cloud to be troubled by. Only one satellite's dates are ever ticked:
+ * an optical picture and a radar measurement are different quantities and
+ * cannot be merged into one another.
+ */
 function tickBest(n) {
-  store.selected = new Set([...store.dates]
-    .sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100))
-    .slice(0, n)
-    .map((d) => d.id));
+  const mine = store.dates.filter((d) => satOf(d) === satShown);
+  const order = isRadar()
+    ? [...mine].sort((a, b) => b.date.localeCompare(a.date))
+    : [...mine].sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100));
+  store.selected = new Set(order.slice(0, n).map((d) => d.id));
   renderDateList();
   sync();
 }
@@ -403,17 +568,26 @@ function renderDateList() {
         pick(date, e.target.checked);
       },
     });
+    const spec = store.config.satellites[satOf(date)];
+    // Radar records no cloud cover, so it gets the thing that is true of it
+    // instead: the pass sees the ground whatever the weather was doing.
+    const cloud = spec.cloud_filter
+      ? el('div', { class: 'scene-cloud' },
+        el('span', { class: 'cloud-dot', style: `background:${cloudColour(date.cloud ?? 0)}` }),
+        `${date.cloud ?? 0}%`)
+      : el('div', { class: 'scene-cloud is-radar', title: 'Radar is unaffected by cloud' }, 'radar');
+
     list.append(el('div', {
       class: `scene ${chosen ? 'is-active' : ''}`,
       onclick: () => pick(date, mode === 'single' ? true : !store.selected.has(date.id)),
     },
       input,
       el('div', {},
-        el('div', { class: 'scene-date' }, fmt.date(date.date)),
+        el('div', { class: 'scene-date' },
+          el('span', { class: 'scene-sat', style: `background:${spec.colour}` }),
+          fmt.date(date.date)),
         el('div', { class: 'scene-meta' }, date.tile || date.platform)),
-      el('div', { class: 'scene-cloud' },
-        el('span', { class: 'cloud-dot', style: `background:${cloudColour(date.cloud ?? 0)}` }),
-        `${date.cloud ?? 0}%`),
+      cloud,
     ));
   }
   $('#dateEmpty').hidden = store.dates.length > 0 || !store.aoi;
@@ -424,9 +598,16 @@ function renderDateList() {
 }
 
 function pick(date, on) {
+  const switching = satOf(date) !== satShown;
+  useSatellite(satOf(date));
+
   if (mode === 'single') {
     store.activeDateId = date.id;
     store.selected = new Set([date.id]);
+  } else if (switching) {
+    // The ticks belonged to the other satellite, and a merge cannot span both.
+    store.selected = new Set([date.id]);
+    toast(`Merging ${activeSat().short} now — the other satellite's ticks were cleared`);
   } else if (on) {
     store.selected.add(date.id);
   } else {
@@ -468,11 +649,14 @@ function sync() {
       ? (ready
         ? (plan.sharpening
           ? `Merge ${dates.length} dates → ${plan.resolves.toFixed(1)}× finer`
-          : `Merge ${dates.length} dates`)
+          : plan.despeckling
+            ? `Average ${dates.length} radar passes`
+            : `Merge ${dates.length} dates`)
         : 'Tick at least two dates')
       : (ready ? (store.image ? 'Show this date' : 'Show imagery') : 'Pick a date');
   $('#planSummary').innerHTML = planSummary(dates, plan);
   $('#downloadPng').disabled = $('#downloadTif').disabled = !lastRequest;
+  $('#copyRegion').disabled = $('#saveRegion').disabled = !store.image;
 }
 
 /** One line above the button saying exactly what pressing it will produce. */
@@ -482,12 +666,22 @@ function planSummary(dates, plan) {
   if (!dates.length) {
     return mode === 'merge' ? 'Tick the dates you want merged.' : 'Pick a date.';
   }
-  const native = store.config.satellite.resolution;
+  const sat = activeSat();
+  const native = sat.resolution;
   const px = `${renderSize()} px`;
   if (mode === 'single') {
-    return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass, ${native} m detail`;
+    return `<b>${fmt.date(dates[0].date)}</b> · ${sat.short} · ${px} · `
+      + `one pass, ${native} m detail`;
   }
   if (dates.length < 2) return 'A merge needs at least two dates.';
+
+  // Radar cannot be sharpened by merging, but averaging its speckle away is
+  // worth as much, so say what it does buy rather than what it cannot.
+  if (plan.despeckling) {
+    const drop = Math.round((1 - 1 / Math.sqrt(dates.length)) * 100);
+    return `<b>${dates.length} radar passes</b> · ${px} · about ${drop}% less speckle, `
+      + `still ${native} m detail`;
+  }
 
   // The grid is coarser than the satellite sampled it, so there is nothing
   // finer to find -- but a bigger size would change that, so say so.
@@ -512,6 +706,7 @@ function buildRequest(dates) {
   const body = {
     aoi: store.aoi,
     scene: dates[0],
+    satellite: satOf(dates[0]),
     mode: kind,
     size: renderSize(),
     mask_clouds: $('#maskClouds').checked,
@@ -561,7 +756,10 @@ async function showImagery() {
 function describeResult(meta) {
   const size = `${meta.grid.width}×${meta.grid.height} px · ~${meta.effective_res_m} m detail`;
   const sr = meta.superres;
-  if (!sr) return `${fmt.date(meta.scene.date)} — ${size}`;
+  if (!sr && meta.scenes?.length > 1 && meta.source?.kind === 'radar') {
+    return `${meta.scenes.length} radar passes averaged — ${size}`;
+  }
+  if (!sr) return `${meta.source?.short ?? ''} ${fmt.date(meta.scene.date)} — ${size}`.trim();
 
   const bits = [`${sr.scale}× merge of ${sr.scenes} dates — ${size}`];
   if (sr.sharpness_gain_pct > 0) bits.push(`+${sr.sharpness_gain_pct}% sharper`);
@@ -578,7 +776,8 @@ async function downloadImagery(format) {
   const when = lastRequest.scenes?.length
     ? `${lastRequest.scenes.length}dates_${lastRequest.scene.date}`
     : lastRequest.scene.date;
-  const name = `sentinel2_${when}_${lastRequest.index ?? lastRequest.preset}.${ext}`;
+  const who = (lastRequest.satellite ?? 'sentinel-2').replace('-', '');
+  const name = `${who}_${when}_${lastRequest.index ?? lastRequest.preset}.${ext}`;
 
   try {
     // The PNG is what you are looking at, at full size, adjustments included.
