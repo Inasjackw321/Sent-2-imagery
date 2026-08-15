@@ -10,6 +10,8 @@ import { api } from './api.js';
 import { store, emit, on } from './store.js';
 import { $, $$, toast, fmt, el } from './ui.js';
 import { copyRegion, saveRegion, WATERMARK } from './capture.js';
+import { initFires, POPUP } from './fires.js';
+import { initClouds } from './clouds.js';
 
 let map;
 let aoiLayer = null;
@@ -58,6 +60,8 @@ export function initMap() {
 
   bindDrawTools();
   bindPassLookup();
+  initFires(map);
+  initClouds(map);
 
   on('image', showOverlay);
   return map;
@@ -173,6 +177,11 @@ function onUp(e) {
 }
 
 function onClick(e) {
+  // Nothing armed and imagery on the map: a click asks what is there.
+  if (mode === 'none') {
+    if (store.image) showProbe(e.latlng);
+    return;
+  }
   if (mode !== 'polygon') return;
   if (!drawing) {
     drawing = { mode: 'polygon', points: [] };
@@ -278,6 +287,7 @@ function showOverlay(image) {
   overlays.set(key, { layer, opacity, visible: true, meta: image.meta });
   store.images.set(key, image);
   renderLayerDock();
+  if (compare) applyCompare();
   drawMapLegend(image.meta);
   // Looking at the imagery is the whole point, so go and look at it.
   map.fitBounds([[s, w], [n, e]], { padding: [28, 28] });
@@ -318,10 +328,17 @@ function renderLayerDock() {
           if (store.image?.meta?.satellite === key) {
             store.image = store.images.values().next().value ?? null;
           }
+          if (compare && compare.keys.includes(key)) stopCompare();
           renderLayerDock();
           emit('layers', store.image);
         },
       }, '×')));
+  }
+  if (overlays.size > 1) {
+    dock.append(el('button', {
+      class: `compare-btn${compare ? ' is-on' : ''}`,
+      onclick: toggleCompare,
+    }, compare ? '✕ Stop comparing' : '⟺ Compare side by side'));
   }
   dock.hidden = false;
 }
@@ -366,6 +383,148 @@ export function armCapture(what = 'copy') {
   setMode(mode === 'capture' ? 'none' : 'capture');
 }
 
+// ── What is actually there ─────────────────────────────────────
+
+/**
+ * Read the measurements behind a point of the picture.
+ *
+ * The imagery on screen has been stretched, curved and coloured to be looked
+ * at; underneath it are numbers with units. A click goes back to those, so
+ * ground that looks green can be asked how green it is and in what -- which is
+ * the difference between a picture of a place and a measurement of it.
+ */
+async function showProbe(latlng) {
+  const request = store.image?.request;
+  if (!request) return;
+
+  const box = el('div', { class: 'probe' },
+    el('div', { class: 'probe-wait' }, 'Reading the measurements…'));
+  const popup = L.popup({ className: 'probe-popup', maxWidth: 290, ...POPUP })
+    .setLatLng(latlng).setContent(box).openOn(map);
+
+  try {
+    const data = await api.probe({
+      lon: latlng.lng, lat: latlng.lat,
+      scene: request.scene, scenes: request.scenes,
+    });
+    box.innerHTML = '';
+    box.append(
+      el('div', { class: 'probe-head' },
+        `${data.source.short} · ${fmt.date(data.date)}`,
+        data.scenes > 1 ? el('span', { class: 'dim' }, ` · ${data.scenes} dates`) : null),
+      el('div', { class: 'probe-coord' }, fmt.coord(...data.point)),
+      ...data.bands.map((band) => el('div', { class: 'probe-row' },
+        el('span', {}, band.label),
+        el('b', {}, band.value == null ? '—'
+          : data.unit === 'dB' ? `${band.value.toFixed(1)} dB` : band.value.toFixed(3)))),
+      data.indices.length
+        ? el('div', { class: 'probe-indices' },
+          ...data.indices.map((index) => el('div', { class: 'probe-row' },
+            el('span', {}, index.label.split(' - ')[0]),
+            el('b', {}, index.value == null ? '—' : index.value.toFixed(3)))))
+        : null,
+      el('div', { class: 'probe-foot' },
+        `${data.unit === 'dB' ? 'Backscatter' : 'Surface reflectance'}, `
+        + `averaged over one ${data.ground_res_m} m cell`),
+    );
+    popup.update();
+  } catch (err) {
+    box.innerHTML = '';
+    box.append(el('div', { class: 'probe-wait' }, `Could not read that: ${err.message}`));
+    popup.update();
+  }
+}
+
+// ── Comparing two layers ───────────────────────────────────────
+
+let compare = null;
+
+/**
+ * A divider you drag across the map, with one layer either side of it.
+ *
+ * Two renders of the same ground fade over each other badly -- at 50% you are
+ * looking at neither. A hard edge shows both at full strength and lets the eye
+ * carry detail across it, which is what makes a difference obvious: the same
+ * field before and after, or the radar answer beside the optical one.
+ */
+function toggleCompare() {
+  if (compare) {
+    stopCompare();
+    return;
+  }
+  const keys = [...overlays.keys()];
+  if (keys.length < 2) {
+    toast('Show both satellites, or two dates, and they can be compared');
+    return;
+  }
+  compare = { at: 0.5, keys: keys.slice(-2) };
+  const handle = el('div', { class: 'compare-handle', id: 'compareHandle' },
+    el('div', { class: 'compare-line' }),
+    el('div', { class: 'compare-grip' }, '⟺'));
+  document.querySelector('.stage').append(handle);
+  handle.addEventListener('pointerdown', startDrag);
+  map.on('move zoom viewreset', applyCompare);
+  applyCompare();
+  renderLayerDock();
+}
+
+function stopCompare() {
+  map.off('move zoom viewreset', applyCompare);
+  $('#compareHandle')?.remove();
+  for (const entry of overlays.values()) {
+    const img = entry.layer.getElement();
+    if (img) img.style.clipPath = '';
+  }
+  compare = null;
+  renderLayerDock();
+}
+
+function startDrag(event) {
+  event.preventDefault();
+  const stage = document.querySelector('.stage');
+  const move = (e) => {
+    const rect = stage.getBoundingClientRect();
+    compare.at = Math.min(0.98, Math.max(0.02, (e.clientX - rect.left) / rect.width));
+    applyCompare();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+}
+
+/**
+ * Put the split where the handle is.
+ *
+ * The clip has to be worked out per layer rather than set once: it is measured
+ * in the image's own coordinates, and the image is a fixed piece of ground
+ * whose position and width on screen change with every pan and zoom.
+ */
+function applyCompare() {
+  if (!compare) return;
+  const stage = document.querySelector('.stage').getBoundingClientRect();
+  const splitX = stage.left + compare.at * stage.width;
+  const handle = $('#compareHandle');
+  if (handle) handle.style.left = `${compare.at * 100}%`;
+
+  const [left, right] = compare.keys;
+  for (const [key, entry] of overlays) {
+    const img = entry.layer.getElement();
+    if (!img) continue;
+    if (key !== left && key !== right) {
+      img.style.clipPath = '';
+      continue;
+    }
+    const rect = img.getBoundingClientRect();
+    const cut = Math.min(1, Math.max(0, (splitX - rect.left) / (rect.width || 1)));
+    img.style.clipPath = key === left
+      ? `inset(0 ${(1 - cut) * 100}% 0 0)`
+      : `inset(0 0 0 ${cut * 100}%)`;
+  }
+}
+
 // ── When the satellites next come over ─────────────────────────
 
 function bindPassLookup() {
@@ -380,7 +539,7 @@ async function showPasses(latlng) {
   const box = el('div', { class: 'passes' },
     el('div', { class: 'passes-head' }, fmt.coord(latlng.lng, latlng.lat)),
     el('div', { class: 'passes-wait' }, 'Asking the catalogue…'));
-  const popup = L.popup({ className: 'pass-popup', maxWidth: 320, autoPan: true })
+  const popup = L.popup({ className: 'pass-popup', maxWidth: 320, ...POPUP })
     .setLatLng(latlng).setContent(box).openOn(map);
 
   try {

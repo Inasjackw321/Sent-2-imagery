@@ -23,6 +23,12 @@ class BandReadError(RuntimeError):
     pass
 
 
+# How wide a neighbourhood the VV/VH ratio is averaged over. Five cells is
+# 50 m on Sentinel-1's grid -- well inside a field, and enough to take the
+# ratio's compounded speckle down by the same factor.
+RATIO_LOOKS = 5
+
+
 def sampling_for(grid: Grid, merging: bool, resolution: float | None = None) -> Resampling:
     """How to land the satellite's pixels on the output grid.
 
@@ -62,13 +68,27 @@ def _resolve_assets(scene: dict, bands: list[str]) -> tuple[list[str], dict[str,
         needed.extend(config.BANDS[band].get("derive") or (band,))
     needed = list(dict.fromkeys(needed))
 
+    assets = scene.get("assets", {})
     targets = {}
     for band in needed:
-        asset = config.BANDS[band]["asset"]
-        if asset not in scene.get("assets", {}):
-            raise BandReadError(f"Scene {scene['id']} is missing its {asset} asset")
-        targets[band] = scene["assets"][asset]
+        name = config.BANDS[band]["asset"]
+        # Catalogues are not always consistent about case, and a radar scene
+        # naming its polarisation VV rather than vv should not be a failure.
+        href = assets.get(name) or _case_insensitive(assets, name)
+        if not href:
+            have = ", ".join(sorted(assets)[:8]) or "none"
+            raise BandReadError(
+                f"Scene {scene['id']} has no {name} asset (it offers: {have})")
+        targets[band] = stac.sign_href(scene, href)
     return needed, targets
+
+
+def _case_insensitive(assets: dict, name: str) -> str | None:
+    wanted = name.lower()
+    for key, href in assets.items():
+        if key.lower() == wanted:
+            return href
+    return None
 
 
 def _add_derived(out: dict, bands: list[str]) -> dict:
@@ -77,8 +97,16 @@ def _add_derived(out: dict, bands: list[str]) -> dict:
         if not parts or band in out:
             continue
         first, second = (out[p] for p in parts)
+        ratio = (first.data - second.data).astype("float32")
+        # Multi-looked, and it has to be. Speckle in the two polarisations is
+        # independent, so their ratio carries about half again as much of it as
+        # either channel does -- while spanning a far narrower range, which
+        # makes it three times noisier on screen and paints the grain in
+        # colour. A ratio is in any case a property of a patch of ground
+        # rather than of one resolution cell, so averaging over a small
+        # neighbourhood is what the quantity actually means.
         out[band] = np.ma.masked_array(
-            (first.data - second.data).astype("float32"),
+            ndimage.uniform_filter(ratio, RATIO_LOOKS),
             mask=np.ma.getmaskarray(first) | np.ma.getmaskarray(second))
     return {band: out[band] for band in bands}
 
@@ -132,6 +160,7 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
 def _read_one(href: str, grid: Grid, resampling: Resampling):
     try:
         with rasterio.open(href) as src:
+            _check_georeferencing(src, href)
             nodata = 0 if src.nodata is None else src.nodata
             with WarpedVRT(
                 src,
@@ -145,7 +174,45 @@ def _read_one(href: str, grid: Grid, resampling: Resampling):
             ) as vrt:
                 return vrt.read(1, masked=True)
     except rasterio.RasterioIOError as exc:
-        raise BandReadError(f"Could not read {href.rsplit('/', 1)[-1]}: {exc}") from exc
+        raise BandReadError(_explain(href, exc)) from exc
+
+
+def _check_georeferencing(src, href: str) -> None:
+    """Refuse a file that has no map transform, rather than warping nonsense.
+
+    Raw Sentinel-1 measurement files are georeferenced by ground control points
+    rather than by a map transform. Warping one without honouring its GCPs does
+    not raise anything -- it silently produces a smooth smear with no ground in
+    it, which looks like imagery and is not. Better to say so.
+    """
+    if src.crs is not None and src.transform and not src.transform.is_identity:
+        return
+    where = _host(href)
+    extra = (" It is georeferenced by ground control points, which this "
+             "reader cannot place on a map." if src.gcps and src.gcps[0] else "")
+    raise BandReadError(
+        f"The file served by {where} carries no map projection.{extra} "
+        "Try a different source for this satellite.")
+
+
+def _explain(href: str, exc: Exception) -> str:
+    """Turn a GDAL failure into something a person can act on."""
+    text = str(exc)
+    where = _host(href)
+    if "403" in text or "AccessDenied" in text or "Forbidden" in text:
+        return (f"{where} refused the request (403). Sentinel-1 on AWS is a "
+                "requester-pays bucket, which cannot be read anonymously; the "
+                "Planetary Computer copy can.")
+    if "404" in text or "NoSuchKey" in text:
+        return f"{where} no longer has that file (404) — the catalogue is ahead of the data."
+    if "signature" in text.lower() or "401" in text:
+        return f"{where} rejected the signature — it may have expired; try again."
+    return f"Could not read {href.rsplit('/', 1)[-1].split('?')[0]} from {where}: {exc}"
+
+
+def _host(href: str) -> str:
+    without = href.split("://", 1)[-1]
+    return without.split("/", 1)[0] or "the source"
 
 
 def _to_physical(raw, scene: dict) -> np.ma.MaskedArray:
@@ -219,16 +286,27 @@ _ENDMEMBERS = {
                  swir16=.08, swir22=.04),
 }
 
-# The same ground seen by radar, in decibels. Still water reflects the pulse
-# away from the satellite and comes back almost black; buildings line up
-# corners with it and come back brightest of all.
+# The same ground seen by radar, in decibels, at figures Sentinel-1 really
+# returns. Still water reflects the pulse away from the satellite and comes
+# back almost black; buildings line their corners up with it and come back
+# brightest of all.
+#
+# The gap between the two polarisations matters as much as the levels, because
+# it is what gives a radar picture its colour. VH only comes back from things
+# that scatter in a volume, so vegetation returns relatively much more of it
+# than bare ground does -- a small VV-VH gap for foliage, a wide one for soil.
+# Get that ordering wrong and the false colour is merely decorative.
 _RADAR_ENDMEMBERS = {
-    "water": dict(vv=-22.0, vh=-28.0),
-    "veg": dict(vv=-8.5, vh=-14.5),
-    "soil": dict(vv=-12.0, vh=-20.0),
-    "urban": dict(vv=-2.5, vh=-9.0),
-    "snow": dict(vv=-14.0, vh=-20.0),
+    "water": dict(vv=-22.5, vh=-30.5),      # ratio 8.0 -- near black
+    "veg": dict(vv=-8.5, vh=-13.5),         # ratio 5.0 -- volume scatter, green
+    "soil": dict(vv=-11.5, vh=-20.5),       # ratio 9.0 -- surface scatter, mauve
+    "urban": dict(vv=-3.0, vh=-11.0),       # ratio 8.0 -- bright, near white
+    "snow": dict(vv=-15.0, vh=-22.0),       # ratio 7.0 -- dull grey
 }
+
+# Sentinel-1's noise-equivalent backscatter for the wide swath mode: nothing
+# fainter than this can be told apart from the instrument's own noise.
+NOISE_FLOOR = 10.0 ** (-24.0 / 10.0)
 
 
 def _fbm(x: np.ndarray, y: np.ndarray, seed: float, octaves: int = 5) -> np.ndarray:
@@ -361,6 +439,12 @@ def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool,
     return out, cloud_fraction
 
 
+def _looks(grid: Grid) -> float:
+    """How many radar resolution cells one output pixel averages together."""
+    cells = grid.ground_res_m / config.satellite("sentinel-1")["resolution"]
+    return max(cells * cells, 1.0)
+
+
 def _demo_radar(fractions: dict, grid: Grid, phase: float, sampling: Resampling,
                 bands: list[str], date_seed: int) -> dict:
     """The same synthetic ground, measured by radar instead of photographed.
@@ -376,15 +460,32 @@ def _demo_radar(fractions: dict, grid: Grid, phase: float, sampling: Resampling,
     out = {}
     rng = np.random.default_rng(date_seed)
     for band in ("vv", "vh"):
-        acc = np.zeros((h, w), dtype="float32")
+        # Mixed in power, not in decibels. Half a pixel of water and half of
+        # city returns the average of what each sent back, and decibels are a
+        # logarithm -- averaging those would put the mixture nowhere near where
+        # the radar would actually read it.
+        power = np.zeros((h, w), dtype="float32")
         for name, frac in fractions.items():
-            acc += frac * _RADAR_ENDMEMBERS[name][band]
+            power += frac * (10.0 ** (_RADAR_ENDMEMBERS[name][band] / 10.0))
+        # Every measurement also carries the instrument's own thermal noise,
+        # and that floor is why radar images look the way they do over water:
+        # calm sea returns less than the noise, so what comes back is mostly
+        # noise in both polarisations, and their ratio collapses towards one.
+        # Without this the sea would have the *highest* VV/VH ratio in the
+        # scene and come out vivid blue instead of black.
+        power += NOISE_FLOOR
+        acc = (10.0 * np.log10(power)).astype("float32")
         # Radar resolves about 20 m however fine the grid it is delivered on,
         # which is exactly why merging its passes cannot sharpen it.
         acc = _as_the_satellite_saw_it(acc, grid, phase, sampling,
                                        config.satellite("sentinel-1")["resolution"])
-        # Multi-looked speckle: near-Gaussian in the log, about 1.7 dB wide.
-        acc = acc + rng.normal(0.0, 1.7, size=(h, w)).astype("float32")
+        # Multi-looked speckle: near-Gaussian in the log, about 1.5 dB wide on
+        # a single resolution cell. Every output pixel that covers more than
+        # one cell is already an average of that many independent draws, so the
+        # grain falls off as the square root of them -- which is why a radar
+        # scene looks noisy zoomed in and clean zoomed out.
+        acc = acc + rng.normal(0.0, 1.5 / math.sqrt(_looks(grid)),
+                               size=(h, w)).astype("float32")
         out[band] = np.ma.masked_array(acc.astype("float32"),
                                        mask=np.zeros((h, w), dtype=bool))
     return _add_derived(out, bands)

@@ -23,6 +23,12 @@ export const api = {
   search: (body) => request('/api/search', { body }),
   geocode: (q) => request(`/api/geocode?q=${encodeURIComponent(q)}`, { method: 'GET' }),
   passes: (lon, lat) => request(`/api/passes?lon=${lon}&lat=${lat}`, { method: 'GET' }),
+  fires: ({ west, south, east, north, hours }) => request(
+    `/api/fires?${new URLSearchParams({
+      west: west.toFixed(4), south: south.toFixed(4),
+      east: east.toFixed(4), north: north.toFixed(4), hours,
+    })}`, { method: 'GET' }),
+  probe: (body) => request('/api/probe', { body }),
   render: (body) => request('/api/render', { body }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
 };

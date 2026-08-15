@@ -9,8 +9,11 @@ Two satellites cover the same ground and answer different questions.
 **Sentinel-1** measures it with radar, through cloud and at night. Either can
 be shown, and both can sit on the map at once so you can fade between them.
 
-Right-click anywhere to find out when each of them next flies over. Highlight
-part of the imagery to take it away as a picture, marked `@Kaldockhi`.
+Click the imagery to read what the satellite actually measured there.
+Right-click for when each satellite next flies over. Switch on **live clouds**
+for today's sky and **active fires** for every thermal detection NASA has
+published in the last day. Put two layers side by side under a divider you
+drag. Highlight part of the picture to take it away, marked `@Kaldockhi`.
 
 That is the whole app. One screen: a map, the dates over your area, and the
 imagery.
@@ -85,11 +88,32 @@ help: it is radar, so cloud, smoke and darkness make no difference to it.
 | Works at night | No | Yes |
 | Cost | Free, no account, no key | Free, no account, no key |
 
-Both come from [Earth Search](https://earth-search.aws.element84.com/v1), a
-public catalogue in front of the Sentinel archives on AWS Open Data. Only the
-bands and the pixels your area needs are read, by HTTP range request straight
-out of the cloud-optimised GeoTIFFs, so a small area is quick even though a
-source tile runs to a gigabyte.
+Sentinel-2 comes from [Earth Search](https://earth-search.aws.element84.com/v1),
+a public catalogue in front of the archive on AWS Open Data. Only the bands and
+the pixels your area needs are read, by HTTP range request straight out of the
+cloud-optimised GeoTIFFs, so a small area is quick even though a source tile
+runs to a gigabyte.
+
+**Sentinel-1 needs more than one home, and the reason is worth knowing.** The
+GRD products in the AWS `sentinel-s1-l1c` bucket are requester-pays, so an
+anonymous read is refused outright — and the measurement files inside them are
+georeferenced by ground control points rather than by a map transform. Warping
+one of those without honouring its GCPs does not fail; it quietly produces a
+smooth smear with no ground in it, which looks like imagery and is not.
+
+So radar is asked for from [Microsoft's Planetary
+Computer](https://planetarycomputer.microsoft.com/) first, which republishes
+the same acquisitions as projected cloud-optimised GeoTIFFs and hands out a
+free, anonymous signature for reading them — no account, no key. Earth Search
+stays behind it as a fallback, and each catalogue is tried in turn until one
+answers. Whichever did is recorded on the scene and credited on the render.
+Pin one with `S1_SOURCE=planetary-computer` or `S1_SOURCE=earth-search` if you
+would rather not have the choice made for you.
+
+When a read does fail, it says what failed and where: a refusal names the host
+and explains requester-pays, a file with no map projection is refused rather
+than warped into a smear, and a pass whose swath misses your shape says so
+instead of handing back a blank.
 
 Stored numbers become physical units on the way in. For Sentinel-2 that is
 surface reflectance, including the -1000 offset that scenes from January 2022
@@ -102,9 +126,42 @@ Still water reflects the pulse away and comes back black; buildings line their
 corners up with the satellite and come back brightest of all. VH only returns
 from things that scatter in a volume — foliage, mostly — so the standard
 false colour (VV red, VH green, their ratio blue) separates towns, crops and
-water on its own. Three ways to look at it: **radar colour**, **VV only**, and
-**water & flood**, which puts the cross-polarised channel first so still water
-goes to near black.
+water on its own: **black water, white towns, green vegetation, violet bare
+ground**. Three ways to look at it: **radar colour**, **VV only**, and **water
+& flood**, which puts the cross-polarised channel first so still water goes to
+near black.
+
+**Radar is displayed in linear power, on fixed windows, and both of those
+matter more than they sound.**
+
+Decibels are right for measuring and for merging — that is the scale on which
+backscatter means something and on which speckle averages out — but wrong for
+looking at. A logarithm gives water, soil, vegetation and concrete roughly
+equal shares of the histogram, so a stretch in decibels comes out looking like
+a poster. Converting back to power puts the scene where radar actually lives:
+dark, with a long bright tail.
+
+Fixed windows matter more still. VV and VH measure the same ground twice and
+agree to within about a percent — 0.993 correlation — so red and green move
+together and all the colour rides on their ratio, whose real spread is two or
+three decibels. Stretch each channel to its own percentiles, as an optical
+composite sensibly does, and that two-decibel wiggle is amplified to full
+scale: every scene collapses onto a single garish red-to-cyan axis, flat ground
+acquires structure that was never there, and no two dates are comparable.
+Anchoring each channel to a window in physical units is what makes a radar
+picture mean the same thing twice.
+
+Two smaller things follow from the physics. The VV/VH ratio is **multi-looked**
+over a 50 m neighbourhood, because speckle in the two polarisations is
+independent — so their ratio carries half again as much of it while spanning a
+far narrower range, which would otherwise paint the grain in colour. And a
+ratio is a property of a patch of ground rather than of one resolution cell, so
+averaging is what the quantity actually means. Second, the sea is black because
+of the **noise floor**: calm water returns less than the instrument's own
+thermal noise, so both polarisations read mostly noise and their ratio
+collapses towards one. Model the water without that floor and it has the widest
+polarisation gap in the scene — and the blue channel lights the sea up brighter
+than the land.
 
 The two satellites are never merged into each other. Reflectance and
 backscatter are different physical quantities in different units, and averaging
@@ -141,6 +198,22 @@ flat grey sand back into sand, without shifting hue. The app opens on the
 **Balanced** preset (haze removal, a little adaptive contrast, detail and
 vibrance) so the first picture already looks right; **Off** gives you the
 untouched stretch.
+
+**The tone curve runs on the pixel, not on the channels** — and it is the
+reason colours stay where the ground put them. Gamma and a highlight roll-off
+applied to red, green and blue separately curve each at a different rate, so
+the ratios between them drift as the ground brightens; and the ratios are what
+colour *is*. A warm roof turns orange, then yellow, then white, because each
+channel saturates in turn. Measured on one surface photographed at rising
+exposure, the hue wandered **21.9°** and the saturation fell from 0.53 to 0.24.
+
+Curving once fixes it. The curve is applied to the brightest of the three
+channels and all three are scaled by the single factor that one changed by:
+scaling together leaves the ratios untouched, so hue and saturation both come
+out exactly as measured — **0.0° of drift**, saturation held at the ground's
+own 0.58 at every exposure. Using the brightest channel rather than the
+luminance also keeps the result inside the gamut by construction, so nothing
+is ever clipped and no colour has to be given up to fit.
 
 **Merging dates** — the big one, and the only thing here that adds detail
 rather than presenting existing detail better. See
@@ -324,6 +397,82 @@ those are collapsed to a single pass, or the prediction would creep a few
 minutes early every cycle. Where there is only one pass on record it falls back
 to the nominal repeat cycle and says so rather than inventing precision.
 
+## Live clouds
+
+Switch on **Live clouds** in the corner of the map and today's sky appears
+under the imagery — the whole planet, as the polar orbiters last saw it.
+
+The tiles are [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/), which
+republishes every overpass as map tiles within about three hours of the
+satellite taking it. Corrected reflectance: what the eye would see, with the
+atmosphere's own scattering taken out of the land but left in the cloud, which
+is precisely what makes it a cloud picture.
+
+Be clear about what "live" means here, because it is not a geostationary loop.
+Each satellite crosses a given place once a day at a fixed local time, so
+choosing between **VIIRS on NOAA-20 or Suomi-NPP** (about 13:30 local) and
+**MODIS on Terra** (about 10:30) or **Aqua** (13:30) is really choosing what
+hour of the day you are looking at. One pass a day, and none of the night side.
+Ask for today's mosaic before it has been assembled and the app steps back a
+day and says why, rather than showing you an empty layer.
+
+**Only the cloud arrives.** The tiles are a picture of the whole Earth — land
+and sea as well — so each one is taken apart and everything that is not cloud
+is made transparent before it reaches the map. Two things separate them and it
+takes both: cloud is bright, but so is desert; cloud is also close to
+colourless, because it reflects every visible wavelength about equally, while
+bright ground almost never is. Bright *and* grey is cloud; bright and coloured
+is ground. Checked against known colours, ocean and forest come out at 0.00,
+desert sand at 0.06, thin and thick cloud at 1.00. The **Catch** slider moves
+the brightness needed, so haze can be let in or kept out.
+
+Snow is the honest exception: it is bright and grey too, and nothing written on
+a true-colour picture can tell it from cloud. The panel says so. And because
+only the cloud is drawn, the layer sits *above* the imagery — weather over your
+ground rather than a second basemap under it.
+
+The useful trick is **Match the imagery**: set the cloud layer to the date of
+the Sentinel scene you are looking at, and you can see the weather that pass
+was flying through — why a scene is hazy on one side, or what the cloud your
+merge just removed actually looked like. Fade it against the imagery with the
+slider; it draws under your drawn area and under the render, because it is
+context rather than the subject.
+
+## What is on fire
+
+Switch on **Active fires** in the corner of the map and every thermal
+detection NASA has published over the visible area appears on it, over the last
+24 hours, 48 hours or 7 days.
+
+The data is [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) — the Fire
+Information for Resource Management System, which publishes every hot spot the
+polar-orbiting satellites have seen, worldwide, within about three hours of the
+overpass. VIIRS resolves 375 m and catches much smaller fires than MODIS's
+1 km, so it leads; MODIS is kept because it fills the gaps between the VIIRS
+overpasses.
+
+**A detection is not a fire.** It is one satellite pixel, a few hundred metres
+across, that came back hot at a known minute — so it is drawn as a dot at a
+point, never as a burnt area, and the app says so on the panel. What it tells
+you is *where something was burning and when*, which is exactly the question a
+satellite image of a fire raises. The dot is sized and coloured by fire
+radiative power in megawatts, which is the closest thing to "how bad": a few MW
+is a field being cleared, hundreds is a fire front. Low-confidence detections
+are drawn fainter rather than hidden — weaker evidence is still evidence.
+
+It pairs with the imagery on purpose. Sentinel-2 shows the smoke and the scar;
+Sentinel-1 sees the ground through the smoke; the detections say which part of
+what you are looking at was alight, and at what hour.
+
+**No account needed.** The public FIRMS archive files are open, so the layer
+works out of the box — one global file per sensor, fetched once and held for
+fifteen minutes rather than pulled down again on every pan. If you have a free
+[FIRMS MAP_KEY](https://firms.modaps.eosdis.nasa.gov/api/area/), put it in
+`FIRMS_MAP_KEY` and the app will ask only for the rectangle you are looking at
+instead, which is far smaller and a little fresher. A continent's worth of
+detections would bury the browser, so when there are too many the fiercest are
+kept and the panel says how many were left out.
+
 ## Taking a picture away
 
 **Copy a region** (or **Save region**) arms a highlight tool: drag a box over
@@ -345,13 +494,19 @@ a file instead and the app says so, so it is never lost to a permission prompt.
 
 ## Where the imagery comes from
 
-[Earth Search](https://earth-search.aws.element84.com/v1), Element 84's free
-STAC API in front of the `sentinel-2-l2a` and `sentinel-1-grd` collections on
-AWS Open Data. No account, no key, no token — a search is one anonymous HTTP
-request, and so is every band read after it. The two collections are searched
-separately, because a cloud-cover filter would throw away every radar scene:
-radar has no such property, and filtering it by one would make it look as
-though it never flew.
+Sentinel-2 from [Earth Search](https://earth-search.aws.element84.com/v1),
+Element 84's free STAC API in front of `sentinel-2-l2a` on AWS Open Data;
+Sentinel-1 from the [Planetary
+Computer](https://planetarycomputer.microsoft.com/), with Earth Search as its
+fallback — see [The satellites](#the-satellites) for why radar needs both.
+Clouds from [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/) and fires
+from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/). No account, no key,
+no token anywhere: a search is one anonymous HTTP request, and so is every band
+read after it.
+
+The two Sentinel collections are searched separately, because a cloud-cover
+filter would throw away every radar scene: radar has no such property, and
+filtering it by one would make it look as though it never flew.
 
 The imagery is licensed for any use, including commercially, with attribution:
 *Contains modified Copernicus Sentinel data*. That line rides along with every
@@ -432,6 +587,26 @@ haze removal and white balance entirely: those are corrections to light, and
 radar is not light, so leaving them in doing nothing would be a lie about what
 the controls do.
 
+**Click the imagery to read it.** The picture on screen has been stretched,
+curved and coloured to be looked at; underneath it are numbers with units. A
+click goes back to those — reflectance per band and NDVI, NDWI and NDBI for
+Sentinel-2; backscatter in decibels and the VV/VH ratio for Sentinel-1 — so
+ground that looks green can be asked how green it is, and in what. It reads a
+small neighbourhood rather than a lone pixel, which costs the same in HTTP
+range requests and lets it say how uniform the surroundings are.
+
+**Compare side by side.** With two layers on the map, a divider you drag splits
+them. Fading two renders over each other is the obvious thing and the wrong
+one — at 50% you are looking at neither. A hard edge shows both at full
+strength and lets the eye carry detail across it, which is what makes a
+difference obvious: the same field before and after, or the radar answer beside
+the optical one.
+
+Two more layers live in the corner of the map rather than in the sidebar,
+because they are context for the imagery rather than part of building it:
+**Live clouds** and **Active fires**, each with its own fade, time window and
+panel saying exactly what it is showing.
+
 **4 · Adjust the picture.** Contrast, exposure, saturation, clarity,
 highlights, shadows, warmth, tint, midtones and vignette, plus nine looks.
 Unlike step 3 these work on the picture already on the map, so they apply as
@@ -461,6 +636,13 @@ own times of day, so a radar pass lands on a different date from the optical
 one. The synthetic radar carries speckle — independent every pass, because
 without it merging Sentinel-1 offline would look pointless when it is not. It
 is there so the interface can be explored, tested and demonstrated offline.
+
+The synthetic radar carries the two things that make a radar picture look like
+one: the instrument's thermal noise floor, which is why the sea comes out
+black, and speckle that thins out as you zoom away, because an output pixel
+covering many resolution cells is already an average of them. Active fires get
+synthetic detections too, clustered along a front with a tail rather than
+sprinkled evenly.
 
 It is not real imagery, and the app says so everywhere it could matter: a badge
 in the header, a second badge in place of the collection name, a warning when
@@ -496,6 +678,7 @@ backend/
   config.py      the satellites, band table, composites, indices, colour maps
   stac.py        catalogue search over both collections, plus synthetic scenes
   passes.py      when each satellite last flew over a point, and when it next will
+  fires.py       NASA FIRMS active fire detections
   raster.py      windowed COG reads, reprojection, cloud masking, demo bands
   composite.py   stretches, indices, colour maps, statistics, encoding
   service.py     render orchestration: merging, enhancement, caching
@@ -503,7 +686,8 @@ backend/
   launcher.py    port choice, app windows, desktop shortcuts
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
-  js/            map, imagery, capture, adjust, store, ui, api, install
+  js/            map, imagery, fires, clouds, capture, adjust, store, ui, api, install
+                 (map carries the probe, the compare divider and the layer stack)
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
@@ -513,7 +697,8 @@ tests/
   test_superres.py   registration, fusion, restoration, the resolution gain
   test_enhance.py    compositing and the image-quality tools
   test_launcher.py   ports, windows, shortcuts, manifest and service worker
-  test_satellites.py radar reading, keeping the two satellites apart, overpasses
+  test_satellites.py radar reading and colour, the two satellites apart, overpasses
+  test_fires.py      FIRMS parsing, the bounding box, the time window, the cap
 ```
 
 ## Tests
@@ -566,5 +751,11 @@ GDAL in its wheels, and `pywebview` uses the window toolkit your OS already has
 (WebView2 on Windows, WebKit on macOS, GTK or Qt on Linux). If no native
 toolkit is available Sent-2 falls back to a chrome-less browser window.
 
-Internet access is needed for imagery, map tiles and place search — but not in
-`--demo` mode.
+Internet access is needed for imagery, map tiles, place search, overpass
+prediction and fire data — but not in `--demo` mode.
+
+Two optional settings, both with sensible defaults. `FIRMS_MAP_KEY` — a free
+key from NASA — makes the fire layer ask for just the rectangle on screen
+instead of the global file; the layer works without it. `S1_SOURCE` pins which
+catalogue Sentinel-1 comes from (`planetary-computer` or `earth-search`)
+instead of trying each in turn.

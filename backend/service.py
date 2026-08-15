@@ -10,7 +10,8 @@ from collections import OrderedDict
 import numpy as np
 
 from . import composite, config, enhance, raster, stac, superres
-from .geo import Grid, geodesic_area_km2, geometry_bounds, normalise_aoi
+from .geo import (Grid, circle_to_polygon, geodesic_area_km2, geometry_bounds,
+                  normalise_aoi)
 
 
 class RenderError(RuntimeError):
@@ -321,6 +322,14 @@ def render(req: dict) -> dict:
         rgb, valid, stretch_bounds = composite.render_composite(bands, preset, req)
         rgb = _enhance_rgb(rgb, req, applied, scale=sr_report["scale"] if sr_report else 1)
 
+    # A radar swath is a slanted strip, so the catalogue can offer a pass whose
+    # bounding box covers the area while the strip itself misses it. Saying so
+    # beats handing back a picture of nothing.
+    if not valid.any():
+        raise RenderError(
+            f"That {sat['short']} pass does not cover this area — nothing it "
+            "measured falls inside your shape. Try another date.")
+
     rgba = composite.to_rgba(rgb, valid)
 
     fmt = req.get("format", "png")
@@ -340,7 +349,7 @@ def render(req: dict) -> dict:
         "scene": {k: v for k, v in scenes[0].items() if k != "assets"},
         "scenes": [{"id": s["id"], "date": s["date"], "cloud": s.get("cloud")} for s in scenes],
         "satellite": sat["key"],
-        "source": satellite_meta(sat["key"]),
+        "source": satellite_meta(sat["key"], scenes[0].get("source")),
         "grid": grid.as_dict(),
         "mode": mode,
         "preset": preset if mode == "composite" else None,
@@ -370,9 +379,101 @@ def render(req: dict) -> dict:
     return {"bytes": payload, "media_type": media, "meta": meta}
 
 
-def satellite_meta(key: str | None = None) -> dict:
+# ── Reading one point ──────────────────────────────────────────
+
+# What is worth reading at a point, per satellite. Not every band -- twelve
+# HTTP reads to answer one click would be slow and most of them would say
+# nothing new -- but enough to work out what is on the ground there.
+PROBE_BANDS = {
+    "optical": ["blue", "green", "red", "nir", "swir16"],
+    "radar": ["vv", "vh"],
+}
+
+PROBE_INDICES = {
+    "optical": ["ndvi", "ndwi", "ndbi"],
+    "radar": ["radar_ratio"],
+}
+
+
+def probe(req: dict) -> dict:
+    """What the satellite actually measured at one point.
+
+    The picture on screen is a rendering: stretched, curved and coloured. This
+    goes back to the numbers behind it, so a place that looks green can be
+    asked how green, and in what units. It reads a small window around the
+    point rather than a single pixel, which costs the same in HTTP range
+    requests and lets it say how uniform the neighbourhood is.
+    """
+    lon, lat = float(req["lon"]), float(req["lat"])
+    scenes = req.get("scenes") or [req.get("scene") or
+                                   stac.get_scene(req["scene_id"], req.get("satellite"))]
+    sat = satellite_of(scenes)
+
+    # A window a few hundred metres across: wide enough to be a neighbourhood,
+    # small enough to be one read.
+    around = circle_to_polygon(lon, lat, max(sat["resolution"] * 15, 200))
+    grid = Grid(geometry_bounds(around), config.MIN_SIZE)
+
+    names = [b for b in PROBE_BANDS[sat["kind"]] if config.BANDS[b]["sat"] == sat["key"]]
+    stacks = [raster.read_bands(s, grid, names)[0] for s in scenes]
+    bands = enhance.composite(stacks, "median") if len(stacks) > 1 else stacks[0]
+
+    row, col = grid.height // 2, grid.width // 2
+    unit = "dB" if sat["kind"] == "radar" else "reflectance"
+    values = []
+    for name in names:
+        patch = bands[name]
+        here = patch[row, col]
+        if here is np.ma.masked:
+            values.append({"band": name, "label": config.BANDS[name]["label"],
+                           "value": None, "unit": unit})
+            continue
+        values.append({
+            "band": name,
+            "label": config.BANDS[name]["label"],
+            "value": round(float(here), 4),
+            # How much the neighbourhood varies: a lone bright pixel and a
+            # uniform field read the same on their own and are not the same.
+            "spread": round(float(np.ma.std(patch)), 4),
+            "unit": unit,
+        })
+
+    indices = []
+    for name in PROBE_INDICES[sat["kind"]]:
+        spec = config.INDICES[name]
+        if any(b not in bands for b in spec["bands"]):
+            continue
+        arr = composite.compute_index(bands, name)
+        here = arr[row, col]
+        indices.append({
+            "index": name,
+            "label": spec["label"],
+            "value": None if here is np.ma.masked else round(float(here), 4),
+        })
+
+    return {
+        "point": [round(lon, 6), round(lat, 6)],
+        "satellite": sat["key"],
+        "source": satellite_meta(sat["key"], scenes[0].get("source")),
+        "date": scenes[0].get("date"),
+        "scenes": len(scenes),
+        "ground_res_m": sat["resolution"],
+        "unit": unit,
+        "bands": values,
+        "indices": indices,
+        "demo": bool(scenes[0].get("demo")),
+    }
+
+
+def satellite_meta(key: str | None = None, source: str | None = None) -> dict:
     """Who took the picture — carried on every render for the credit line."""
     sat = config.satellite(key)
-    return {k: sat[k] for k in
+    meta = {k: sat[k] for k in
             ("key", "short", "label", "kind", "platform", "resolution",
              "units", "attribution", "provider")}
+    # Radar can come from more than one catalogue, so credit the one it did.
+    catalogue = config.SOURCES.get(source or "")
+    if catalogue:
+        meta["provider"] = catalogue["label"]
+        meta["catalogue"] = catalogue["key"]
+    return meta
