@@ -223,6 +223,21 @@ finer again, and it comes from commercial satellites (Maxar, Planet SkySat,
 Airbus Pléiades) or aircraft — no amount of processing gets Sentinel-2 there,
 because the detail was never recorded.
 
+**A merge is never softer than the date it started from.** That is the one
+outcome nobody would accept, and without guarding against it, it happens:
+ground changes between passes, and the satellite's own pointing error varies
+across a frame in a way a single shift cannot correct. Averaging things that
+disagree blurs them. Measured against a single date, merging six passes with a
+pixel of drifting misregistration came back at 0.79× the fine detail — visibly
+worse than not merging at all.
+
+So the result is measured against what one date would have looked like, and
+where the fusion has not recovered more than the averaging cost, the merge's
+own fine structure is lifted to cover the difference — its high frequencies,
+which have the noise averaged out of them, rather than a single date's noisier
+ones. Across misregistration, changed ground and both together, the merge now
+comes out between 1.05× and 1.14× the detail of one date instead of 0.79×.
+
 **Getting the best out of it.** Dates close together work best: the method
 assumes every date saw the same ground, so a year of crop growth averages into
 *less* detail, not more — and the report says so plainly when that is what

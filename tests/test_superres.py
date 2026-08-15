@@ -360,6 +360,66 @@ def test_the_merge_resolves_more_ground_than_one_date(dates, aoi):
     assert report["sharpness_gain_pct"] > 10
 
 
+def test_a_merge_is_never_softer_than_the_date_it_started_from():
+    """The one outcome nobody would accept.
+
+    Real dates disagree: ground changes between passes, and the satellite's
+    pointing error varies across a frame in a way one shift cannot correct.
+    Averaging disagreement blurs, and a merge that comes back softer than the
+    single date is worse than useless. Where the fusion has not recovered more
+    than it averaged away, the merge's own fine structure is lifted to cover
+    the difference -- its high frequencies, which have the noise averaged out
+    of them, rather than a single date's noisier ones.
+    """
+    size = 288
+    rng = np.random.default_rng(11)
+    truth = ndimage.gaussian_filter(rng.random((size, size)).astype("float32"), 1.1)
+    truth = (truth - truth.min()) / np.ptp(truth)
+
+    def wander(image, amount, seed):
+        """Pointing error that varies across the frame, as the real thing does."""
+        r = np.random.default_rng(seed)
+        dy = ndimage.zoom(r.normal(0, 1, (5, 5)), size / 5, order=3) * amount
+        dx = ndimage.zoom(r.normal(0, 1, (5, 5)), size / 5, order=3) * amount
+        rows, cols = np.mgrid[0:size, 0:size].astype("float32")
+        return ndimage.map_coordinates(
+            image, [rows + dy[:size, :size], cols + dx[:size, :size]],
+            order=1, mode="nearest")
+
+    def pass_over(offset, drift, change, seed):
+        ground = truth
+        if change:                       # some of the ground is simply different
+            r = np.random.default_rng(seed + 500)
+            other = ndimage.gaussian_filter(r.random((size, size)).astype("float32"), 1.1)
+            where = ndimage.gaussian_filter(r.random((size, size)).astype("float32"), 12) > 0.5
+            ground = np.where(where, truth * (1 - change) + other * change, truth)
+        if drift:
+            ground = wander(ground, drift * 3, seed)
+        footprint = ndimage.uniform_filter(ground, 3)
+        rows = np.arange(0, size, 3) + offset[0]
+        cols = np.arange(0, size, 3) + offset[1]
+        coarse = ndimage.map_coordinates(
+            footprint, np.meshgrid(rows, cols, indexing="ij"), order=1, mode="nearest")
+        coarse = coarse + rng.normal(0, 0.004, coarse.shape)
+        fine_r = (np.arange(size) - offset[0]) / 3
+        fine_c = (np.arange(size) - offset[1]) / 3
+        return _masked(ndimage.map_coordinates(
+            coarse, np.meshgrid(fine_r, fine_c, indexing="ij"), order=0, mode="nearest"))
+
+    offsets = [(0, 0), (1.1, 0.4), (0.5, 1.7), (2.1, 2.4), (0.3, 1.2), (1.6, 0.2)]
+    inner = (slice(30, -30), slice(30, -30))
+
+    def detail(band):
+        data = np.ma.filled(band, 0.0)
+        return float(np.std((data - ndimage.gaussian_filter(data, 3))[inner]))
+
+    for drift, change in [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (0.0, 0.5), (0.7, 0.35)]:
+        dates = [{"red": pass_over(o, drift, change, i)} for i, o in enumerate(offsets)]
+        merged, _ = superres.fuse(dates, scale=3)
+        assert detail(merged["red"]) >= detail(dates[0]["red"]), (
+            f"merging came back softer than one date with drift={drift}, change={change}")
+
+
 # ── Grid and clamping ──────────────────────────────────────────
 
 

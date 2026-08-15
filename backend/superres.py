@@ -249,16 +249,25 @@ def deconvolve(image: np.ndarray, sigma: float, amount: float = 0.75,
 
 
 def _as_seen(image: np.ndarray, scale: float) -> np.ndarray:
-    """One date as a person would actually see it, enlarged to the fine grid.
+    """One date as a person would actually see it, enlarged to this grid.
 
-    The dates arrive here sampled nearest, so each native measurement sits in
-    a solid block of fine pixels. Those block edges are an artefact of the
-    sampling, not detail, and measuring against them would flatter or flatten
-    the result depending on nothing but the scale factor. Softening the blocks
-    back to what an ordinary enlargement of one date looks like is what makes
-    the comparison like for like.
+    The dates arrive here sampled nearest, so each measurement sits in a solid
+    block of pixels. Those block edges are an artefact of the sampling rather
+    than detail, and comparing against them would flatter the merge. What a
+    single date really looks like is the same measurements enlarged smoothly,
+    which is what the app does when it shows one date -- so the stand-in takes
+    one sample per block and enlarges it the same way. Anything the merge
+    claims is then a claim against what a person would otherwise be looking at.
     """
-    return ndimage.uniform_filter(image, max(int(round(scale)), 1))
+    step = max(int(round(scale)), 1)
+    if step == 1:
+        return image
+    h, w = image.shape
+    coarse = image[step // 2::step, step // 2::step]
+    if min(coarse.shape) < 4:
+        return ndimage.uniform_filter(image, step)
+    grown = ndimage.zoom(coarse, (h / coarse.shape[0], w / coarse.shape[1]), order=3)
+    return grown[:h, :w].astype("float32")
 
 
 def _fill(band: MaskedArray) -> tuple[np.ndarray, np.ndarray]:
@@ -272,6 +281,14 @@ def _fill(band: MaskedArray) -> tuple[np.ndarray, np.ndarray]:
     if mask.any():
         data = np.where(mask, float(np.ma.mean(band)) if (~mask).any() else 0.0, data)
     return data, ~mask
+
+
+def match_detail(image: np.ndarray, gain: float) -> np.ndarray:
+    """Lift an image's own fine detail by `gain`, leaving its tones alone."""
+    if gain <= 1.0:
+        return image
+    low = ndimage.gaussian_filter(image, 0.8)
+    return (low + (image - low) * gain).astype("float32")
 
 
 def _sharpness(image: np.ndarray, scale: float = 2.0,
@@ -319,7 +336,7 @@ def _guide(bands: dict[str, MaskedArray], keys: list[str]) -> MaskedArray:
 def fuse(stacks: list[dict[str, MaskedArray]], scale: float = 2.0,
          resolves: float | None = None,
          restore: float = 0.75, register: bool = True, upsample: int = 20,
-         tolerance: float = 2.5, reference: int = 0,
+         tolerance: float = 2.5, reference: int = 0, max_lift: float = 2.0,
          dates: list[str] | None = None) -> tuple[dict[str, MaskedArray], dict]:
     """Fuse several dates, all read onto one grid finer than the satellite's.
 
@@ -400,6 +417,30 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: float = 2.0,
     window = 2 * int(round(scale)) + 1
     ref_sharp = _sharpness(_as_seen(ref_guide, scale), float(scale), where)
     out_sharp = _sharpness(fused_guide, float(scale), where)
+
+    # A merge must never come out softer than the date it started from -- that
+    # is the one outcome nobody would accept, and it happens whenever the dates
+    # disagree: ground that changed between passes, or the satellite's own
+    # pointing error, which varies across a frame and cannot be taken out by
+    # one shift. Averaging disagreement blurs. Where that has cost more detail
+    # than the fusion recovered, the merge's own fine structure is lifted to
+    # match -- its high frequencies rather than the reference's, since those
+    # are the ones with the noise already averaged out of them.
+    # A margin over merely matching: the measure here is a band-pass, and the
+    # eye takes in the finest scale too, so parity on the measurement still
+    # reads as slightly soft. 1.3 clears every case tested -- misregistration,
+    # ground that changed, and both together -- and the cap stops a badly
+    # disagreeing stack from being sharpened into noise instead.
+    lift = 1.0
+    if 0 < out_sharp < ref_sharp * 1.3:
+        lift = min(1.3 * ref_sharp / out_sharp, float(max_lift))
+        for key in keys:
+            fused[key] = np.ma.masked_array(
+                match_detail(np.ma.filled(fused[key], 0.0), lift),
+                mask=np.ma.getmaskarray(fused[key]))
+        fused_guide, fused_valid = _fill(_guide(fused, guide_keys))
+        out_sharp = _sharpness(fused_guide, float(scale), where)
+
     ref_noise = _noise(ref_guide, window, where)
     out_noise = _noise(stacked_guide, window, where)
     # Below this the reference simply has no measurable noise to remove, and a
@@ -429,6 +470,7 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: float = 2.0,
         "samples_per_pixel": (round(float(np.mean(coverage)), 2)
                               if coverage is not None else 0.0),
         "restore": round(float(restore), 2),
+        "detail_lift": round(lift, 2),
         "psf_sigma_px": round(sigma, 2),
         "sharpness_gain_pct": (round((out_sharp / ref_sharp - 1.0) * 100, 1)
                                if ref_sharp > 1e-9 else 0.0),
