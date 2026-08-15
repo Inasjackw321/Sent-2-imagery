@@ -11,6 +11,7 @@ import { store, emit, on } from './store.js';
 import { $, $$, toast, fmt, el } from './ui.js';
 import { copyRegion, saveRegion, WATERMARK } from './capture.js';
 import { initFires, POPUP } from './fires.js';
+import { initClouds } from './clouds.js';
 
 let map;
 let aoiLayer = null;
@@ -60,6 +61,7 @@ export function initMap() {
   bindDrawTools();
   bindPassLookup();
   initFires(map);
+  initClouds(map);
 
   on('image', showOverlay);
   return map;

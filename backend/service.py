@@ -321,6 +321,14 @@ def render(req: dict) -> dict:
         rgb, valid, stretch_bounds = composite.render_composite(bands, preset, req)
         rgb = _enhance_rgb(rgb, req, applied, scale=sr_report["scale"] if sr_report else 1)
 
+    # A radar swath is a slanted strip, so the catalogue can offer a pass whose
+    # bounding box covers the area while the strip itself misses it. Saying so
+    # beats handing back a picture of nothing.
+    if not valid.any():
+        raise RenderError(
+            f"That {sat['short']} pass does not cover this area — nothing it "
+            "measured falls inside your shape. Try another date.")
+
     rgba = composite.to_rgba(rgb, valid)
 
     fmt = req.get("format", "png")
@@ -340,7 +348,7 @@ def render(req: dict) -> dict:
         "scene": {k: v for k, v in scenes[0].items() if k != "assets"},
         "scenes": [{"id": s["id"], "date": s["date"], "cloud": s.get("cloud")} for s in scenes],
         "satellite": sat["key"],
-        "source": satellite_meta(sat["key"]),
+        "source": satellite_meta(sat["key"], scenes[0].get("source")),
         "grid": grid.as_dict(),
         "mode": mode,
         "preset": preset if mode == "composite" else None,
@@ -370,9 +378,15 @@ def render(req: dict) -> dict:
     return {"bytes": payload, "media_type": media, "meta": meta}
 
 
-def satellite_meta(key: str | None = None) -> dict:
+def satellite_meta(key: str | None = None, source: str | None = None) -> dict:
     """Who took the picture — carried on every render for the credit line."""
     sat = config.satellite(key)
-    return {k: sat[k] for k in
+    meta = {k: sat[k] for k in
             ("key", "short", "label", "kind", "platform", "resolution",
              "units", "attribution", "provider")}
+    # Radar can come from more than one catalogue, so credit the one it did.
+    catalogue = config.SOURCES.get(source or "")
+    if catalogue:
+        meta["provider"] = catalogue["label"]
+        meta["catalogue"] = catalogue["key"]
+    return meta

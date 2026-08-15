@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
+import requests
 from affine import Affine
 from rasterio.crs import CRS
 from scipy import ndimage
@@ -360,6 +361,180 @@ def test_the_offline_catalogue_flies_both_satellites():
     assert found == sorted(found, key=lambda s: s["datetime"], reverse=True)
     for scene in found:
         assert stac.get_scene(scene["id"])["satellite"] == scene["satellite"]
+
+
+# ── Where radar's pixels come from ─────────────────────────────
+
+
+class _Reply:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _item(ident="S1A_TEST"):
+    return {
+        "id": ident,
+        "properties": {"datetime": "2024-05-04T17:52:11Z", "platform": "sentinel-1a"},
+        "assets": {"vv": {"href": "https://example.test/vv.tif"}},
+    }
+
+
+def test_radar_is_asked_for_from_more_than_one_catalogue():
+    """Optical has one obvious home; radar does not, and the order matters."""
+    optical = stac.sources_for(config.satellite("sentinel-2"))
+    radar = stac.sources_for(config.satellite("sentinel-1"))
+    assert [s["key"] for s in optical] == ["earth-search"]
+    assert len(radar) > 1
+    # The projected, anonymously-signable copy is tried before the raw one.
+    assert radar[0]["projected"] is True
+
+
+def test_a_pinned_source_is_the_only_one_tried(monkeypatch):
+    monkeypatch.setattr(config, "S1_SOURCE", "earth-search")
+    assert [s["key"] for s in stac.sources_for(config.satellite("sentinel-1"))] \
+        == ["earth-search"]
+
+
+def test_the_second_catalogue_answers_when_the_first_cannot(monkeypatch):
+    asked = []
+
+    def post(url, **kwargs):
+        asked.append(url)
+        if "planetarycomputer" in url:
+            raise requests.RequestException("503 from the front door")
+        return _Reply({"features": [_item()], "numberMatched": 1})
+
+    monkeypatch.setattr(stac._session, "post", post)
+    found, _ = stac._search_one(config.satellite("sentinel-1"),
+                                {"type": "Point", "coordinates": [0, 0]},
+                                "2024-05-01", "2024-05-31", 100, 10)
+    assert len(asked) == 2, "it must try the fallback, not give up"
+    assert found[0]["source"] == "earth-search"
+
+
+def test_every_catalogue_failing_says_which_ones(monkeypatch):
+    monkeypatch.setattr(stac._session, "post",
+                        lambda url, **kw: (_ for _ in ()).throw(
+                            requests.RequestException("no route")))
+    with pytest.raises(stac.SceneSearchError) as caught:
+        stac._search_one(config.satellite("sentinel-1"),
+                         {"type": "Point", "coordinates": [0, 0]},
+                         "2024-05-01", "2024-05-31", 100, 10)
+    assert "Planetary Computer" in str(caught.value)
+    assert "Earth Search" in str(caught.value)
+
+
+def test_nowhere_holding_a_pass_is_not_an_error(monkeypatch):
+    """An area no radar pass covers is an empty answer, not a failure."""
+    monkeypatch.setattr(stac._session, "post",
+                        lambda url, **kw: _Reply({"features": []}))
+    found, count = stac._search_one(config.satellite("sentinel-1"),
+                                    {"type": "Point", "coordinates": [0, 0]},
+                                    "2024-05-01", "2024-05-31", 100, 10)
+    assert found == [] and count == 0
+
+
+def test_a_scene_remembers_which_catalogue_served_it():
+    summary = stac.scene_summary(_item(), "sentinel-1", "planetary-computer")
+    assert summary["source"] == "planetary-computer"
+    # Anything that never said falls back to the original source.
+    assert stac.scene_summary(_item(), "sentinel-1")["source"] == "earth-search"
+
+
+def test_pixels_that_need_signing_get_signed(monkeypatch):
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return _Reply({"token": "st=2024&sig=abc",
+                       "msft:expiry": "2099-01-01T00:00:00Z"})
+
+    monkeypatch.setattr(stac._session, "get", get)
+    stac._tokens.clear()
+    scene = {"satellite": "sentinel-1", "source": "planetary-computer"}
+
+    signed = stac.sign_href(scene, "https://x.blob.core.windows.net/a/vv.tif")
+    assert signed.endswith("?st=2024&sig=abc")
+    # An href that already carries a query keeps it.
+    assert stac.sign_href(scene, "https://x/vv.tif?a=1").endswith("?a=1&st=2024&sig=abc")
+    # And the signature is fetched once, not per band of every render.
+    for _ in range(5):
+        stac.sign_href(scene, "https://x/vv.tif")
+    assert len(calls) == 1
+
+
+def test_a_source_that_needs_no_signature_is_left_alone(monkeypatch):
+    monkeypatch.setattr(stac._session, "get",
+                        lambda *a, **k: pytest.fail("must not ask for a token"))
+    stac._tokens.clear()
+    scene = {"satellite": "sentinel-1", "source": "earth-search"}
+    assert stac.sign_href(scene, "https://x/vv.tif") == "https://x/vv.tif"
+
+
+def test_an_expired_signature_is_replaced(monkeypatch):
+    tokens = iter([
+        {"token": "old=1", "msft:expiry": "2000-01-01T00:00:00Z"},
+        {"token": "new=1", "msft:expiry": "2099-01-01T00:00:00Z"},
+    ])
+    monkeypatch.setattr(stac._session, "get", lambda *a, **k: _Reply(next(tokens)))
+    stac._tokens.clear()
+    scene = {"satellite": "sentinel-1", "source": "planetary-computer"}
+    assert stac.sign_href(scene, "https://x/vv.tif").endswith("old=1")
+    assert stac.sign_href(scene, "https://x/vv.tif").endswith("new=1")
+
+
+# ── Saying what went wrong ─────────────────────────────────────
+
+
+def test_a_refused_read_names_the_host_and_the_reason():
+    message = raster._explain("https://sentinel-s1-l1c.s3.amazonaws.com/x/vv.tiff",
+                              RuntimeError("HTTP response code: 403"))
+    assert "sentinel-s1-l1c.s3.amazonaws.com" in message
+    assert "requester-pays" in message
+    assert "Planetary Computer" in message
+
+
+def test_a_missing_file_is_distinguished_from_a_refused_one():
+    assert "404" in raster._explain("https://h/x.tif", RuntimeError("404 NoSuchKey"))
+    assert "no longer has" in raster._explain("https://h/x.tif", RuntimeError("404"))
+
+
+def test_a_file_with_no_map_transform_is_refused_rather_than_warped():
+    """The failure that produces a smooth smear instead of an error."""
+    class Ungeoreferenced:
+        crs = None
+        transform = Affine.identity()
+        gcps = ([object()], None)
+
+    with pytest.raises(raster.BandReadError) as caught:
+        raster._check_georeferencing(Ungeoreferenced(), "https://aws.test/iw-vv.tiff")
+    assert "no map projection" in str(caught.value)
+    assert "ground control points" in str(caught.value)
+
+
+def test_a_properly_projected_file_passes_the_check():
+    class Fine:
+        crs = CRS.from_epsg(32630)
+        transform = Affine(10, 0, 500000, 0, -10, 5700000)
+        gcps = ([], None)
+
+    raster._check_georeferencing(Fine(), "https://ok.test/vv.tif")   # must not raise
+
+
+def test_a_pass_that_misses_the_area_says_so_instead_of_showing_nothing(radar_scene, aoi):
+    """A radar swath is a slanted strip; its bounding box is not."""
+    from backend.geo import circle_to_polygon
+
+    # Far outside the fixture's tile, so every pixel reads as no data.
+    elsewhere = circle_to_polygon(20.0, 10.0, 2000)
+    with pytest.raises(service.RenderError, match="does not cover this area"):
+        service.render({"aoi": elsewhere, "scene": radar_scene, "size": 64})
 
 
 # ── When the satellites next come over ─────────────────────────

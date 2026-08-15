@@ -10,9 +10,9 @@ Two satellites cover the same ground and answer different questions.
 be shown, and both can sit on the map at once so you can fade between them.
 
 Right-click anywhere to find out when each of them next flies over. Switch on
-**active fires** to see every thermal detection NASA has published in the last
-day. Highlight part of the imagery to take it away as a picture, marked
-`@Kaldockhi`.
+**live clouds** for today's sky and **active fires** for every thermal
+detection NASA has published in the last day. Highlight part of the imagery to
+take it away as a picture, marked `@Kaldockhi`.
 
 That is the whole app. One screen: a map, the dates over your area, and the
 imagery.
@@ -87,11 +87,32 @@ help: it is radar, so cloud, smoke and darkness make no difference to it.
 | Works at night | No | Yes |
 | Cost | Free, no account, no key | Free, no account, no key |
 
-Both come from [Earth Search](https://earth-search.aws.element84.com/v1), a
-public catalogue in front of the Sentinel archives on AWS Open Data. Only the
-bands and the pixels your area needs are read, by HTTP range request straight
-out of the cloud-optimised GeoTIFFs, so a small area is quick even though a
-source tile runs to a gigabyte.
+Sentinel-2 comes from [Earth Search](https://earth-search.aws.element84.com/v1),
+a public catalogue in front of the archive on AWS Open Data. Only the bands and
+the pixels your area needs are read, by HTTP range request straight out of the
+cloud-optimised GeoTIFFs, so a small area is quick even though a source tile
+runs to a gigabyte.
+
+**Sentinel-1 needs more than one home, and the reason is worth knowing.** The
+GRD products in the AWS `sentinel-s1-l1c` bucket are requester-pays, so an
+anonymous read is refused outright — and the measurement files inside them are
+georeferenced by ground control points rather than by a map transform. Warping
+one of those without honouring its GCPs does not fail; it quietly produces a
+smooth smear with no ground in it, which looks like imagery and is not.
+
+So radar is asked for from [Microsoft's Planetary
+Computer](https://planetarycomputer.microsoft.com/) first, which republishes
+the same acquisitions as projected cloud-optimised GeoTIFFs and hands out a
+free, anonymous signature for reading them — no account, no key. Earth Search
+stays behind it as a fallback, and each catalogue is tried in turn until one
+answers. Whichever did is recorded on the scene and credited on the render.
+Pin one with `S1_SOURCE=planetary-computer` or `S1_SOURCE=earth-search` if you
+would rather not have the choice made for you.
+
+When a read does fail, it says what failed and where: a refusal names the host
+and explains requester-pays, a file with no map projection is refused rather
+than warped into a smear, and a pass whose swath misses your shape says so
+instead of handing back a blank.
 
 Stored numbers become physical units on the way in. For Sentinel-2 that is
 surface reflectance, including the -1000 offset that scenes from January 2022
@@ -359,6 +380,32 @@ those are collapsed to a single pass, or the prediction would creep a few
 minutes early every cycle. Where there is only one pass on record it falls back
 to the nominal repeat cycle and says so rather than inventing precision.
 
+## Live clouds
+
+Switch on **Live clouds** in the corner of the map and today's sky appears
+under the imagery — the whole planet, as the polar orbiters last saw it.
+
+The tiles are [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/), which
+republishes every overpass as map tiles within about three hours of the
+satellite taking it. Corrected reflectance: what the eye would see, with the
+atmosphere's own scattering taken out of the land but left in the cloud, which
+is precisely what makes it a cloud picture.
+
+Be clear about what "live" means here, because it is not a geostationary loop.
+Each satellite crosses a given place once a day at a fixed local time, so
+choosing between **VIIRS on NOAA-20 or Suomi-NPP** (about 13:30 local) and
+**MODIS on Terra** (about 10:30) or **Aqua** (13:30) is really choosing what
+hour of the day you are looking at. One pass a day, and none of the night side.
+Ask for today's mosaic before it has been assembled and the app steps back a
+day and says why, rather than showing you an empty layer.
+
+The useful trick is **Match the imagery**: set the cloud layer to the date of
+the Sentinel scene you are looking at, and you can see the weather that pass
+was flying through — why a scene is hazy on one side, or what the cloud your
+merge just removed actually looked like. Fade it against the imagery with the
+slider; it draws under your drawn area and under the render, because it is
+context rather than the subject.
+
 ## What is on fire
 
 Switch on **Active fires** in the corner of the map and every thermal
@@ -415,13 +462,19 @@ a file instead and the app says so, so it is never lost to a permission prompt.
 
 ## Where the imagery comes from
 
-[Earth Search](https://earth-search.aws.element84.com/v1), Element 84's free
-STAC API in front of the `sentinel-2-l2a` and `sentinel-1-grd` collections on
-AWS Open Data. No account, no key, no token — a search is one anonymous HTTP
-request, and so is every band read after it. The two collections are searched
-separately, because a cloud-cover filter would throw away every radar scene:
-radar has no such property, and filtering it by one would make it look as
-though it never flew.
+Sentinel-2 from [Earth Search](https://earth-search.aws.element84.com/v1),
+Element 84's free STAC API in front of `sentinel-2-l2a` on AWS Open Data;
+Sentinel-1 from the [Planetary
+Computer](https://planetarycomputer.microsoft.com/), with Earth Search as its
+fallback — see [The satellites](#the-satellites) for why radar needs both.
+Clouds from [NASA GIBS](https://nasa-gibs.github.io/gibs-api-docs/) and fires
+from [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/). No account, no key,
+no token anywhere: a search is one anonymous HTTP request, and so is every band
+read after it.
+
+The two Sentinel collections are searched separately, because a cloud-cover
+filter would throw away every radar scene: radar has no such property, and
+filtering it by one would make it look as though it never flew.
 
 The imagery is licensed for any use, including commercially, with attribution:
 *Contains modified Copernicus Sentinel data*. That line rides along with every
@@ -502,6 +555,11 @@ haze removal and white balance entirely: those are corrections to light, and
 radar is not light, so leaving them in doing nothing would be a lie about what
 the controls do.
 
+Two more layers live in the corner of the map rather than in the sidebar,
+because they are context for the imagery rather than part of building it:
+**Live clouds** and **Active fires**, each with its own fade, time window and
+panel saying exactly what it is showing.
+
 **4 · Adjust the picture.** Contrast, exposure, saturation, clarity,
 highlights, shadows, warmth, tint, midtones and vignette, plus nine looks.
 Unlike step 3 these work on the picture already on the map, so they apply as
@@ -581,7 +639,7 @@ backend/
   launcher.py    port choice, app windows, desktop shortcuts
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
-  js/            map, imagery, fires, capture, adjust, store, ui, api, install
+  js/            map, imagery, fires, clouds, capture, adjust, store, ui, api, install
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
@@ -648,6 +706,8 @@ toolkit is available Sent-2 falls back to a chrome-less browser window.
 Internet access is needed for imagery, map tiles, place search, overpass
 prediction and fire data — but not in `--demo` mode.
 
-`FIRMS_MAP_KEY` is the only optional setting: a free key from NASA makes the
-fire layer ask for just the rectangle on screen instead of the global file. The
-layer works without it.
+Two optional settings, both with sensible defaults. `FIRMS_MAP_KEY` — a free
+key from NASA — makes the fire layer ask for just the rectangle on screen
+instead of the global file; the layer works without it. `S1_SOURCE` pins which
+catalogue Sentinel-1 comes from (`planetary-computer` or `earth-search`)
+instead of trying each in turn.

@@ -76,8 +76,10 @@ def _resolve_assets(scene: dict, bands: list[str]) -> tuple[list[str], dict[str,
         # naming its polarisation VV rather than vv should not be a failure.
         href = assets.get(name) or _case_insensitive(assets, name)
         if not href:
-            raise BandReadError(f"Scene {scene['id']} is missing its {name} asset")
-        targets[band] = href
+            have = ", ".join(sorted(assets)[:8]) or "none"
+            raise BandReadError(
+                f"Scene {scene['id']} has no {name} asset (it offers: {have})")
+        targets[band] = stac.sign_href(scene, href)
     return needed, targets
 
 
@@ -158,6 +160,7 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
 def _read_one(href: str, grid: Grid, resampling: Resampling):
     try:
         with rasterio.open(href) as src:
+            _check_georeferencing(src, href)
             nodata = 0 if src.nodata is None else src.nodata
             with WarpedVRT(
                 src,
@@ -171,7 +174,45 @@ def _read_one(href: str, grid: Grid, resampling: Resampling):
             ) as vrt:
                 return vrt.read(1, masked=True)
     except rasterio.RasterioIOError as exc:
-        raise BandReadError(f"Could not read {href.rsplit('/', 1)[-1]}: {exc}") from exc
+        raise BandReadError(_explain(href, exc)) from exc
+
+
+def _check_georeferencing(src, href: str) -> None:
+    """Refuse a file that has no map transform, rather than warping nonsense.
+
+    Raw Sentinel-1 measurement files are georeferenced by ground control points
+    rather than by a map transform. Warping one without honouring its GCPs does
+    not raise anything -- it silently produces a smooth smear with no ground in
+    it, which looks like imagery and is not. Better to say so.
+    """
+    if src.crs is not None and src.transform and not src.transform.is_identity:
+        return
+    where = _host(href)
+    extra = (" It is georeferenced by ground control points, which this "
+             "reader cannot place on a map." if src.gcps and src.gcps[0] else "")
+    raise BandReadError(
+        f"The file served by {where} carries no map projection.{extra} "
+        "Try a different source for this satellite.")
+
+
+def _explain(href: str, exc: Exception) -> str:
+    """Turn a GDAL failure into something a person can act on."""
+    text = str(exc)
+    where = _host(href)
+    if "403" in text or "AccessDenied" in text or "Forbidden" in text:
+        return (f"{where} refused the request (403). Sentinel-1 on AWS is a "
+                "requester-pays bucket, which cannot be read anonymously; the "
+                "Planetary Computer copy can.")
+    if "404" in text or "NoSuchKey" in text:
+        return f"{where} no longer has that file (404) — the catalogue is ahead of the data."
+    if "signature" in text.lower() or "401" in text:
+        return f"{where} rejected the signature — it may have expired; try again."
+    return f"Could not read {href.rsplit('/', 1)[-1].split('?')[0]} from {where}: {exc}"
+
+
+def _host(href: str) -> str:
+    without = href.split("://", 1)[-1]
+    return without.split("/", 1)[0] or "the source"
 
 
 def _to_physical(raw, scene: dict) -> np.ma.MaskedArray:

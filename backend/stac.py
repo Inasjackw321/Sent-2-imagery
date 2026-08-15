@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import math
+import threading
 from typing import Any
 
 import requests
@@ -94,8 +95,48 @@ def search_scenes(
     return {"scenes": scenes, "demo": False, "matched": matched, "satellites": wanted}
 
 
+def sources_for(sat: dict) -> list[dict]:
+    """The catalogues to try for a satellite, best first."""
+    keys = list(sat.get("sources") or ("earth-search",))
+    if sat["kind"] == "radar" and config.S1_SOURCE in config.SOURCES:
+        keys = [config.S1_SOURCE]          # pinned by the environment
+    return [config.SOURCES[k] for k in keys if k in config.SOURCES]
+
+
 def _search_one(sat: dict, geometry: dict, start: str, end: str,
                 max_cloud: float, limit: int) -> tuple[list[dict], int]:
+    """Ask each catalogue in turn until one answers.
+
+    Falling through matters for radar: the catalogues carry the same
+    acquisitions but not in the same state, and one being unreachable or
+    holding nothing for this area should not be the end of it. Whichever
+    answered is written onto every scene, because reading its pixels later
+    depends on knowing where they came from.
+    """
+    problems = []
+    for source in sources_for(sat):
+        try:
+            found, count = _search_source(source, sat, geometry, start, end,
+                                          max_cloud, limit)
+        except SceneSearchError as exc:
+            problems.append(str(exc))
+            continue
+        if found:
+            return found, count
+        problems.append(f"{source['label']} has no {sat['short']} pass here")
+
+    if problems and len(problems) == len(sources_for(sat)):
+        # Every catalogue was asked and none of them produced anything. An
+        # empty result is not an error, but being unable to reach any of them
+        # is -- and saying which were tried is what makes it fixable.
+        if all("has no" in p for p in problems):
+            return [], 0
+        raise SceneSearchError("; ".join(problems))
+    return [], 0
+
+
+def _search_source(source: dict, sat: dict, geometry: dict, start: str, end: str,
+                   max_cloud: float, limit: int) -> tuple[list[dict], int]:
     payload: dict[str, Any] = {
         "collections": [sat["collection"]],
         "intersects": geometry,
@@ -105,19 +146,20 @@ def _search_one(sat: dict, geometry: dict, start: str, end: str,
     if sat["cloud_filter"]:
         payload["query"] = {"eo:cloud_cover": {"lt": float(max_cloud)}}
     try:
-        resp = _session.post(f"{config.STAC_URL}/search", json=payload, timeout=60)
+        resp = _session.post(f"{source['stac']}/search", json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
         raise SceneSearchError(
-            f"Could not reach the {sat['short']} catalogue: {exc}") from exc
+            f"Could not reach {source['label']} for {sat['short']}: {exc}") from exc
 
-    found = [s for s in (scene_summary(item, sat["key"])
+    found = [s for s in (scene_summary(item, sat["key"], source["key"])
                          for item in data.get("features", [])) if s]
     return found, data.get("numberMatched") or 0
 
 
-def scene_summary(item: dict, satellite: str | None = None) -> dict[str, Any] | None:
+def scene_summary(item: dict, satellite: str | None = None,
+                  source: str | None = None) -> dict[str, Any] | None:
     """Flatten a STAC item into what the app needs."""
     props = item.get("properties", {})
     assets = item.get("assets", {})
@@ -135,6 +177,9 @@ def scene_summary(item: dict, satellite: str | None = None) -> dict[str, Any] | 
     return {
         "id": item.get("id"),
         "satellite": key,
+        # Which catalogue served it: reading its pixels needs to know, because
+        # some of them hand out URLs that must be signed before they open.
+        "source": source or "earth-search",
         "datetime": when,
         "date": when[:10],
         "cloud": round(float(cloud), 1) if cloud is not None else None,
@@ -149,6 +194,64 @@ def scene_summary(item: dict, satellite: str | None = None) -> dict[str, Any] | 
         "assets": hrefs,
         "demo": False,
     }
+
+
+# ── Signing ────────────────────────────────────────────────────
+
+# Signatures are handed out with an expiry, so they are held until shortly
+# before they run out rather than fetched per band of every render.
+_tokens: dict[str, tuple[dt.datetime, str]] = {}
+_token_lock = threading.Lock()
+TOKEN_MARGIN = dt.timedelta(minutes=5)
+
+
+def sign_href(scene: dict, href: str) -> str:
+    """Make one asset URL openable.
+
+    Some catalogues publish their pixels in storage that will not serve an
+    unsigned request. The signature is free and anonymous -- ask the token
+    endpoint, put what it returns on the end of the URL -- but it has to be
+    asked for, and it expires, so it is fetched once and reused.
+    """
+    source = config.SOURCES.get(scene.get("source") or "")
+    if not source or not source.get("sign") or not href.startswith("http"):
+        return href
+    token = _token(source, config.satellite(scene.get("satellite"))["collection"])
+    if not token:
+        return href
+    return f"{href}{'&' if '?' in href else '?'}{token}"
+
+
+def _token(source: dict, collection: str) -> str:
+    key = f"{source['key']}/{collection}"
+    now = dt.datetime.now(dt.timezone.utc)
+    with _token_lock:
+        held = _tokens.get(key)
+        if held and held[0] - TOKEN_MARGIN > now:
+            return held[1]
+
+    url = source["sign"].format(collection=collection)
+    try:
+        resp = _session.get(url, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise SceneSearchError(
+            f"{source['label']} would not sign the imagery: {exc}") from exc
+
+    token = data.get("token") or ""
+    expiry = _parse_time(data.get("msft:expiry")) or (now + dt.timedelta(minutes=30))
+    with _token_lock:
+        _tokens[key] = (expiry, token)
+    return token
+
+
+def _parse_time(value) -> dt.datetime | None:
+    try:
+        stamp = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
 
 
 def _tile_label(props: dict) -> str:
@@ -175,17 +278,23 @@ def get_scene(scene_id: str, satellite: str | None = None) -> dict[str, Any]:
     key = satellite or ("sentinel-1" if scene_id.upper().startswith("S1")
                         else config.DEFAULT_SATELLITE)
     sat = config.satellite(key)
-    url = f"{config.STAC_URL}/collections/{sat['collection']}/items/{scene_id}"
-    try:
-        resp = _session.get(url, timeout=45)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise SceneSearchError(f"Scene {scene_id} could not be fetched: {exc}") from exc
 
-    summary = scene_summary(resp.json(), sat["key"])
-    if not summary:
-        raise SceneSearchError(f"Scene {scene_id} has no readable assets")
-    return summary
+    problems = []
+    for source in sources_for(sat):
+        url = f"{source['stac']}/collections/{sat['collection']}/items/{scene_id}"
+        try:
+            resp = _session.get(url, timeout=45)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            problems.append(f"{source['label']}: {exc}")
+            continue
+        summary = scene_summary(resp.json(), sat["key"], source["key"])
+        if summary:
+            return summary
+        problems.append(f"{source['label']} holds no readable assets for it")
+
+    raise SceneSearchError(f"Scene {scene_id} could not be fetched — "
+                           + "; ".join(problems))
 
 
 def boa_offset(scene: dict) -> int:

@@ -14,6 +14,45 @@ STAC_URL = os.environ.get("STAC_URL", "https://earth-search.aws.element84.com/v1
 STAC_COLLECTION = os.environ.get("STAC_COLLECTION", "sentinel-2-l2a")
 STAC_COLLECTION_S1 = os.environ.get("STAC_COLLECTION_S1", "sentinel-1-grd")
 
+# Where each satellite's pixels come from. Sentinel-2 has one obvious home;
+# Sentinel-1 does not, and the difference is worth spelling out because it is
+# the reason radar needs more than one.
+#
+# Sentinel-2 L2A on AWS Open Data is anonymous, cloud-optimised and already in
+# a map projection: open the URL and read the window you want. Sentinel-1 GRD
+# is none of those things by default. The products in the AWS `sentinel-s1-l1c`
+# bucket are requester-pays, so an anonymous read is refused outright, and the
+# measurement files inside them are georeferenced by ground control points
+# rather than by a map transform -- warping one without honouring its GCPs does
+# not fail, it quietly produces a smooth smear with no ground in it.
+#
+# Microsoft's Planetary Computer republishes the same acquisitions as projected
+# cloud-optimised GeoTIFFs, readable by anyone who asks its token endpoint for
+# a signature -- free, anonymous, no account. So that is tried first for radar,
+# with Earth Search kept behind it in case a deployment prefers it or the
+# Planetary Computer is unreachable.
+SOURCES = {
+    "planetary-computer": {
+        "key": "planetary-computer",
+        "label": "Microsoft Planetary Computer",
+        "stac": "https://planetarycomputer.microsoft.com/api/stac/v1",
+        "sign": "https://planetarycomputer.microsoft.com/api/sas/v1/token/{collection}",
+        "projected": True,
+    },
+    "earth-search": {
+        "key": "earth-search",
+        "label": "Earth Search (AWS Open Data)",
+        "stac": STAC_URL,
+        "sign": None,
+        # Raw GRD measurement files carry ground control points, not a map
+        # transform, and live in a requester-pays bucket.
+        "projected": False,
+    },
+}
+
+# Overridable so a deployment that knows better can pin one.
+S1_SOURCE = os.environ.get("S1_SOURCE", "").strip()
+
 # The two satellites, in one place. They fly over the same ground and answer
 # different questions: Sentinel-2 photographs it in daylight when there is no
 # cloud, Sentinel-1 measures it with radar through cloud and at night. Every
@@ -27,6 +66,7 @@ SATELLITES = {
         "kind": "optical",
         "platform": "Sentinel-2 A/B/C",
         "collection": STAC_COLLECTION,
+        "sources": ("earth-search",),
         "resolution": 10,
         "since": "2015-06-23",
         "revisit": "≈5 days",
@@ -54,6 +94,9 @@ SATELLITES = {
         "kind": "radar",
         "platform": "Sentinel-1 A/C",
         "collection": STAC_COLLECTION_S1,
+        # Tried in order until one answers: see SOURCES above for why radar
+        # needs more than one and optical does not.
+        "sources": ("planetary-computer", "earth-search"),
         # GRD is delivered on a 10 m grid but resolves about 20 m: the grid is
         # finer than the radar's own detail, not the other way round.
         "resolution": 20,
@@ -108,7 +151,8 @@ USER_AGENT = "Sent-2-imagery/1.0 (https://github.com/Inasjackw321/Sent-2-imagery
 # sizes are in bytes -- a string here raises "an integer is required".
 GDAL_ENV = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.TIF,.tiff",
+    # No extension allowlist: a signed URL ends in its signature rather than in
+    # .tif, and an allowlist would refuse to open one.
     "GDAL_HTTP_MULTIPLEX": "YES",
     "GDAL_HTTP_VERSION": "2",
     "GDAL_HTTP_MAX_RETRY": 3,
