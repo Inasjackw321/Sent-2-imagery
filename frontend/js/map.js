@@ -10,6 +10,7 @@ import { api } from './api.js';
 import { store, emit, on } from './store.js';
 import { $, $$, toast, fmt, el } from './ui.js';
 import { copyRegion, saveRegion, WATERMARK } from './capture.js';
+import { initFires, POPUP } from './fires.js';
 
 let map;
 let aoiLayer = null;
@@ -58,6 +59,7 @@ export function initMap() {
 
   bindDrawTools();
   bindPassLookup();
+  initFires(map);
 
   on('image', showOverlay);
   return map;
@@ -380,7 +382,7 @@ async function showPasses(latlng) {
   const box = el('div', { class: 'passes' },
     el('div', { class: 'passes-head' }, fmt.coord(latlng.lng, latlng.lat)),
     el('div', { class: 'passes-wait' }, 'Asking the catalogue…'));
-  const popup = L.popup({ className: 'pass-popup', maxWidth: 320, autoPan: true })
+  const popup = L.popup({ className: 'pass-popup', maxWidth: 320, ...POPUP })
     .setLatLng(latlng).setContent(box).openOn(map);
 
   try {

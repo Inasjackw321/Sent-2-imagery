@@ -9,8 +9,10 @@ Two satellites cover the same ground and answer different questions.
 **Sentinel-1** measures it with radar, through cloud and at night. Either can
 be shown, and both can sit on the map at once so you can fade between them.
 
-Right-click anywhere to find out when each of them next flies over. Highlight
-part of the imagery to take it away as a picture, marked `@Kaldockhi`.
+Right-click anywhere to find out when each of them next flies over. Switch on
+**active fires** to see every thermal detection NASA has published in the last
+day. Highlight part of the imagery to take it away as a picture, marked
+`@Kaldockhi`.
 
 That is the whole app. One screen: a map, the dates over your area, and the
 imagery.
@@ -102,9 +104,42 @@ Still water reflects the pulse away and comes back black; buildings line their
 corners up with the satellite and come back brightest of all. VH only returns
 from things that scatter in a volume — foliage, mostly — so the standard
 false colour (VV red, VH green, their ratio blue) separates towns, crops and
-water on its own. Three ways to look at it: **radar colour**, **VV only**, and
-**water & flood**, which puts the cross-polarised channel first so still water
-goes to near black.
+water on its own: **black water, white towns, green vegetation, violet bare
+ground**. Three ways to look at it: **radar colour**, **VV only**, and **water
+& flood**, which puts the cross-polarised channel first so still water goes to
+near black.
+
+**Radar is displayed in linear power, on fixed windows, and both of those
+matter more than they sound.**
+
+Decibels are right for measuring and for merging — that is the scale on which
+backscatter means something and on which speckle averages out — but wrong for
+looking at. A logarithm gives water, soil, vegetation and concrete roughly
+equal shares of the histogram, so a stretch in decibels comes out looking like
+a poster. Converting back to power puts the scene where radar actually lives:
+dark, with a long bright tail.
+
+Fixed windows matter more still. VV and VH measure the same ground twice and
+agree to within about a percent — 0.993 correlation — so red and green move
+together and all the colour rides on their ratio, whose real spread is two or
+three decibels. Stretch each channel to its own percentiles, as an optical
+composite sensibly does, and that two-decibel wiggle is amplified to full
+scale: every scene collapses onto a single garish red-to-cyan axis, flat ground
+acquires structure that was never there, and no two dates are comparable.
+Anchoring each channel to a window in physical units is what makes a radar
+picture mean the same thing twice.
+
+Two smaller things follow from the physics. The VV/VH ratio is **multi-looked**
+over a 50 m neighbourhood, because speckle in the two polarisations is
+independent — so their ratio carries half again as much of it while spanning a
+far narrower range, which would otherwise paint the grain in colour. And a
+ratio is a property of a patch of ground rather than of one resolution cell, so
+averaging is what the quantity actually means. Second, the sea is black because
+of the **noise floor**: calm water returns less than the instrument's own
+thermal noise, so both polarisations read mostly noise and their ratio
+collapses towards one. Model the water without that floor and it has the widest
+polarisation gap in the scene — and the blue channel lights the sea up brighter
+than the land.
 
 The two satellites are never merged into each other. Reflectance and
 backscatter are different physical quantities in different units, and averaging
@@ -324,6 +359,41 @@ those are collapsed to a single pass, or the prediction would creep a few
 minutes early every cycle. Where there is only one pass on record it falls back
 to the nominal repeat cycle and says so rather than inventing precision.
 
+## What is on fire
+
+Switch on **Active fires** in the corner of the map and every thermal
+detection NASA has published over the visible area appears on it, over the last
+24 hours, 48 hours or 7 days.
+
+The data is [NASA FIRMS](https://firms.modaps.eosdis.nasa.gov/) — the Fire
+Information for Resource Management System, which publishes every hot spot the
+polar-orbiting satellites have seen, worldwide, within about three hours of the
+overpass. VIIRS resolves 375 m and catches much smaller fires than MODIS's
+1 km, so it leads; MODIS is kept because it fills the gaps between the VIIRS
+overpasses.
+
+**A detection is not a fire.** It is one satellite pixel, a few hundred metres
+across, that came back hot at a known minute — so it is drawn as a dot at a
+point, never as a burnt area, and the app says so on the panel. What it tells
+you is *where something was burning and when*, which is exactly the question a
+satellite image of a fire raises. The dot is sized and coloured by fire
+radiative power in megawatts, which is the closest thing to "how bad": a few MW
+is a field being cleared, hundreds is a fire front. Low-confidence detections
+are drawn fainter rather than hidden — weaker evidence is still evidence.
+
+It pairs with the imagery on purpose. Sentinel-2 shows the smoke and the scar;
+Sentinel-1 sees the ground through the smoke; the detections say which part of
+what you are looking at was alight, and at what hour.
+
+**No account needed.** The public FIRMS archive files are open, so the layer
+works out of the box — one global file per sensor, fetched once and held for
+fifteen minutes rather than pulled down again on every pan. If you have a free
+[FIRMS MAP_KEY](https://firms.modaps.eosdis.nasa.gov/api/area/), put it in
+`FIRMS_MAP_KEY` and the app will ask only for the rectangle you are looking at
+instead, which is far smaller and a little fresher. A continent's worth of
+detections would bury the browser, so when there are too many the fiercest are
+kept and the panel says how many were left out.
+
 ## Taking a picture away
 
 **Copy a region** (or **Save region**) arms a highlight tool: drag a box over
@@ -462,6 +532,13 @@ one. The synthetic radar carries speckle — independent every pass, because
 without it merging Sentinel-1 offline would look pointless when it is not. It
 is there so the interface can be explored, tested and demonstrated offline.
 
+The synthetic radar carries the two things that make a radar picture look like
+one: the instrument's thermal noise floor, which is why the sea comes out
+black, and speckle that thins out as you zoom away, because an output pixel
+covering many resolution cells is already an average of them. Active fires get
+synthetic detections too, clustered along a front with a tail rather than
+sprinkled evenly.
+
 It is not real imagery, and the app says so everywhere it could matter: a badge
 in the header, a second badge in place of the collection name, a warning when
 it starts, and a flag on every render's metadata.
@@ -496,6 +573,7 @@ backend/
   config.py      the satellites, band table, composites, indices, colour maps
   stac.py        catalogue search over both collections, plus synthetic scenes
   passes.py      when each satellite last flew over a point, and when it next will
+  fires.py       NASA FIRMS active fire detections
   raster.py      windowed COG reads, reprojection, cloud masking, demo bands
   composite.py   stretches, indices, colour maps, statistics, encoding
   service.py     render orchestration: merging, enhancement, caching
@@ -503,7 +581,7 @@ backend/
   launcher.py    port choice, app windows, desktop shortcuts
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
-  js/            map, imagery, capture, adjust, store, ui, api, install
+  js/            map, imagery, fires, capture, adjust, store, ui, api, install
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
@@ -513,7 +591,8 @@ tests/
   test_superres.py   registration, fusion, restoration, the resolution gain
   test_enhance.py    compositing and the image-quality tools
   test_launcher.py   ports, windows, shortcuts, manifest and service worker
-  test_satellites.py radar reading, keeping the two satellites apart, overpasses
+  test_satellites.py radar reading and colour, the two satellites apart, overpasses
+  test_fires.py      FIRMS parsing, the bounding box, the time window, the cap
 ```
 
 ## Tests
@@ -566,5 +645,9 @@ GDAL in its wheels, and `pywebview` uses the window toolkit your OS already has
 (WebView2 on Windows, WebKit on macOS, GTK or Qt on Linux). If no native
 toolkit is available Sent-2 falls back to a chrome-less browser window.
 
-Internet access is needed for imagery, map tiles and place search — but not in
-`--demo` mode.
+Internet access is needed for imagery, map tiles, place search, overpass
+prediction and fire data — but not in `--demo` mode.
+
+`FIRMS_MAP_KEY` is the only optional setting: a free key from NASA makes the
+fire layer ask for just the rectangle on screen instead of the global file. The
+layer works without it.

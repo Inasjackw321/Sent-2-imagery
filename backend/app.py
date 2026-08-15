@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import composite, config, passes, service, stac
+from . import composite, config, fires, passes, service, stac
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -65,6 +65,12 @@ def get_config() -> dict[str, Any]:
             for name in config.COLORMAPS
         },
         "bands": config.BANDS,
+        "fires": {
+            "windows": sorted(fires.WINDOWS),
+            "sensors": {k: v["label"] for k, v in fires.SENSORS.items()},
+            "attribution": "NASA FIRMS",
+            "keyed": bool(fires.MAP_KEY),
+        },
         "max_size": config.MAX_SIZE,
         "max_superres": config.MAX_SUPERRES,
         "superres_steps": [list(step) for step in config.SUPERRES_STEPS],
@@ -126,6 +132,21 @@ def overpasses(
         return passes.next_passes(
             lon, lat, satellites=[satellite] if satellite else None)
     except passes.PassLookupError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/fires")
+def active_fires(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    hours: int = Query(24, ge=1, le=168),
+) -> dict:
+    """Every NASA FIRMS thermal detection in a rectangle, newest first."""
+    try:
+        return fires.active_fires((west, south, east, north), hours=hours)
+    except fires.FireLookupError as exc:
         raise _fail(exc)
 
 

@@ -18,6 +18,7 @@ import pytest
 import rasterio
 from affine import Affine
 from rasterio.crs import CRS
+from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -117,14 +118,27 @@ def test_the_ratio_band_is_worked_out_not_downloaded(radar_scene, aoi):
     grid = Grid(geometry_bounds(aoi), 192)
     bands, _ = raster.read_bands(radar_scene, grid, ["vv", "vh", "vvvh"])
     assert set(bands) == {"vv", "vh", "vvvh"}
-    assert np.allclose(bands["vvvh"].compressed(),
-                       (bands["vv"] - bands["vh"]).compressed(), atol=1e-4)
+    # Away from the fixture's own seam the ratio is just the difference; the
+    # multi-look only softens the one column where the two halves meet.
+    plain = bands["vv"] - bands["vh"]
+    assert np.allclose(bands["vvvh"][:, 20:70], plain[:, 20:70], atol=1e-3)
+    assert bands["vvvh"].mean() == pytest.approx(7.96, abs=0.05)
 
 
 def test_asking_the_wrong_satellite_for_a_band_says_so(radar_scene, aoi):
     grid = Grid(geometry_bounds(aoi), 64)
     with pytest.raises(raster.BandReadError, match="not a Sentinel-1 band"):
         raster.read_bands(radar_scene, grid, ["red"])
+
+
+def test_a_polarisation_named_in_capitals_is_still_found(radar_scene, aoi):
+    """Catalogues disagree about case; that is not worth failing a render for."""
+    shouty = {**radar_scene,
+              "assets": {k.upper(): v for k, v in radar_scene["assets"].items()}}
+    grid = Grid(geometry_bounds(aoi), 64)
+    shouted, _ = raster.read_bands(shouty, grid, ["vv"])
+    plain, _ = raster.read_bands(radar_scene, grid, ["vv"])
+    assert np.array_equal(shouted["vv"].data, plain["vv"].data)
 
 
 def test_radar_reads_only_the_bands_it_was_asked_for(radar_scene, aoi):
@@ -153,6 +167,90 @@ def test_the_radar_ratio_index_is_a_difference_in_decibels(radar_scene, aoi):
     bands, _ = raster.read_bands(radar_scene, grid, ["vv", "vh"])
     ratio = composite.compute_index(bands, "radar_ratio")
     assert ratio.mean() == pytest.approx(7.96, abs=0.05)
+
+
+def test_radar_false_colour_puts_each_surface_where_it_belongs():
+    """The colours have to mean something, or the picture is decoration.
+
+    Every surface is pushed through the same path the renderer uses -- power
+    plus the instrument's noise floor, then the composite's fixed windows --
+    and has to land where a radar reader expects it: black water, white towns,
+    green vegetation, violet bare ground.
+    """
+    windows = config.COMPOSITES["radar_color"]["windows"]
+
+    def colour(cover):
+        db = raster._RADAR_ENDMEMBERS[cover]
+        power = {b: 10 ** (db[b] / 10) + raster.NOISE_FLOOR for b in ("vv", "vh")}
+        channels = [power["vv"], power["vh"], power["vv"] / power["vh"]]
+        return [float(np.clip((v - lo) / (hi - lo), 0, 1))
+                for v, (lo, hi) in zip(channels, windows)]
+
+    water, veg, soil, urban = (colour(k) for k in ("water", "veg", "soil", "urban"))
+
+    assert sum(water) < 0.3, "still water must come out near black"
+    assert min(urban[:2]) > 0.95, "a city is the brightest thing in a radar scene"
+    assert veg[1] > veg[0] > veg[2], "vegetation returns cross-polarised: green"
+    assert soil[2] > soil[0] > soil[1], "bare ground scatters off the surface: violet"
+    assert sum(water) < sum(soil) < sum(urban)
+
+
+def test_the_noise_floor_is_what_keeps_the_sea_black():
+    """Calm water returns less than the instrument's own noise.
+
+    Left out, water would have the *highest* VV/VH ratio in the scene -- its
+    two polarisations are furthest apart -- and the blue channel would paint
+    the sea brighter than the land. The noise floor collapses that ratio
+    towards one, which is why real radar imagery has a black sea.
+    """
+    def ratio_db(cover, floor):
+        db = raster._RADAR_ENDMEMBERS[cover]
+        power = {b: 10 ** (db[b] / 10) + floor for b in ("vv", "vh")}
+        return 10 * np.log10(power["vv"] / power["vh"])
+
+    # Without it, water's two polarisations are further apart than most of the
+    # land's -- so the blue channel would light the sea up.
+    assert ratio_db("water", 0.0) > ratio_db("veg", 0.0)
+    assert ratio_db("water", 0.0) > ratio_db("snow", 0.0)
+    # With it, water has the smallest gap of the lot, and the sea goes dark.
+    floor = raster.NOISE_FLOOR
+    assert ratio_db("water", floor) < min(ratio_db(c, floor)
+                                          for c in ("veg", "soil", "urban", "snow"))
+
+
+def test_a_featureless_radar_scene_is_not_stretched_into_structure():
+    """The bug that made every radar render a red-to-cyan gradient.
+
+    VV and VH measure the same ground twice and agree to within about a
+    percent, so all the colour rides on their ratio -- whose real spread is two
+    or three decibels. Stretched to its own percentiles that becomes full
+    scale, and flat ground with a little speckle on it comes back as a
+    saturated rainbow. Fixed windows keep flat ground looking flat.
+    """
+    rng = np.random.default_rng(7)
+    shape = (96, 96)
+    flat = {}
+    for band, level in (("vv", -12.0), ("vh", -19.0)):
+        flat[band] = np.ma.masked_array(
+            (level + rng.normal(0, 0.4, shape)).astype("float32"), np.zeros(shape, bool))
+    flat["vvvh"] = np.ma.masked_array(
+        ndimage.uniform_filter((flat["vv"] - flat["vh"]).data, raster.RATIO_LOOKS),
+        np.zeros(shape, bool))
+
+    steady, _, info = composite.render_composite(flat, "radar_color", {})
+    loud, _, _ = composite.render_composite(flat, "radar_color", {"stretch": "percentile"})
+
+    assert info["mode"] == "fixed"
+    # One kind of ground, so one colour: a little grain, and nothing more.
+    assert steady.std(axis=(0, 1)).max() < 8
+    # Percentiles turn that same fraction of a decibel into the whole gamut.
+    assert loud.std(axis=(0, 1)).min() > 40
+
+
+def test_decibels_are_converted_back_to_power_for_display():
+    flat = np.ma.masked_array(np.array([[-10.0, -20.0, 0.0]], dtype="float32"),
+                              np.zeros((1, 3), bool))
+    assert np.allclose(composite.from_decibels(flat).data, [[0.1, 0.01, 1.0]], atol=1e-6)
 
 
 def test_an_optical_composite_is_refused_for_radar(radar_scene, aoi):

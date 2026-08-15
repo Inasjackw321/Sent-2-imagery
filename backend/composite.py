@@ -96,6 +96,24 @@ def soft_highlights(x: np.ndarray, knee: float = 0.72) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def from_decibels(band: np.ma.MaskedArray) -> np.ma.MaskedArray:
+    """Decibels back to linear power, for display.
+
+    Radar is measured, merged and read in decibels, because that is the scale
+    on which backscatter is meaningful and on which speckle averages out. But
+    it is the wrong scale to *look* at. A logarithm spreads every surface
+    evenly across the range, so a stretch in decibels gives water, soil,
+    vegetation and concrete roughly equal shares of the histogram and the
+    picture comes out looking like a poster. In linear power the scene is
+    naturally dark with a long bright tail, which is why real radar imagery
+    reads as black water and a few brilliant targets rather than a wash of
+    colour.
+    """
+    return np.ma.masked_array(
+        np.power(10.0, np.ma.filled(band, -40.0).astype("float32") / 10.0),
+        mask=np.ma.getmaskarray(band))
+
+
 def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, np.ndarray, dict]:
     """RGB uint8 + valid mask + per-channel stretch bounds.
 
@@ -113,6 +131,9 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
     gamma = float(opts.get("gamma") or defaults.get("gamma", 1.0))
     keys = spec["bands"]
 
+    if spec.get("from_db"):
+        bands = {k: from_decibels(bands[k]) for k in keys}
+
     if mode == "percentile_linked":
         pool = np.concatenate([b.compressed() for b in (bands[k] for k in keys)])
         if pool.size:
@@ -121,9 +142,18 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
             lo, hi = 0.0, 1.0
         per_band = [(lo, hi)] * 3
     elif mode == "fixed":
-        lo = float(opts.get("vmin", defaults.get("vmin", 0.0)))
-        hi = float(opts.get("vmax", defaults.get("vmax", 0.30)))
-        per_band = [(lo, hi)] * 3
+        # A composite can name a window per channel. Radar needs that: its
+        # three channels sit in genuinely different ranges -- VH returns some
+        # 6 to 10 dB weaker than VV, and the ratio is a difference rather than
+        # a level -- so one window across all three would be meaningless.
+        windows = spec.get("windows")
+        asked = opts.get("vmin") is not None and opts.get("vmax") is not None
+        if windows and not asked:
+            per_band = [(float(a), float(b)) for a, b in windows]
+        else:
+            lo = float(opts.get("vmin", defaults.get("vmin", 0.0)))
+            hi = float(opts.get("vmax", defaults.get("vmax", 0.30)))
+            per_band = [(lo, hi)] * 3
     else:
         per_band = [None] * 3
 

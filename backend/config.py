@@ -267,29 +267,47 @@ COMPOSITES = {
     },
 
     # Sentinel-1. Radar has no colour of its own, so these are the conventional
-    # ways of giving it one. The channels are stretched separately because they
-    # live in genuinely different ranges -- VH comes back 6 to 10 dB weaker than
-    # VV, and the ratio is a difference rather than a level.
+    # ways of giving it one -- and each channel gets a fixed decibel window
+    # rather than a percentile.
+    #
+    # That is not a stylistic choice, it is the difference between a radar
+    # picture and a kaleidoscope. VV and VH measure the same ground twice and
+    # agree to within about a percent, so red and green move together; all the
+    # colour is carried by the ratio, whose real spread is only two or three
+    # decibels. Stretch each channel to its own percentiles and that two-decibel
+    # wiggle is amplified to full scale, collapsing every scene onto one garish
+    # red-to-cyan axis and inventing structure out of noise. Fixed windows keep
+    # the channels in their true proportions, so water comes out black, towns
+    # white, vegetation green -- and two dates are comparable.
     "radar_color": {
         "label": "Radar colour",
         "sat": "sentinel-1",
         "bands": ["vv", "vh", "vvvh"],
-        "hint": "The standard radar false colour. Towns pink, crops green, water black.",
-        "default_stretch": {"mode": "percentile", "low": 2, "high": 98, "gamma": 1.0},
+        "hint": "The standard radar false colour. Towns white, vegetation green, water black.",
+        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        # Linear power, not decibels -- see composite.from_decibels. VH returns
+        # roughly a quarter of what VV does, and the ratio is a ratio, so all
+        # three windows differ.
+        "from_db": True,
+        "windows": [[0.0, 0.35], [0.0, 0.08], [1.0, 8.0]],
     },
     "radar_grey": {
         "label": "Radar (VV only)",
         "sat": "sentinel-1",
         "bands": ["vv", "vv", "vv"],
         "hint": "Plain backscatter. Bright is rough or metal, black is smooth water.",
-        "default_stretch": {"mode": "percentile", "low": 2, "high": 98, "gamma": 1.0},
+        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "from_db": True,
+        "windows": [[0.0, 0.35]] * 3,
     },
     "radar_water": {
         "label": "Radar water & flood",
         "sat": "sentinel-1",
         "bands": ["vh", "vv", "vv"],
         "hint": "Cross-polarised first: still water goes to near black, so floods stand out.",
-        "default_stretch": {"mode": "percentile", "low": 1, "high": 99, "gamma": 1.0},
+        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "from_db": True,
+        "windows": [[0.0, 0.06], [0.0, 0.35], [0.0, 0.35]],
     },
 }
 

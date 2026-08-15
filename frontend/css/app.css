@@ -304,14 +304,64 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .layer-x:hover { color: var(--danger); }
 
-/* Right-click anywhere: when each satellite next comes over. */
-.pass-popup .leaflet-popup-content-wrapper {
+/* ── NASA FIRMS active fires ────────────────────────────────── */
+
+/* Clear of the layers control, which sits at the top right. */
+.fire-dock {
+  position: absolute; top: 62px; right: 12px; z-index: 500;
+  display: grid; gap: 8px; justify-items: stretch; width: 186px;
+}
+.fire-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.fire-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.fire-toggle.is-on {
+  color: #ffd8a8; border-color: rgba(251,133,0,.65); background: rgba(80,32,4,.82);
+  font-weight: 600;
+}
+.fire-flame { filter: grayscale(1); opacity: .6; font-size: 13px; }
+.fire-toggle.is-on .fire-flame { filter: none; opacity: 1; }
+
+.fire-body {
+  padding: 10px 11px; border-radius: 10px; font-size: 11.5px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+.fire-windows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.fire-window {
+  padding: 5px 2px; font: inherit; font-size: 11px; cursor: pointer;
+  background: var(--bg-3); color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.fire-window:hover { color: var(--ink); }
+.fire-window.is-active { border-color: var(--warn); color: var(--warn); }
+.fire-count { margin: 9px 0 8px; color: var(--ink); line-height: 1.4; }
+.fire-count .dim { color: var(--ink-faint); }
+.fire-key { display: grid; gap: 3px; padding-top: 8px; border-top: 1px solid var(--line); }
+.fire-key-row { display: flex; align-items: center; gap: 7px; color: var(--ink-faint); }
+.fire-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.fire-note {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 10px; line-height: 1.4; color: var(--ink-faint);
+}
+.fire-popup-head { font-weight: 650; color: var(--ink); font-size: 13px; margin-bottom: 3px; }
+.fire-popup .dim { color: var(--ink-faint); }
+
+/* Popups. Both kinds the app opens wear the same dark skin -- Leaflet's own
+   is white, and light text on it would be unreadable. */
+.leaflet-popup-content-wrapper {
   background: rgba(13,16,21,.95); color: var(--ink);
   border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.6);
 }
-.pass-popup .leaflet-popup-tip { background: rgba(13,16,21,.95); border: 1px solid var(--line); }
-.pass-popup .leaflet-popup-content { margin: 11px 13px; font-size: 12.5px; }
-.pass-popup a.leaflet-popup-close-button { color: var(--ink-faint); }
+.leaflet-popup-tip { background: rgba(13,16,21,.95); border: 1px solid var(--line); }
+.leaflet-popup-content { margin: 11px 13px; font-size: 12.5px; line-height: 1.5; }
+a.leaflet-popup-close-button { color: var(--ink-faint); }
+a.leaflet-popup-close-button:hover { color: var(--ink); }
+
+/* Right-click anywhere: when each satellite next comes over. */
 .passes-head {
   font-variant-numeric: tabular-nums; color: var(--ink-faint);
   font-size: 11px; letter-spacing: .04em; margin-bottom: 8px;
