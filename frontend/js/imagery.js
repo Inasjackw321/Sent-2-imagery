@@ -151,18 +151,32 @@ function chosenDates() {
 }
 
 /**
- * How much finer a merge of `count` dates will be sampled.
+ * What a merge of `count` dates would resolve at the current size.
  *
- * The same rule the backend applies, so the panel can promise what the render
- * will actually deliver -- including the cap that stops a big area from asking
- * for more pixels than an image is allowed to have.
+ * The same reasoning the backend applies, so the panel promises what the
+ * render will actually deliver. A merge does not make the picture bigger; it
+ * makes the size you asked for real. What it can resolve is limited by two
+ * things at once: how many dates there are, and whether the output grid is
+ * even finer than the satellite's own 10 m -- there is nothing hiding between
+ * the satellite's samples if a pixel covers more ground than one of them.
  */
-function mergeScale(count) {
-  if (count < 2) return 1;
+function mergePlan(count) {
+  const native = store.config.satellite.resolution;
+  const extent = store.aoiInfo?.extent_m;
+  const metresPerPixel = extent ? Math.max(...extent) / renderSize() : native;
+  const over = native / metresPerPixel;
+
   const steps = store.config.superres_steps ?? [[9, 4], [5, 3], [2, 2]];
-  const wanted = steps.find(([needed]) => count >= needed)?.[1] ?? 1;
-  const fits = Math.max(1, Math.floor((store.config.max_size ?? 4096) / renderSize()));
-  return Math.min(wanted, fits);
+  const supported = count >= 2 ? (steps.find(([needed]) => count >= needed)?.[1] ?? 1) : 1;
+  const sharpening = count >= 2 && supported > 1 && over > 1.2;
+  return {
+    sharpening,
+    supported,
+    metresPerPixel,
+    resolves: sharpening ? Math.min(over, supported) : 1,
+    // What raising the size would buy, when the grid is the limit.
+    sizeLimited: count >= 2 && supported > 1 && over < supported,
+  };
 }
 
 const renderSize = () => parseInt($('#renderSize').value, 10);
@@ -442,7 +456,7 @@ function sync() {
   $('#tuningSummary').textContent = tuned ? `${tuned} adjusted` : 'off';
   $('#adjustReset').disabled = adjust.isNeutral(adjustmentValues());
 
-  const scale = mode === 'merge' ? mergeScale(dates.length) : 1;
+  const plan = mergePlan(dates.length);
   const ready = mode === 'merge' ? dates.length > 1 : dates.length === 1;
   const current = ready && lastRequest
     && JSON.stringify(buildRequest(dates)) === JSON.stringify(lastRequest);
@@ -451,32 +465,44 @@ function sync() {
   $('#showBtn').textContent = current
     ? 'Showing this now'
     : mode === 'merge'
-      ? (ready ? `Merge ${dates.length} dates → ${scale}×` : 'Tick at least two dates')
+      ? (ready
+        ? (plan.sharpening
+          ? `Merge ${dates.length} dates → ${plan.resolves.toFixed(1)}× finer`
+          : `Merge ${dates.length} dates`)
+        : 'Tick at least two dates')
       : (ready ? (store.image ? 'Show this date' : 'Show imagery') : 'Pick a date');
-  $('#planSummary').innerHTML = planSummary(dates, scale);
+  $('#planSummary').innerHTML = planSummary(dates, plan);
   $('#downloadPng').disabled = $('#downloadTif').disabled = !lastRequest;
 }
 
 /** One line above the button saying exactly what pressing it will produce. */
-function planSummary(dates, scale) {
+function planSummary(dates, plan) {
   if (!store.aoi) return 'Draw an area on the map to begin.';
   if (!store.dates.length) return 'No dates yet.';
   if (!dates.length) {
     return mode === 'merge' ? 'Tick the dates you want merged.' : 'Pick a date.';
   }
   const native = store.config.satellite.resolution;
-  const px = `${renderSize() * scale} px`;
+  const px = `${renderSize()} px`;
   if (mode === 'single') {
-    return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass at ${native} m`;
+    return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass, ${native} m detail`;
   }
   if (dates.length < 2) return 'A merge needs at least two dates.';
 
-  const steps = store.config.superres_steps ?? [];
-  const next = steps.find(([, s]) => s === scale + 1);
-  const more = next && scale < (store.config.max_superres ?? 4)
-    ? ` · <span class="dim">${next[0]} dates would reach ${next[1]}×</span>` : '';
-  return `<b>${dates.length} dates → ${scale}× detail</b> · ${px} · `
-    + `~${(native / scale).toFixed(1)} m from ${native} m data${more}`;
+  // The grid is coarser than the satellite sampled it, so there is nothing
+  // finer to find -- but a bigger size would change that, so say so.
+  if (!plan.sharpening) {
+    return `<b>${dates.length} dates</b> · ${px} · cloud cleared, but a pixel here `
+      + `covers ${plan.metresPerPixel.toFixed(0)} m of ground · `
+      + '<span class="dim">raise the size for finer detail</span>';
+  }
+  const detail = `~${(native / plan.resolves).toFixed(1)} m detail`;
+  const more = plan.sizeLimited
+    ? ' · <span class="dim">a larger size would resolve more</span>'
+    : `${(store.config.superres_steps ?? []).find(([, s]) => s === plan.supported + 1)
+      ? ` · <span class="dim">more dates would resolve more</span>` : ''}`;
+  return `<b>${dates.length} dates → ${detail}</b> · ${px}, against ${native} m `
+    + `from one date${more}`;
 }
 
 // ── Showing the imagery ────────────────────────────────────────

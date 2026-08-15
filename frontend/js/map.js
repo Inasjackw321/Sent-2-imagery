@@ -217,6 +217,9 @@ function renderAoiSummary(info) {
   const [w, s, e, n] = info.bounds;
   const widthM = map.distance(L.latLng(info.center[1], w), L.latLng(info.center[1], e));
   const heightM = map.distance(L.latLng(s, info.center[0]), L.latLng(n, info.center[0]));
+  // The panel needs the ground extent to work out what a given output size
+  // means in metres per pixel, and so what a merge can resolve.
+  info.extent_m = [widthM, heightM];
   $('#aoiSummary').innerHTML = `
     <div>Area <b>${fmt.area(info.area_km2)}</b></div>
     <div>Extent <b>${fmt.distance(widthM)} × ${fmt.distance(heightM)}</b></div>

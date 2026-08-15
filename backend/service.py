@@ -86,33 +86,55 @@ def load_bands(scene: dict, geometry: dict, grid: Grid, names: list[str], req: d
 
 
 def auto_scale(dates: int) -> int:
-    """How much finer a merge of this many dates can honestly be sampled."""
+    """How much finer than the satellite this many dates can honestly resolve."""
     for needed, scale in config.SUPERRES_STEPS:
         if dates >= needed:
             return scale
     return 1
 
 
-def superres_scale(req: dict, grid: Grid, scenes: list[dict]) -> int:
-    """How much finer the fusion will actually go for this request.
+def oversampling(grid: Grid) -> float:
+    """How many output pixels the satellite's own 10 m sample spans.
 
-    Merging is one thing rather than two: several dates always mean both a
-    cleaner picture and a sharper one, so the multiplier follows from how many
-    dates there are unless the caller insists on a number. It is then clamped
-    to what the output grid can hold, since asking for more pixels than the
-    image is allowed to have would only cost time.
+    This is what decides whether there is anything to super-resolve. Detail
+    recoverable by merging lives *between* the satellite's samples, so it only
+    exists where the output grid is finer than that sampling. Render a wide
+    area small and the grid is coarser than 10 m -- several dates can still
+    clear the cloud, but there is no finer detail to find. Render it large and
+    each 10 m measurement covers several output pixels, which is exactly the
+    gap the merge fills in.
     """
-    if len(scenes) < 2:
-        return 1
+    return config.SATELLITE["resolution"] / max(grid.ground_res_m, 1e-6)
+
+
+def merge_plan(req: dict, grid: Grid, scenes: list[dict]) -> dict:
+    """What merging these dates onto this grid can and cannot do.
+
+    The output is always the size that was asked for. Merging makes that size
+    *real* rather than making it bigger: the same picture, resolving detail
+    that one pass could not, instead of the same detail spread over more
+    pixels.
+    """
+    over = oversampling(grid)
+    supported = auto_scale(len(scenes)) if len(scenes) > 1 else 1
     asked = req.get("superres", "auto")
     # `is True` rather than `== True`: 1 equals True in Python, and a caller
     # asking for 1x means "leave it alone", not "choose for me".
-    automatic = asked is None or asked is True or asked == "auto"
-    scale = auto_scale(len(scenes)) if automatic else int(asked)
-    scale = min(max(scale, 1), config.MAX_SUPERRES)
-    while scale > 1 and max(grid.width, grid.height) * scale > config.MAX_SIZE:
-        scale -= 1
-    return scale
+    if not (asked is None or asked is True or asked == "auto"):
+        supported = min(max(int(asked), 1), config.MAX_SUPERRES)
+
+    # Below this the grid is at or coarser than the satellite's own sampling,
+    # so the dates have nothing finer to contribute and a plain composite is
+    # the honest answer.
+    sharpening = len(scenes) > 1 and supported > 1 and over > 1.2
+    return {
+        "sharpening": sharpening,
+        "oversampling": round(over, 2),
+        "supported": supported,
+        # What the result can actually resolve: the finer of what the grid can
+        # hold and what the number of dates justifies.
+        "resolves": min(over, supported) if sharpening else 1.0,
+    }
 
 
 def _gather(scenes: list[dict], geometry, grid, names, req):
@@ -124,32 +146,36 @@ def _gather(scenes: list[dict], geometry, grid, names, req):
     by reading every date onto a finer grid, where each one lands its samples
     at a slightly different place, and solving for the detail they jointly saw.
     """
-    scale = superres_scale(req, grid, scenes)
-    fine = grid.refined(scale)
+    plan = merge_plan(req, grid, scenes)
 
     stacks = []
     clouds = []
     for scene in scenes:
-        bands, cloud = load_bands(scene, geometry, fine, names, req, merging=scale > 1)
+        bands, cloud = load_bands(scene, geometry, grid, names, req,
+                                  merging=plan["sharpening"])
         stacks.append(bands)
         clouds.append(cloud)
 
     cloud_fraction = min(clouds) if clouds else 0.0
     report = enhance.composite_report(stacks, names[0]) if len(stacks) > 1 else None
 
-    if scale > 1:
+    if plan["sharpening"]:
         merged, sr_report = superres.fuse(
-            stacks, scale=scale,
+            stacks,
+            # The blur to undo is the satellite's own footprint measured in
+            # output pixels, which is what the oversampling is.
+            scale=plan["oversampling"],
+            resolves=plan["resolves"],
             restore=float(req.get("superres_restore", 0.75)),
             register=req.get("superres_register", True) is not False,
             dates=[s.get("date") for s in scenes],
         )
-        return merged, cloud_fraction, report, sr_report, fine
+        return merged, cloud_fraction, report, sr_report, grid
 
-    # One date, or a grid already at the size limit: there is nothing to fuse,
-    # so the middle of the stack is the best answer available.
+    # One date, or a grid no finer than the satellite sampled it: nothing to
+    # sharpen, so the middle of the stack is the best answer available.
     merged = enhance.composite(stacks, "median") if len(stacks) > 1 else stacks[0]
-    return merged, cloud_fraction, report, None, fine
+    return merged, cloud_fraction, report, None, grid
 
 
 def _enhance_bands(bands: dict, req: dict, applied: list[str]) -> dict:

@@ -161,16 +161,29 @@ Tuesday.
 passes. It is better in two ways at once, which is why it is one button and
 not two:
 
-- **Higher definition.** The merge is sampled two to four times finer than the
-  satellite's own 10 m, with detail measured off the ground rather than
-  invented by a model.
+- **Higher definition.** The picture stays the size you asked for; what
+  changes is what it resolves — two to four times finer than the satellite's
+  own 10 m, with detail measured off the ground rather than invented by a
+  model. A merge that handed back a bigger file would spread the same detail
+  over more pixels and look no better beside a single date, which is the whole
+  point of the exercise.
 - **More of the ground.** Cloud sitting over one date is taken out by the
   others, so the picture is clearer than any single pass and often has no gaps
   at all.
 
-How much finer follows from how many dates you ticked — 2 earn 2×, 5 earn 3×,
-9 earn 4× — and the button says which you are getting before you press it:
-*"Merge 6 dates → 3×"*.
+How much finer follows from two things at once, and the button says which you
+are getting before you press it: *"Merge 6 dates → 2.5× finer"*.
+
+**The dates** set the ceiling — 2 earn 2×, 5 earn 3×, 9 earn 4×.
+
+**The size** decides whether any of it is reachable. Detail recoverable by
+merging hides *between* the satellite's samples, so it only exists where the
+output grid is finer than those samples. Render a wide area at 512 px and each
+pixel covers more ground than a whole Sentinel-2 measurement: several dates
+still clear the cloud, but there is nothing finer to find, and the panel says
+so rather than pretending. Raise the size and the gap opens up for the merge to
+fill. The panel tells you which of the two is currently the limit — *"a larger
+size would resolve more"* or *"more dates would resolve more"*.
 
 **Why there is anything to recover.** A satellite never samples the same ground
 twice in the same place. Orbits repeat to within a few tens of metres and each

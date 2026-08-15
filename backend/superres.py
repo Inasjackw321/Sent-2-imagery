@@ -27,14 +27,14 @@ from scipy import ndimage
 
 MaskedArray = np.ma.MaskedArray
 
-def frames_wanted(scale: int) -> int:
+def frames_wanted(scale: float) -> int:
     """Dates needed before a scale factor is properly supported.
 
     An N times finer grid has N^2 times as many pixels to fill, so N^2
     differently-phased looks is the point at which the fusion is solving a
     determined problem rather than interpolating between a handful of samples.
     """
-    return max(2, int(scale) ** 2)
+    return max(2, int(round(float(scale))) ** 2)
 
 
 # ── Sub-pixel registration ─────────────────────────────────────
@@ -316,15 +316,18 @@ def _guide(bands: dict[str, MaskedArray], keys: list[str]) -> MaskedArray:
 # ── The pipeline ───────────────────────────────────────────────
 
 
-def fuse(stacks: list[dict[str, MaskedArray]], scale: int = 2,
+def fuse(stacks: list[dict[str, MaskedArray]], scale: float = 2.0,
+         resolves: float | None = None,
          restore: float = 0.75, register: bool = True, upsample: int = 20,
          tolerance: float = 2.5, reference: int = 0,
          dates: list[str] | None = None) -> tuple[dict[str, MaskedArray], dict]:
-    """Fuse several dates, already read onto the same fine grid, into one image.
+    """Fuse several dates, all read onto one grid finer than the satellite's.
 
-    The inputs must all share the grid -- read them at `scale` times the
-    resolution you want out, so that each date arrives carrying its own
-    sub-pixel sampling phase for the fusion to exploit.
+    `scale` is how many output pixels the satellite's own sample spans -- the
+    blur to undo, and the distance over which the dates differ. `resolves` is
+    how much of that the number of dates actually justifies claiming; it is
+    what the sharpening is trusted to, so a thin stack is not deconvolved as
+    hard as a deep one.
     """
     if not stacks:
         raise ValueError("Nothing to fuse")
@@ -334,6 +337,8 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: int = 2,
     if len(stacks) == 1:
         return stacks[0], {}
 
+    scale = max(float(scale), 1.0)
+    resolves = float(resolves) if resolves else scale
     reference = max(0, min(int(reference), len(stacks) - 1))
     guide_keys = [k for k in ("red", "green", "blue", "nir", "pan", "vv") if k in keys] or keys
     guides = [_guide(s, guide_keys) for s in stacks]
@@ -351,7 +356,10 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: int = 2,
             shifts.append(estimate_shift(guides[reference], guide,
                                          upsample=upsample, cutoff=cutoff))
 
-    sigma = max(0.45 * float(scale), 0.5)
+    # The footprint blur in output pixels, held back where the dates do not
+    # support undoing all of it.
+    sigma = max(0.45 * min(scale, resolves * 1.5), 0.5)
+    restore = restore * min(1.0, resolves / scale)
     fused: dict[str, MaskedArray] = {}
     stacked: dict[str, MaskedArray] = {}
     coverage = None
@@ -382,14 +390,14 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: int = 2,
     ref_guide, ref_valid = _fill(guides[reference])
     where = ref_valid & fused_valid
     if not where.all():
-        where = ndimage.binary_erosion(where, iterations=2 * int(scale) + 2)
+        where = ndimage.binary_erosion(where, iterations=2 * int(round(scale)) + 2)
     if not where.any():
         where = ref_valid & fused_valid
 
     # Sharpness is judged against one date as a person would see it enlarged,
     # so the comparison is like for like. Noise is judged against that date as
     # measured: smoothing it first would remove the very thing being counted.
-    window = 2 * int(scale) + 1
+    window = 2 * int(round(scale)) + 1
     ref_sharp = _sharpness(_as_seen(ref_guide, scale), float(scale), where)
     out_sharp = _sharpness(fused_guide, float(scale), where)
     ref_noise = _noise(ref_guide, window, where)
@@ -399,10 +407,11 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: int = 2,
     measurable = ref_noise > max(1e-6, 1e-4 * float(np.ptp(ref_guide)))
 
     report = {
-        "scale": int(scale),
+        "scale": round(resolves, 2),
+        "oversampling": round(scale, 2),
         "scenes": len(stacks),
-        "frames_wanted": frames_wanted(scale),
-        "well_supported": len(stacks) >= frames_wanted(scale),
+        "frames_wanted": frames_wanted(resolves),
+        "well_supported": len(stacks) >= frames_wanted(resolves),
         "registered": bool(register),
         "sub_pixel_dates": sum(
             1 for i, (dy, dx) in enumerate(shifts)

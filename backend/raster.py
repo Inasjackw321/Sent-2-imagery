@@ -13,6 +13,7 @@ from rasterio.enums import Resampling
 from rasterio.features import rasterize
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import transform_geom
+from scipy import ndimage
 
 from . import config, stac
 from .geo import WGS84, Grid
@@ -52,7 +53,7 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
     sampling = sampling_for(grid, merging)
 
     if scene.get("demo"):
-        return _demo_bands(scene, grid, bands, mask_clouds)
+        return _demo_bands(scene, grid, bands, mask_clouds, sampling)
 
     unknown = [b for b in bands if b not in config.BANDS]
     if unknown:
@@ -182,7 +183,44 @@ def _fbm(x: np.ndarray, y: np.ndarray, seed: float, octaves: int = 5) -> np.ndar
     return total / norm
 
 
-def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool):
+def _as_the_satellite_saw_it(field: np.ndarray, grid: Grid, phase: float,
+                             sampling: Resampling) -> np.ndarray:
+    """Put a synthetic field through the satellite's sampling.
+
+    Without this the demo would generate its imagery straight onto whatever
+    grid was asked for, at whatever fineness -- which is a world where the
+    satellite has no pixel size, nothing is ever hiding between its samples,
+    and merging dates therefore has nothing to find. Averaging over a 10 m
+    footprint and holding that value across the pixels it covers is what makes
+    the demo behave like the real thing, including the part where each date
+    lands its footprint in a slightly different place.
+    """
+    span = config.SATELLITE["resolution"] / max(grid.ground_res_m, 1e-6)
+    if span <= 1.2:                        # grid already coarser than the sensor
+        return field
+
+    h, w = field.shape
+    offset = (phase % 1.0) * span
+    # Which footprint each output pixel falls in, offset by this date's phase.
+    rows = np.clip(((np.arange(h) + offset) // span).astype("int32"), 0, None)
+    cols = np.clip(((np.arange(w) + offset) // span).astype("int32"), 0, None)
+    # Average within each footprint, then hold it across the pixels it covers.
+    sums = np.zeros((rows[-1] + 1, cols[-1] + 1), dtype="float32")
+    counts = np.zeros_like(sums)
+    np.add.at(sums, (rows[:, None], cols[None, :]), field)
+    np.add.at(counts, (rows[:, None], cols[None, :]), 1.0)
+    held = (sums / np.maximum(counts, 1))[rows[:, None], cols[None, :]]
+
+    # A single date is read with a smooth enlargement rather than held in
+    # blocks, so the demo has to enlarge it the same way or it would look
+    # coarser on screen than the real thing ever does.
+    if sampling != Resampling.nearest:
+        held = ndimage.uniform_filter(held, max(int(round(span)), 1))
+    return held
+
+
+def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool,
+                sampling: Resampling = Resampling.cubic):
     h, w = grid.shape
     x0, y0, x1, y1 = grid.bounds3857
     xs = np.linspace(x0, x1, w, dtype="float32") / 2000.0
@@ -216,12 +254,17 @@ def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool):
     date_seed = int(hashlib.sha1(scene["date"].encode()).hexdigest()[:6], 16) % 997
     grain = 1.0 + 0.05 * _fbm(X * 9.0, Y * 9.0, seed + date_seed * 0.37, 2)
 
+    # Every date views the ground with its footprint in a slightly different
+    # place, which is the whole reason merging them can recover detail.
+    phase = (date_seed % 97) / 97.0
+
     out = {}
     for band in bands:
         acc = np.zeros((h, w), dtype="float32")
         for name, frac in fractions.items():
             acc += frac * _ENDMEMBERS[name].get(band, 0.1)
-        out[band] = np.ma.masked_array((acc * grain).astype("float32"),
+        acc = _as_the_satellite_saw_it(acc * grain, grid, phase, sampling)
+        out[band] = np.ma.masked_array(acc.astype("float32"),
                                        mask=np.zeros((h, w), dtype=bool))
 
     cloud_fraction = 0.0
