@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sent-2 · Sentinel-2 imagery</title>
-<meta name="description" content="Look at any place on Earth in free Sentinel-2 satellite imagery, from one date or merged from several into one sharper, cloud-free picture.">
+<title>Sent-2 · Sentinel imagery</title>
+<meta name="description" content="Look at any place on Earth in free Sentinel-1 and Sentinel-2 satellite imagery, from one date or merged from several into one sharper, cloud-free picture — and find out when either satellite next flies over.">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/css/app.css">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -20,10 +20,10 @@
 <body>
 
 <header class="topbar">
-  <div class="brand"><span class="brand-mark">🛰️</span><span>Sent-2<small>sentinel-2 imagery</small></span></div>
+  <div class="brand"><span class="brand-mark">🛰️</span><span>Sent-2<small>sentinel-1 &amp; 2 imagery</small></span></div>
   <div class="topbar-right">
     <span class="badge badge-demo" id="demoBadge" hidden>Demo data — synthetic</span>
-    <span class="badge" id="sourceBadge">Sentinel-2 L2A</span>
+    <span class="badge" id="sourceBadge">Sentinel-1 &amp; 2</span>
     <button class="btn-install" id="installBtn" hidden title="Install Sent-2 as an app">
       <span>↓</span> Install app
     </button>
@@ -59,7 +59,9 @@
       </div>
 
       <div class="group" id="stepDates">
-        <h3><span class="step">2</span> One date, or many merged</h3>
+        <h3><span class="step">2</span> Which satellite, and when</h3>
+        <div class="sats" id="satPicker"></div>
+        <p class="hint" id="satHint"></p>
         <div class="modes" id="modePicker">
           <button class="mode is-active" data-mode="single">
             <b>One date</b><small>A single pass, as taken</small>
@@ -136,6 +138,16 @@
         <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>Save PNG</button>
         <button class="btn btn-ghost btn-sm" id="downloadTif" disabled>GeoTIFF</button>
       </div>
+      <div class="row">
+        <button class="btn btn-ghost btn-sm" id="copyRegion" data-draw="capture"
+                data-capture="copy" disabled
+                title="Drag over part of the imagery to copy it, marked @Kaldockhi">
+          ⧉ Copy a region
+        </button>
+        <button class="btn btn-ghost btn-sm" id="saveRegion" data-draw="capture"
+                data-capture="save" disabled
+                title="Same, but saved as a file">Save region</button>
+      </div>
     </div>
   </aside>
 
@@ -143,10 +155,7 @@
     <div id="map"></div>
     <div class="map-hint" id="mapHint"></div>
     <div class="map-legend" id="mapLegend" hidden></div>
-    <div class="opacity-dock" id="opacityDock" hidden>
-      <label>Imagery <input type="range" id="overlayOpacity" min="0" max="100" value="100"></label>
-      <button class="btn btn-ghost btn-sm" id="toggleOverlay">Hide</button>
-    </div>
+    <div class="layer-dock" id="layerDock" hidden></div>
   </section>
 </main>
 

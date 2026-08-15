@@ -113,6 +113,22 @@ export const fmt = {
       day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
     });
   },
+  when(iso) {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleString(undefined, {
+      weekday: 'short', day: 'numeric', month: 'short',
+      hour: '2-digit', minute: '2-digit',
+    });
+  },
+  // A countdown reads better in the units a person would use out loud.
+  duration(hours) {
+    const h = Math.abs(hours);
+    if (h < 1) return `${Math.max(1, Math.round(h * 60))} min`;
+    if (h < 48) return `${h < 10 ? h.toFixed(1) : Math.round(h)} h`;
+    const days = Math.floor(h / 24);
+    const rest = Math.round(h - days * 24);
+    return rest ? `${days} d ${rest} h` : `${days} d`;
+  },
   coord(lon, lat) {
     const ns = lat >= 0 ? 'N' : 'S';
     const ew = lon >= 0 ? 'E' : 'W';

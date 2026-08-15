@@ -1,8 +1,16 @@
-# Sent-2 · Sentinel-2 imagery
+# Sent-2 · Sentinel imagery
 
-Look at any place on Earth in free Sentinel-2 imagery — and, because one pass
-is never the best picture available, merge several dates into one that is
-sharper than any single pass and has the cloud taken out.
+Look at any place on Earth in free Sentinel imagery — and, because one pass is
+never the best picture available, merge several dates into one that is sharper
+than any single pass and has the cloud taken out.
+
+Two satellites cover the same ground and answer different questions.
+**Sentinel-2** photographs it in daylight, when there is no cloud in the way.
+**Sentinel-1** measures it with radar, through cloud and at night. Either can
+be shown, and both can sit on the map at once so you can fade between them.
+
+Right-click anywhere to find out when each of them next flies over. Highlight
+part of the imagery to take it away as a picture, marked `@Kaldockhi`.
 
 That is the whole app. One screen: a map, the dates over your area, and the
 imagery.
@@ -59,29 +67,51 @@ the running copy up instead of starting another. Closing the window quits.
 
 ---
 
-## The satellite
+## The satellites
 
-**Sentinel-2**, and only Sentinel-2 — the best free optical imagery there is,
-and the reason the app is called Sent-2.
+**Sentinel-2** is the reason the app is called Sent-2 — the best free optical
+imagery there is. **Sentinel-1** is what you turn to when Sentinel-2 cannot
+help: it is radar, so cloud, smoke and darkness make no difference to it.
 
-| | |
-| --- | --- |
-| Resolution | 10 m visible and near-infrared, 20 m red-edge and short-wave infrared |
-| Revisit | About every five days, everywhere on Earth |
-| Archive | June 2015 to this morning |
-| Bands | Twelve, from coastal aerosol at 443 nm to short-wave infrared at 2190 nm |
-| Level | L2A surface reflectance, atmospherically corrected |
-| Cost | Free, no account, no key |
+| | Sentinel-2 | Sentinel-1 |
+| --- | --- | --- |
+| What it is | Optical — a photograph | C-band radar — a measurement of roughness |
+| Resolution | 10 m visible and near-infrared, 20 m red-edge and short-wave infrared | ~20 m, delivered on a 10 m grid |
+| Revisit | About every five days | About every 6–12 days |
+| Archive | June 2015 to this morning | October 2014 to this morning |
+| Bands | Twelve, 443 nm to 2190 nm | VV and VH polarisation |
+| Level | L2A surface reflectance, atmospherically corrected | GRD amplitude, shown in decibels |
+| Sees through cloud | No | Yes |
+| Works at night | No | Yes |
+| Cost | Free, no account, no key | Free, no account, no key |
 
-It comes from [Earth Search](https://earth-search.aws.element84.com/v1), a
-public catalogue in front of the Sentinel-2 archive on AWS Open Data. Only the
+Both come from [Earth Search](https://earth-search.aws.element84.com/v1), a
+public catalogue in front of the Sentinel archives on AWS Open Data. Only the
 bands and the pixels your area needs are read, by HTTP range request straight
 out of the cloud-optimised GeoTIFFs, so a small area is quick even though a
 source tile runs to a gigabyte.
 
-Stored numbers become surface reflectance on the way in, including the -1000
-offset that scenes from January 2022 onwards carry, so the values behind every
-picture are physically correct.
+Stored numbers become physical units on the way in. For Sentinel-2 that is
+surface reflectance, including the -1000 offset that scenes from January 2022
+onwards carry. For Sentinel-1 it is decibels — amplitude squared is power, and
+radar is always read on a log scale because backscatter spans four orders of
+magnitude between still water and a city.
+
+**Reading a radar picture.** Brightness is roughness and geometry, not colour.
+Still water reflects the pulse away and comes back black; buildings line their
+corners up with the satellite and come back brightest of all. VH only returns
+from things that scatter in a volume — foliage, mostly — so the standard
+false colour (VV red, VH green, their ratio blue) separates towns, crops and
+water on its own. Three ways to look at it: **radar colour**, **VV only**, and
+**water & flood**, which puts the cross-polarised channel first so still water
+goes to near black.
+
+The two satellites are never merged into each other. Reflectance and
+backscatter are different physical quantities in different units, and averaging
+them together would mean nothing — so a render is always of one satellite, and
+ticking a date from the other one starts a fresh selection. Putting both on the
+map at the same time is a different matter, and that is what the layer dock in
+the corner is for.
 
 ## Making the imagery look better
 
@@ -161,16 +191,29 @@ Tuesday.
 passes. It is better in two ways at once, which is why it is one button and
 not two:
 
-- **Higher definition.** The merge is sampled two to four times finer than the
-  satellite's own 10 m, with detail measured off the ground rather than
-  invented by a model.
+- **Higher definition.** The picture stays the size you asked for; what
+  changes is what it resolves — two to four times finer than the satellite's
+  own 10 m, with detail measured off the ground rather than invented by a
+  model. A merge that handed back a bigger file would spread the same detail
+  over more pixels and look no better beside a single date, which is the whole
+  point of the exercise.
 - **More of the ground.** Cloud sitting over one date is taken out by the
   others, so the picture is clearer than any single pass and often has no gaps
   at all.
 
-How much finer follows from how many dates you ticked — 2 earn 2×, 5 earn 3×,
-9 earn 4× — and the button says which you are getting before you press it:
-*"Merge 6 dates → 3×"*.
+How much finer follows from two things at once, and the button says which you
+are getting before you press it: *"Merge 6 dates → 2.5× finer"*.
+
+**The dates** set the ceiling — 2 earn 2×, 5 earn 3×, 9 earn 4×.
+
+**The size** decides whether any of it is reachable. Detail recoverable by
+merging hides *between* the satellite's samples, so it only exists where the
+output grid is finer than those samples. Render a wide area at 512 px and each
+pixel covers more ground than a whole Sentinel-2 measurement: several dates
+still clear the cloud, but there is nothing finer to find, and the panel says
+so rather than pretending. Raise the size and the gap opens up for the merge to
+fill. The panel tells you which of the two is currently the limit — *"a larger
+size would resolve more"* or *"more dates would resolve more"*.
 
 **Why there is anything to recover.** A satellite never samples the same ground
 twice in the same place. Orbits repeat to within a few tens of metres and each
@@ -210,6 +253,33 @@ finer again, and it comes from commercial satellites (Maxar, Planet SkySat,
 Airbus Pléiades) or aircraft — no amount of processing gets Sentinel-2 there,
 because the detail was never recorded.
 
+**A merge is never softer than the date it started from.** That is the one
+outcome nobody would accept, and without guarding against it, it happens:
+ground changes between passes, and the satellite's own pointing error varies
+across a frame in a way a single shift cannot correct. Averaging things that
+disagree blurs them. Measured against a single date, merging six passes with a
+pixel of drifting misregistration came back at 0.79× the fine detail — visibly
+worse than not merging at all.
+
+So the result is measured against what one date would have looked like, and
+where the fusion has not recovered more than the averaging cost, the merge's
+own fine structure is lifted to cover the difference — its high frequencies,
+which have the noise averaged out of them, rather than a single date's noisier
+ones. Across misregistration, changed ground and both together, the merge now
+comes out between 1.05× and 1.14× the detail of one date instead of 0.79×.
+
+**Merging radar is a different bargain, and the app says which one you are
+getting.** Sentinel-1 arrives on a 10 m grid but resolves about 20 m, so it is
+already over-sampled: there is nothing hiding between its samples for a merge
+to solve for, and no honest way to sharpen it. What merging radar passes does
+instead is kill the speckle — the grain that makes a single radar image hard
+to read at all. Speckle is a random multiplier on every pixel, independent from
+one pass to the next, so in decibels it is an unbiased additive error that
+simply averages away: six passes come back with about 59% less of it. The
+button says *"Average 6 radar passes"* rather than promising a sharpness it
+cannot deliver, and the merge takes the mean rather than the median, because
+there is no cloud to reject and the mean removes more noise.
+
 **Getting the best out of it.** Dates close together work best: the method
 assumes every date saw the same ground, so a year of crop growth averages into
 *less* detail, not more — and the report says so plainly when that is what
@@ -228,12 +298,60 @@ sharpening the picture and sharpening the grain.
 
 ---
 
+## When does it next fly over?
+
+**Right-click anywhere on the map.** A panel says when each satellite last
+crossed that point and when it will next be back: *"Sentinel-1 — in 2 d 6 h ·
+Tue, 18 Aug, 17:52. Last pass 3 d ago · track 59, repeating every 12 days."*
+
+There is no public "next overpass" service, but there is something better: the
+catalogue of every pass already flown. Both satellites are held on a repeating
+ground track — Sentinel-2 retraces its own every 10 days, Sentinel-1 every 12 —
+and each track is numbered, so a place is visited by the same numbered orbit at
+the same local time, over and over.
+
+So the prediction is measurement, not modelling. The app asks the catalogue
+what has crossed that point in the last 45 days, groups those passes by the
+track that took them, works out the interval each track actually repeats on,
+and steps the most recent one forward until it lands in the future. Whichever
+track comes round soonest is the answer, and it inherits the real time of day.
+
+Two things it is careful about. A missed or unarchived acquisition can only
+make a gap bigger, never smaller, so the interval is the *smallest* gap on the
+track rather than the average — a patchy record does not make the satellite
+look slow. And one overflight is often filed as several products minutes apart;
+those are collapsed to a single pass, or the prediction would creep a few
+minutes early every cycle. Where there is only one pass on record it falls back
+to the nominal repeat cycle and says so rather than inventing precision.
+
+## Taking a picture away
+
+**Copy a region** (or **Save region**) arms a highlight tool: drag a box over
+the part of the imagery you want, and it lands on your clipboard as a PNG
+marked **@Kaldockhi**.
+
+The crop is taken from the rendered imagery itself, not from the screen, so it
+comes out at the full resolution that was fetched rather than at whatever size
+the map happened to be showing — and it carries the adjustments you are looking
+at, because the point is to take away what you can see. The corners are
+converted through Web Mercator rather than treated as latitudes, which is what
+stops the crop shearing. Under the mark sits a small credit line naming the
+satellite and the date, which is both useful and what the Copernicus licence
+asks for when the imagery is published.
+
+Writing an image to the clipboard needs a secure context and the browser's
+permission, and neither is guaranteed; if it is refused the picture is saved as
+a file instead and the app says so, so it is never lost to a permission prompt.
+
 ## Where the imagery comes from
 
 [Earth Search](https://earth-search.aws.element84.com/v1), Element 84's free
-STAC API in front of the `sentinel-2-l2a` collection on AWS Open Data. No
-account, no key, no token — a search is one anonymous HTTP request, and so is
-every band read after it.
+STAC API in front of the `sentinel-2-l2a` and `sentinel-1-grd` collections on
+AWS Open Data. No account, no key, no token — a search is one anonymous HTTP
+request, and so is every band read after it. The two collections are searched
+separately, because a cloud-cover filter would throw away every radar scene:
+radar has no such property, and filtering it by one would make it look as
+though it never flew.
 
 The imagery is licensed for any use, including commercially, with attribution:
 *Contains modified Copernicus Sentinel data*. That line rides along with every
@@ -256,15 +374,23 @@ the map like any other.
 Drawing an area is a clear enough request for the dates over it, so the search
 runs on its own.
 
-**2 · One date, or many merged.** The choice
-[described above](#one-date-or-many-merged), made before anything else so that
-the list below it means the right thing: radio buttons for one date, tick boxes
-for a merge. Every Sentinel-2 pass over your area is listed, newest first, with
-how cloudy each was; the clearest is chosen for you, or the six clearest ticked,
-and the list scrolls to show you which. The dates searched and the cloud ceiling
-fold away into a line you can open when you want to change them.
+Right-clicking is never drawing: it asks when the satellites next come over.
 
-**3 · How it looks.** Nine band combinations and eight indices:
+**2 · Which satellite, and when.** **Sentinel-2**, **Sentinel-1**, or **Both** —
+then the choice [described above](#one-date-or-many-merged), made before
+anything else so that the list below it means the right thing: radio buttons
+for one date, tick boxes for a merge. Every pass over your area is listed,
+newest first, each with a dot saying which satellite took it and how cloudy it
+was — or `radar`, for the ones cloud cannot touch. The clearest is chosen for
+you, or the six best ticked, and the list scrolls to show you which. The dates
+searched and the cloud ceiling fold away into a line you can open when you want
+to change them.
+
+Picking a radar date changes everything downstream to suit it: the
+visualisations on offer, the tuning presets, and what a merge is for.
+
+**3 · How it looks.** Nine Sentinel-2 band combinations and eight indices, or
+three radar composites and the VV/VH ratio:
 
 | Band combination | What it shows |
 | --- | --- |
@@ -278,6 +404,12 @@ fold away into a line you can open when you want to change them.
 | Bathymetric | Shallow sea floor and sediment plumes |
 | Atmospheric penetration | Sees through haze |
 
+| Radar composite | What it shows |
+| --- | --- |
+| Radar colour | The standard false colour: towns pink, crops green, water black |
+| Radar (VV only) | Plain backscatter — bright is rough or metal, black is smooth water |
+| Radar water & flood | Cross-polarised first, so still water goes to near black |
+
 | Index | What it measures |
 | --- | --- |
 | NDVI | Green biomass and vigour |
@@ -288,13 +420,17 @@ fold away into a line you can open when you want to change them.
 | NDSI | Snow and ice |
 | EVI | Vegetation, resistant to soil and haze |
 | SAVI | Vegetation over sparse or bright soils |
+| VV/VH | Radar ratio — low where the ground scatters in a volume: forest, dense crops |
 
 Indices come with a colour scale and a legend on the map. Also here: cloud and
 shadow masking from the scene classification band, clipping to the exact shape
 you drew, and sizes up to 4096 px before a merge multiplies them. **Fine
 tuning** folds away the rest — tone mapping, gamma, haze removal, adaptive
 contrast, denoise, detail, vibrance, white balance, and five presets — and says
-how many of them you have moved.
+how many of them you have moved. On radar it offers its own presets and drops
+haze removal and white balance entirely: those are corrections to light, and
+radar is not light, so leaving them in doing nothing would be a lie about what
+the controls do.
 
 **4 · Adjust the picture.** Contrast, exposure, saturation, clarity,
 highlights, shadows, warmth, tint, midtones and vignette, plus nine looks.
@@ -307,15 +443,24 @@ line above it saying what pressing it will produce: *"6 dates → 3× detail ·
 which flies to it. Once it is showing, the button reads **Showing this now**
 and greys out until you change something — so it always tells you whether what
 you are looking at is what your settings say. Save the result as a PNG or as a
-georeferenced **GeoTIFF** that drops straight into QGIS.
+georeferenced **GeoTIFF** that drops straight into QGIS, or highlight part of
+it and take that away marked.
+
+**The layer dock.** Each render stays on the map as its own layer, one per
+satellite, with its own fade. That is what lets you put radar and optical over
+the same ground and cross-fade between them — the cloud-free measurement
+underneath, the photograph on top. `×` takes a layer off again.
 
 ## Demo mode
 
 `python run.py --demo` replaces the catalogue with synthetic dates generated
 from noise fields: plausible water, vegetation, soil, urban and snow cover, a
 seasonal cycle, slow urban growth over the years, and clouds matching each
-date's stated cover. It is there so the interface can be explored, tested and
-demonstrated offline.
+date's stated cover. Both satellites fly, on their own cadences and at their
+own times of day, so a radar pass lands on a different date from the optical
+one. The synthetic radar carries speckle — independent every pass, because
+without it merging Sentinel-1 offline would look pointless when it is not. It
+is there so the interface can be explored, tested and demonstrated offline.
 
 It is not real imagery, and the app says so everywhere it could matter: a badge
 in the header, a second badge in place of the collection name, a warning when
@@ -348,8 +493,9 @@ backend/
   enhance.py     compositing, haze removal, CLAHE, denoise, white balance
   superres.py    sub-pixel registration, multi-frame fusion, deconvolution
   app.py         FastAPI routes and static hosting
-  config.py      the satellite, band table, composites, indices, colour maps
-  stac.py        catalogue search, plus synthetic scenes for demo mode
+  config.py      the satellites, band table, composites, indices, colour maps
+  stac.py        catalogue search over both collections, plus synthetic scenes
+  passes.py      when each satellite last flew over a point, and when it next will
   raster.py      windowed COG reads, reprojection, cloud masking, demo bands
   composite.py   stretches, indices, colour maps, statistics, encoding
   service.py     render orchestration: merging, enhancement, caching
@@ -357,7 +503,7 @@ backend/
   launcher.py    port choice, app windows, desktop shortcuts
 frontend/
   index.html, css/app.css, manifest.webmanifest, sw.js
-  js/            map, imagery, adjust, store, ui, api, install
+  js/            map, imagery, capture, adjust, store, ui, api, install
   icons/         app icons, favicon.ico and a macOS .icns
   vendor/        Leaflet 1.9.4 (BSD-2-Clause), vendored — no CDN needed
 launchers/       double-clickable launchers for macOS, Linux and Windows
@@ -367,6 +513,7 @@ tests/
   test_superres.py   registration, fusion, restoration, the resolution gain
   test_enhance.py    compositing and the image-quality tools
   test_launcher.py   ports, windows, shortcuts, manifest and service worker
+  test_satellites.py radar reading, keeping the two satellites apart, overpasses
 ```
 
 ## Tests
@@ -400,6 +547,17 @@ removal finds the right floor, adaptive contrast really is local, denoise
 removes speckle, white balance neutralises a cast) and the desktop-app plumbing
 (port selection, window arguments, generated shortcuts, the web-app manifest
 and service worker).
+
+Sentinel-1 has its own file, and most of what is in it is about the boundary
+between the two satellites: that amplitude becomes the right number of
+decibels, that the VV/VH ratio is worked out rather than downloaded, that a
+band or a composite belonging to one satellite is refused to the other, that
+the two are never merged into each other, and that merging radar averages the
+speckle away instead of claiming a sharpness it cannot deliver. The overpass
+prediction is tested where it is easy to get wrong: a gap in the record must
+not be read as a slower satellite, one pass filed twice must not be read as an
+interval, and the answer must always be in the future at the right time of
+day.
 
 ## Requirements
 

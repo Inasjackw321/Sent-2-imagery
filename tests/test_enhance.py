@@ -176,9 +176,18 @@ def test_every_visualisation_uses_bands_the_satellite_carries():
 
 def test_every_band_knows_where_to_find_itself():
     for name, spec in config.BANDS.items():
-        assert spec["asset"], f"{name} has no asset name"
-        assert spec["s2"].startswith("B"), f"{name} has no Sentinel-2 band number"
+        assert spec["sat"] in config.SATELLITES, f"{name} belongs to no satellite"
         assert spec["res"] in (10, 20, 60)
+        if spec.get("derive"):
+            # A derived band is arithmetic on real ones, so it has no asset of
+            # its own -- but the bands it is made of must exist and be its own
+            # satellite's.
+            for part in spec["derive"]:
+                assert config.BANDS[part]["sat"] == spec["sat"]
+            continue
+        assert spec["asset"], f"{name} has no asset name"
+        if spec["sat"] == "sentinel-2":
+            assert spec["s2"].startswith("B"), f"{name} has no Sentinel-2 band number"
 
 
 def test_an_unknown_visualisation_is_rejected():

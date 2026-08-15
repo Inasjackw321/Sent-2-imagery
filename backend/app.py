@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import composite, config, service, stac
+from . import composite, config, passes, service, stac
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -45,14 +45,18 @@ def get_config() -> dict[str, Any]:
         "stac_url": config.STAC_URL,
         "collection": config.STAC_COLLECTION,
         "satellite": config.SATELLITE,
+        "satellites": config.SATELLITES,
+        "default_satellite": config.DEFAULT_SATELLITE,
         "composites": {
             k: {"label": v["label"], "bands": v["bands"], "hint": v["hint"],
+                "sat": v["sat"],
                 "band_labels": [config.BANDS[b]["label"] for b in v["bands"]]}
             for k, v in config.COMPOSITES.items()
         },
         "indices": {
             k: {"label": v["label"], "bands": v["bands"], "formula": v["formula"],
-                "range": v["range"], "colormap": v["colormap"], "hint": v["hint"]}
+                "range": v["range"], "colormap": v["colormap"], "hint": v["hint"],
+                "sat": v["sat"]}
             for k, v in config.INDICES.items()
         },
         "colormaps": {
@@ -103,10 +107,25 @@ def search(body: dict = Body(...)) -> dict:
             max_cloud=float(body.get("max_cloud", 30)),
             limit=int(body.get("limit", 60)),
             demo=body.get("demo"),
+            satellites=body.get("satellites") or body.get("satellite"),
         )
     except ValueError as exc:
         raise _fail(exc, 400)
     except stac.SceneSearchError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/passes")
+def overpasses(
+    lon: float = Query(..., ge=-180, le=180),
+    lat: float = Query(..., ge=-85, le=85),
+    satellite: str | None = Query(None),
+) -> dict:
+    """When either Sentinel last flew over this point, and when it next will."""
+    try:
+        return passes.next_passes(
+            lon, lat, satellites=[satellite] if satellite else None)
+    except passes.PassLookupError as exc:
         raise _fail(exc)
 
 
@@ -166,7 +185,8 @@ def render(body: dict = Body(...), download: bool = Query(False)):
     except (BandReadError, stac.SceneSearchError) as exc:
         raise _fail(exc)
     meta = result["meta"]
-    stem = (f"sentinel2_{meta['scene'].get('date', 'scene')}"
+    stem = (f"{meta.get('satellite', 'sentinel-2').replace('-', '')}"
+            f"_{meta['scene'].get('date', 'scene')}"
             f"_{meta.get('index') or meta.get('preset')}")
     return _render_response(result, download, stem)
 

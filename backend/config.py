@@ -9,24 +9,92 @@ import os
 # ---------------------------------------------------------------------------
 
 # Element 84's Earth Search is a free, no-signup STAC API in front of the
-# Sentinel-2 Cloud-Optimised GeoTIFF archive on AWS Open Data.
+# Sentinel Cloud-Optimised GeoTIFF archives on AWS Open Data.
 STAC_URL = os.environ.get("STAC_URL", "https://earth-search.aws.element84.com/v1")
 STAC_COLLECTION = os.environ.get("STAC_COLLECTION", "sentinel-2-l2a")
+STAC_COLLECTION_S1 = os.environ.get("STAC_COLLECTION_S1", "sentinel-1-grd")
 
-# The satellite, in one place. Sentinel-2 is the whole app: 10 m optical,
-# every five days, free, worldwide, and the best free imagery there is.
-SATELLITE = {
-    "label": "Sentinel-2 · surface reflectance",
-    "platform": "Sentinel-2 A/B/C",
-    "resolution": 10,
-    "since": "2015-06-23",
-    "revisit": "≈5 days",
-    "swath_hint": "10 m visible and near-infrared, 20 m red-edge and short-wave infrared",
-    "attribution": "Contains modified Copernicus Sentinel data",
-    "provider": "Earth Search (AWS Open Data)",
-    "notes": "Level-2A surface reflectance, atmospherically corrected.",
-    "default_composite": "true_color",
+# The two satellites, in one place. They fly over the same ground and answer
+# different questions: Sentinel-2 photographs it in daylight when there is no
+# cloud, Sentinel-1 measures it with radar through cloud and at night. Every
+# band, composite and index below says which one it belongs to, so the rest of
+# the app only ever has to ask.
+SATELLITES = {
+    "sentinel-2": {
+        "key": "sentinel-2",
+        "short": "Sentinel-2",
+        "label": "Sentinel-2 · surface reflectance",
+        "kind": "optical",
+        "platform": "Sentinel-2 A/B/C",
+        "collection": STAC_COLLECTION,
+        "resolution": 10,
+        "since": "2015-06-23",
+        "revisit": "≈5 days",
+        # One satellite retraces the same ground track every this many days.
+        # Both spacecraft share the track numbering half a cycle apart, which
+        # is where the ≈5 day revisit comes from.
+        "repeat_days": 10,
+        "swath_hint": "10 m visible and near-infrared, 20 m red-edge and short-wave infrared",
+        "attribution": "Contains modified Copernicus Sentinel data",
+        "provider": "Earth Search (AWS Open Data)",
+        "notes": "Level-2A surface reflectance, atmospherically corrected.",
+        "units": "surface reflectance",
+        "default_composite": "true_color",
+        "cloud_filter": True,
+        # Sentinel-2 samples at 10 m with a footprint about that wide, so
+        # detail genuinely hides between its samples and merging dates can
+        # recover it.
+        "can_superres": True,
+        "colour": "#4cc2ff",
+    },
+    "sentinel-1": {
+        "key": "sentinel-1",
+        "short": "Sentinel-1",
+        "label": "Sentinel-1 · radar backscatter",
+        "kind": "radar",
+        "platform": "Sentinel-1 A/C",
+        "collection": STAC_COLLECTION_S1,
+        # GRD is delivered on a 10 m grid but resolves about 20 m: the grid is
+        # finer than the radar's own detail, not the other way round.
+        "resolution": 20,
+        "pixel_spacing": 10,
+        "since": "2014-10-03",
+        "revisit": "≈6–12 days",
+        "repeat_days": 12,
+        "swath_hint": "C-band radar, VV and VH polarisation, 10 m pixels at ~20 m detail",
+        "attribution": "Contains modified Copernicus Sentinel data",
+        "provider": "Earth Search (AWS Open Data)",
+        "notes": "Ground Range Detected amplitude, shown in decibels. Sees through "
+                 "cloud and works at night; not radiometrically terrain-corrected.",
+        "units": "dB (uncalibrated amplitude)",
+        "default_composite": "radar_color",
+        "cloud_filter": False,
+        # The 10 m grid over-samples a 20 m resolution cell, so nothing is
+        # hiding between the samples and merging dates cannot sharpen. What it
+        # does do -- and radar needs badly -- is average the speckle away.
+        "can_superres": False,
+        "colour": "#ffb347",
+    },
 }
+
+DEFAULT_SATELLITE = "sentinel-2"
+
+# Kept as the plain name for the satellite the app opens on, so anything that
+# only ever cared about Sentinel-2 still reads the same.
+SATELLITE = SATELLITES[DEFAULT_SATELLITE]
+
+
+def satellite(key: str | None = None) -> dict:
+    """The satellite record for a key, defaulting to Sentinel-2."""
+    return SATELLITES.get(key or DEFAULT_SATELLITE, SATELLITES[DEFAULT_SATELLITE])
+
+
+def satellite_for_collection(collection: str | None) -> str:
+    """Which satellite a STAC collection belongs to."""
+    for key, spec in SATELLITES.items():
+        if spec["collection"] == collection:
+            return key
+    return DEFAULT_SATELLITE
 
 # Synthetic imagery instead of live downloads. Everything the app produces in
 # this mode is flagged as fake -- it exists so the UI can be exercised offline.
@@ -75,6 +143,8 @@ REFLECTANCE_SCALE = 1e-4
 # ---------------------------------------------------------------------------
 # Bands. The key is the name used everywhere in the app; "asset" is what the
 # band is called in the catalogue, and "s2" is its name on the satellite.
+# "sat" says which satellite carries it -- there is one table because a render
+# only ever draws on one satellite's bands, and tagging is cheaper than two.
 # ---------------------------------------------------------------------------
 
 BANDS = {
@@ -95,9 +165,28 @@ BANDS = {
               "label": "Water vapour"},
     "swir16": {"asset": "swir16", "s2": "B11", "res": 20, "nm": 1610, "label": "SWIR 1"},
     "swir22": {"asset": "swir22", "s2": "B12", "res": 20, "nm": 2190, "label": "SWIR 2"},
+    # Sentinel-1. Backscatter, not reflectance: how much of the radar pulse the
+    # ground sent back. VV bounces off flat and rough surfaces alike, VH only
+    # comes back from things that scatter in a volume -- foliage, mostly -- so
+    # the pair separates vegetation from bare ground and water on its own.
+    "vv": {"asset": "vv", "res": 10, "label": "VV backscatter",
+           "sat": "sentinel-1", "unit": "dB"},
+    "vh": {"asset": "vh", "res": 10, "label": "VH backscatter",
+           "sat": "sentinel-1", "unit": "dB"},
+    # Not a band the satellite measures: the difference between the two, which
+    # in decibels is their ratio. Read as one so a composite can use it.
+    "vvvh": {"derive": ("vv", "vh"), "res": 10, "label": "VV − VH ratio",
+             "sat": "sentinel-1", "unit": "dB"},
 }
 
+for _name, _band in BANDS.items():
+    _band.setdefault("sat", "sentinel-2")
+
 SCL_ASSET = "scl"
+
+# Sentinel-1 GRD stores amplitude as raw digital numbers. Squared it is power,
+# and ten times its log is the decibel figure every radar image is shown in.
+S1_FLOOR_DN = 1.0        # a DN of zero is no data, not silence
 
 # Scene classification layer classes worth masking out.
 SCL_CLASSES = {
@@ -176,7 +265,36 @@ COMPOSITES = {
         "hint": "Sees through haze; no visible light at all.",
         "default_stretch": {"mode": "percentile_linked", "low": 2, "high": 98, "gamma": 1.05},
     },
+
+    # Sentinel-1. Radar has no colour of its own, so these are the conventional
+    # ways of giving it one. The channels are stretched separately because they
+    # live in genuinely different ranges -- VH comes back 6 to 10 dB weaker than
+    # VV, and the ratio is a difference rather than a level.
+    "radar_color": {
+        "label": "Radar colour",
+        "sat": "sentinel-1",
+        "bands": ["vv", "vh", "vvvh"],
+        "hint": "The standard radar false colour. Towns pink, crops green, water black.",
+        "default_stretch": {"mode": "percentile", "low": 2, "high": 98, "gamma": 1.0},
+    },
+    "radar_grey": {
+        "label": "Radar (VV only)",
+        "sat": "sentinel-1",
+        "bands": ["vv", "vv", "vv"],
+        "hint": "Plain backscatter. Bright is rough or metal, black is smooth water.",
+        "default_stretch": {"mode": "percentile", "low": 2, "high": 98, "gamma": 1.0},
+    },
+    "radar_water": {
+        "label": "Radar water & flood",
+        "sat": "sentinel-1",
+        "bands": ["vh", "vv", "vv"],
+        "hint": "Cross-polarised first: still water goes to near black, so floods stand out.",
+        "default_stretch": {"mode": "percentile", "low": 1, "high": 99, "gamma": 1.0},
+    },
 }
+
+for _name, _preset in COMPOSITES.items():
+    _preset.setdefault("sat", "sentinel-2")
 
 # ---------------------------------------------------------------------------
 # Spectral indices
@@ -247,7 +365,19 @@ INDICES = {
         "colormap": "ndvi",
         "hint": "Vegetation over sparse or bright soils.",
     },
+    "radar_ratio": {
+        "label": "VV/VH - radar ratio",
+        "sat": "sentinel-1",
+        "bands": ["vv", "vh"],
+        "formula": "vv - vh  (decibels, so a ratio)",
+        "range": [0.0, 14.0],
+        "colormap": "magma",
+        "hint": "Low where the ground scatters in a volume: forest, dense crops.",
+    },
 }
+
+for _name, _index in INDICES.items():
+    _index.setdefault("sat", "sentinel-2")
 
 # ---------------------------------------------------------------------------
 # Colormaps: control points as (position, r, g, b)
