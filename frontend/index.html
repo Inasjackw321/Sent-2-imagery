@@ -110,11 +110,22 @@
 
         <details class="advanced">
           <summary>Fine tuning<span class="summary-value" id="tuningSummary">off</span></summary>
+          <p class="hint">Applied to the reflectance before the picture is made,
+            so these need the imagery fetching again.</p>
           <div class="presets presets-wide" id="enhancePresets"></div>
           <div id="enhanceSliders"></div>
           <div id="renderSliders"></div>
           <button class="btn btn-ghost btn-sm" id="enhanceReset">Reset</button>
         </details>
+      </div>
+
+      <div class="group" id="stepAdjust">
+        <h3><span class="step">4</span> Adjust the picture</h3>
+        <p class="hint">Contrast, colour and clarity on the imagery you are
+          looking at. These apply as you drag, with nothing to re-fetch.</p>
+        <div class="presets" id="adjustPresets"></div>
+        <div id="adjustSliders"></div>
+        <button class="btn btn-ghost btn-sm" id="adjustReset">Back to the original</button>
       </div>
     </div>
 

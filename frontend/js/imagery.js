@@ -7,13 +7,22 @@
 
 import { api } from './api.js';
 import { store, on, setImage } from './store.js';
-import { $, $$, el, toast, withBusy, download, loadImage, fmt, sliderBank } from './ui.js';
+import { updateOverlay } from './map.js';
+import * as adjust from './adjust.js';
+import {
+  $, $$, el, toast, withBusy, download, loadImage, fmt, sliderBank, debounce,
+} from './ui.js';
 
 let renderControls = {};
 let enhanceControls = {};
+let adjustControls = {};
 let cloudControl = null;
 let lastRequest = null;
 let mode = 'single';                     // 'single' | 'merge'
+
+// The map never shows more than a screenful, so the live preview is built at
+// this size however big the render is. Saving uses the full thing.
+const PREVIEW_MAX = 1600;
 
 const ENHANCE_SPECS = [
   { key: 'haze_removal', label: 'Haze removal', min: 0, max: 1, step: 0.05, value: 0,
@@ -30,11 +39,27 @@ const ENHANCE_SPECS = [
     format: (v) => (v ? v.toFixed(2) : 'off') },
 ];
 
+// Photographic adjustments on the finished picture, live on the map.
+const ADJUST_SPECS = [
+  { key: 'contrast', label: 'Contrast', min: -60, max: 80, step: 1, value: 0 },
+  { key: 'exposure', label: 'Exposure', min: -50, max: 50, step: 1, value: 0 },
+  { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, value: 0 },
+  { key: 'clarity', label: 'Clarity', min: 0, max: 100, step: 1, value: 0 },
+  { key: 'highlights', label: 'Highlights', min: -60, max: 60, step: 1, value: 0 },
+  { key: 'shadows', label: 'Shadows', min: -60, max: 60, step: 1, value: 0 },
+  { key: 'temperature', label: 'Warmth', min: -60, max: 60, step: 1, value: 0 },
+  { key: 'tint', label: 'Tint', min: -60, max: 60, step: 1, value: 0 },
+  { key: 'gamma', label: 'Midtones', min: 0.6, max: 1.8, step: 0.02, value: 1,
+    format: (v) => v.toFixed(2) },
+  { key: 'vignette', label: 'Vignette', min: 0, max: 80, step: 1, value: 0 },
+];
+
 // Starting points that suit different jobs.
 const ENHANCE_PRESETS = {
   Off: {},
-  Balanced: { haze_removal: 0.8, adaptive_contrast: 1.5, sharpen: 0.25, vibrance: 0.2 },
-  Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.5, vibrance: 0.45 },
+  Balanced: { haze_removal: 0.8, adaptive_contrast: 1.8, sharpen: 0.45, vibrance: 0.2 },
+  Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.7, vibrance: 0.45 },
+  Detail: { haze_removal: 0.9, adaptive_contrast: 2.5, sharpen: 0.9, vibrance: 0.15 },
   Hazy_day: { haze_removal: 1, adaptive_contrast: 2, white_balance: 0.6, sharpen: 0.3 },
   Natural: { haze_removal: 0.5, white_balance: 0.35 },
 };
@@ -58,6 +83,14 @@ export function initImagery() {
   buildVisualisationOptions();
   buildRenderSliders();
   buildEnhanceControls();
+  buildAdjustControls();
+
+  // Raw Sentinel-2 reads milky and blue-grey: the atmosphere is still in it.
+  // Balanced takes that out and gives the colour back, which is what the
+  // imagery should look like before anyone touches a slider.
+  applyEnhancePreset('Balanced');
+  $$('#enhancePresets .preset')
+    .find((b) => b.textContent === 'Balanced')?.classList.add('is-active');
 
   $$('#modePicker .mode').forEach((btn) =>
     btn.addEventListener('click', () => setMode(btn.dataset.mode)));
@@ -81,6 +114,8 @@ export function initImagery() {
     sync();
     if (info) runSearch();
   });
+  // A new render is a new picture: the adjustments stay, and are re-applied.
+  on('image', applyAdjustments);
   setMode('single');
 }
 
@@ -225,6 +260,63 @@ function applyEnhancePreset(name) {
   sync();
 }
 
+// ── Adjusting the picture on screen ────────────────────────────
+
+function buildAdjustControls() {
+  adjustControls = sliderBank($('#adjustSliders'), ADJUST_SPECS, queueAdjust);
+
+  const host = $('#adjustPresets');
+  host.innerHTML = '';
+  for (const name of Object.keys(adjust.PRESETS)) {
+    host.append(el('button', {
+      class: 'preset',
+      onclick: (e) => {
+        setAdjustments(adjust.PRESETS[name]);
+        $$('#adjustPresets .preset').forEach((b) => b.classList.toggle('is-active', b === e.target));
+      },
+    }, name));
+  }
+  $('#adjustReset').addEventListener('click', () => {
+    setAdjustments({});
+    $$('#adjustPresets .preset').forEach((b) => b.classList.remove('is-active'));
+  });
+}
+
+function setAdjustments(values) {
+  const full = adjust.withDefaults(values);
+  for (const spec of ADJUST_SPECS) adjustControls[spec.key]?.set(full[spec.key]);
+  applyAdjustments();
+  sync();
+}
+
+function adjustmentValues() {
+  const out = {};
+  for (const spec of ADJUST_SPECS) out[spec.key] = adjustControls[spec.key]?.get() ?? spec.value;
+  return out;
+}
+
+/**
+ * Push the current adjustments onto the imagery on the map.
+ *
+ * The overlay's pixels are swapped in place rather than the overlay replaced,
+ * so the map does not move and the fade slider keeps its setting.
+ */
+function applyAdjustments() {
+  const source = store.image?.element;
+  if (!source) return;
+  const values = adjustmentValues();
+  if (adjust.isNeutral(values)) {
+    updateOverlay(store.image.src);
+  } else {
+    updateOverlay(adjust.renderToCanvas(source, values, { maxSide: PREVIEW_MAX }).toDataURL());
+  }
+  sync();
+}
+
+// Dragging a slider fires continuously; rebuilding the picture every time
+// would make it lag behind the thumb.
+const queueAdjust = debounce(applyAdjustments, 90);
+
 function enhancementValues() {
   const values = {};
   for (const spec of ENHANCE_SPECS) {
@@ -340,6 +432,7 @@ function sync() {
 
   $('#stepDates').classList.toggle('is-locked', !hasAoi);
   $('#stepLook').classList.toggle('is-locked', !store.dates.length);
+  $('#stepAdjust').classList.toggle('is-locked', !store.image);
   $('#searchDates').disabled = !hasAoi;
   $('#dateEmpty').hidden = store.dates.length > 0 || !hasAoi;
   $('#whenSummary').textContent =
@@ -347,6 +440,7 @@ function sync() {
 
   const tuned = Object.keys(enhancementValues()).length;
   $('#tuningSummary').textContent = tuned ? `${tuned} adjusted` : 'off';
+  $('#adjustReset').disabled = adjust.isNeutral(adjustmentValues());
 
   const scale = mode === 'merge' ? mergeScale(dates.length) : 1;
   const ready = mode === 'merge' ? dates.length > 1 : dates.length === 1;
@@ -370,15 +464,19 @@ function planSummary(dates, scale) {
   if (!dates.length) {
     return mode === 'merge' ? 'Tick the dates you want merged.' : 'Pick a date.';
   }
+  const native = store.config.satellite.resolution;
   const px = `${renderSize() * scale} px`;
-  if (mode === 'single') return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass`;
+  if (mode === 'single') {
+    return `<b>${fmt.date(dates[0].date)}</b> · ${px} · one pass at ${native} m`;
+  }
   if (dates.length < 2) return 'A merge needs at least two dates.';
 
   const steps = store.config.superres_steps ?? [];
   const next = steps.find(([, s]) => s === scale + 1);
   const more = next && scale < (store.config.max_superres ?? 4)
     ? ` · <span class="dim">${next[0]} dates would reach ${next[1]}×</span>` : '';
-  return `<b>${dates.length} dates → ${scale}× detail</b> · ${px}${more}`;
+  return `<b>${dates.length} dates → ${scale}× detail</b> · ${px} · `
+    + `~${(native / scale).toFixed(1)} m from ${native} m data${more}`;
 }
 
 // ── Showing the imagery ────────────────────────────────────────
@@ -417,9 +515,9 @@ async function showImagery() {
     : `Fetching ${fmt.date(dates[0].date)}…`;
   try {
     const data = await withBusy(what, () => api.render(body));
-    await loadImage(data.image);          // decoded before the map is told
+    const element = await loadImage(data.image);   // decoded before the map is told
     lastRequest = body;
-    setImage({ src: data.image, meta: data.meta });
+    setImage({ src: data.image, meta: data.meta, element });
     sync();
     toast(describeResult(data.meta), 'ok');
   } catch (err) {
@@ -427,14 +525,20 @@ async function showImagery() {
   }
 }
 
-/** What came back, in one line: how big, how sharp, how clear. */
+/**
+ * What came back, in one line: how big, how sharp, how clear.
+ *
+ * Pixel size is deliberately not the headline. A small area rendered at 2048 px
+ * has half-metre pixels and still cannot show anything Sentinel-2 did not see,
+ * so what gets reported is the resolution the imagery actually has.
+ */
 function describeResult(meta) {
-  const size = `${meta.grid.width}×${meta.grid.height} px at ${meta.grid.ground_res_m} m/px`;
+  const size = `${meta.grid.width}×${meta.grid.height} px · ~${meta.effective_res_m} m detail`;
   const sr = meta.superres;
   if (!sr) return `${fmt.date(meta.scene.date)} — ${size}`;
 
   const bits = [`${sr.scale}× merge of ${sr.scenes} dates — ${size}`];
-  if (sr.sharpness_gain_pct > 0) bits.push(`+${sr.sharpness_gain_pct}% detail`);
+  if (sr.sharpness_gain_pct > 0) bits.push(`+${sr.sharpness_gain_pct}% sharper`);
   else bits.push('no detail gained — try dates closer together');
   if (sr.noise_drop_pct > 0) bits.push(`${sr.noise_drop_pct}% less noise`);
   const clear = meta.composite_report?.combined_pct;
@@ -444,14 +548,24 @@ function describeResult(meta) {
 
 async function downloadImagery(format) {
   if (!lastRequest) return;
+  const ext = format === 'geotiff' ? 'tif' : 'png';
+  const when = lastRequest.scenes?.length
+    ? `${lastRequest.scenes.length}dates_${lastRequest.scene.date}`
+    : lastRequest.scene.date;
+  const name = `sentinel2_${when}_${lastRequest.index ?? lastRequest.preset}.${ext}`;
+
   try {
+    // The PNG is what you are looking at, at full size, adjustments included.
+    // The GeoTIFF is the measurement, so it goes out as the satellite had it.
+    if (format === 'png' && store.image?.element) {
+      const canvas = adjust.renderToCanvas(store.image.element, adjustmentValues());
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      download(blob, name);
+      return;
+    }
     const blob = await withBusy('Preparing the file…', () =>
       api.renderFile({ ...lastRequest, format }));
-    const ext = format === 'geotiff' ? 'tif' : 'png';
-    const when = lastRequest.scenes?.length
-      ? `${lastRequest.scenes.length}dates_${lastRequest.scene.date}`
-      : lastRequest.scene.date;
-    download(blob, `sentinel2_${when}_${lastRequest.index ?? lastRequest.preset}.${ext}`);
+    download(blob, name);
   } catch (err) {
     toast(`Download failed: ${err.message}`, 'err');
   }

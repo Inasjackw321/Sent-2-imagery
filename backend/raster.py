@@ -22,7 +22,25 @@ class BandReadError(RuntimeError):
     pass
 
 
-def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = False):
+def sampling_for(grid: Grid, merging: bool) -> Resampling:
+    """How to land the satellite's pixels on the output grid.
+
+    The choice matters more than it looks. Going the other way -- a wide area
+    on a coarse grid -- neighbouring pixels must be averaged or the result
+    aliases. Zoomed in, they must not be: a merge recovers detail from the
+    sub-pixel differences between dates, and interpolating each date on the way
+    in smooths away the very differences it is about to solve for. Nearest
+    keeps every date's measurements exactly where the satellite made them, and
+    the fusion does the rest. For one date there is nothing to fuse, so cubic
+    gives the smoothest honest enlargement.
+    """
+    if grid.ground_res_m >= config.SATELLITE["resolution"]:
+        return Resampling.bilinear                  # downsampling: average
+    return Resampling.nearest if merging else Resampling.cubic
+
+
+def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = False,
+               merging: bool = False):
     """Return {band: masked float32 array} on the grid, as reflectance.
 
     Each band is read only over the area asked for, straight out of the
@@ -31,6 +49,7 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
     fraction of pixels dropped by cloud masking comes back alongside.
     """
     bands = list(dict.fromkeys(bands))
+    sampling = sampling_for(grid, merging)
 
     if scene.get("demo"):
         return _demo_bands(scene, grid, bands, mask_clouds)
@@ -50,10 +69,11 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
 
     with rasterio.Env(**config.GDAL_ENV):
         with ThreadPoolExecutor(max_workers=min(8, len(targets) + 1)) as pool:
-            futures = {band: pool.submit(_read_one, href, grid, False)
+            futures = {band: pool.submit(_read_one, href, grid, sampling)
                        for band, href in targets.items()}
+            # Classes must never be averaged with their neighbours.
             mask_future = (pool.submit(_read_one, scene["assets"][config.SCL_ASSET],
-                                       grid, True) if want_mask else None)
+                                       grid, Resampling.nearest) if want_mask else None)
 
             out = {band: _to_reflectance(fut.result(), scene)
                    for band, fut in futures.items()}
@@ -70,9 +90,7 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
     return out, cloud_fraction
 
 
-def _read_one(href: str, grid: Grid, categorical: bool):
-    # Classes must not be averaged with their neighbours; reflectance should be.
-    resampling = Resampling.nearest if categorical else Resampling.bilinear
+def _read_one(href: str, grid: Grid, resampling: Resampling):
     try:
         with rasterio.open(href) as src:
             nodata = 0 if src.nodata is None else src.nodata
