@@ -57,8 +57,9 @@ const ADJUST_SPECS = [
 // Starting points that suit different jobs.
 const ENHANCE_PRESETS = {
   Off: {},
-  Balanced: { haze_removal: 0.8, adaptive_contrast: 1.5, sharpen: 0.25, vibrance: 0.2 },
-  Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.5, vibrance: 0.45 },
+  Balanced: { haze_removal: 0.8, adaptive_contrast: 1.8, sharpen: 0.45, vibrance: 0.2 },
+  Punchy: { haze_removal: 1, adaptive_contrast: 3, sharpen: 0.7, vibrance: 0.45 },
+  Detail: { haze_removal: 0.9, adaptive_contrast: 2.5, sharpen: 0.9, vibrance: 0.15 },
   Hazy_day: { haze_removal: 1, adaptive_contrast: 2, white_balance: 0.6, sharpen: 0.3 },
   Natural: { haze_removal: 0.5, white_balance: 0.35 },
 };

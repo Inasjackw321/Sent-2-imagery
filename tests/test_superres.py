@@ -311,6 +311,55 @@ def test_a_thin_stack_is_reported_as_under_supported():
     assert report["well_supported"] is False
 
 
+def test_merging_reads_the_dates_without_smoothing_them_first():
+    """The whole gain lives in the differences between dates.
+
+    Interpolating each date on the way onto the fine grid averages neighbouring
+    measurements together, which is exactly the sub-pixel information the merge
+    exists to recover -- measured against known ground truth, reading them
+    interpolated instead of as measured throws away more than half of it. So a
+    merge samples nearest, and a single date, having nothing to fuse with, gets
+    the smoother enlargement instead.
+    """
+    from rasterio.enums import Resampling
+
+    from backend import raster
+
+    fine = Grid((-0.1, 51.4, -0.09, 51.41), 512)          # well finer than 10 m
+    assert fine.ground_res_m < 10
+    assert raster.sampling_for(fine, merging=True) == Resampling.nearest
+    assert raster.sampling_for(fine, merging=False) == Resampling.cubic
+
+    # A wide area lands on a grid coarser than the satellite, where neighbours
+    # must be averaged instead or the result aliases.
+    coarse = Grid((-2.0, 51.0, 2.0, 53.0), 256)
+    assert coarse.ground_res_m > 10
+    assert raster.sampling_for(coarse, merging=True) == Resampling.bilinear
+
+
+def test_the_merge_resolves_more_ground_than_one_date(dates, aoi):
+    """The claim the whole feature rests on, through the real reader."""
+    from backend.geo import geometry_bounds
+
+    grid = Grid(geometry_bounds(aoi), 256).refined(2)
+    request = {"aoi": aoi, "mask_clouds": False}
+    single = service.load_bands(dates[0], aoi, grid, ["red"], request, merging=False)[0]
+    stacks = [service.load_bands(d, aoi, grid, ["red"], request, merging=True)[0]
+              for d in dates]
+    merged, report = superres.fuse(stacks, scale=2)
+
+    inner = (slice(24, -24), slice(24, -24))
+
+    def fine_detail(band):
+        data = np.ma.filled(band, 0.0)
+        return float(np.std((data - ndimage.gaussian_filter(data, 2))[inner]))
+
+    # A third more fine structure than the same ground on one date, and the
+    # report says so rather than claiming something the pixels do not show.
+    assert fine_detail(merged["red"]) > fine_detail(single["red"]) * 1.3
+    assert report["sharpness_gain_pct"] > 10
+
+
 # ── Grid and clamping ──────────────────────────────────────────
 
 

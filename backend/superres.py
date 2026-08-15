@@ -248,6 +248,19 @@ def deconvolve(image: np.ndarray, sigma: float, amount: float = 0.75,
 # ── Measuring whether it worked ────────────────────────────────
 
 
+def _as_seen(image: np.ndarray, scale: float) -> np.ndarray:
+    """One date as a person would actually see it, enlarged to the fine grid.
+
+    The dates arrive here sampled nearest, so each native measurement sits in
+    a solid block of fine pixels. Those block edges are an artefact of the
+    sampling, not detail, and measuring against them would flatter or flatten
+    the result depending on nothing but the scale factor. Softening the blocks
+    back to what an ordinary enlargement of one date looks like is what makes
+    the comparison like for like.
+    """
+    return ndimage.uniform_filter(image, max(int(round(scale)), 1))
+
+
 def _fill(band: MaskedArray) -> tuple[np.ndarray, np.ndarray]:
     """A plain array plus its validity, with holes filled at the mean.
 
@@ -373,8 +386,11 @@ def fuse(stacks: list[dict[str, MaskedArray]], scale: int = 2,
     if not where.any():
         where = ref_valid & fused_valid
 
+    # Sharpness is judged against one date as a person would see it enlarged,
+    # so the comparison is like for like. Noise is judged against that date as
+    # measured: smoothing it first would remove the very thing being counted.
     window = 2 * int(scale) + 1
-    ref_sharp = _sharpness(ref_guide, float(scale), where)
+    ref_sharp = _sharpness(_as_seen(ref_guide, scale), float(scale), where)
     out_sharp = _sharpness(fused_guide, float(scale), where)
     ref_noise = _noise(ref_guide, window, where)
     out_noise = _noise(stacked_guide, window, where)
