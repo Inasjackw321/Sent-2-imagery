@@ -8,18 +8,21 @@
 <meta property="og:title" content="EarthViewer">
 <meta property="og:description" content="A free way to look at the Earth from orbit — drag the slider and see what merging six passes does.">
 <meta property="og:image" content="assets/paris-city.webp">
+<meta name="theme-color" content="#080a0e">
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <style>
   :root {
-    --bg: #0c0f14;
-    --panel: #141922;
-    --line: #232c3b;
-    --ink: #eef2f8;
-    --dim: #93a1b8;
-    --faint: #64748b;
-    --accent: #4cc2ff;
-    --accent-2: #37e0a0;
-    --warn: #ffb454;
+    --bg: #080a0e;
+    --raised: rgba(255, 255, 255, .04);
+    --line: rgba(255, 255, 255, .09);
+    --line-lit: rgba(255, 255, 255, .18);
+    --ink: #f3f6fb;
+    --dim: #a6b2c6;
+    --faint: #6d7b91;
+    --accent: #58c9ff;
+    --accent-2: #3ee39f;
+    --warn: #ffc061;
+    --radius: 16px;
   }
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
@@ -27,47 +30,112 @@
     margin: 0;
     background: var(--bg);
     color: var(--ink);
-    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
   }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
-  h1, h2 { line-height: 1.15; letter-spacing: -0.02em; margin: 0; }
-  h1 { font-size: clamp(38px, 7vw, 66px); font-weight: 700; }
-  h2 { font-size: clamp(24px, 3.6vw, 34px); font-weight: 650; }
-  p { margin: 14px 0 0; }
-  a { color: var(--accent); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding-inline: 24px; }
 
-  /* ── Header ─────────────────────────────────────────────── */
-  header { padding: 68px 0 34px; text-align: center; }
-  .logo { width: 76px; height: 76px; display: block; margin: 0 auto 14px; }
-  .lede { max-width: 620px; margin: 18px auto 0; font-size: clamp(17px, 2.1vw, 20px); color: var(--dim); }
-  .cta { margin-top: 28px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-  .btn {
-    display: inline-block; padding: 11px 20px; border-radius: 999px;
-    font-size: 15px; font-weight: 600; text-decoration: none;
-    background: var(--accent); color: #05121c; border: 1px solid var(--accent);
+  h1, h2, h3 { line-height: 1.1; margin: 0; }
+  h1 { font-size: clamp(46px, 8.5vw, 88px); font-weight: 760; letter-spacing: -.037em; }
+  h2 { font-size: clamp(27px, 4vw, 40px); font-weight: 680; letter-spacing: -.027em; }
+  p { margin: 15px 0 0; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  em { color: var(--ink); font-style: italic; }
+
+  /* The heading is lit from above, which is a small thing that does a lot of
+     work on a page that is otherwise flat dark. Guarded, because unsupported
+     background-clip plus transparent text is an invisible headline. */
+  @supports (-webkit-background-clip: text) or (background-clip: text) {
+    h1 {
+      background: linear-gradient(176deg, #ffffff 18%, #a9bcd4 96%);
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent;
+    }
   }
-  .btn.ghost { background: transparent; color: var(--accent); }
-  .btn:hover { filter: brightness(1.12); }
+
+  /* ── The bar that arrives once the hero is behind you ────── */
+  .topbar {
+    position: fixed; inset: 0 0 auto; z-index: 40;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 24px;
+    background: rgba(8, 10, 14, .72); backdrop-filter: blur(14px);
+    border-bottom: 1px solid transparent;
+    opacity: 0; transform: translateY(-101%);
+    transition: opacity .35s ease, transform .35s cubic-bezier(.22,.7,.3,1), border-color .35s;
+  }
+  .topbar.up { opacity: 1; transform: none; border-bottom-color: var(--line); }
+  .topbar a { color: var(--ink); text-decoration: none; font-size: 14.5px; font-weight: 600; }
+  .topbar .home { display: flex; align-items: center; gap: 9px; letter-spacing: -.01em; }
+  .topbar .home .logo { width: 24px; height: 24px; margin: 0; }
+  .topbar .away { color: var(--dim); font-weight: 550; }
+  .topbar .away:hover { color: var(--ink); }
+
+  /* ── Hero ───────────────────────────────────────────────── */
+  .hero { position: relative; padding: 104px 24px 44px; text-align: center; }
+  .glow {
+    position: absolute; inset: -220px -10% auto -10%; height: 660px;
+    pointer-events: none;
+    background:
+      radial-gradient(46% 62% at 50% 34%, rgba(88, 201, 255, .17), transparent 72%),
+      radial-gradient(34% 50% at 72% 26%, rgba(62, 227, 159, .11), transparent 72%);
+  }
+  .hero-in { position: relative; max-width: 720px; margin: 0 auto; }
+  .logo { width: 74px; height: 74px; display: block; margin: 0 auto 20px; }
+  .lede {
+    max-width: 590px; margin: 20px auto 0; color: var(--dim);
+    font-size: clamp(17px, 2.1vw, 20.5px); line-height: 1.55;
+  }
+  .cta { margin-top: 30px; display: flex; gap: 11px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 22px; border-radius: 999px;
+    font-size: 15px; font-weight: 620; text-decoration: none; letter-spacing: -.005em;
+    background: var(--accent); color: #04121c; border: 1px solid var(--accent);
+    box-shadow: 0 10px 34px -14px rgba(88, 201, 255, .85);
+    transition: transform .2s, box-shadow .2s, background .2s;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 16px 40px -14px rgba(88, 201, 255, .95); }
+  .btn.ghost {
+    background: transparent; color: var(--ink);
+    border-color: var(--line-lit); box-shadow: none;
+  }
+  .btn.ghost:hover { border-color: var(--ink); background: rgba(255,255,255,.04); }
+
+  /* ── The opening picture, edge to edge ──────────────────── */
+  .shot { margin: 18px 0 0; position: relative; }
+  .shot-frame { position: relative; }
+  .shot img {
+    display: block; width: 100%; height: clamp(280px, 52vh, 540px); object-fit: cover;
+  }
+  /* Faded into the page on every side rather than sitting in a box: the
+     picture becomes the page instead of an illustration on it. */
+  .shot-frame::after {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background:
+      linear-gradient(to bottom, var(--bg), transparent 26%, transparent 58%, var(--bg)),
+      linear-gradient(to right, var(--bg), transparent 14%, transparent 86%, var(--bg));
+  }
+  .shot figcaption { margin-top: 2px; }
 
   /* ── Sections ───────────────────────────────────────────── */
-  section { padding: 54px 0; border-top: 1px solid var(--line); }
+  section { padding-block: 92px; border-top: 1px solid var(--line); scroll-margin-top: 72px; }
   section:first-of-type { border-top: 0; }
   .kicker {
-    font-size: 12px; font-weight: 650; letter-spacing: .12em;
-    text-transform: uppercase; color: var(--faint); margin-bottom: 10px;
+    font-size: 11.5px; font-weight: 680; letter-spacing: .15em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 13px;
   }
-  .note { color: var(--dim); max-width: 660px; font-size: 15.5px; }
-  .fine { color: var(--faint); font-size: 13px; margin-top: 12px; }
-  figcaption { color: var(--faint); font-size: 13px; margin-top: 10px; }
+  .note { color: var(--dim); max-width: 640px; font-size: 16.5px; }
+  .fine { color: var(--faint); font-size: 13.5px; line-height: 1.6; margin-top: 16px; max-width: 760px; }
+  figcaption { color: var(--faint); font-size: 13.5px; margin-top: 12px; }
 
   /* ── The slider ─────────────────────────────────────────── */
   .slide {
     --at: 50%;
-    position: relative; margin-top: 24px; overflow: hidden;
-    border-radius: 12px; border: 1px solid var(--line);
-    background: #0a0d12; touch-action: none; user-select: none;
-    cursor: ew-resize;
+    position: relative; margin-top: 30px; overflow: hidden;
+    border-radius: var(--radius); border: 1px solid var(--line);
+    background: #06080b; touch-action: none; user-select: none; cursor: ew-resize;
+    box-shadow: 0 30px 70px -40px rgba(0, 0, 0, 1);
   }
   /* The images take no pointer events of their own: otherwise pressing on one
      starts the browser's native image drag, which swallows every pointermove
@@ -80,72 +148,99 @@
   .slide img.over { position: relative; clip-path: inset(0 calc(100% - var(--at)) 0 0); }
   .slide-bar {
     position: absolute; top: 0; bottom: 0; left: var(--at);
-    width: 2px; margin-left: -1px; background: #fff; opacity: .9;
-    pointer-events: none;
+    width: 2px; margin-left: -1px; pointer-events: none;
+    background: rgba(255, 255, 255, .92); box-shadow: 0 0 18px rgba(0, 0, 0, .7);
   }
   .slide-grip {
     pointer-events: auto;
     position: absolute; top: 50%; left: var(--at);
-    width: 42px; height: 42px; margin: -21px 0 0 -21px;
+    width: 46px; height: 46px; margin: -23px 0 0 -23px;
     display: grid; place-items: center; border-radius: 50%;
-    background: rgba(10,13,18,.9); border: 2px solid #fff; color: #fff;
-    font-size: 15px; box-shadow: 0 4px 18px rgba(0,0,0,.6);
+    background: rgba(8, 11, 16, .86); backdrop-filter: blur(6px);
+    border: 2px solid #fff; color: #fff; font-size: 16px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .75);
+    transition: transform .18s;
   }
+  .slide:hover .slide-grip { transform: scale(1.06); }
   .slide-grip:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   .tag {
-    position: absolute; top: 12px; padding: 5px 11px; border-radius: 999px;
-    font-size: 12px; font-weight: 600; letter-spacing: .02em;
-    background: rgba(10,13,18,.82); border: 1px solid rgba(255,255,255,.22);
-    pointer-events: none; backdrop-filter: blur(4px);
+    position: absolute; top: 14px; padding: 6px 12px; border-radius: 999px;
+    font-size: 12px; font-weight: 620; letter-spacing: .01em;
+    background: rgba(8, 11, 16, .74); border: 1px solid rgba(255, 255, 255, .2);
+    pointer-events: none; backdrop-filter: blur(6px);
   }
-  .tag.left { left: 12px; }
-  .tag.right { right: 12px; }
+  .tag.left { left: 14px; }
+  .tag.right { right: 14px; }
 
   /* ── Numbers ────────────────────────────────────────────── */
-  .figures { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 22px; }
-  .figures div { min-width: 150px; }
+  .figures {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    gap: 4px 28px; margin-top: 32px; border-top: 1px solid var(--line);
+  }
+  .figures div { padding-top: 20px; }
+  .figures b {
+    display: block; font-size: 36px; font-weight: 720; letter-spacing: -.03em;
+    color: var(--accent); font-variant-numeric: tabular-nums; line-height: 1.1;
+  }
+  .figures span { display: block; margin-top: 4px; font-size: 13.5px; color: var(--faint); }
   .tag-soft { color: var(--warn); }
   .tag-sharp { color: var(--accent-2); }
-  .figures b { display: block; font-size: 27px; font-weight: 700; color: var(--accent); }
-  .figures span { font-size: 13.5px; color: var(--faint); }
 
-  /* ── Gallery ────────────────────────────────────────────── */
-  .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 24px; }
+  /* ── Pictures ───────────────────────────────────────────── */
+  .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 30px; }
   .gallery figure { margin: 0; }
   .gallery img {
     display: block; width: 100%; height: auto;
-    border-radius: 10px; border: 1px solid var(--line);
+    border-radius: 12px; border: 1px solid var(--line);
   }
   /* Two frames of different shapes, put on one line: matching their height is
      what lets the eye compare them instead of measuring them. */
   .gallery.compare img { aspect-ratio: 4 / 3; object-fit: cover; }
   @media (max-width: 700px) { .gallery { grid-template-columns: 1fr; } }
 
-  /* ── Annotated image ────────────────────────────────────── */
-  .annotated { position: relative; margin-top: 24px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+  .annotated {
+    position: relative; margin: 0; border-radius: 12px; overflow: hidden;
+    border: 1px solid var(--line); box-shadow: 0 30px 70px -44px rgba(0, 0, 0, 1);
+  }
   .annotated img { display: block; width: 100%; height: auto; }
   .annotated svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 
   /* Text beside a tall picture, stacking on a narrow screen. */
-  .split { display: grid; grid-template-columns: 1fr minmax(0, 400px); gap: 36px; align-items: start; margin-top: 24px; }
-  .split .figures { margin-top: 20px; }
-  .split .annotated { margin-top: 0; }
+  .split {
+    display: grid; grid-template-columns: 1fr minmax(0, 400px);
+    gap: 40px; align-items: start; margin-top: 30px;
+  }
+  .split .note:first-child { margin-top: 0; }
   @media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
 
-  /* ── Feature list ───────────────────────────────────────── */
-  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 26px; }
-  .feature {
-    padding: 18px; border-radius: 11px;
-    background: var(--panel); border: 1px solid var(--line);
+  /* ── Cards ──────────────────────────────────────────────── */
+  .features {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 16px; margin-top: 30px;
   }
-  .feature h3 { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
-  .feature p { margin: 0; font-size: 14px; color: var(--dim); line-height: 1.55; }
+  .feature {
+    position: relative; padding: 22px; border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.014));
+    border: 1px solid var(--line);
+    transition: transform .22s ease, border-color .22s ease;
+  }
+  /* A hairline of light along the top edge, the way a real surface catches it. */
+  .feature::before {
+    content: ''; position: absolute; inset: 0 0 auto; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,.26), transparent);
+  }
+  .feature:hover { transform: translateY(-3px); border-color: var(--line-lit); }
+  .feature h3 { margin-bottom: 8px; font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+  .feature p { margin: 0; font-size: 14.5px; color: var(--dim); line-height: 1.6; }
 
   pre {
-    margin-top: 18px; padding: 15px 17px; overflow-x: auto;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    font: 13.5px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
+    margin-top: 22px; padding: 18px 20px; overflow-x: auto;
+    background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.014));
+    border: 1px solid var(--line); border-radius: var(--radius);
+    font: 13.5px/1.85 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
   }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; color: var(--ink); }
+
   /* ── Arriving on scroll ─────────────────────────────────── */
   .reveal {
     opacity: 0; transform: translateY(26px);
@@ -153,12 +248,13 @@
   }
   /* Pictures settle into place rather than sliding: a big image moving a long
      way is distracting, but a slight scale reads as it coming into focus. */
-  figure.reveal, .slide.reveal, .gallery.reveal, .annotated.reveal, .split.reveal {
+  figure.reveal, .slide.reveal, .gallery.reveal, .annotated.reveal,
+  .split.reveal, .features.reveal, .shot.reveal {
     transform: translateY(18px) scale(.988);
   }
   .reveal.shown { opacity: 1; transform: none; }
   .logo { transition: transform .9s cubic-bezier(.22,.7,.3,1); }
-  .reveal .logo, .reveal.logo { transform: rotate(-18deg) scale(.92); }
+  .reveal .logo, .reveal.logo { transform: rotate(-18deg) scale(.9); }
   .shown .logo, .shown.logo { transform: none; }
   .reveal:nth-child(2) { transition-delay: .07s; }
   .reveal:nth-child(3) { transition-delay: .14s; }
@@ -167,43 +263,57 @@
      still gets the whole page. */
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
-    .reveal { opacity: 1; transform: none; transition: none; }
+    .reveal, .logo, .feature, .btn { transition: none; }
+    .reveal { opacity: 1; transform: none; }
   }
 
   #progress {
-    position: fixed; top: 0; left: 0; height: 2px; width: 0;
-    background: var(--accent); z-index: 50; transition: width .1s linear;
+    position: fixed; top: 0; left: 0; height: 2px; width: 0; z-index: 60;
+    background: linear-gradient(90deg, var(--accent-2), var(--accent));
+    transition: width .1s linear;
   }
 
-  footer { padding: 44px 0 66px; border-top: 1px solid var(--line); color: var(--faint); font-size: 13.5px; }
+  footer {
+    padding-block: 56px 84px; border-top: 1px solid var(--line);
+    color: var(--faint); font-size: 13.5px; line-height: 1.7;
+  }
+  footer .logo { width: 30px; height: 30px; margin: 0 0 18px; }
   footer a { color: var(--dim); }
 </style>
 </head>
 <body>
 <div id="progress"></div>
 
-<div class="wrap">
+<nav class="topbar" id="topbar">
+  <a class="home" href="#top">
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="g-nav"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#g-nav)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
+    EarthViewer
+  </a>
+  <a class="away" href="https://github.com/Inasjackw321/Sent-2-imagery">GitHub</a>
+</nav>
 
-<header>
-  <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="globe"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#37e0a0" stroke-width="9.5" fill="none" clip-path="url(#globe)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#4cc2ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#4cc2ff" stroke-width="4"/></svg>
-  <h1>EarthViewer</h1>
-  <p class="lede">A free way to look at the Earth from orbit. Pick a place, pick a
-    day — or let six passes be solved into one picture sharper than any of them.</p>
-  <div class="cta">
-    <a class="btn" href="#slide">See what merging does</a>
-    <a class="btn ghost" href="https://github.com/Inasjackw321/Sent-2-imagery">Get it on GitHub</a>
+<header class="hero" id="top">
+  <div class="glow"></div>
+  <div class="hero-in">
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="globe"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#globe)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
+    <h1>EarthViewer</h1>
+    <p class="lede">A free way to look at the Earth from orbit. Pick a place, pick a
+      day — or let six passes be solved into one picture sharper than any of them.</p>
+    <div class="cta">
+      <a class="btn" href="#slide">See what merging does</a>
+      <a class="btn ghost" href="https://github.com/Inasjackw321/Sent-2-imagery">Get it on GitHub</a>
+    </div>
   </div>
 </header>
 
-<section>
-  <figure style="margin:0">
-    <img src="assets/paris-wide.webp" alt="Paris from orbit, showing the boulevards radiating across the Right Bank"
-         style="width:100%;height:auto;border-radius:12px;border:1px solid var(--line)" loading="eager">
-    <figcaption>Paris. Every street, park and rail yard, from space.</figcaption>
-  </figure>
-</section>
+<figure class="shot">
+  <div class="shot-frame">
+    <img src="assets/paris-wide.webp" alt="Paris from orbit, showing the boulevards radiating across the Right Bank" loading="eager">
+  </div>
+  <figcaption class="wrap">Paris. Every street, park and rail yard, from space.</figcaption>
+</figure>
 
-<section id="slide">
+<section class="wrap" id="slide">
   <div class="kicker">Drag the handle</div>
   <h2>Six passes, one picture</h2>
   <p class="note">A satellite never samples the same ground twice in exactly the
@@ -234,7 +344,7 @@
     the error against it fell by 16%.</p>
 </section>
 
-<section>
+<section class="wrap">
   <div class="kicker">Drag the handle</div>
   <h2>Colour that stays where the ground put it</h2>
   <p class="note">Brightening a picture by curving red, green and blue separately
@@ -258,7 +368,7 @@
     per-channel drift reaches 21.9°.</p>
 </section>
 
-<section>
+<section class="wrap">
   <div class="kicker">Zoom</div>
   <h2>All the way in</h2>
   <p class="note">The same city at the scale you actually want it: boulevards and
@@ -276,7 +386,7 @@
   </div>
 </section>
 
-<section>
+<section class="wrap">
   <div class="kicker">Why it is worth doing</div>
   <h2>When the detail is not there</h2>
   <p class="note">Not every pass is a good one. The same city, photographed two
@@ -304,7 +414,7 @@
     two ways, drag the handle further up the page.</p>
 </section>
 
-<section>
+<section class="wrap">
   <div class="kicker">What it is for</div>
   <h2>Holes in a hangar roof</h2>
 
@@ -329,9 +439,9 @@
       <img src="assets/roof-holes.jpg" alt="A hangar roof seen from orbit with two dark punctures through the panel, each ringed">
       <svg viewBox="0 0 570 1170" preserveAspectRatio="none" aria-hidden="true">
         <style>
-          .ring { fill: none; stroke: #ffd166; stroke-width: 4;
+          .ring { fill: none; stroke: #ffc061; stroke-width: 4;
                   filter: drop-shadow(0 1px 4px rgba(0,0,0,.9)); }
-          .num  { fill: #ffd166; font: 700 34px ui-sans-serif, system-ui, sans-serif;
+          .num  { fill: #ffc061; font: 700 34px ui-sans-serif, system-ui, sans-serif;
                   stroke: rgba(6,9,13,.9); stroke-width: 5; paint-order: stroke fill; }
         </style>
         <circle class="ring" cx="291" cy="531" r="58"/>
@@ -344,7 +454,7 @@
   <figcaption>The rings are the only thing added. Everything inside them is in the pixels.</figcaption>
 </section>
 
-<section>
+<section class="wrap">
   <div class="kicker">Also on the map</div>
   <h2>More than a picture</h2>
   <div class="features">
@@ -381,7 +491,7 @@
   </div>
 </section>
 
-<section>
+<section class="wrap">
   <div class="kicker">Free, and no account</div>
   <h2>Run it</h2>
   <p class="note">One Python file. It installs what it needs on first run and opens
@@ -393,7 +503,8 @@ python app.py</pre>
   <p class="fine">Add <code>--demo</code> to explore it offline with synthetic imagery.</p>
 </section>
 
-<footer>
+<footer class="wrap">
+  <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="g-foot"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#g-foot)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
   <p>EarthViewer is built on free, public data: Copernicus Sentinel-1 and
     Sentinel-2, NASA GIBS and NASA FIRMS. Sentinel imagery contains modified
     Copernicus Sentinel data.</p>
@@ -401,12 +512,10 @@ python app.py</pre>
     <a href="https://github.com/Inasjackw321/Sent-2-imagery">Source on GitHub</a>.</p>
 </footer>
 
-</div>
-
 <script>
 // The compare slider. One behaviour, applied to every [data-slide] on the page:
-// point at it or drag it to move the divider, and arrow keys nudge it once it
-// has focus, so it works without a mouse.
+// drag it to move the divider, and arrow keys nudge it once it has focus, so it
+// works without a mouse.
 for (const slide of document.querySelectorAll('[data-slide]')) {
   const grip = slide.querySelector('.slide-grip');
   let dragging = false;
@@ -449,10 +558,9 @@ for (const slide of document.querySelectorAll('[data-slide]')) {
 
 // Sections arrive as you reach them. Everything is visible to begin with and
 // only hidden once this runs, so the page still reads with JavaScript off.
-const arriving = document.querySelectorAll('section > *, header > *');
-if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  // Leave the page exactly as it is.
-} else {
+const arriving = document.querySelectorAll('section > *, .hero-in > *, .shot, footer > *');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (!reduced) {
   for (const node of arriving) node.classList.add('reveal');
   const watcher = new IntersectionObserver((entries) => {
     for (const entry of entries) {
@@ -481,11 +589,17 @@ if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
   }, { passive: true });
 }
 
-// How far down the page you are.
-const bar = document.getElementById('progress');
+// How far down the page you are, and the bar that appears once the hero is
+// behind you.
+// Not named `top`: that is a read-only property of window, and declaring a
+// const over it is a syntax error that takes the whole script down with it.
+const progressBar = document.getElementById('progress');
+const stickyBar = document.getElementById('topbar');
+const hero = document.querySelector('.hero');
 const track = () => {
-  const run = document.documentElement.scrollHeight - window.innerHeight;
-  bar.style.width = `${run > 0 ? (window.scrollY / run) * 100 : 0}%`;
+  const run = document.documentElement.scrollHeight - innerHeight;
+  progressBar.style.width = `${run > 0 ? (scrollY / run) * 100 : 0}%`;
+  stickyBar.classList.toggle('up', scrollY > hero.offsetHeight * 0.8);
 };
 addEventListener('scroll', track, { passive: true });
 addEventListener('resize', track);
