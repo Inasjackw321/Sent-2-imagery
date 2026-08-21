@@ -1,7 +1,7 @@
 {
   "id": "sent-2-imagery",
-  "name": "Sent-2 \u00b7 Sentinel-2 imagery",
-  "short_name": "Sent-2",
+  "name": "EarthViewer \u00b7 Sentinel-1 and Sentinel-2 imagery",
+  "short_name": "EarthViewer",
   "description": "Look at any place on Earth in free Sentinel-2 satellite imagery, merged from several dates into one sharper, cloud-free picture.",
   "start_url": "/",
   "scope": "/",

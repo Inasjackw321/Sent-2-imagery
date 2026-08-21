@@ -48,7 +48,7 @@ function wireInstallButton() {
 
   window.addEventListener('appinstalled', () => {
     button.hidden = true;
-    toast('Installed — you can now open Sent-2 from your desktop.', 'ok');
+    toast('Installed — you can now open EarthViewer from your desktop.', 'ok');
   });
 }
 

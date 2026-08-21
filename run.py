@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the Sent-2 imagery studio.
+"""Start EarthViewer.
 
     python run.py                     # open as an app window
     python run.py --demo              # synthetic imagery, works offline
@@ -18,7 +18,7 @@ import threading
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Sent-2 imagery studio",
+        description="EarthViewer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("\n", 2)[2],
     )

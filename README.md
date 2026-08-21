@@ -1,4 +1,6 @@
-# Sent-2 · Sentinel imagery
+# EarthViewer
+
+*A free way to look at the Earth from orbit.*
 
 Look at any place on Earth in free Sentinel imagery — and, because one pass is
 never the best picture available, merge several dates into one that is sharper
@@ -25,7 +27,7 @@ python app.py
 ```
 
 That's it — `app.py` installs anything missing on first run, starts the local
-engine and opens Sent-2 in a desktop window. No account, no API key, no
+engine and opens EarthViewer in a desktop window. No account, no API key, no
 terminal needed afterwards. Add `--demo` to explore the interface offline with
 synthetic imagery (see [Demo mode](#demo-mode)).
 
@@ -42,13 +44,13 @@ Windows — they set up a private `.venv` on first run.
 python app.py --install-shortcut
 ```
 
-- macOS — a real `Sent-2.app` in `~/Applications`, with its own icon, ready to
+- macOS — a real `EarthViewer.app` in `~/Applications`, with its own icon, ready to
   drag to the Dock
 - Windows — shortcuts on the Desktop and in the Start menu, launched via
   `pythonw` so no console window appears
 - Linux — a `.desktop` entry in your applications menu
 
-**Install from the browser.** Sent-2 is also a progressive web app: open it in
+**Install from the browser.** EarthViewer is also a progressive web app: open it in
 a tab and use the **Install app** button in the header. You get a dock/taskbar
 icon and a standalone window, and the interface is cached so it starts
 instantly — and still opens if you're offline.
@@ -72,8 +74,7 @@ the running copy up instead of starting another. Closing the window quits.
 
 ## The satellites
 
-**Sentinel-2** is the reason the app is called Sent-2 — the best free optical
-imagery there is. **Sentinel-1** is what you turn to when Sentinel-2 cannot
+**Sentinel-2** is the workhorse — the best free optical imagery there is. **Sentinel-1** is what you turn to when Sentinel-2 cannot
 help: it is radar, so cloud, smoke and darkness make no difference to it.
 
 | | Sentinel-2 | Sentinel-1 |
@@ -316,7 +317,7 @@ much sharper it reads, how much of the noise went, and how much of the frame
 came out clear: *"3× merge of 6 dates — 1536×1116 px · ~3.3 m detail · +31%
 sharper · 12% less noise · 100% clear"*.
 
-**Pixel size is not resolution, and Sent-2 will not pretend otherwise.** Ask
+**Pixel size is not resolution, and EarthViewer will not pretend otherwise.** Ask
 for a small area at 2048 px and the pixels come out under a metre across — but
 they are interpolated from 10 m data and cannot show anything Sentinel-2 did
 not see. So the figure reported is the honest one: the satellite's 10 m divided
@@ -749,7 +750,7 @@ day.
 Python 3.10+. Everything else installs itself on first run: `rasterio` ships
 GDAL in its wheels, and `pywebview` uses the window toolkit your OS already has
 (WebView2 on Windows, WebKit on macOS, GTK or Qt on Linux). If no native
-toolkit is available Sent-2 falls back to a chrome-less browser window.
+toolkit is available EarthViewer falls back to a chrome-less browser window.
 
 Internet access is needed for imagery, map tiles, place search, overpass
 prediction and fire data — but not in `--demo` mode.

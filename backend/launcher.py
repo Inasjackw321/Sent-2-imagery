@@ -1,4 +1,4 @@
-"""Opening Sent-2 as a desktop app: port selection, app windows, shortcuts."""
+"""Opening EarthViewer as a desktop app: port selection, app windows, shortcuts."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-APP_NAME = "Sent-2"
+APP_NAME = "EarthViewer"
 APP_ID = "sent-2-imagery"
 
 
