@@ -220,9 +220,6 @@
     display: block; width: 100%; height: auto;
     border-radius: 12px; border: 1px solid var(--line);
   }
-  /* Two frames of different shapes, put on one line: matching their height is
-     what lets the eye compare them instead of measuring them. */
-  .gallery.compare img { aspect-ratio: 4 / 3; object-fit: cover; }
   @media (max-width: 700px) { .gallery { grid-template-columns: 1fr; } }
 
   .annotated {
@@ -231,6 +228,17 @@
   }
   .annotated img { display: block; width: 100%; height: auto; }
   .annotated svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* The flagship pair: one frame above the other at full column width, so the
+     magnification between them is read as a step down into the same ground
+     rather than as two pictures being weighed against each other. */
+  .wide-figure { margin: 30px 0 0; }
+  .wide-figure + figcaption { margin-bottom: 6px; }
+  .wide-figure.plain {
+    border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+    box-shadow: 0 30px 70px -44px rgba(0, 0, 0, 1);
+  }
+  .wide-figure.plain img { display: block; width: 100%; height: auto; }
 
   /* Text beside a tall picture, stacking on a narrow screen. */
   .split {
@@ -373,6 +381,54 @@
   </div>
 </section>
 
+<section class="wrap" id="example">
+  <div class="kicker">The prime example</div>
+  <h2>Zoom past what the data holds</h2>
+  <p class="note">Heathrow, and the whole case for applied-view in two frames. The
+    first is the airport at a scale its detail supports: terminals, stands, every
+    aircraft on them. The second is the boxed part of it, magnified four times —
+    the same data, asked for more than it has. Nothing is wrong with that second
+    frame. It has simply run out.</p>
+
+  <figure class="annotated wide-figure">
+    <img src="assets/heathrow-wide.webp" alt="Heathrow from orbit: two runways, the terminal piers and aircraft on every stand" loading="lazy">
+    <svg viewBox="0 0 1359 762" preserveAspectRatio="none" aria-hidden="true">
+      <style>
+        .box { fill: none; stroke: #ffc061; stroke-width: 3;
+               filter: drop-shadow(0 1px 4px rgba(0,0,0,.9)); }
+      </style>
+      <rect class="box" x="208" y="356" width="280" height="145" rx="3"/>
+    </svg>
+  </figure>
+  <figcaption><span class="chip">Applied-view</span>The airport at a scale its
+    detail supports. The box is the ground shown below.</figcaption>
+
+  <figure class="wide-figure plain">
+    <img src="assets/heathrow-close.webp" alt="The boxed terminal area magnified four times: aircraft and piers smeared, edges ringing" loading="lazy">
+  </figure>
+  <figcaption><b class="tag-soft">Four times in, no layer applied</b> — the same
+    ground, magnified past what the free pass holds: piers smear, aircraft bloom,
+    edges ring.</figcaption>
+
+  <div class="figures">
+    <div><b>4&times;</b><span>magnification between the two frames</span></div>
+    <div><b>0.995</b><span>match confirming it is the same ground</span></div>
+    <div><b>0%</b><span>detail lost — there was never more to show</span></div>
+  </div>
+  <p class="fine">Worth being exact about, because the obvious reading is wrong. The
+    lower frame is not worse imagery. Located inside the upper one by cross-correlation
+    — 0.995 against 0.783 for the next-best position, so the pairing is certain rather
+    than asserted — and then measured at the <em>same ground scale</em>, the two carry
+    the same fine structure: 0.251 for the wide frame against 0.255 for the magnified
+    one, and that holds at every filter width tested. The magnified frame has four
+    times the pixels and no more information to put in them.</p>
+  <p class="fine">That is the gap applied-view fills, and it is worth saying what it
+    does not do. It cannot recover what the pass never recorded. It substitutes
+    existing high-detail imagery of the same ground, so that zooming in keeps
+    returning something true to the place — but what comes back is the existing
+    layer's record of it, not the new pass's.</p>
+</section>
+
 <section class="wrap" id="slide">
   <div class="kicker">Drag the handle</div>
   <h2>Six passes, one picture</h2>
@@ -455,38 +511,6 @@
       <figcaption><span class="chip">Applied-view</span>Close — courtyards, street trees, vehicles.</figcaption>
     </figure>
   </div>
-</section>
-
-<section class="wrap">
-  <div class="kicker">Why it is worth doing</div>
-  <h2>When the detail is not there</h2>
-  <p class="note">This is the difference applied-view exists to close. On the left,
-    a frame with no existing high-detail layer to draw on — the free pass on its
-    own, blocks and roads and no more. On the right, the same kind of ground with
-    that layer applied. The gap between them is not the satellite doing better; it
-    is the second source being there.</p>
-
-  <div class="gallery compare">
-    <figure>
-      <img src="assets/paris-soft.webp" alt="A soft, low-detail frame of Paris where individual buildings cannot be made out" loading="lazy">
-      <figcaption><b class="tag-soft">No layer applied</b> — the free pass alone: blocks and roads, and no more than that.</figcaption>
-    </figure>
-    <figure>
-      <img src="assets/paris-close.webp" alt="A sharp frame of Paris with individual buildings, street trees and vehicles" loading="lazy">
-      <figcaption><b class="tag-sharp">Applied-view</b> — existing detail laid over it: courtyards, street trees, vehicles.</figcaption>
-    </figure>
-  </div>
-
-  <div class="figures">
-    <div><b>6.6&times;</b><span>more fine structure once the layer is applied</span></div>
-  </div>
-  <p class="fine">Measured as fine structure against coarse, which is a ratio and so does
-    not depend on how much ground each frame covers. These are two different parts
-    of Paris, not the same street twice — checked, and they do not overlap, so this
-    is a comparison of quality rather than a before and after. The extra structure is
-    contributed by the existing high-detail layer; it is not detail the free pass
-    recorded and it should not be read as such. For the same ground two ways, drag
-    the handle further up the page.</p>
 </section>
 
 <section class="wrap">

@@ -20,6 +20,19 @@ photograph taken on a stated date. The page says so at each picture rather than
 only once, because a reader who scrolls past the explainer still has to be told
 what they are looking at. Keep that labelling in place when editing the page.
 
+The flagship example is Heathrow, two frames of the same ground:
+
+- `assets/heathrow-wide.webp` — the airport at a scale its detail supports.
+- `assets/heathrow-close.webp` — the boxed part of it magnified 4×.
+
+The pairing is not asserted. The close frame was located inside the wide one
+by normalised cross-correlation: 0.995 at 280×145 px offset (208, 356), against
+0.783 for the next-best position. Measured at the *same ground scale* the two
+carry the same fine structure — 0.251 against 0.255, stable across filter widths
+1.0–3.0 — so the close frame is not worse imagery, it is the same data magnified
+past what it holds. Do not rewrite that section to claim the wide frame resolves
+more; the measurement says otherwise.
+
 Two of the images are generated rather than photographed, and both are made by
 the application's own code so the page shows the real thing:
 
