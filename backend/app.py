@@ -21,7 +21,7 @@ from .raster import BandReadError
 log = logging.getLogger("sent2")
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
-app = FastAPI(title="Sent-2 Imagery", version="1.0.0")
+app = FastAPI(title="EarthViewer", version="1.0.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )

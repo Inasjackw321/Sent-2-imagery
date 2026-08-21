@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sent-2 imagery studio — double-click this file to run it.
+"""EarthViewer — double-click this file to run it.
 
 On first launch it installs anything that is missing, then opens the studio in
 its own desktop window. No terminal needed.
@@ -110,7 +110,7 @@ def main() -> int:
     port = launcher.choose_port(host, port)
     url = f"http://localhost:{port}"
 
-    print(f"\n  Sent-2 imagery studio → {url}")
+    print(f"\n  EarthViewer → {url}")
     print(f"  Imagery: {'SYNTHETIC DEMO DATA' if '--demo' in argv else 'live satellites'}\n")
 
     import uvicorn
