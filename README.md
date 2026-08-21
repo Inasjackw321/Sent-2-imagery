@@ -33,13 +33,36 @@ carry the same fine structure — 0.251 against 0.255, stable across filter widt
 past what it holds. Do not rewrite that section to claim the wide frame resolves
 more; the measurement says otherwise.
 
-Two of the images are generated rather than photographed, and both are made by
-the application's own code so the page shows the real thing:
+Two of the pairs are demonstrations produced by the application's own code, and
+they are applied-view too — the source they start from is existing high-detail
+imagery:
 
 - `assets/merge-one.jpg` / `assets/merge-six.jpg` — one sharp picture of Paris
   sampled coarsely six times with its grid landed a third of a pixel apart, then
-  fused by `backend/superres.py`. Because the original is known, the result is
-  scored against it.
+  fused by `backend/superres.py`. A test of the fusion step on data whose answer
+  is known — not a measurement of what six real passes would give.
 - `assets/tone-old.jpg` / `assets/tone-new.jpg` — the same pixels brightened two
   ways by `backend/composite.py`: each channel curved separately, and the whole
   pixel curved at once.
+
+## Numbers on the page
+
+Only two remain, both in the Heathrow section, and both re-derivable from the
+assets in this repo with the correlation described above.
+
+Several figures were removed rather than carried forward, because they could not
+be reproduced from anything checked in:
+
+- *35% of the detail recovered* and *16% closer to the real ground* (merge
+  section) — these were scored against a ground-truth original that is not in
+  this repo, so there is nothing here to verify them against.
+- *hue drift 2.4° / 0.0° / 21.9°* (tone section) — measuring the two published
+  JPEGs gives a mean difference of 4.6°, not 2.4°, and JPEG chroma subsampling
+  alone perturbs it. The section now argues the point from the arithmetic
+  instead: brightening the whole pixel scales R, G and B by the same factor, so
+  the ratios that define hue are unchanged by construction.
+- *18% darker than the roof around them* (hangar section) — measuring the ringed
+  regions directly gives roughly 58% and 36%, so 18% was wrong whatever it
+  originally referred to. The count of two marks is stated in prose instead.
+
+Do not reintroduce a statistic that cannot be recomputed from this repo.

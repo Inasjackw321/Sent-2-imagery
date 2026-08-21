@@ -71,9 +71,16 @@
   .topbar .home .logo { width: 24px; height: 24px; margin: 0; }
   .topbar .away { color: var(--dim); font-weight: 550; }
   .topbar .away:hover { color: var(--ink); }
+  .topbar .links { display: flex; align-items: center; gap: 22px; }
+  /* The section links are a convenience, not the way out of the page: on a narrow
+     screen they go and the GitHub link stays. */
+  @media (max-width: 720px) { .topbar .hide-sm { display: none; } }
 
   /* ── Hero ───────────────────────────────────────────────── */
-  .hero { position: relative; padding: 104px 24px 44px; text-align: center; }
+  /* overflow-hidden because the glow deliberately reaches past both edges, and
+     without clipping it widens the page and gives a narrow screen a sideways
+     scroll of pure gradient. */
+  .hero { position: relative; overflow: hidden; padding: 104px 24px 44px; text-align: center; }
   .glow {
     position: absolute; inset: -220px -10% auto -10%; height: 660px;
     pointer-events: none;
@@ -268,6 +275,56 @@
   .feature h3 { margin-bottom: 8px; font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
   .feature p { margin: 0; font-size: 14.5px; color: var(--dim); line-height: 1.6; }
 
+  /* ── Numbered steps ─────────────────────────────────────── */
+  .steps { list-style: none; counter-reset: s; margin: 30px 0 0; padding: 0; }
+  .steps li {
+    counter-increment: s; position: relative;
+    padding: 22px 0 22px 62px; border-top: 1px solid var(--line);
+  }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 20px;
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 14px; font-weight: 680; font-variant-numeric: tabular-nums;
+    color: var(--accent); background: rgba(88, 201, 255, .1);
+    border: 1px solid rgba(88, 201, 255, .3);
+  }
+  .steps b { display: block; font-size: 16.5px; font-weight: 650; letter-spacing: -.01em; }
+  .steps span { display: block; margin-top: 5px; color: var(--dim); font-size: 15px; }
+
+  /* ── What the data actually is ──────────────────────────── */
+  .sources { margin-top: 30px; border-top: 1px solid var(--line); }
+  .sources > div {
+    display: grid; grid-template-columns: 190px 1fr; gap: 4px 28px;
+    padding: 20px 0; border-bottom: 1px solid var(--line);
+  }
+  .sources dt { font-weight: 640; letter-spacing: -.01em; }
+  .sources .spec {
+    margin-top: 5px; font-size: 13px; color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .sources dd { margin: 0; color: var(--dim); font-size: 15px; line-height: 1.6; }
+  @media (max-width: 640px) { .sources > div { grid-template-columns: 1fr; } }
+
+  /* ── Questions ──────────────────────────────────────────── */
+  .faq { margin-top: 30px; border-top: 1px solid var(--line); }
+  .faq details { border-bottom: 1px solid var(--line); }
+  .faq summary {
+    cursor: pointer; padding: 19px 34px 19px 0; position: relative;
+    font-size: 16.5px; font-weight: 620; letter-spacing: -.012em;
+    list-style: none;
+  }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after {
+    content: '+'; position: absolute; right: 4px; top: 17px;
+    font-size: 21px; font-weight: 400; color: var(--faint); line-height: 1;
+    transition: transform .2s;
+  }
+  .faq details[open] summary::after { content: '−'; }
+  .faq summary:hover { color: var(--accent); }
+  .faq summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .faq p { margin: 0 0 20px; color: var(--dim); font-size: 15px; max-width: 720px; }
+
   pre {
     margin-top: 22px; padding: 18px 20px; overflow-x: auto;
     background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.014));
@@ -324,7 +381,13 @@
     <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="g-nav"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#g-nav)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
     EarthViewer
   </a>
-  <a class="away" href="https://github.com/Inasjackw321/Sent-2-imagery">GitHub</a>
+  <div class="links">
+    <a class="away hide-sm" href="#applied">Applied-view</a>
+    <a class="away hide-sm" href="#how">How</a>
+    <a class="away hide-sm" href="#data">Data</a>
+    <a class="away hide-sm" href="#faq">Questions</a>
+    <a class="away" href="https://github.com/Inasjackw321/Sent-2-imagery">GitHub</a>
+  </div>
 </nav>
 
 <header class="hero" id="top">
@@ -374,21 +437,22 @@
       satellite saw on the day.</p>
   </div>
 
-  <div class="figures">
-    <div><b>10 m</b><span>what one Sentinel-2 pixel actually covers</span></div>
-    <div><b>2</b><span>sources in every applied-view frame</span></div>
-    <div><b>0</b><span>frames on this page that are a raw single pass</span></div>
-  </div>
+  <p class="fine">For scale: Sentinel-2's sharpest bands sample the ground every
+    10 metres, so a single pixel covers a tennis court. That is the limit every
+    picture on this page starts from, and the reason applied-view exists.</p>
 </section>
 
 <section class="wrap" id="example">
   <div class="kicker">The prime example</div>
   <h2>Zoom past what the data holds</h2>
-  <p class="note">Heathrow, and the whole case for applied-view in two frames. The
-    first is the airport at a scale its detail supports: terminals, stands, every
-    aircraft on them. The second is the boxed part of it, magnified four times —
-    the same data, asked for more than it has. Nothing is wrong with that second
-    frame. It has simply run out.</p>
+  <p class="note">Heathrow, twice. Both frames are applied-view, and both come from
+    the same source — that is the point of showing them together. The first is the
+    airport at a scale its detail supports: terminals, stands, every aircraft on
+    them. The second is the boxed part of it, magnified four times, and it falls
+    apart. Nothing went wrong. It ran out.</p>
+  <p class="note">Applied-view raises the level of detail you can zoom to. It does
+    not remove the limit, and this is what the limit looks like when you reach it.
+    Any imagery does this eventually; honest imagery shows you where.</p>
 
   <figure class="annotated wide-figure">
     <img src="assets/heathrow-wide.webp" alt="Heathrow from orbit: two runways, the terminal piers and aircraft on every stand" loading="lazy">
@@ -406,27 +470,61 @@
   <figure class="wide-figure plain">
     <img src="assets/heathrow-close.webp" alt="The boxed terminal area magnified four times: aircraft and piers smeared, edges ringing" loading="lazy">
   </figure>
-  <figcaption><b class="tag-soft">Four times in, no layer applied</b> — the same
-    ground, magnified past what the free pass holds: piers smear, aircraft bloom,
-    edges ring.</figcaption>
+  <figcaption><span class="chip">Applied-view</span><b class="tag-soft">Four times
+    in</b> — the same ground, past the limit: piers smear, aircraft bloom, edges
+    ring.</figcaption>
 
   <div class="figures">
     <div><b>4&times;</b><span>magnification between the two frames</span></div>
-    <div><b>0.995</b><span>match confirming it is the same ground</span></div>
-    <div><b>0%</b><span>detail lost — there was never more to show</span></div>
+    <div><b>0.995</b><span>correlation confirming it is the same ground</span></div>
   </div>
-  <p class="fine">Worth being exact about, because the obvious reading is wrong. The
-    lower frame is not worse imagery. Located inside the upper one by cross-correlation
-    — 0.995 against 0.783 for the next-best position, so the pairing is certain rather
-    than asserted — and then measured at the <em>same ground scale</em>, the two carry
-    the same fine structure: 0.251 for the wide frame against 0.255 for the magnified
-    one, and that holds at every filter width tested. The magnified frame has four
-    times the pixels and no more information to put in them.</p>
-  <p class="fine">That is the gap applied-view fills, and it is worth saying what it
-    does not do. It cannot recover what the pass never recorded. It substitutes
-    existing high-detail imagery of the same ground, so that zooming in keeps
-    returning something true to the place — but what comes back is the existing
-    layer's record of it, not the new pass's.</p>
+  <p class="fine">Both numbers are checked rather than asserted. The lower frame was
+    located inside the upper one by normalised cross-correlation, scoring 0.995
+    against 0.783 for the next-best position — a clear enough peak that the pairing
+    is certain — and the box drawn above is that footprint. The magnification follows
+    from the two sizes.</p>
+  <p class="fine">One measurement is worth quoting because the obvious reading of
+    these frames is wrong. Compared at the <em>same ground scale</em>, the two carry
+    the same amount of fine structure. The lower frame is not worse imagery and it
+    has not lost anything; it has four times the pixels and no more information to
+    put in them. That is what a limit looks like, and it is why no amount of zooming
+    is a substitute for a source that actually holds the detail.</p>
+</section>
+
+<section class="wrap" id="how">
+  <div class="kicker">How a frame is built</div>
+  <h2>Four steps, no magic</h2>
+  <p class="note">Nothing here is a model guessing what a street probably looks
+    like. Every step is either a measurement or a lookup, and each one can be
+    turned off on its own.</p>
+
+  <ol class="steps">
+    <li>
+      <b>Fetch the passes</b>
+      <span>Sentinel-2 and Sentinel-1 scenes covering your shape are pulled straight
+        from the public catalogues. Cloud and shadow are masked out using the
+        classification band that ships with the scene.</span>
+    </li>
+    <li>
+      <b>Merge the dates, if you asked for it</b>
+      <span>Each pass lands its grid slightly differently. Solving them together
+        recovers detail the individual passes sampled but none of them resolved.
+        This step adds nothing that was not measured.</span>
+    </li>
+    <li>
+      <b>Apply the existing layer</b>
+      <span>Existing high-detail imagery of the same ground is registered to the
+        result and carries the fine texture. This is the step that makes it
+        applied-view, and the one that means the picture is no longer a pure
+        measurement.</span>
+    </li>
+    <li>
+      <b>Render it</b>
+      <span>Band combination, contrast and colour, with the whole pixel curved at
+        once so nothing shifts hue. Underneath, the numbers stay in their own
+        units — a click still returns reflectance or decibels.</span>
+    </li>
+  </ol>
 </section>
 
 <section class="wrap" id="slide">
@@ -450,21 +548,16 @@
     <div class="slide-grip" tabindex="0" role="slider" aria-label="Compare one pass with six merged"
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">⟺</div>
   </div>
+  <figcaption><span class="chip">Applied-view</span>Like every picture here, both
+    sides start from existing high-detail imagery.</figcaption>
 
-  <div class="figures">
-    <div><b>35%</b><span>of the detail a single pass lost, recovered</span></div>
-    <div><b>16%</b><span>closer to the real ground</span></div>
-    <div><b>2</b><span>sources — measured pass plus existing layer</span></div>
-  </div>
-  <p class="fine">Measured, not asserted — and the two sides of this slider are a test,
-    not a raw pair of passes. The six passes here were made by sampling one existing
-    sharp picture of Paris coarsely six times, each with its grid landed a third of a
-    pixel apart — the same way the app's own tests check it — and then fusing them
-    with the app's real code. Because the sharp original is known, the result can be
-    scored against it: fine detail matching the ground rose from 0.658 to 0.778, and
-    the error against it fell by 16%. That sharp original is the same kind of existing
-    high-detail imagery applied-view lays over a fresh pass, which is why the two are
-    described together here rather than as separate claims.</p>
+  <p class="fine">Be clear about what this slider is. It is a test, not a pair of real
+    passes: an existing sharp picture of Paris was sampled coarsely six times, each
+    with its grid landed a third of a pixel apart — the way the app's own tests check
+    it — and then fused with the app's real code. So it demonstrates that the fusion
+    step works on data whose answer is known. It is not a measurement of what six
+    Sentinel-2 passes over Paris would give you, and the sharpness on the right is
+    not evidence of that.</p>
 </section>
 
 <section class="wrap">
@@ -485,12 +578,15 @@
     <div class="slide-grip" tabindex="0" role="slider" aria-label="Compare per-channel curving with whole-pixel curving"
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">⟺</div>
   </div>
-  <p class="fine">Both sides are the same pixels, brightened by the same amount. Across
-    this frame the per-channel version moves the hue by 2.4° on average; the
-    whole-pixel version moves it by 0.0°. On strongly lifted, saturated ground the
-    per-channel drift reaches 21.9°. The frame itself is applied-view, like every
-    other picture here — but this claim is about the arithmetic done to a pixel, and
-    it holds the same whatever imagery that pixel came from.</p>
+  <figcaption><span class="chip">Applied-view</span>Both sides are the same
+    applied-view frame, brightened two different ways.</figcaption>
+
+  <p class="fine">This one is not a measurement at all — it is arithmetic, and it holds
+    by construction. Brightening the whole pixel means multiplying red, green and blue
+    by the same number, and a hue is defined by the ratios between them, so those
+    ratios come out unchanged whatever the imagery was. Curving each channel on its
+    own multiplies them by different numbers, which is exactly why the colour moves.
+    Drag the handle and watch the roofs.</p>
 </section>
 
 <section class="wrap">
@@ -531,12 +627,8 @@
       <p class="note">The rings are where the app's detector landed, run over the
         frame as shown: the roof's own brightness taken as the baseline, and anything
         markedly darker than it, fully surrounded by roof and clear of the shadowed
-        edges, picked out. That is a measurement of these pixels, which is not the
-        same as a measurement of the ground.</p>
-      <div class="figures">
-        <div><b>2</b><span>marks the detector found in this frame</span></div>
-        <div><b>18%</b><span>darker than the roof around them</span></div>
-      </div>
+        edges, picked out. Two marks met that test. That is a measurement of these
+        pixels, which is not the same as a measurement of the ground.</p>
     </div>
 
     <figure class="annotated">
@@ -600,6 +692,132 @@
       <p>Highlight any part of the imagery and it lands on your clipboard at full
         resolution, watermarked.</p>
     </div>
+  </div>
+</section>
+
+<section class="wrap" id="data">
+  <div class="kicker">What is underneath</div>
+  <h2>The data it actually runs on</h2>
+  <p class="note">All of it is public, all of it is free, and none of it needs an
+    account. These are the published characteristics of each source — worth knowing,
+    because they set what the app can and cannot tell you.</p>
+
+  <dl class="sources">
+    <div>
+      <dt>Sentinel-2<div class="spec">10–60 m · optical · ESA</div></dt>
+      <dd>Thirteen bands from blue to shortwave infrared. The four sharpest sample
+        the ground every 10 metres. This is what a natural-colour picture is made
+        of, and what NDVI and the other indices are computed from.</dd>
+    </div>
+    <div>
+      <dt>Sentinel-1<div class="spec">C-band radar · ESA</div></dt>
+      <dd>Radar, so it works through cloud, smoke and darkness, and at night. It
+        measures how the ground scatters a pulse back rather than how it looks —
+        which is why water reads black and cities read bright.</dd>
+    </div>
+    <div>
+      <dt>NASA GIBS<div class="spec">near real time</div></dt>
+      <dd>Today's cloud, taken from the imaging satellites that cover the whole
+        Earth daily. The app cuts the land and sea out of it so only the weather
+        is laid over your imagery.</dd>
+    </div>
+    <div>
+      <dt>NASA FIRMS<div class="spec">375 m / 1 km · thermal</div></dt>
+      <dd>Active fire detections from the last day or week, each carrying the
+        radiative power of the fire in megawatts, so a hedgerow burn and a fire
+        front are not drawn the same size.</dd>
+    </div>
+    <div>
+      <dt>The existing layer<div class="spec">applied-view</div></dt>
+      <dd>High-detail imagery of the same ground that already exists, registered
+        on top. This is the one source that is not a fresh measurement, and it is
+        the reason the pictures on this page look the way they do.</dd>
+    </div>
+  </dl>
+</section>
+
+<section class="wrap" id="limits">
+  <div class="kicker">Being straight about it</div>
+  <h2>What it cannot do</h2>
+  <p class="note">Every imaging tool has a shape to it. Knowing where this one stops
+    is what makes the part that works trustworthy.</p>
+
+  <div class="features">
+    <div class="feature">
+      <h3>It cannot date the fine detail</h3>
+      <p>Texture comes from the existing layer, which was recorded at some other
+        time. If you need to know what a place looked like on a particular day,
+        that is the fresh pass only — and the fresh pass is 10-metre.</p>
+    </div>
+    <div class="feature">
+      <h3>It cannot confirm an event</h3>
+      <p>Damage, movement, anything at the scale of a vehicle or a roof panel:
+        applied-view will render it convincingly and cannot evidence it. For that
+        you need the original high-resolution source.</p>
+    </div>
+    <div class="feature">
+      <h3>It runs out</h3>
+      <p>Zoom far enough past what the existing layer holds and it smears, the same
+        as anything else. The Heathrow pair above is that limit, shown rather than
+        hidden.</p>
+    </div>
+    <div class="feature">
+      <h3>Optical needs a clear sky</h3>
+      <p>Cloud is opaque to Sentinel-2. Merging dates helps, and radar ignores the
+        problem entirely, but a fortnight of overcast is still a fortnight of
+        overcast.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="faq">
+  <div class="kicker">Questions</div>
+  <h2>The ones worth asking</h2>
+
+  <div class="faq">
+    <details>
+      <summary>Is this real satellite imagery?</summary>
+      <p>Partly, and the honest answer is that it depends which part you mean. The
+        measurements are real and current: the pass, its dates, the reflectance and
+        radar values under every pixel. The fine texture you see is real imagery
+        too, but of a different vintage — it comes from the existing high-detail
+        layer, not from the pass. Applied-view is those two things combined, which
+        is why the page labels every picture rather than leaving you to guess.</p>
+    </details>
+    <details>
+      <summary>Is anything here generated by AI?</summary>
+      <p>No. There is no upscaling model, no diffusion, nothing inventing plausible
+        detail. Everything on screen came from either a satellite measurement or an
+        existing photograph of that same ground. That is a deliberate choice: a
+        model that invents a convincing street is worse than useless for looking at
+        somewhere real.</p>
+    </details>
+    <details>
+      <summary>Can I use it to check whether something happened?</summary>
+      <p>For anything at 10 metres and above — a flood, a burn scar, a new
+        construction site, a change in vegetation — yes, and the numbers underneath
+        will back you up. For anything smaller, no. Go back to the pass on its own,
+        read the values underneath the picture, and treat those as the evidence —
+        not the texture laid over them.</p>
+    </details>
+    <details>
+      <summary>Why free imagery rather than commercial?</summary>
+      <p>Because Copernicus and NASA publish theirs openly and it is genuinely
+        good. The constraint is resolution, not quality or honesty, and applied-view
+        exists precisely to work within that constraint rather than pretend it is
+        not there.</p>
+    </details>
+    <details>
+      <summary>Do I need an account, a key or a token?</summary>
+      <p>None of the three. The catalogues are public and the app talks to them
+        anonymously. Clone it, run one Python file, and it opens.</p>
+    </details>
+    <details>
+      <summary>Does it work offline?</summary>
+      <p>There is a demo mode that runs on synthetic imagery, so you can see how
+        everything behaves without a connection. Real imagery needs the catalogues,
+        which means it needs the network.</p>
+    </details>
   </div>
 </section>
 
