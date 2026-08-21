@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EarthViewer — see the Earth for free</title>
-<meta name="description" content="EarthViewer is a free desktop app for looking at the Earth from orbit: Sentinel-2 and Sentinel-1, merged across dates into something sharper than any single pass, with live cloud and active fires on the map.">
+<meta name="description" content="EarthViewer is a free desktop app for looking at the Earth from orbit: Sentinel-2 and Sentinel-1, with live cloud and active fires on the map, and applied-view — existing high-detail imagery laid over a fresh pass to give it realistic definition.">
 <meta property="og:title" content="EarthViewer">
-<meta property="og:description" content="A free way to look at the Earth from orbit — drag the slider and see what merging six passes does.">
+<meta property="og:description" content="A free way to look at the Earth from orbit, with applied-view: existing high-detail imagery laid over fresh Sentinel data.">
 <meta property="og:image" content="assets/paris-city.webp">
 <meta name="theme-color" content="#080a0e">
 <link rel="icon" href="logo.svg" type="image/svg+xml">
@@ -128,6 +128,33 @@
   .note { color: var(--dim); max-width: 640px; font-size: 16.5px; }
   .fine { color: var(--faint); font-size: 13.5px; line-height: 1.6; margin-top: 16px; max-width: 760px; }
   figcaption { color: var(--faint); font-size: 13.5px; margin-top: 12px; }
+
+  /* ── Saying what a picture is ───────────────────────────────
+     Every example frame on this page is applied-view, and each one says so
+     next to itself rather than only in a note further down. A reader who
+     scrolls past the explainer must still be told what they are looking at. */
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px 5px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 620; letter-spacing: .005em;
+    color: var(--warn); background: rgba(255, 192, 97, .08);
+    border: 1px solid rgba(255, 192, 97, .3);
+  }
+  .chip::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--warn); flex: none;
+  }
+  figcaption .chip { margin-right: 9px; vertical-align: -1px; }
+  .shot figcaption .chip { margin-top: 10px; }
+
+  /* The definition of the term, set apart from the argument around it. */
+  .callout {
+    margin-top: 30px; padding: 24px 26px; border-radius: var(--radius);
+    background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.014));
+    border: 1px solid var(--line); border-left: 2px solid var(--warn);
+  }
+  .callout p:first-child { margin-top: 0; }
+  .callout .note { max-width: none; }
 
   /* ── The slider ─────────────────────────────────────────── */
   .slide {
@@ -298,9 +325,10 @@
     <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="globe"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#globe)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
     <h1>EarthViewer</h1>
     <p class="lede">A free way to look at the Earth from orbit. Pick a place, pick a
-      day — or let six passes be solved into one picture sharper than any of them.</p>
+      day — and with <em>applied-view</em>, see it at a definition a single free pass
+      cannot reach, because existing high-detail imagery is laid over the fresh data.</p>
     <div class="cta">
-      <a class="btn" href="#slide">See what merging does</a>
+      <a class="btn" href="#applied">What applied-view is</a>
       <a class="btn ghost" href="https://github.com/Inasjackw321/Sent-2-imagery">Get it on GitHub</a>
     </div>
   </div>
@@ -310,16 +338,52 @@
   <div class="shot-frame">
     <img src="assets/paris-wide.webp" alt="Paris from orbit, showing the boulevards radiating across the Right Bank" loading="eager">
   </div>
-  <figcaption class="wrap">Paris. Every street, park and rail yard, from space.</figcaption>
+  <figcaption class="wrap">Paris. Every street, park and rail yard.
+    <br><span class="chip">Applied-view</span> Not a raw Sentinel-2 frame: existing
+    high-detail imagery of Paris carried on top of the fresh pass.</figcaption>
 </figure>
+
+<section class="wrap" id="applied">
+  <div class="kicker">Read this first</div>
+  <h2>What applied-view is</h2>
+  <p class="note">Every example picture on this page is applied-view, and none of
+    them is original imagery from a single free satellite pass. Applied-view takes
+    <em>existing</em> high-detail imagery of a place and lays it over new Sentinel-2
+    and other current data, registered to the same ground. The fresh pass supplies
+    what is true now — colour, change, radar, cloud, heat. The existing layer
+    supplies the fine texture that Sentinel-2's 10-metre pixels never held.</p>
+
+  <div class="callout">
+    <p class="note">So what you are looking at is <em>realistic but constructed</em>:
+      higher definition than the free data alone can give, built by combining two
+      sources rather than by measuring one harder. It is not a photograph taken on
+      the date shown, and the fine detail in it is not evidence of what that pass
+      recorded.</p>
+    <p class="note">That distinction matters most where the detail is the point.
+      Anywhere on this page that a small feature is picked out — the punctures in a
+      roof, the vehicles at a junction — the texture carrying that feature comes
+      from the existing layer, so it shows what the place looks like, not what the
+      satellite saw on the day.</p>
+  </div>
+
+  <div class="figures">
+    <div><b>10 m</b><span>what one Sentinel-2 pixel actually covers</span></div>
+    <div><b>2</b><span>sources in every applied-view frame</span></div>
+    <div><b>0</b><span>frames on this page that are a raw single pass</span></div>
+  </div>
+</section>
 
 <section class="wrap" id="slide">
   <div class="kicker">Drag the handle</div>
   <h2>Six passes, one picture</h2>
-  <p class="note">A satellite never samples the same ground twice in exactly the
-    same place. Each pass lands its pixel grid a fraction of a pixel differently,
-    so every date is a slightly different measurement of the same street. Solve
-    them together and the answer is finer than any one of them could be.</p>
+  <p class="note">Underneath applied-view sits the part that is pure measurement.
+    A satellite never samples the same ground twice in exactly the same place. Each
+    pass lands its pixel grid a fraction of a pixel differently, so every date is a
+    slightly different measurement of the same street. Solve them together and the
+    answer is finer than any one of them could be — and this step invents nothing:
+    it only recovers detail the passes between them already sampled. Applied-view
+    then lays the existing high-detail layer over <em>that</em>, which is where the
+    definition you see in the frames on this page comes from.</p>
 
   <div class="slide" data-slide style="aspect-ratio: 620 / 420">
     <img class="under" src="assets/merge-six.jpg" alt="The same streets after six passes are merged: individual buildings and courtyards resolved">
@@ -334,14 +398,17 @@
   <div class="figures">
     <div><b>35%</b><span>of the detail a single pass lost, recovered</span></div>
     <div><b>16%</b><span>closer to the real ground</span></div>
-    <div><b>0</b><span>invented pixels — no upscaling model</span></div>
+    <div><b>2</b><span>sources — measured pass plus existing layer</span></div>
   </div>
-  <p class="fine">Measured, not asserted. The six passes here were made by sampling one
+  <p class="fine">Measured, not asserted — and the two sides of this slider are a test,
+    not a raw pair of passes. The six passes here were made by sampling one existing
     sharp picture of Paris coarsely six times, each with its grid landed a third of a
     pixel apart — the same way the app's own tests check it — and then fusing them
     with the app's real code. Because the sharp original is known, the result can be
     scored against it: fine detail matching the ground rose from 0.658 to 0.778, and
-    the error against it fell by 16%.</p>
+    the error against it fell by 16%. That sharp original is the same kind of existing
+    high-detail imagery applied-view lays over a fresh pass, which is why the two are
+    described together here rather than as separate claims.</p>
 </section>
 
 <section class="wrap">
@@ -365,7 +432,9 @@
   <p class="fine">Both sides are the same pixels, brightened by the same amount. Across
     this frame the per-channel version moves the hue by 2.4° on average; the
     whole-pixel version moves it by 0.0°. On strongly lifted, saturated ground the
-    per-channel drift reaches 21.9°.</p>
+    per-channel drift reaches 21.9°. The frame itself is applied-view, like every
+    other picture here — but this claim is about the arithmetic done to a pixel, and
+    it holds the same whatever imagery that pixel came from.</p>
 </section>
 
 <section class="wrap">
@@ -373,15 +442,17 @@
   <h2>All the way in</h2>
   <p class="note">The same city at the scale you actually want it: boulevards and
     rail yards from above, then close enough to pick out courtyards, street trees
-    and the traffic on the junction.</p>
+    and the traffic on the junction. Both frames are applied-view — at this
+    magnification every one of those courtyards and vehicles is carried by the
+    existing high-detail layer, not resolved by the Sentinel-2 pass beneath it.</p>
   <div class="gallery">
     <figure>
       <img src="assets/paris-city.webp" alt="Paris across the Right Bank, boulevards and rail yards" loading="lazy">
-      <figcaption>Wide — the shape of a city.</figcaption>
+      <figcaption><span class="chip">Applied-view</span>Wide — the shape of a city.</figcaption>
     </figure>
     <figure>
       <img src="assets/paris-close.webp" alt="A Paris star junction close in, with individual buildings, trees and vehicles" loading="lazy">
-      <figcaption>Close — courtyards, street trees, vehicles.</figcaption>
+      <figcaption><span class="chip">Applied-view</span>Close — courtyards, street trees, vehicles.</figcaption>
     </figure>
   </div>
 </section>
@@ -389,29 +460,33 @@
 <section class="wrap">
   <div class="kicker">Why it is worth doing</div>
   <h2>When the detail is not there</h2>
-  <p class="note">Not every pass is a good one. The same city, photographed two
-    ways: one frame where the detail never made it, and one where it did. This
-    is the difference the merge above is trying to close.</p>
+  <p class="note">This is the difference applied-view exists to close. On the left,
+    a frame with no existing high-detail layer to draw on — the free pass on its
+    own, blocks and roads and no more. On the right, the same kind of ground with
+    that layer applied. The gap between them is not the satellite doing better; it
+    is the second source being there.</p>
 
   <div class="gallery compare">
     <figure>
       <img src="assets/paris-soft.webp" alt="A soft, low-detail frame of Paris where individual buildings cannot be made out" loading="lazy">
-      <figcaption><b class="tag-soft">Soft</b> — blocks and roads, and no more than that.</figcaption>
+      <figcaption><b class="tag-soft">No layer applied</b> — the free pass alone: blocks and roads, and no more than that.</figcaption>
     </figure>
     <figure>
       <img src="assets/paris-close.webp" alt="A sharp frame of Paris with individual buildings, street trees and vehicles" loading="lazy">
-      <figcaption><b class="tag-sharp">Sharp</b> — courtyards, street trees, vehicles.</figcaption>
+      <figcaption><b class="tag-sharp">Applied-view</b> — existing detail laid over it: courtyards, street trees, vehicles.</figcaption>
     </figure>
   </div>
 
   <div class="figures">
-    <div><b>6.6&times;</b><span>more fine structure in the sharp frame</span></div>
+    <div><b>6.6&times;</b><span>more fine structure once the layer is applied</span></div>
   </div>
   <p class="fine">Measured as fine structure against coarse, which is a ratio and so does
     not depend on how much ground each frame covers. These are two different parts
     of Paris, not the same street twice — checked, and they do not overlap, so this
-    is a comparison of quality rather than a before and after. For the same ground
-    two ways, drag the handle further up the page.</p>
+    is a comparison of quality rather than a before and after. The extra structure is
+    contributed by the existing high-detail layer; it is not detail the free pass
+    recorded and it should not be read as such. For the same ground two ways, drag
+    the handle further up the page.</p>
 </section>
 
 <section class="wrap">
@@ -421,16 +496,21 @@
   <div class="split">
     <div>
       <p class="note">An airbase, after a reported strike. This is the hangar roof
-        at full magnification, sharpened with the same local-contrast and detail
-        tools the app applies to any imagery — nothing added, nothing painted on
-        but the two rings.</p>
-      <p class="note">Both punctures sit well inside the roof panel, clear of its
-        shadowed edges, which is what separates a hole from the dark of an eave.
-        They were found by measurement rather than by eye: the roof's own
-        brightness taken as the baseline, and anything markedly darker than it,
-        fully surrounded by roof, picked out.</p>
+        at full magnification, and it is applied-view: existing high-detail imagery
+        of the base over the fresh pass, then sharpened with the same local-contrast
+        and detail tools the app applies to any imagery.</p>
+      <p class="note">Say plainly what that means here. A roof panel is a few metres
+        across, so nothing at this scale is resolved by Sentinel-2 — the texture the
+        punctures sit in comes from the existing layer, and this frame is therefore
+        an illustration of the product, not an observation that can date or confirm
+        a strike. For that you would need the original high-resolution source.</p>
+      <p class="note">The rings are where the app's detector landed, run over the
+        frame as shown: the roof's own brightness taken as the baseline, and anything
+        markedly darker than it, fully surrounded by roof and clear of the shadowed
+        edges, picked out. That is a measurement of these pixels, which is not the
+        same as a measurement of the ground.</p>
       <div class="figures">
-        <div><b>2</b><span>punctures through the panel</span></div>
+        <div><b>2</b><span>marks the detector found in this frame</span></div>
         <div><b>18%</b><span>darker than the roof around them</span></div>
       </div>
     </div>
@@ -451,13 +531,21 @@
       </svg>
     </figure>
   </div>
-  <figcaption>The rings are the only thing added. Everything inside them is in the pixels.</figcaption>
+  <figcaption><span class="chip">Applied-view</span>The rings are drawn by the detector.
+    The detail they sit in is carried by the existing high-detail layer, not resolved
+    by the Sentinel-2 pass.</figcaption>
 </section>
 
 <section class="wrap">
   <div class="kicker">Also on the map</div>
   <h2>More than a picture</h2>
   <div class="features">
+    <div class="feature">
+      <h3>Applied-view</h3>
+      <p>Existing high-detail imagery registered onto the fresh pass, so a place
+        looks the way it looks while the new data carries what has changed. Every
+        frame built this way is labelled as such.</p>
+    </div>
     <div class="feature">
       <h3>Radar that sees through cloud</h3>
       <p>Sentinel-1 measures the ground with radar, so cloud, smoke and darkness
@@ -508,7 +596,11 @@ python app.py</pre>
   <p>EarthViewer is built on free, public data: Copernicus Sentinel-1 and
     Sentinel-2, NASA GIBS and NASA FIRMS. Sentinel imagery contains modified
     Copernicus Sentinel data.</p>
-  <p>Example imagery on this page supplied by the project author.
+  <p>Every example picture on this page is applied-view: existing high-detail imagery
+    laid over new Sentinel-2 and other data. None of them is original imagery from a
+    single free pass, none is a photograph taken on a stated date, and the fine detail
+    in them should not be read as evidence of what a satellite recorded. Example
+    imagery supplied by the project author.
     <a href="https://github.com/Inasjackw321/Sent-2-imagery">Source on GitHub</a>.</p>
 </footer>
 
