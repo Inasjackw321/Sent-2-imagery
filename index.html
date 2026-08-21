@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EarthViewer — see the Earth for free</title>
+<meta name="description" content="EarthViewer is a free desktop app for looking at the Earth from orbit: Sentinel-2 and Sentinel-1, merged across dates into something sharper than any single pass, with live cloud and active fires on the map.">
+<meta property="og:title" content="EarthViewer">
+<meta property="og:description" content="A free way to look at the Earth from orbit — drag the slider and see what merging six passes does.">
+<meta property="og:image" content="assets/paris-city.webp">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
+<style>
+  :root {
+    --bg: #0c0f14;
+    --panel: #141922;
+    --line: #232c3b;
+    --ink: #eef2f8;
+    --dim: #93a1b8;
+    --faint: #64748b;
+    --accent: #4cc2ff;
+    --warn: #ffb454;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  h1, h2 { line-height: 1.15; letter-spacing: -0.02em; margin: 0; }
+  h1 { font-size: clamp(38px, 7vw, 66px); font-weight: 700; }
+  h2 { font-size: clamp(24px, 3.6vw, 34px); font-weight: 650; }
+  p { margin: 14px 0 0; }
+  a { color: var(--accent); }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  header { padding: 68px 0 34px; text-align: center; }
+  .mark { font-size: 42px; display: block; margin-bottom: 10px; }
+  .lede { max-width: 620px; margin: 18px auto 0; font-size: clamp(17px, 2.1vw, 20px); color: var(--dim); }
+  .cta { margin-top: 28px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 20px; border-radius: 999px;
+    font-size: 15px; font-weight: 600; text-decoration: none;
+    background: var(--accent); color: #05121c; border: 1px solid var(--accent);
+  }
+  .btn.ghost { background: transparent; color: var(--accent); }
+  .btn:hover { filter: brightness(1.12); }
+
+  /* ── Sections ───────────────────────────────────────────── */
+  section { padding: 54px 0; border-top: 1px solid var(--line); }
+  section:first-of-type { border-top: 0; }
+  .kicker {
+    font-size: 12px; font-weight: 650; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 10px;
+  }
+  .note { color: var(--dim); max-width: 660px; font-size: 15.5px; }
+  .fine { color: var(--faint); font-size: 13px; margin-top: 12px; }
+  figcaption { color: var(--faint); font-size: 13px; margin-top: 10px; }
+
+  /* ── The slider ─────────────────────────────────────────── */
+  .slide {
+    --at: 50%;
+    position: relative; margin-top: 24px; overflow: hidden;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: #0a0d12; touch-action: none; user-select: none;
+    cursor: ew-resize;
+  }
+  /* The images take no pointer events of their own: otherwise pressing on one
+     starts the browser's native image drag, which swallows every pointermove
+     after it and the divider never follows the mouse. */
+  .slide img {
+    display: block; width: 100%; height: auto;
+    pointer-events: none; -webkit-user-drag: none; user-drag: none;
+  }
+  .slide img.under { position: absolute; inset: 0; height: 100%; object-fit: cover; }
+  .slide img.over { position: relative; clip-path: inset(0 calc(100% - var(--at)) 0 0); }
+  .slide-bar {
+    position: absolute; top: 0; bottom: 0; left: var(--at);
+    width: 2px; margin-left: -1px; background: #fff; opacity: .9;
+    pointer-events: none;
+  }
+  .slide-grip {
+    pointer-events: auto;
+    position: absolute; top: 50%; left: var(--at);
+    width: 42px; height: 42px; margin: -21px 0 0 -21px;
+    display: grid; place-items: center; border-radius: 50%;
+    background: rgba(10,13,18,.9); border: 2px solid #fff; color: #fff;
+    font-size: 15px; box-shadow: 0 4px 18px rgba(0,0,0,.6);
+  }
+  .slide-grip:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .tag {
+    position: absolute; top: 12px; padding: 5px 11px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; letter-spacing: .02em;
+    background: rgba(10,13,18,.82); border: 1px solid rgba(255,255,255,.22);
+    pointer-events: none; backdrop-filter: blur(4px);
+  }
+  .tag.left { left: 12px; }
+  .tag.right { right: 12px; }
+
+  /* ── Numbers ────────────────────────────────────────────── */
+  .figures { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 22px; }
+  .figures div { min-width: 150px; }
+  .figures b { display: block; font-size: 27px; font-weight: 700; color: var(--accent); }
+  .figures span { font-size: 13.5px; color: var(--faint); }
+
+  /* ── Gallery ────────────────────────────────────────────── */
+  .gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 24px; }
+  .gallery figure { margin: 0; }
+  .gallery img {
+    display: block; width: 100%; height: auto;
+    border-radius: 10px; border: 1px solid var(--line);
+  }
+  @media (max-width: 700px) { .gallery { grid-template-columns: 1fr; } }
+
+  /* ── Annotated image ────────────────────────────────────── */
+  .annotated { position: relative; margin-top: 24px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+  .annotated img { display: block; width: 100%; height: auto; }
+  .annotated svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ── Feature list ───────────────────────────────────────── */
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 26px; }
+  .feature {
+    padding: 18px; border-radius: 11px;
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  .feature h3 { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
+  .feature p { margin: 0; font-size: 14px; color: var(--dim); line-height: 1.55; }
+
+  pre {
+    margin-top: 18px; padding: 15px 17px; overflow-x: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    font: 13.5px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink);
+  }
+  footer { padding: 44px 0 66px; border-top: 1px solid var(--line); color: var(--faint); font-size: 13.5px; }
+  footer a { color: var(--dim); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <span class="mark">🛰️</span>
+  <h1>EarthViewer</h1>
+  <p class="lede">A free way to look at the Earth from orbit. Pick a place, pick a
+    day — or let six passes be solved into one picture sharper than any of them.</p>
+  <div class="cta">
+    <a class="btn" href="#slide">See what merging does</a>
+    <a class="btn ghost" href="https://github.com/Inasjackw321/Sent-2-imagery">Get it on GitHub</a>
+  </div>
+</header>
+
+<section>
+  <figure style="margin:0">
+    <img src="assets/paris-wide.webp" alt="Paris from orbit, showing the boulevards radiating across the Right Bank"
+         style="width:100%;height:auto;border-radius:12px;border:1px solid var(--line)" loading="eager">
+    <figcaption>Paris. Every street, park and rail yard, from space.</figcaption>
+  </figure>
+</section>
+
+<section id="slide">
+  <div class="kicker">Drag the handle</div>
+  <h2>Six passes, one picture</h2>
+  <p class="note">A satellite never samples the same ground twice in exactly the
+    same place. Each pass lands its pixel grid a fraction of a pixel differently,
+    so every date is a slightly different measurement of the same street. Solve
+    them together and the answer is finer than any one of them could be.</p>
+
+  <div class="slide" data-slide style="aspect-ratio: 1320 / 879">
+    <img class="under" src="assets/merge-six.jpg" alt="The same streets after six passes are merged: individual buildings and courtyards resolved">
+    <img class="over" src="assets/merge-one.jpg" alt="Paris streets from a single satellite pass, soft and blurred">
+    <span class="tag left">One pass</span>
+    <span class="tag right">Six merged</span>
+    <div class="slide-bar"></div>
+    <div class="slide-grip" tabindex="0" role="slider" aria-label="Compare one pass with six merged"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">⟺</div>
+  </div>
+
+  <div class="figures">
+    <div><b>35%</b><span>of the detail a single pass lost, recovered</span></div>
+    <div><b>16%</b><span>closer to the real ground</span></div>
+    <div><b>0</b><span>invented pixels — no upscaling model</span></div>
+  </div>
+  <p class="fine">Measured, not asserted. The six passes here were made by sampling one
+    sharp picture of Paris coarsely six times, each with its grid landed a third of a
+    pixel apart — the same way the app's own tests check it — and then fusing them
+    with the app's real code. Because the sharp original is known, the result can be
+    scored against it: fine detail matching the ground rose from 0.658 to 0.778, and
+    the error against it fell by 16%.</p>
+</section>
+
+<section>
+  <div class="kicker">Drag the handle</div>
+  <h2>Colour that stays where the ground put it</h2>
+  <p class="note">Brightening a picture by curving red, green and blue separately
+    makes them climb at different rates — and the ratios between them are what
+    colour <em>is</em>. Warm roofs slide towards orange, then yellow, then white.
+    EarthViewer curves the whole pixel at once instead, so brightness moves and
+    hue does not.</p>
+
+  <div class="slide" data-slide style="aspect-ratio: 1647 / 1101">
+    <img class="under" src="assets/tone-new.jpg" alt="The same view brightened with the whole pixel curved at once, colours unchanged">
+    <img class="over" src="assets/tone-old.jpg" alt="The same view brightened by curving each colour channel separately, colours drifting">
+    <span class="tag left">Curved per channel</span>
+    <span class="tag right">Curved as a pixel</span>
+    <div class="slide-bar"></div>
+    <div class="slide-grip" tabindex="0" role="slider" aria-label="Compare per-channel curving with whole-pixel curving"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">⟺</div>
+  </div>
+  <p class="fine">Both sides are the same pixels, brightened by the same amount. Across
+    this frame the per-channel version moves the hue by 2.4° on average; the
+    whole-pixel version moves it by 0.0°. On strongly lifted, saturated ground the
+    per-channel drift reaches 21.9°.</p>
+</section>
+
+<section>
+  <div class="kicker">Zoom</div>
+  <h2>All the way in</h2>
+  <p class="note">The same city at the scale you actually want it: boulevards and
+    rail yards from above, then close enough to pick out courtyards, street trees
+    and the traffic on the junction.</p>
+  <div class="gallery">
+    <figure>
+      <img src="assets/paris-city.webp" alt="Paris across the Right Bank, boulevards and rail yards" loading="lazy">
+      <figcaption>Wide — the shape of a city.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/paris-close.webp" alt="A Paris star junction close in, with individual buildings, trees and vehicles" loading="lazy">
+      <figcaption>Close — courtyards, street trees, vehicles.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">What it is for</div>
+  <h2>Looking at something that happened</h2>
+  <p class="note">An airbase, after a reported strike. Nothing here is drawn on by
+    hand except the arrows: the aircraft, the vehicles, the individual trees and the
+    dark scarring across the hangar roofs are all in the pixels.</p>
+
+  <div class="annotated">
+    <img src="assets/airbase.webp" alt="An airbase seen from orbit, with aircraft on the apron, a compound of buildings, and dark scarring across large roofs">
+    <svg viewBox="0 0 1023 809" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <marker id="head" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#fff"/>
+        </marker>
+        <style>
+          .lead { stroke: #fff; stroke-width: 2.6; fill: none; marker-end: url(#head);
+                  filter: drop-shadow(0 1px 3px rgba(0,0,0,.95)); }
+          /* Outlined rather than boxed: a plate sized in advance overflows the
+             moment a font renders a little wider than expected, and this cannot. */
+          .label {
+            fill: #fff; font: 700 22px ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+            stroke: rgba(6,9,13,.92); stroke-width: 5; stroke-linejoin: round;
+            paint-order: stroke fill;
+          }
+        </style>
+      </defs>
+
+      <!-- Aircraft on the apron -->
+      <path class="lead" d="M 392 128 C 520 120 620 80 700 38"/>
+      <text class="label" x="112" y="131">Aircraft on the apron</text>
+
+      <!-- Scarring on the roofs -->
+      <path class="lead" d="M 700 320 C 780 340 812 366 840 388"/>
+      <text class="label" x="420" y="319">Scarring across the roofs</text>
+
+      <!-- Vehicles and single trees -->
+      <path class="lead" d="M 150 606 C 200 650 226 672 252 692"/>
+      <text class="label" x="30" y="601">Vehicles and single trees</text>
+    </svg>
+  </div>
+  <figcaption>Arrows added for this page. Everything they point at is in the imagery.</figcaption>
+</section>
+
+<section>
+  <div class="kicker">Also on the map</div>
+  <h2>More than a picture</h2>
+  <div class="features">
+    <div class="feature">
+      <h3>Radar that sees through cloud</h3>
+      <p>Sentinel-1 measures the ground with radar, so cloud, smoke and darkness
+        make no difference. Put it beside the optical view and slide between them.</p>
+    </div>
+    <div class="feature">
+      <h3>Live cloud, cloud only</h3>
+      <p>Today's sky from NASA, with the land and sea cut out of it — weather
+        over your imagery instead of a second basemap under it.</p>
+    </div>
+    <div class="feature">
+      <h3>Active fires</h3>
+      <p>Every thermal detection NASA has published in the last day, sized by how
+        much energy the fire is actually radiating.</p>
+    </div>
+    <div class="feature">
+      <h3>When it next flies over</h3>
+      <p>Right-click anywhere. Worked out from the passes already flown over that
+        point, not from a nominal cycle.</p>
+    </div>
+    <div class="feature">
+      <h3>Click to measure</h3>
+      <p>The picture is a rendering; underneath are numbers with units. A click
+        gives you reflectance, backscatter in decibels, NDVI and the rest.</p>
+    </div>
+    <div class="feature">
+      <h3>Take it away</h3>
+      <p>Highlight any part of the imagery and it lands on your clipboard at full
+        resolution, watermarked.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">Free, and no account</div>
+  <h2>Run it</h2>
+  <p class="note">One Python file. It installs what it needs on first run and opens
+    in its own window. No sign-up, no API key, no token — the imagery is public and
+    so is the catalogue.</p>
+  <pre>git clone https://github.com/Inasjackw321/Sent-2-imagery
+cd Sent-2-imagery
+python app.py</pre>
+  <p class="fine">Add <code>--demo</code> to explore it offline with synthetic imagery.</p>
+</section>
+
+<footer>
+  <p>EarthViewer is built on free, public data: Copernicus Sentinel-1 and
+    Sentinel-2, NASA GIBS and NASA FIRMS. Sentinel imagery contains modified
+    Copernicus Sentinel data.</p>
+  <p>Example imagery on this page supplied by the project author.
+    <a href="https://github.com/Inasjackw321/Sent-2-imagery">Source on GitHub</a>.</p>
+</footer>
+
+</div>
+
+<script>
+// The compare slider. One behaviour, applied to every [data-slide] on the page:
+// point at it or drag it to move the divider, and arrow keys nudge it once it
+// has focus, so it works without a mouse.
+for (const slide of document.querySelectorAll('[data-slide]')) {
+  const grip = slide.querySelector('.slide-grip');
+  let dragging = false;
+
+  const put = (fraction) => {
+    const at = Math.min(1, Math.max(0, fraction));
+    slide.style.setProperty('--at', `${at * 100}%`);
+    grip.setAttribute('aria-valuenow', Math.round(at * 100));
+  };
+  const fromEvent = (event) => {
+    const box = slide.getBoundingClientRect();
+    put((event.clientX - box.left) / box.width);
+  };
+
+  // The move and release are listened for on the window rather than on the
+  // slider: a drag that leaves the image should keep working until the button
+  // comes up, and pointer capture is not dependable across browsers.
+  const onMove = (e) => { if (dragging) fromEvent(e); };
+  const onUp = () => { dragging = false; };
+  slide.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    fromEvent(e);
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+
+  grip.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 0.1 : 0.02;
+    const now = parseFloat(grip.getAttribute('aria-valuenow')) / 100;
+    if (e.key === 'ArrowLeft') { put(now - step); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { put(now + step); e.preventDefault(); }
+    if (e.key === 'Home') { put(0); e.preventDefault(); }
+    if (e.key === 'End') { put(1); e.preventDefault(); }
+  });
+
+  put(0.5);
+}
+</script>
+
+</body>
+</html>
