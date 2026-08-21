@@ -8,7 +8,7 @@
 <meta property="og:title" content="EarthViewer">
 <meta property="og:description" content="A free way to look at the Earth from orbit — drag the slider and see what merging six passes does.">
 <meta property="og:image" content="assets/paris-city.webp">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
 <style>
   :root {
     --bg: #0c0f14;
@@ -18,6 +18,7 @@
     --dim: #93a1b8;
     --faint: #64748b;
     --accent: #4cc2ff;
+    --accent-2: #37e0a0;
     --warn: #ffb454;
   }
   * { box-sizing: border-box; }
@@ -38,7 +39,7 @@
 
   /* ── Header ─────────────────────────────────────────────── */
   header { padding: 68px 0 34px; text-align: center; }
-  .mark { font-size: 42px; display: block; margin-bottom: 10px; }
+  .logo { width: 76px; height: 76px; display: block; margin: 0 auto 14px; }
   .lede { max-width: 620px; margin: 18px auto 0; font-size: clamp(17px, 2.1vw, 20px); color: var(--dim); }
   .cta { margin-top: 28px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .btn {
@@ -103,6 +104,8 @@
   /* ── Numbers ────────────────────────────────────────────── */
   .figures { display: flex; flex-wrap: wrap; gap: 26px; margin-top: 22px; }
   .figures div { min-width: 150px; }
+  .tag-soft { color: var(--warn); }
+  .tag-sharp { color: var(--accent-2); }
   .figures b { display: block; font-size: 27px; font-weight: 700; color: var(--accent); }
   .figures span { font-size: 13.5px; color: var(--faint); }
 
@@ -113,6 +116,9 @@
     display: block; width: 100%; height: auto;
     border-radius: 10px; border: 1px solid var(--line);
   }
+  /* Two frames of different shapes, put on one line: matching their height is
+     what lets the eye compare them instead of measuring them. */
+  .gallery.compare img { aspect-ratio: 4 / 3; object-fit: cover; }
   @media (max-width: 700px) { .gallery { grid-template-columns: 1fr; } }
 
   /* ── Annotated image ────────────────────────────────────── */
@@ -142,10 +148,18 @@
   }
   /* ── Arriving on scroll ─────────────────────────────────── */
   .reveal {
-    opacity: 0; transform: translateY(22px);
-    transition: opacity .75s ease, transform .75s cubic-bezier(.22,.7,.3,1);
+    opacity: 0; transform: translateY(26px);
+    transition: opacity .8s ease, transform .8s cubic-bezier(.22,.7,.3,1);
+  }
+  /* Pictures settle into place rather than sliding: a big image moving a long
+     way is distracting, but a slight scale reads as it coming into focus. */
+  figure.reveal, .slide.reveal, .gallery.reveal, .annotated.reveal, .split.reveal {
+    transform: translateY(18px) scale(.988);
   }
   .reveal.shown { opacity: 1; transform: none; }
+  .logo { transition: transform .9s cubic-bezier(.22,.7,.3,1); }
+  .reveal .logo, .reveal.logo { transform: rotate(-18deg) scale(.92); }
+  .shown .logo, .shown.logo { transform: none; }
   .reveal:nth-child(2) { transition-delay: .07s; }
   .reveal:nth-child(3) { transition-delay: .14s; }
   .reveal:nth-child(4) { transition-delay: .2s; }
@@ -171,7 +185,7 @@
 <div class="wrap">
 
 <header>
-  <span class="mark">🛰️</span>
+  <svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="globe"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#37e0a0" stroke-width="9.5" fill="none" clip-path="url(#globe)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#4cc2ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#4cc2ff" stroke-width="4"/></svg>
   <h1>EarthViewer</h1>
   <p class="lede">A free way to look at the Earth from orbit. Pick a place, pick a
     day — or let six passes be solved into one picture sharper than any of them.</p>
@@ -260,6 +274,34 @@
       <figcaption>Close — courtyards, street trees, vehicles.</figcaption>
     </figure>
   </div>
+</section>
+
+<section>
+  <div class="kicker">Why it is worth doing</div>
+  <h2>When the detail is not there</h2>
+  <p class="note">Not every pass is a good one. The same city, photographed two
+    ways: one frame where the detail never made it, and one where it did. This
+    is the difference the merge above is trying to close.</p>
+
+  <div class="gallery compare">
+    <figure>
+      <img src="assets/paris-soft.webp" alt="A soft, low-detail frame of Paris where individual buildings cannot be made out" loading="lazy">
+      <figcaption><b class="tag-soft">Soft</b> — blocks and roads, and no more than that.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/paris-close.webp" alt="A sharp frame of Paris with individual buildings, street trees and vehicles" loading="lazy">
+      <figcaption><b class="tag-sharp">Sharp</b> — courtyards, street trees, vehicles.</figcaption>
+    </figure>
+  </div>
+
+  <div class="figures">
+    <div><b>6.6&times;</b><span>more fine structure in the sharp frame</span></div>
+  </div>
+  <p class="fine">Measured as fine structure against coarse, which is a ratio and so does
+    not depend on how much ground each frame covers. These are two different parts
+    of Paris, not the same street twice — checked, and they do not overlap, so this
+    is a comparison of quality rather than a before and after. For the same ground
+    two ways, drag the handle further up the page.</p>
 </section>
 
 <section>
