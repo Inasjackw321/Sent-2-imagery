@@ -27,8 +27,13 @@ SIZES = [16, 32, 48, 64, 128, 180, 192, 256, 512, 1024]
 
 
 def draw_icon(size: int, maskable: bool = False) -> Image.Image:
-    """The mark: a scanned globe inside a framing reticle."""
-    s = size * 4  # supersample, then downscale for clean edges
+    """The mark: a globe with the swath of one pass laid across it.
+
+    Deliberately three shapes and no more. An icon is read at sixteen pixels
+    more often than at any other size, and everything beyond a circle, a
+    meridian and the strip becomes mud at that size.
+    """
+    s = size * 8  # supersample, then downscale for clean edges
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
 
@@ -43,44 +48,36 @@ def draw_icon(size: int, maskable: bool = False) -> Image.Image:
         mask = Image.new("L", (s, s), 0)
         ImageDraw.Draw(mask).rounded_rectangle([0, 0, s - 1, s - 1], radius, fill=255)
         img.putalpha(mask)
-        d = ImageDraw.Draw(img)
 
-    inset = 0.30 if maskable else 0.22
+    inset = 0.30 if maskable else 0.24
     cx = cy = s / 2
     r = s * (0.5 - inset)
-    lw = max(2, int(s * 0.020))
+    lw = max(2, round(s * 0.031))
 
-    # Globe outline
+    # The swath, drawn on its own layer and then cut to the globe: a strip of
+    # ground lies on the sphere, it does not cross in front of it.
+    swath = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(swath)
+    def place(x, y):
+        """A point from the logo's own 64-unit drawing, put on this canvas."""
+        return cx + (x - 32) / 21 * r, cy + (y - 32) / 21 * r
+
+    a, ctrl, b = place(-8, 50), place(32, 31), place(72, 10)
+    curve = [(
+        (1 - t) ** 2 * a[0] + 2 * (1 - t) * t * ctrl[0] + t * t * b[0],
+        (1 - t) ** 2 * a[1] + 2 * (1 - t) * t * ctrl[1] + t * t * b[1],
+    ) for t in [i / 48 for i in range(49)]]
+    sd.line(curve, fill=ACCENT_2 + (255,), width=round(r * 0.45), joint="curve")
+
+    hole = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(hole).ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+    img.alpha_composite(Image.composite(swath, Image.new("RGBA", (s, s), (0, 0, 0, 0)), hole))
+
+    d = ImageDraw.Draw(img)
+    # One meridian, so the circle reads as a globe rather than a ring.
+    d.ellipse([cx - r * 0.40, cy - r, cx + r * 0.40, cy + r],
+              outline=ACCENT + (150,), width=max(1, round(lw * 0.6)))
     d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=ACCENT + (255,), width=lw)
-
-    # Parallels: ellipses squashed towards the poles.
-    for frac in (-0.55, 0.0, 0.55):
-        ry = r * 0.30 if frac else r * 0.42
-        y = cy + r * frac
-        half = r * (1 - frac * frac) ** 0.5
-        if half < r * 0.1:
-            continue
-        d.arc([cx - half, y - ry / 2, cx + half, y + ry / 2], 0, 360,
-              fill=ACCENT + (150 if frac else 210,), width=max(1, lw // 2))
-
-    # Meridians
-    for frac in (0.42, 1.0):
-        half = r * frac
-        d.arc([cx - half, cy - r, cx + half, cy + r], 0, 360,
-              fill=ACCENT + (150 if frac < 1 else 210,), width=max(1, lw // 2))
-
-    # Reticle corners: the "select a region" idea.
-    arm = s * 0.10
-    pad = s * (0.20 if maskable else 0.13)
-    for sx, sy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
-        x = cx + sx * (s / 2 - pad)
-        y = cy + sy * (s / 2 - pad)
-        d.line([(x, y), (x - sx * arm, y)], fill=ACCENT_2 + (255,), width=lw)
-        d.line([(x, y), (x, y - sy * arm)], fill=ACCENT_2 + (255,), width=lw)
-
-    # A pass line across the globe, like a swath.
-    d.line([(cx - r * 0.95, cy + r * 0.55), (cx + r * 0.95, cy - r * 0.75)],
-           fill=INK + (190,), width=max(1, lw // 2))
 
     return img.resize((size, size), Image.LANCZOS)
 
