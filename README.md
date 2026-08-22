@@ -99,6 +99,12 @@ Articles live in `articles.json` in this branch. Each entry is:
 }
 ```
 
+Set `"verified": true` for a post from EarthViewer itself and the byline gets a
+mark. It means exactly one thing — this was posted by the site owner — which on
+a site whose articles live in the repository is simply true, since nobody else
+can put one there. It is not a claim that anyone outside has checked anything,
+and it should not be put on a guest post.
+
 `body` is plain text, never HTML — `render.js` escapes it before applying any
 formatting, so the only tags reaching the page are the ones it writes. Keep it
 that way.

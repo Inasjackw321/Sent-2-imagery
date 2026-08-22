@@ -87,8 +87,7 @@ function show(articles) {
 
   if (found) {
     document.title = `${found.title} — EarthViewer`;
-    document.getElementById('artWhen').textContent = prettyDate(found.date)
-      + (found.author ? ` · ${found.author}` : '');
+    document.getElementById('artWhen').replaceChildren(...byline(found));
     document.getElementById('artTitle').textContent = found.title;
     const summary = document.getElementById('artSummary');
     summary.textContent = found.summary ?? '';
@@ -116,7 +115,8 @@ function show(articles) {
   const sorted = [...articles].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   list.insertAdjacentHTML('beforeend', '<div class="list">' + sorted.map((a) => `
     <a class="item" href="?a=${encodeURIComponent(a.slug)}">
-      <div class="when">${prettyDate(a.date)}${a.author ? ` · ${escapeText(a.author)}` : ''}</div>
+      <div class="when">${prettyDate(a.date)}${a.author
+        ? ` · ${escapeText(a.author)}${a.verified ? VERIFIED_MARK : ''}` : ''}</div>
       <h2>${escapeText(a.title)}</h2>
       <p>${escapeText(a.summary || excerpt(a.body))}</p>
       <span class="more">Read →</span>
@@ -215,6 +215,31 @@ async function setUpReactions(slug) {
   };
 
   paint();
+}
+
+// ── Bylines ────────────────────────────────────────────────────────────────
+//
+// The mark means this was posted by EarthViewer itself, which on a site whose
+// articles live in the repository is simply true: nobody else can put one
+// there. It is not a claim that anyone outside has checked anything.
+const VERIFIED_TITLE = 'Posted by EarthViewer';
+const VERIFIED_MARK =
+  ` <span class="verified" title="${VERIFIED_TITLE}" aria-label="${VERIFIED_TITLE}">✓</span>`;
+
+function byline(article) {
+  const parts = [document.createTextNode(prettyDate(article.date))];
+  if (article.author) {
+    parts.push(document.createTextNode(` · ${article.author}`));
+    if (article.verified) {
+      const mark = document.createElement('span');
+      mark.className = 'verified';
+      mark.textContent = '✓';
+      mark.title = VERIFIED_TITLE;
+      mark.setAttribute('aria-label', VERIFIED_TITLE);
+      parts.push(document.createTextNode(' '), mark);
+    }
+  }
+  return parts;
 }
 
 // Titles and summaries go in as text, not markup.

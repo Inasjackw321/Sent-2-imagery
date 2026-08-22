@@ -239,3 +239,13 @@ footer a { color: var(--dim); }
 /* Tabular figures so a count going 9 -> 10 does not shuffle the row along. */
 .reaction .tally { font-variant-numeric: tabular-nums; font-weight: 620; font-size: 14px; }
 .reaction.on .tally { color: var(--accent); }
+
+/* ── The mark on EarthViewer's own posts ──────────────────── */
+.verified {
+  display: inline-grid; place-items: center;
+  width: 15px; height: 15px; border-radius: 50%;
+  background: var(--accent); color: #04121c;
+  font-size: 10px; font-weight: 800; line-height: 1;
+  vertical-align: 1px; cursor: help;
+}
+.item .verified { width: 14px; height: 14px; font-size: 9px; }
