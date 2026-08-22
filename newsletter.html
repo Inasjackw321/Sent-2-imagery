@@ -38,6 +38,19 @@
     <h1 id="artTitle"></h1>
     <p class="lede" id="artSummary"></p>
     <div class="prose" id="artBody"></div>
+
+    <div class="share" id="share">
+      <span class="share-label">Share</span>
+      <button class="chipbtn" id="shareNative" hidden>Share…</button>
+      <button class="chipbtn" id="shareCopy">Copy link</button>
+      <a class="chipbtn" id="shareX" target="_blank" rel="noopener noreferrer">X</a>
+      <a class="chipbtn" id="shareBluesky" target="_blank" rel="noopener noreferrer">Bluesky</a>
+      <a class="chipbtn" id="shareLinkedIn" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+      <a class="chipbtn" id="shareReddit" target="_blank" rel="noopener noreferrer">Reddit</a>
+      <a class="chipbtn" id="shareMail">Email</a>
+      <span class="say" id="shareSay" role="status"></span>
+    </div>
+
     <a class="back" href="newsletter.html">← All articles</a>
   </article>
 </main>
@@ -77,6 +90,7 @@ function show(articles) {
     summary.textContent = found.summary ?? '';
     summary.hidden = !found.summary;
     document.getElementById('artBody').innerHTML = renderBody(found.body);
+    setUpShare(found);
     listView.hidden = true;
     readView.hidden = false;
     return;
@@ -102,6 +116,57 @@ function show(articles) {
       <p>${escapeText(a.summary || excerpt(a.body))}</p>
       <span class="more">Read →</span>
     </a>`).join('') + '</div>');
+}
+
+// ── Sharing ────────────────────────────────────────────────────────────────
+//
+// Sharing needs nobody's server: it is a link, handed to whatever the reader
+// already uses. Liking and commenting are a different matter -- those need
+// somewhere to keep what people write, which a static site does not have.
+function setUpShare(article) {
+  const url = location.href;
+  const title = article.title;
+  const blurb = article.summary || title;
+  const encoded = { url: encodeURIComponent(url), title: encodeURIComponent(title),
+                    blurb: encodeURIComponent(`${blurb}\n\n${url}`) };
+
+  document.getElementById('shareX').href =
+    `https://twitter.com/intent/tweet?text=${encoded.title}&url=${encoded.url}`;
+  document.getElementById('shareBluesky').href =
+    `https://bsky.app/intent/compose?text=${encoded.blurb}`;
+  document.getElementById('shareLinkedIn').href =
+    `https://www.linkedin.com/sharing/share-offsite/?url=${encoded.url}`;
+  document.getElementById('shareReddit').href =
+    `https://www.reddit.com/submit?url=${encoded.url}&title=${encoded.title}`;
+  document.getElementById('shareMail').href =
+    `mailto:?subject=${encoded.title}&body=${encoded.blurb}`;
+
+  const said = (text) => {
+    const say = document.getElementById('shareSay');
+    say.textContent = text;
+    clearTimeout(setUpShare.timer);
+    setUpShare.timer = setTimeout(() => { say.textContent = ''; }, 2600);
+  };
+
+  // The phone's own share sheet, where there is one. It is a better thing to
+  // offer than a row of logos, so when it exists it goes first.
+  const native = document.getElementById('shareNative');
+  if (navigator.share) {
+    native.hidden = false;
+    native.onclick = async () => {
+      try { await navigator.share({ title, text: blurb, url }); }
+      catch { /* Dismissing the sheet is not a failure worth reporting. */ }
+    };
+  }
+
+  document.getElementById('shareCopy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      said('Link copied');
+    } catch {
+      said('Could not copy — the link is in the address bar');
+    }
+  };
 }
 
 // Titles and summaries go in as text, not markup.
