@@ -67,6 +67,50 @@ be reproduced from anything checked in:
 
 Do not reintroduce a statistic that cannot be recomputed from this repo.
 
+## Accounts, comments and likes
+
+`backend.js` holds the Supabase URL and anon key. **Left empty, the whole site
+behaves as it did before**: the newsletter reads `articles.json`, the editor
+uses the passphrase, and there are no accounts, comments or likes. Nothing on
+the site depends on the backend being there.
+
+With it configured:
+
+- `account.html` — sign up, sign in, profile, and (for admins) setting roles.
+- Likes and comments appear on each article.
+- The editor opens for an account with the `author` or `admin` role and
+  publishes straight to the database — no GitHub token.
+
+### Setting it up
+
+1. Create a project at supabase.com (the free tier is enough).
+2. Run `supabase-schema.sql` once in its SQL editor.
+3. Copy Project URL and the **anon** key into `backend.js`.
+4. Sign up on `account.html`, then run the last query in the schema file with
+   your address to make yourself an admin.
+5. Optional: Authentication → Providers → Google, to allow Google sign-in.
+
+The anon key belongs in the repository — it identifies the project and grants
+nothing on its own. **Never** put the `service_role` key in this repo; it
+bypasses every policy below.
+
+### Where the rules live
+
+All of them are in Postgres, in `supabase-schema.sql`, not in the pages:
+
+- A comment's `user_id` must equal the caller's own id, so a comment cannot be
+  signed with someone else's name however the request is made.
+- Likes are keyed on `(article_slug, user_id)`, so a second like is impossible
+  rather than merely discouraged.
+- Publishing requires the `author` or `admin` role, checked by a policy.
+- A `before update` trigger keeps anyone from changing their own role. The
+  account page reads the row back after a role change rather than assuming the
+  update did what it looked like.
+
+Comment text is rendered with `textContent`, never as markup — tested by
+posting `<img onerror>` and `<script>` and confirming they come out as visible
+text.
+
 ## The newsletter
 
 `newsletter.html` lists and reads articles; `write.html` is the editor behind a

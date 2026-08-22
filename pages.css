@@ -207,3 +207,38 @@ footer a { color: var(--dim); }
 .chipbtn:hover { color: var(--ink); border-color: var(--line-lit); transform: translateY(-1px); }
 .chipbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .share .say { margin: 0; min-height: 0; font-size: 13px; color: var(--accent-2); }
+
+/* ── Accounts ─────────────────────────────────────────────── */
+.btn.wide { display: block; width: 100%; text-align: center; }
+.whoami { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.avatar { width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--line); }
+.person {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line);
+}
+.person select { width: auto; margin-top: 0; padding: 7px 11px; font-size: 14px; }
+
+/* ── Likes ────────────────────────────────────────────────── */
+.chipbtn.like { margin-right: 10px; }
+.chipbtn.like .heart { color: var(--faint); transition: color .18s, transform .18s; }
+.chipbtn.like.on { color: var(--ink); border-color: rgba(255, 128, 128, .45); }
+.chipbtn.like.on .heart { color: #ff8080; transform: scale(1.15); }
+
+/* ── Comments ─────────────────────────────────────────────── */
+.comments { margin-top: 48px; padding-top: 34px; border-top: 1px solid var(--line); }
+.comments h2 { font-size: 22px; }
+.comment { padding: 20px 0; border-bottom: 1px solid var(--line); }
+.comment-head { display: flex; align-items: baseline; gap: 12px; }
+.comment-head b { font-size: 15px; font-weight: 650; }
+.comment-head .fine { margin-top: 0; }
+.comment-body {
+  margin-top: 8px; color: #dfe6f1; font-size: 15.5px; line-height: 1.65;
+  /* A comment is somebody else's words: keep their line breaks, and never let
+     a wall of unbroken characters push the page sideways. */
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.linkbtn {
+  margin-left: auto; padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 13px; color: var(--faint); text-decoration: underline;
+}
+.linkbtn:hover { color: var(--bad); }
