@@ -164,3 +164,22 @@ footer {
   color: var(--faint); font-size: 13.5px; line-height: 1.7;
 }
 footer a { color: var(--dim); }
+
+/* ── Signing in ───────────────────────────────────────────── */
+#googleBox { margin-top: 30px; }
+#googleBtn { min-height: 44px; }
+/* A rule with a word sitting in it, marking the two ways in as alternatives
+   rather than as steps to be done in order. */
+.or {
+  display: flex; align-items: center; gap: 14px;
+  margin: 26px 0 4px; color: var(--faint); font-size: 12.5px;
+  text-transform: uppercase; letter-spacing: .14em;
+}
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+
+.who {
+  display: inline-block; margin-top: 14px; padding: 5px 13px;
+  border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  color: var(--accent-2); background: rgba(62, 227, 159, .09);
+  border: 1px solid rgba(62, 227, 159, .3);
+}

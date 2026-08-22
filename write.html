@@ -27,8 +27,14 @@
   <header class="head">
     <div class="kicker">Editor</div>
     <h1>Write an article</h1>
-    <p class="lede">Enter the passphrase to open the editor.</p>
+    <p class="lede">Sign in with Google, or use the passphrase.</p>
   </header>
+
+  <div id="googleBox">
+    <div id="googleBtn"></div>
+    <div class="say" id="googleSay"></div>
+    <div class="or"><span>or</span></div>
+  </div>
 
   <form id="gateForm" autocomplete="off">
     <label class="field">Passphrase
@@ -44,15 +50,27 @@
     <div class="say" id="gateSay"></div>
   </form>
 
+  <div class="note-box" id="setupNote" hidden>
+    <p><b>Google sign-in is not configured yet.</b></p>
+    <p>It needs an OAuth client ID from the Google Cloud console, with this site
+      listed as an authorised JavaScript origin. Put it in <code>write.html</code>
+      as <code>GOOGLE_CLIENT_ID</code> and the button appears. Until then the
+      passphrase is the way in.</p>
+  </div>
+
   <div class="note-box">
-    <p><b>What this passphrase does, and what it does not.</b></p>
-    <p>This is a static page with no server behind it, so the check runs in your
-      browser and anyone determined can read past it. Treat it as a lock on a
-      door, not a safe: it keeps the editor out of the way of passers-by.</p>
-    <p>The protection that actually matters is elsewhere. Nothing typed here can
-      reach the site on its own — publishing needs a write to the repository, and
-      only you can do that. Someone who bypassed this gate would gain a text box
-      and nothing else.</p>
+    <p><b>What signing in does here, and what it does not.</b></p>
+    <p>Google's token is checked properly — the signature is verified against
+      Google's own public keys, and the address inside it has to be yours. That
+      part is real.</p>
+    <p>But this is a static page with no server, so all of that runs in the
+      browser, and anyone determined can step over it by editing the page.
+      The same is true of the passphrase. Treat either as a lock on a door,
+      not a safe.</p>
+    <p>The protection that actually holds is elsewhere. Nothing here can reach
+      the site on its own — publishing needs a write to the repository, and that
+      needs a GitHub token that signing in does not give you. Someone past this
+      gate would gain a text box and nothing else.</p>
   </div>
 </main>
 
@@ -63,6 +81,7 @@
     <h1>Write an article</h1>
     <p class="lede">Type on the left, see it on the right. Publish straight to the
       site, or take the file away and commit it yourself.</p>
+    <p class="who" id="whoBadge" hidden></p>
   </header>
 
   <div class="cols">
@@ -148,7 +167,7 @@
 
     <div class="row" style="margin-top:34px">
       <button class="btn ghost" id="clearBtn" type="button">Clear the editor</button>
-      <button class="btn ghost" id="lockBtn" type="button">Lock</button>
+      <button class="btn ghost" id="lockBtn" type="button">Sign out</button>
     </div>
   </section>
 </main>
@@ -161,6 +180,21 @@
 
 <script type="module">
 import { renderBody, prettyDate, slugify } from './render.js';
+import { verifyGoogleToken, loadGoogle, sha256Hex, AuthError } from './auth.js';
+
+// ── Who is allowed in ──────────────────────────────────────────────────────
+//
+// Paste the OAuth client ID from the Google Cloud console here. It is not a
+// secret -- Google publishes it to every visitor that loads the button -- but
+// leaving it empty simply hides the button, so the editor still opens with the
+// passphrase before this is set up.
+const GOOGLE_CLIENT_ID = '';
+
+// The address allowed to sign in, stored as a SHA-256 so that a public
+// repository does not also publish an email address to anything scraping them.
+const ALLOWED_EMAIL_HASHES = [
+  'd0a592532fbba89b8508c370b3f260955d5faf19bc4ab31ab5af408f9129c97b',
+];
 
 // The passphrase is not stored here -- only what it hashes to. That keeps it out
 // of the repository, which is public. It is still a client-side check and the
@@ -173,6 +207,7 @@ const FILE = 'articles.json';
 const DRAFT_KEY = 'earthviewer.draft';
 const OPEN_KEY = 'earthviewer.open';
 const TOKEN_KEY = 'earthviewer.token';
+const WHO_KEY = 'earthviewer.who';
 
 const $ = (id) => document.getElementById(id);
 const gate = $('gate'), editor = $('editor');
@@ -183,20 +218,61 @@ function say(el, text, kind = '') {
 }
 
 // ── The gate ───────────────────────────────────────────────────────────────
-async function sha256(text) {
-  // Needs a secure context. Over https, which is how the published site is
-  // served, this is always there; opened from a file:// path it may not be, and
-  // an unexplained failure is worse than a plain refusal.
-  if (!crypto?.subtle) throw new Error('This browser will not hash here — open the page over https.');
-  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-function openEditor() {
+function openEditor(who) {
   gate.hidden = true;
   editor.hidden = false;
+  const badge = $('whoBadge');
+  badge.textContent = who ? `Signed in as ${who}` : 'Opened with the passphrase';
+  badge.hidden = false;
   loadDraft();
   paint();
+}
+
+// ── Google ─────────────────────────────────────────────────────────────────
+async function onGoogleCredential(response) {
+  say($('googleSay'), 'Checking with Google…', 'busy');
+  try {
+    const who = await verifyGoogleToken(response.credential, {
+      clientId: GOOGLE_CLIENT_ID,
+      allowedHashes: ALLOWED_EMAIL_HASHES,
+    });
+    try {
+      sessionStorage.setItem(OPEN_KEY, '1');
+      sessionStorage.setItem(WHO_KEY, who.email);
+    } catch {}
+    say($('googleSay'), '');
+    openEditor(who.email);
+  } catch (err) {
+    // Anyone can be signed into a Google account; being signed into the wrong
+    // one is the ordinary case, not an error worth being cryptic about.
+    say($('googleSay'), err instanceof AuthError ? err.message : 'Sign-in failed.', 'err');
+  }
+}
+
+async function setUpGoogle() {
+  if (!GOOGLE_CLIENT_ID) {
+    $('googleBox').hidden = true;
+    $('setupNote').hidden = false;
+    return;
+  }
+  try {
+    const google = await loadGoogle();
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: onGoogleCredential,
+      auto_select: false,
+      cancel_on_tap_outside: true,
+    });
+    google.accounts.id.renderButton($('googleBtn'), {
+      theme: 'filled_black', size: 'large', shape: 'pill',
+      text: 'signin_with', logo_alignment: 'left', width: 280,
+    });
+  } catch (err) {
+    // The passphrase is still there, so a library that will not load is a
+    // degraded gate rather than a locked door.
+    $('googleBtn').hidden = true;
+    say($('googleSay'), err.message, 'err');
+  }
 }
 
 $('gateForm').addEventListener('submit', async (e) => {
@@ -208,7 +284,7 @@ $('gateForm').addEventListener('submit', async (e) => {
     // A deliberate pause. It does not make a client-side check strong, but it
     // does make grinding at it through the form tedious.
     await new Promise((r) => setTimeout(r, 400));
-    if (await sha256(entered) !== PASS_HASH) {
+    if (await sha256Hex(entered) !== PASS_HASH) {
       say($('gateSay'), 'That is not it.', 'err');
       $('pass').select();
       return;
@@ -222,7 +298,14 @@ $('gateForm').addEventListener('submit', async (e) => {
   }
 });
 
-try { if (sessionStorage.getItem(OPEN_KEY) === '1') openEditor(); } catch {}
+let alreadyOpen = false;
+try {
+  if (sessionStorage.getItem(OPEN_KEY) === '1') {
+    alreadyOpen = true;
+    openEditor(sessionStorage.getItem(WHO_KEY) || '');
+  }
+} catch {}
+if (!alreadyOpen) setUpGoogle();
 
 // ── The article being written ──────────────────────────────────────────────
 const fields = ['fTitle', 'fDate', 'fAuthor', 'fSummary', 'fBody'];
@@ -398,7 +481,8 @@ $('clearBtn').addEventListener('click', () => {
 });
 
 $('lockBtn').addEventListener('click', () => {
-  try { sessionStorage.removeItem(OPEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch {}
+  try { for (const k of [OPEN_KEY, TOKEN_KEY, WHO_KEY]) sessionStorage.removeItem(k);
+        globalThis.google?.accounts?.id?.disableAutoSelect?.(); } catch {}
   location.reload();
 });
 </script>

@@ -77,13 +77,34 @@ Articles are stored as **plain text, never HTML**. `render.js` escapes the text
 before applying any formatting, so the only tags that ever reach the page are
 the ones it puts there. Keep it that way — do not add a raw-HTML block type.
 
+### Signing in with Google
+
+`auth.js` verifies Google's ID token in the browser: it fetches Google's JWKS,
+checks the RS256 signature against the key named in the token header, then
+checks `iss`, `aud`, `exp`, `iat`, `email_verified` and the address against a
+list of SHA-256 hashes. The allowed address is stored hashed so a public repo
+does not also publish an email address for scrapers.
+
+That verification is real and was tested against forged tokens — tampered
+payload, `alg: none`, wrong audience, expired, future-dated, unknown key id,
+wrong issuer, wrong address. All were rejected; only the correctly signed token
+for the allowed address was accepted.
+
+To turn it on, create an OAuth 2.0 Client ID (Web application) in the Google
+Cloud console, add the site's origin (`https://inasjackw321.github.io`) as an
+authorised JavaScript origin, and set `GOOGLE_CLIENT_ID` in `write.html`. Left
+empty, the button is hidden and the passphrase remains the way in. The client ID
+is not a secret — Google serves it to every visitor who loads the button.
+
 ### About the passphrase
 
 The gate on `write.html` is a SHA-256 check that runs in the browser. Only the
 hash is in the repository; the passphrase itself is not, and must not be added.
 
 It is obfuscation, not access control, and the page says so in as many words. A
-static host has nowhere to put a real check. The security property that actually
+static host has nowhere to put a real check — and this applies equally to the
+Google sign-in above: the token check is genuine, but it runs in the visitor's
+browser and can be stepped over by editing the page. The security property that actually
 holds is different: the editor cannot publish by itself. Writing to the site
 needs either a commit or a GitHub token with write access to this repository, so
 someone who read past the gate would get a text box and nothing more.
