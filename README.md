@@ -66,3 +66,29 @@ be reproduced from anything checked in:
   originally referred to. The count of two marks is stated in prose instead.
 
 Do not reintroduce a statistic that cannot be recomputed from this repo.
+
+## The newsletter
+
+`newsletter.html` lists and reads articles; `write.html` is the editor behind a
+passphrase; `articles.json` is the store; `render.js` turns article text into
+HTML and `pages.css` styles both pages.
+
+Articles are stored as **plain text, never HTML**. `render.js` escapes the text
+before applying any formatting, so the only tags that ever reach the page are
+the ones it puts there. Keep it that way — do not add a raw-HTML block type.
+
+### About the passphrase
+
+The gate on `write.html` is a SHA-256 check that runs in the browser. Only the
+hash is in the repository; the passphrase itself is not, and must not be added.
+
+It is obfuscation, not access control, and the page says so in as many words. A
+static host has nowhere to put a real check. The security property that actually
+holds is different: the editor cannot publish by itself. Writing to the site
+needs either a commit or a GitHub token with write access to this repository, so
+someone who read past the gate would get a text box and nothing more.
+
+To change the passphrase, replace `PASS_HASH` in `write.html` with the SHA-256
+of the new one:
+
+    printf %s 'the-new-passphrase' | sha256sum

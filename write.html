@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Write — EarthViewer</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#080a0e">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="pages.css">
+</head>
+<body>
+
+<nav class="topbar">
+  <a class="home" href="index.html">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="g-nav"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#g-nav)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
+    EarthViewer
+  </a>
+  <div class="links">
+    <a class="away" href="newsletter.html">Newsletter</a>
+    <a class="away" href="index.html">Home</a>
+  </div>
+</nav>
+
+<!-- ── The gate ─────────────────────────────────────────────── -->
+<main class="wrap narrow" id="gate">
+  <header class="head">
+    <div class="kicker">Editor</div>
+    <h1>Write an article</h1>
+    <p class="lede">Enter the passphrase to open the editor.</p>
+  </header>
+
+  <form id="gateForm" autocomplete="off">
+    <label class="field">Passphrase
+      <input type="password" id="pass" autocomplete="current-password" spellcheck="false"
+             placeholder="xxxxx-xxxxx-xxxxx-xxxxx">
+    </label>
+    <div class="row">
+      <button class="btn" type="submit">Open the editor</button>
+      <label style="font-size:14px;color:var(--dim);display:flex;gap:8px;align-items:center;">
+        <input type="checkbox" id="remember" style="width:auto;margin:0;"> Stay open in this tab
+      </label>
+    </div>
+    <div class="say" id="gateSay"></div>
+  </form>
+
+  <div class="note-box">
+    <p><b>What this passphrase does, and what it does not.</b></p>
+    <p>This is a static page with no server behind it, so the check runs in your
+      browser and anyone determined can read past it. Treat it as a lock on a
+      door, not a safe: it keeps the editor out of the way of passers-by.</p>
+    <p>The protection that actually matters is elsewhere. Nothing typed here can
+      reach the site on its own — publishing needs a write to the repository, and
+      only you can do that. Someone who bypassed this gate would gain a text box
+      and nothing else.</p>
+  </div>
+</main>
+
+<!-- ── The editor ───────────────────────────────────────────── -->
+<main class="wrap" id="editor" hidden>
+  <header class="head">
+    <div class="kicker">Editor</div>
+    <h1>Write an article</h1>
+    <p class="lede">Type on the left, see it on the right. Publish straight to the
+      site, or take the file away and commit it yourself.</p>
+  </header>
+
+  <div class="cols">
+    <div>
+      <label class="field">Title
+        <input type="text" id="fTitle" placeholder="What this one is about">
+      </label>
+      <label class="field">Date
+        <input type="date" id="fDate">
+      </label>
+      <label class="field">By <span style="font-weight:400">(optional)</span>
+        <input type="text" id="fAuthor" placeholder="Left blank, no name is shown">
+      </label>
+      <label class="field">Summary <span style="font-weight:400">(optional)</span>
+        <input type="text" id="fSummary" placeholder="One line for the list page">
+        <span class="hint">Left blank, the opening of the article is used.</span>
+      </label>
+      <label class="field">Article
+        <textarea id="fBody" class="mono" placeholder="Blank line between paragraphs.
+
+## A heading
+### A smaller heading
+
+- a list
+- of things
+
+> something quoted
+
+**bold**, *italic*, `code`, [a link](https://example.com)
+
+!(assets/paris-wide.webp) A picture, with this as its caption"></textarea>
+      </label>
+      <div class="say" id="draftSay"></div>
+    </div>
+
+    <div class="preview-shell">
+      <div class="panel">
+        <div class="kicker" style="margin-bottom:10px">Preview</div>
+        <div class="when" id="pWhen" style="font-size:13px;color:var(--faint)"></div>
+        <h2 id="pTitle" style="margin-top:8px">Untitled</h2>
+        <div class="prose" id="pBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <section style="margin-top:56px;border-top:1px solid var(--line);padding-top:36px">
+    <h2>Publish it</h2>
+    <p class="lede">Two ways. The first writes to the site for you; the second
+      hands you the file and leaves the writing to you.</p>
+
+    <div class="cols" style="margin-top:26px">
+      <div class="panel">
+        <h3>Straight to the site</h3>
+        <p style="font-size:14.5px;color:var(--dim)">Needs a GitHub token with
+          permission to write to this one repository. It is kept in this tab only,
+          never saved to the page and never sent anywhere but GitHub.</p>
+        <label class="field">GitHub token
+          <input type="password" id="fToken" autocomplete="off" spellcheck="false"
+                 placeholder="github_pat_…">
+          <span class="hint">Fine-grained token · this repository only · Contents:
+            read and write. Anything wider than that is more than this needs.</span>
+        </label>
+        <div class="row">
+          <button class="btn" id="publishBtn" type="button">Publish</button>
+          <button class="btn ghost" id="forgetBtn" type="button">Forget the token</button>
+        </div>
+        <div class="say" id="pubSay"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Take the file away</h3>
+        <p style="font-size:14.5px;color:var(--dim)">Downloads
+          <code>articles.json</code> with this article added to whatever is already
+          published. Drop it in the root of the <code>gh-pages</code> branch and
+          commit.</p>
+        <div class="row">
+          <button class="btn ghost" id="downloadBtn" type="button">Download articles.json</button>
+          <button class="btn ghost" id="copyBtn" type="button">Copy to clipboard</button>
+        </div>
+        <div class="say" id="fileSay"></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:34px">
+      <button class="btn ghost" id="clearBtn" type="button">Clear the editor</button>
+      <button class="btn ghost" id="lockBtn" type="button">Lock</button>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p>The editor is a page like any other on this site — it has no server, and it
+    can only write to the newsletter through GitHub.
+    <a href="newsletter.html">See what is published</a>.</p>
+</footer>
+
+<script type="module">
+import { renderBody, prettyDate, slugify } from './render.js';
+
+// The passphrase is not stored here -- only what it hashes to. That keeps it out
+// of the repository, which is public. It is still a client-side check and the
+// page says so plainly rather than implying otherwise.
+const PASS_HASH = '2ae25e3b90c8678eabee7880e3cd339f99d1b7008ee14786b9a145e1f8025d28';
+
+const REPO = 'Inasjackw321/Sent-2-imagery';
+const BRANCH = 'gh-pages';
+const FILE = 'articles.json';
+const DRAFT_KEY = 'earthviewer.draft';
+const OPEN_KEY = 'earthviewer.open';
+const TOKEN_KEY = 'earthviewer.token';
+
+const $ = (id) => document.getElementById(id);
+const gate = $('gate'), editor = $('editor');
+
+function say(el, text, kind = '') {
+  el.className = `say ${kind}`;
+  el.textContent = text;
+}
+
+// ── The gate ───────────────────────────────────────────────────────────────
+async function sha256(text) {
+  // Needs a secure context. Over https, which is how the published site is
+  // served, this is always there; opened from a file:// path it may not be, and
+  // an unexplained failure is worse than a plain refusal.
+  if (!crypto?.subtle) throw new Error('This browser will not hash here — open the page over https.');
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function openEditor() {
+  gate.hidden = true;
+  editor.hidden = false;
+  loadDraft();
+  paint();
+}
+
+$('gateForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const entered = $('pass').value.trim();
+  if (!entered) return;
+  say($('gateSay'), 'Checking…', 'busy');
+  try {
+    // A deliberate pause. It does not make a client-side check strong, but it
+    // does make grinding at it through the form tedious.
+    await new Promise((r) => setTimeout(r, 400));
+    if (await sha256(entered) !== PASS_HASH) {
+      say($('gateSay'), 'That is not it.', 'err');
+      $('pass').select();
+      return;
+    }
+    if ($('remember').checked) sessionStorage.setItem(OPEN_KEY, '1');
+    $('pass').value = '';
+    say($('gateSay'), '');
+    openEditor();
+  } catch (err) {
+    say($('gateSay'), err.message, 'err');
+  }
+});
+
+try { if (sessionStorage.getItem(OPEN_KEY) === '1') openEditor(); } catch {}
+
+// ── The article being written ──────────────────────────────────────────────
+const fields = ['fTitle', 'fDate', 'fAuthor', 'fSummary', 'fBody'];
+
+function current() {
+  return {
+    slug: slugify($('fTitle').value || 'article'),
+    title: $('fTitle').value.trim(),
+    date: $('fDate').value || new Date().toISOString().slice(0, 10),
+    author: $('fAuthor').value.trim(),
+    summary: $('fSummary').value.trim(),
+    body: $('fBody').value,
+  };
+}
+
+function paint() {
+  const a = current();
+  $('pTitle').textContent = a.title || 'Untitled';
+  $('pWhen').textContent = prettyDate(a.date) + (a.author ? ` · ${a.author}` : '');
+  $('pBody').innerHTML = renderBody(a.body);
+  const ready = Boolean(a.title && a.body.trim());
+  $('publishBtn').disabled = !ready;
+  $('downloadBtn').disabled = !ready;
+  $('copyBtn').disabled = !ready;
+}
+
+function saveDraft() {
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(current()));
+    say($('draftSay'), 'Draft kept in this browser.', '');
+  } catch {
+    say($('draftSay'), 'This browser will not keep a draft — do not close the tab.', 'err');
+  }
+}
+
+function loadDraft() {
+  let draft = null;
+  try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch {}
+  if (draft) {
+    $('fTitle').value = draft.title ?? '';
+    $('fDate').value = draft.date ?? '';
+    $('fAuthor').value = draft.author ?? '';
+    $('fSummary').value = draft.summary ?? '';
+    $('fBody').value = draft.body ?? '';
+  }
+  if (!$('fDate').value) $('fDate').value = new Date().toISOString().slice(0, 10);
+  try { $('fToken').value = sessionStorage.getItem(TOKEN_KEY) ?? ''; } catch {}
+}
+
+let saveTimer;
+for (const id of fields) {
+  $(id).addEventListener('input', () => {
+    paint();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveDraft, 700);
+  });
+}
+
+// ── Merging into what is already published ────────────────────────────────
+async function published() {
+  const resp = await fetch(`${FILE}?t=${Date.now()}`, { cache: 'no-store' });
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  return Array.isArray(data) ? data : (data.articles ?? []);
+}
+
+/** An article with the same address replaces the old one rather than joining it. */
+function merged(articles, article) {
+  const rest = articles.filter((a) => a.slug !== article.slug);
+  return { articles: [article, ...rest].sort((a, b) => String(b.date).localeCompare(String(a.date))) };
+}
+
+async function fileContents() {
+  return JSON.stringify(merged(await published(), current()), null, 2) + '\n';
+}
+
+$('downloadBtn').addEventListener('click', async () => {
+  try {
+    const blob = new Blob([await fileContents()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: FILE });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    say($('fileSay'), `Saved ${FILE}. Commit it to ${BRANCH}.`, 'ok');
+  } catch (err) {
+    say($('fileSay'), err.message, 'err');
+  }
+});
+
+$('copyBtn').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(await fileContents());
+    say($('fileSay'), 'Copied. Paste it over articles.json.', 'ok');
+  } catch {
+    say($('fileSay'), 'The clipboard is not allowed here — use the download instead.', 'err');
+  }
+});
+
+// ── Publishing through GitHub ─────────────────────────────────────────────
+const api = (path, token, options = {}) => fetch(`https://api.github.com/repos/${REPO}/${path}`, {
+  ...options,
+  headers: {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${token}`,
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(options.headers ?? {}),
+  },
+});
+
+// btoa works on bytes, not characters: an accented letter or a dash would throw
+// without this step, and the article would fail to publish for no visible reason.
+function toBase64(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+$('publishBtn').addEventListener('click', async () => {
+  const token = $('fToken').value.trim();
+  if (!token) { say($('pubSay'), 'A token is needed to write to the repository.', 'err'); return; }
+  const article = current();
+
+  $('publishBtn').disabled = true;
+  say($('pubSay'), 'Publishing…', 'busy');
+  try {
+    try { sessionStorage.setItem(TOKEN_KEY, token); } catch {}
+
+    // The sha of what is there now: GitHub needs it to be sure nothing has been
+    // written in between, and refuses the update if it has.
+    let sha;
+    const head = await api(`contents/${FILE}?ref=${BRANCH}`, token);
+    if (head.ok) sha = (await head.json()).sha;
+    else if (head.status === 401) throw new Error('GitHub rejected that token.');
+    else if (head.status === 403) throw new Error('That token is not allowed to read this repository.');
+    else if (head.status !== 404) throw new Error(`GitHub said ${head.status} looking for ${FILE}.`);
+
+    const body = {
+      message: `Newsletter: ${article.title}`,
+      content: toBase64(JSON.stringify(merged(await published(), article), null, 2) + '\n'),
+      branch: BRANCH,
+      ...(sha ? { sha } : {}),
+    };
+    const put = await api(`contents/${FILE}`, token, { method: 'PUT', body: JSON.stringify(body) });
+
+    if (put.status === 409) throw new Error('Something else changed articles.json — reload and publish again.');
+    if (!put.ok) {
+      const detail = await put.json().catch(() => ({}));
+      throw new Error(detail.message ? `GitHub: ${detail.message}` : `GitHub said ${put.status}.`);
+    }
+
+    say($('pubSay'), 'Published. It is live once Pages rebuilds, usually under a minute.', 'ok');
+  } catch (err) {
+    say($('pubSay'), err.message, 'err');
+  } finally {
+    $('publishBtn').disabled = false;
+  }
+});
+
+$('forgetBtn').addEventListener('click', () => {
+  $('fToken').value = '';
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
+  say($('pubSay'), 'Token forgotten.', '');
+});
+
+$('clearBtn').addEventListener('click', () => {
+  if (!confirm('Clear the editor? The draft in this browser goes with it.')) return;
+  for (const id of fields) $(id).value = '';
+  try { localStorage.removeItem(DRAFT_KEY); } catch {}
+  $('fDate').value = new Date().toISOString().slice(0, 10);
+  paint();
+  say($('draftSay'), '');
+});
+
+$('lockBtn').addEventListener('click', () => {
+  try { sessionStorage.removeItem(OPEN_KEY); sessionStorage.removeItem(TOKEN_KEY); } catch {}
+  location.reload();
+});
+</script>
+
+</body>
+</html>

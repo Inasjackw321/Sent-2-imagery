@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Newsletter — EarthViewer</title>
+<meta name="description" content="Notes on EarthViewer: what applied-view is doing, what the satellites saw this month, and what changed in the app.">
+<meta name="theme-color" content="#080a0e">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="pages.css">
+</head>
+<body>
+
+<nav class="topbar">
+  <a class="home" href="index.html">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><defs><clipPath id="g-nav"><circle cx="32" cy="32" r="21"/></clipPath></defs><path d="M -8,50 Q 32,31 72,10" stroke="#3ee39f" stroke-width="9.5" fill="none" clip-path="url(#g-nav)"/><ellipse cx="32" cy="32" rx="8.5" ry="21" fill="none" stroke="#58c9ff" stroke-width="2.4" opacity=".6"/><circle cx="32" cy="32" r="21" fill="none" stroke="#58c9ff" stroke-width="4"/></svg>
+    EarthViewer
+  </a>
+  <div class="links">
+    <a class="away" href="index.html">Home</a>
+    <a class="away" href="https://github.com/Inasjackw321/Sent-2-imagery">GitHub</a>
+  </div>
+</nav>
+
+<main class="wrap" id="main">
+  <div id="listView">
+    <header class="head">
+      <div class="kicker">Newsletter</div>
+      <h1>Notes from orbit</h1>
+      <p class="lede">Occasional writing about the app: what applied-view is doing,
+        what the satellites picked up, and what has changed since last time.</p>
+    </header>
+    <div id="list"></div>
+  </div>
+
+  <article class="article" id="readView" hidden>
+    <div class="when" id="artWhen"></div>
+    <h1 id="artTitle"></h1>
+    <p class="lede" id="artSummary"></p>
+    <div class="prose" id="artBody"></div>
+    <a class="back" href="newsletter.html">← All articles</a>
+  </article>
+</main>
+
+<footer class="wrap">
+  <p>EarthViewer is built on free, public data: Copernicus Sentinel-1 and
+    Sentinel-2, NASA GIBS and NASA FIRMS.
+    <a href="index.html">Back to the project page</a>.</p>
+</footer>
+
+<script type="module">
+import { renderBody, excerpt, prettyDate } from './render.js';
+
+const listView = document.getElementById('listView');
+const readView = document.getElementById('readView');
+const list = document.getElementById('list');
+
+const nothingYet = `
+  <div class="empty">
+    <b>No articles yet</b>
+    The first one will appear here once it is published.
+  </div>`;
+
+function show(articles) {
+  // ?a=the-slug reads one article; without it you get the list. A query rather
+  // than a separate file per article, because a static host has no way to make
+  // the files without a build step, and this needs neither.
+  const want = new URLSearchParams(location.search).get('a');
+  const found = want && articles.find((a) => a.slug === want);
+
+  if (found) {
+    document.title = `${found.title} — EarthViewer`;
+    document.getElementById('artWhen').textContent = prettyDate(found.date)
+      + (found.author ? ` · ${found.author}` : '');
+    document.getElementById('artTitle').textContent = found.title;
+    const summary = document.getElementById('artSummary');
+    summary.textContent = found.summary ?? '';
+    summary.hidden = !found.summary;
+    document.getElementById('artBody').innerHTML = renderBody(found.body);
+    listView.hidden = true;
+    readView.hidden = false;
+    return;
+  }
+
+  if (want) {
+    // Asked for something that is not there: say so rather than showing the
+    // list as though nothing had been requested.
+    list.innerHTML = `
+      <div class="empty">
+        <b>That article is not here</b>
+        It may have been renamed. Everything published is listed below.
+      </div>`;
+  }
+
+  if (!articles.length) { list.innerHTML = nothingYet; return; }
+
+  const sorted = [...articles].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  list.insertAdjacentHTML('beforeend', '<div class="list">' + sorted.map((a) => `
+    <a class="item" href="?a=${encodeURIComponent(a.slug)}">
+      <div class="when">${prettyDate(a.date)}${a.author ? ` · ${escapeText(a.author)}` : ''}</div>
+      <h2>${escapeText(a.title)}</h2>
+      <p>${escapeText(a.summary || excerpt(a.body))}</p>
+      <span class="more">Read →</span>
+    </a>`).join('') + '</div>');
+}
+
+// Titles and summaries go in as text, not markup.
+function escapeText(s) {
+  const d = document.createElement('div');
+  d.textContent = s ?? '';
+  return d.innerHTML;
+}
+
+fetch('articles.json', { cache: 'no-cache' })
+  .then((r) => (r.ok ? r.json() : { articles: [] }))
+  .then((data) => show(Array.isArray(data) ? data : (data.articles ?? [])))
+  .catch(() => { list.innerHTML = nothingYet; });
+</script>
+
+</body>
+</html>
