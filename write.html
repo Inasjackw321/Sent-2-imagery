@@ -30,14 +30,6 @@
     <p class="lede">Sign in with Google, or use the passphrase.</p>
   </header>
 
-  <div id="accountBox" hidden>
-    <a class="btn wide" href="account.html">Sign in to your account</a>
-    <p class="hint">Publishing this way needs the author role, which the database
-      checks — not this page.</p>
-    <div class="say" id="accountSay"></div>
-    <div class="or"><span>or</span></div>
-  </div>
-
   <div id="googleBox">
     <div id="googleBtn"></div>
     <div class="say" id="googleSay"></div>
@@ -143,10 +135,7 @@
     <div class="cols" style="margin-top:26px">
       <div class="panel">
         <h3>Straight to the site</h3>
-        <p style="font-size:14.5px;color:var(--dim)" id="accountPublishNote" hidden>
-          Signed in as an author, so this publishes straight to the newsletter.
-          No token needed.</p>
-        <p style="font-size:14.5px;color:var(--dim)" id="tokenNote">Needs a GitHub token with
+        <p style="font-size:14.5px;color:var(--dim)">Needs a GitHub token with
           permission to write to this one repository. It is kept in this tab only,
           never saved to the page and never sent anywhere but GitHub.</p>
         <label class="field">GitHub token
@@ -192,7 +181,6 @@
 <script type="module">
 import { renderBody, prettyDate, slugify } from './render.js';
 import { verifyGoogleToken, loadGoogle, sha256Hex, AuthError } from './auth.js';
-import * as backend from './backend.js';
 
 // ── Who is allowed in ──────────────────────────────────────────────────────
 //
@@ -233,12 +221,6 @@ function say(el, text, kind = '') {
 function openEditor(who) {
   gate.hidden = true;
   editor.hidden = false;
-  if (publishVia === 'account') {
-    $('accountPublishNote').hidden = false;
-    $('tokenNote').hidden = true;
-    $('fToken').closest('label').hidden = true;
-    $('forgetBtn').hidden = true;
-  }
   const badge = $('whoBadge');
   badge.textContent = who ? `Signed in as ${who}` : 'Opened with the passphrase';
   badge.hidden = false;
@@ -264,31 +246,6 @@ async function onGoogleCredential(response) {
     // Anyone can be signed into a Google account; being signed into the wrong
     // one is the ordinary case, not an error worth being cryptic about.
     say($('googleSay'), err instanceof AuthError ? err.message : 'Sign-in failed.', 'err');
-  }
-}
-
-// With a backend configured, an account carrying the author role is the way
-// in, and the role is checked by the database rather than by this page.
-async function setUpAccount() {
-  if (!backend.configured()) return false;
-  try {
-    const who = await backend.me();
-    if (!who) {
-      $('accountBox').hidden = false;
-      return false;
-    }
-    if (!who.canPublish) {
-      $('accountBox').hidden = false;
-      say($('accountSay'), `Signed in as ${who.name}, but this account cannot publish. An admin can grant the author role.`, 'err');
-      return false;
-    }
-    publishVia = 'account';
-    openEditor(`${who.name} · ${who.role}`);
-    return true;
-  } catch (err) {
-    say($('accountSay'), err.message, 'err');
-    $('accountBox').hidden = false;
-    return false;
   }
 }
 
@@ -341,8 +298,6 @@ $('gateForm').addEventListener('submit', async (e) => {
   }
 });
 
-let publishVia = 'github';
-
 let alreadyOpen = false;
 try {
   if (sessionStorage.getItem(OPEN_KEY) === '1') {
@@ -350,9 +305,7 @@ try {
     openEditor(sessionStorage.getItem(WHO_KEY) || '');
   }
 } catch {}
-if (!alreadyOpen) {
-  setUpAccount().then((opened) => { if (!opened) setUpGoogle(); });
-}
+if (!alreadyOpen) setUpGoogle();
 
 // ── The article being written ──────────────────────────────────────────────
 const fields = ['fTitle', 'fDate', 'fAuthor', 'fSummary', 'fBody'];
@@ -472,22 +425,6 @@ function toBase64(text) {
 }
 
 $('publishBtn').addEventListener('click', async () => {
-  // Signed in with an author account: the database takes the article directly,
-  // and refuses it if the role does not allow it.
-  if (publishVia === 'account') {
-    $('publishBtn').disabled = true;
-    say($('pubSay'), 'Publishing…', 'busy');
-    try {
-      await backend.saveArticle(current());
-      say($('pubSay'), 'Published. It is on the newsletter now.', 'ok');
-    } catch (err) {
-      say($('pubSay'), err.message, 'err');
-    } finally {
-      $('publishBtn').disabled = false;
-    }
-    return;
-  }
-
   const token = $('fToken').value.trim();
   if (!token) { say($('pubSay'), 'A token is needed to write to the repository.', 'err'); return; }
   const article = current();

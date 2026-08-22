@@ -218,27 +218,24 @@ footer a { color: var(--dim); }
 }
 .person select { width: auto; margin-top: 0; padding: 7px 11px; font-size: 14px; }
 
-/* ── Likes ────────────────────────────────────────────────── */
-.chipbtn.like { margin-right: 10px; }
-.chipbtn.like .heart { color: var(--faint); transition: color .18s, transform .18s; }
-.chipbtn.like.on { color: var(--ink); border-color: rgba(255, 128, 128, .45); }
-.chipbtn.like.on .heart { color: #ff8080; transform: scale(1.15); }
-
-/* ── Comments ─────────────────────────────────────────────── */
-.comments { margin-top: 48px; padding-top: 34px; border-top: 1px solid var(--line); }
-.comments h2 { font-size: 22px; }
-.comment { padding: 20px 0; border-bottom: 1px solid var(--line); }
-.comment-head { display: flex; align-items: baseline; gap: 12px; }
-.comment-head b { font-size: 15px; font-weight: 650; }
-.comment-head .fine { margin-top: 0; }
-.comment-body {
-  margin-top: 8px; color: #dfe6f1; font-size: 15.5px; line-height: 1.65;
-  /* A comment is somebody else's words: keep their line breaks, and never let
-     a wall of unbroken characters push the page sideways. */
-  white-space: pre-wrap; overflow-wrap: anywhere;
+/* ── Reactions ────────────────────────────────────────────── */
+.reactions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 44px; }
+.reaction {
+  display: inline-flex; align-items: center; gap: 9px;
+  padding: 9px 16px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 15px; line-height: 1;
+  color: var(--dim); background: var(--raised);
+  border: 1px solid var(--line);
+  transition: border-color .18s, background .18s, transform .12s;
 }
-.linkbtn {
-  margin-left: auto; padding: 0; border: 0; background: none; cursor: pointer;
-  font: inherit; font-size: 13px; color: var(--faint); text-decoration: underline;
+.reaction:hover { border-color: var(--line-lit); transform: translateY(-1px); }
+.reaction:active { transform: translateY(0) scale(.97); }
+.reaction:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reaction.on {
+  color: var(--ink); background: rgba(88, 201, 255, .1);
+  border-color: rgba(88, 201, 255, .45);
 }
-.linkbtn:hover { color: var(--bad); }
+.reaction .face { font-size: 17px; }
+/* Tabular figures so a count going 9 -> 10 does not shuffle the row along. */
+.reaction .tally { font-variant-numeric: tabular-nums; font-weight: 620; font-size: 14px; }
+.reaction.on .tally { color: var(--accent); }

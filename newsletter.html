@@ -17,7 +17,6 @@
     EarthViewer
   </a>
   <div class="links">
-    <a class="away" href="account.html" id="accountLink" hidden>Sign in</a>
     <a class="away" href="index.html">Home</a>
     <a class="away" href="https://github.com/Inasjackw321/Sent-2-imagery">GitHub</a>
   </div>
@@ -40,10 +39,9 @@
     <p class="lede" id="artSummary"></p>
     <div class="prose" id="artBody"></div>
 
+    <div class="reactions" id="reactions" hidden></div>
+
     <div class="share" id="share">
-      <button class="chipbtn like" id="likeBtn" hidden>
-        <span class="heart">♥</span> <span id="likeCount">0</span>
-      </button>
       <span class="share-label">Share</span>
       <button class="chipbtn" id="shareNative" hidden>Share…</button>
       <button class="chipbtn" id="shareCopy">Copy link</button>
@@ -55,28 +53,6 @@
       <span class="say" id="shareSay" role="status"></span>
     </div>
 
-    <section class="comments" id="comments" hidden>
-      <h2 id="commentsHead">Comments</h2>
-
-      <div id="commentBox" hidden>
-        <label class="field" for="commentText">Join in</label>
-        <textarea id="commentText" rows="4" style="min-height:110px"
-                  placeholder="Say something…" maxlength="4000"></textarea>
-        <div class="row">
-          <button class="btn" id="postComment" type="button">Post</button>
-          <span class="fine" id="commentAs"></span>
-        </div>
-      </div>
-
-      <div class="note-box" id="signInToComment" hidden>
-        <p><b>Sign in to comment.</b></p>
-        <p><a href="account.html">Create an account or sign in</a> — it takes a
-          moment, and lets you like articles too.</p>
-      </div>
-
-      <div class="say" id="commentSay" role="status"></div>
-      <div id="commentList"></div>
-    </section>
 
     <a class="back" href="newsletter.html">← All articles</a>
   </article>
@@ -121,9 +97,7 @@ function show(articles) {
     setUpShare(found);
     listView.hidden = true;
     readView.hidden = false;
-    // Likes and comments need the backend. Without one they simply are not
-    // there, rather than being there and not working.
-    if (backend.configured()) setUpSocial(found.slug).catch(reportSocial);
+    if (backend.configured()) setUpReactions(found.slug).catch(() => {});
     return;
   }
 
@@ -200,123 +174,47 @@ function setUpShare(article) {
   };
 }
 
-// ── Likes and comments ─────────────────────────────────────────────────────
-const reportSocial = (err) => {
-  const say = document.getElementById('commentSay');
-  say.className = 'say err';
-  say.textContent = err.message;
-};
+// ── Reactions ──────────────────────────────────────────────────────────────
+//
+// The only part of this page that needs anything behind the site. Without it
+// configured the bar is simply absent -- better than a row of buttons that
+// count to nothing.
+async function setUpReactions(slug) {
+  const bar = document.getElementById('reactions');
+  let state = await backend.reactionsFor(slug);
 
-async function setUpSocial(slug) {
-  const who = await backend.me();
+  const paint = () => {
+    bar.replaceChildren(...backend.REACTIONS.map((r) => {
+      const button = document.createElement('button');
+      const { count, mine } = state[r.key];
+      button.className = `reaction${mine ? ' on' : ''}`;
+      button.title = mine ? 'Tap again to take it back' : r.label;
+      button.setAttribute('aria-pressed', String(mine));
 
-  // Likes
-  const likeBtn = document.getElementById('likeBtn');
-  const likeCount = document.getElementById('likeCount');
-  const paintLikes = ({ count, liked }) => {
-    likeCount.textContent = count;
-    likeBtn.classList.toggle('on', liked);
-    likeBtn.title = who
-      ? (liked ? 'You liked this' : 'Like this')
-      : 'Sign in to like this';
-    likeBtn.hidden = false;
-  };
-  paintLikes(await backend.likeState(slug));
-  likeBtn.onclick = async () => {
-    if (!who) { location.href = 'account.html'; return; }
-    likeBtn.disabled = true;
-    try { paintLikes(await backend.toggleLike(slug)); }
-    catch (err) { reportSocial(err); }
-    finally { likeBtn.disabled = false; }
-  };
+      const face = document.createElement('span');
+      face.className = 'face';
+      face.textContent = r.emoji;
+      const tally = document.createElement('span');
+      tally.className = 'tally';
+      tally.textContent = count;
 
-  // Comments
-  document.getElementById('comments').hidden = false;
-  document.getElementById('commentBox').hidden = !who;
-  document.getElementById('signInToComment').hidden = Boolean(who);
-  if (who) document.getElementById('commentAs').textContent = `as ${who.name}`;
-
-  const paintComments = async () => {
-    const comments = await backend.listComments(slug);
-    document.getElementById('commentsHead').textContent =
-      comments.length ? `Comments (${comments.length})` : 'Comments';
-    const listEl = document.getElementById('commentList');
-
-    if (!comments.length) {
-      listEl.replaceChildren(Object.assign(document.createElement('p'),
-        { className: 'fine', textContent: 'Nothing yet. Be the first.' }));
-      return;
-    }
-
-    listEl.replaceChildren(...comments.map((c) => {
-      const el = document.createElement('div');
-      el.className = 'comment';
-
-      const head = document.createElement('div');
-      head.className = 'comment-head';
-      const name = document.createElement('b');
-      name.textContent = c.name;
-      const when = document.createElement('span');
-      when.className = 'fine';
-      when.textContent = prettyDate(String(c.at).slice(0, 10)) + (c.edited ? ' · edited' : '');
-      head.append(name, when);
-
-      // Everyone can delete their own; an admin can delete any. The database
-      // decides which of those is true -- this only offers the button.
-      if (who && (who.id === c.userId || who.isAdmin)) {
-        const remove = document.createElement('button');
-        remove.className = 'linkbtn';
-        remove.textContent = 'Delete';
-        remove.onclick = async () => {
-          if (!confirm('Delete this comment?')) return;
-          try { await backend.deleteComment(c.id); await paintComments(); }
-          catch (err) { reportSocial(err); }
-        };
-        head.append(remove);
-      }
-
-      // The comment goes in as text. Someone else wrote it, and it is never
-      // going to be treated as markup.
-      const body = document.createElement('p');
-      body.className = 'comment-body';
-      body.textContent = c.body;
-
-      el.append(head, body);
-      return el;
+      button.append(face, tally);
+      button.onclick = async () => {
+        // Move the number straight away and put it back if the write fails:
+        // waiting on a round trip makes a button feel broken.
+        const before = state;
+        state = { ...state, [r.key]: { count: count + (mine ? -1 : 1), mine: !mine } };
+        paint();
+        try { state = await backend.react(slug, r.key); }
+        catch { state = before; }
+        paint();
+      };
+      return button;
     }));
+    bar.hidden = false;
   };
 
-  await paintComments();
-
-  const post = document.getElementById('postComment');
-  if (post) post.onclick = async () => {
-    const field = document.getElementById('commentText');
-    post.disabled = true;
-    try {
-      await backend.addComment(slug, field.value);
-      field.value = '';
-      document.getElementById('commentSay').textContent = '';
-      await paintComments();
-    } catch (err) {
-      reportSocial(err);
-    } finally {
-      post.disabled = false;
-    }
-  };
-}
-
-// ── Signed-in state in the bar ─────────────────────────────────────────────
-async function paintNav() {
-  if (!backend.configured()) return;
-  const link = document.getElementById('accountLink');
-  link.hidden = false;
-  try {
-    const who = await backend.me();
-    link.textContent = who ? (who.name ?? 'Account') : 'Sign in';
-  } catch {
-    // A backend that will not answer should not stop the newsletter being read.
-    link.textContent = 'Sign in';
-  }
+  paint();
 }
 
 // Titles and summaries go in as text, not markup.
@@ -326,7 +224,6 @@ function escapeText(s) {
   return d.innerHTML;
 }
 
-paintNav();
 backend.listArticles()
   .then(show)
   .catch(() => { list.innerHTML = nothingYet; });

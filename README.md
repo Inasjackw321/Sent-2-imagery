@@ -67,49 +67,44 @@ be reproduced from anything checked in:
 
 Do not reintroduce a statistic that cannot be recomputed from this repo.
 
-## Accounts, comments and likes
+## Reactions
 
-`backend.js` holds the Supabase URL and anon key. **Left empty, the whole site
-behaves as it did before**: the newsletter reads `articles.json`, the editor
-uses the passphrase, and there are no accounts, comments or likes. Nothing on
-the site depends on the backend being there.
+`reactions-schema.sql` is the entire database: one table of counts. There are
+no accounts, no sign-up, no comments — those were tried and taken out again,
+because the setup they needed was not worth what they gave back.
 
-With it configured:
+A reaction is anonymous. A random id in the visitor's own browser stops a
+double-tap counting twice and lets the page light up the buttons they already
+pressed. It is not an identity and it proves nothing: **without accounts there
+is no way to know two reactions came from two people**, so treat the numbers as
+a rough measure of interest, not a poll.
 
-- `account.html` — sign up, sign in, profile, and (for admins) setting roles.
-- Likes and comments appear on each article.
-- The editor opens for an account with the `author` or `admin` role and
-  publishes straight to the database — no GitHub token.
+To switch it on: create a Supabase project, run `reactions-schema.sql` in its
+SQL editor, and put the Project URL and **anon** key into `backend.js`. Left
+empty, the reaction bar does not appear at all — it never shows a count it
+cannot back up. Never commit the `service_role` key.
 
-### Setting it up
+## Publishing an article
 
-1. Create a project at supabase.com (the free tier is enough).
-2. Run `supabase-schema.sql` once in its SQL editor.
-3. Copy Project URL and the **anon** key into `backend.js`.
-4. Sign up on `account.html`, then run the last query in the schema file with
-   your address to make yourself an admin.
-5. Optional: Authentication → Providers → Google, to allow Google sign-in.
+Articles live in `articles.json` in this branch. Each entry is:
 
-The anon key belongs in the repository — it identifies the project and grants
-nothing on its own. **Never** put the `service_role` key in this repo; it
-bypasses every policy below.
+```json
+{
+  "slug": "url-friendly-name",
+  "title": "The headline",
+  "date": "2026-08-22",
+  "author": "Jack",
+  "summary": "One line for the list page.",
+  "body": "Plain text. Blank line between paragraphs."
+}
+```
 
-### Where the rules live
+`body` is plain text, never HTML — `render.js` escapes it before applying any
+formatting, so the only tags reaching the page are the ones it writes. Keep it
+that way.
 
-All of them are in Postgres, in `supabase-schema.sql`, not in the pages:
-
-- A comment's `user_id` must equal the caller's own id, so a comment cannot be
-  signed with someone else's name however the request is made.
-- Likes are keyed on `(article_slug, user_id)`, so a second like is impossible
-  rather than merely discouraged.
-- Publishing requires the `author` or `admin` role, checked by a policy.
-- A `before update` trigger keeps anyone from changing their own role. The
-  account page reads the row back after a role change rather than assuming the
-  update did what it looked like.
-
-Comment text is rendered with `textContent`, never as markup — tested by
-posting `<img onerror>` and `<script>` and confirming they come out as visible
-text.
+Add an entry, commit to `gh-pages`, and it is live. `write.html` still works as
+an editor if you want one, but editing the file directly is the simpler path.
 
 ## The newsletter
 
