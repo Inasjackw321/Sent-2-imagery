@@ -533,3 +533,51 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 /* A control that cannot bite on the current satellite: shown, but faded, so
    its setting is not mistaken for something that is being applied. */
 .is-moot { opacity: .4; }
+
+/* ── Live rain radar ────────────────────────────────────────── */
+
+.radar-dock { display: grid; gap: 8px; }
+.radar-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.radar-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.radar-toggle.is-on {
+  color: #d9ffe9; border-color: rgba(62,227,159,.6); background: rgba(11,58,42,.85);
+  font-weight: 600;
+}
+.radar-mark { font-size: 13px; opacity: .65; }
+.radar-toggle.is-on .radar-mark { opacity: 1; }
+
+.radar-body {
+  padding: 10px 11px; border-radius: 10px; font-size: 11.5px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+.radar-time { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+/* Tabular figures so the clock does not jitter the row as the loop runs. */
+.radar-time b { color: var(--ink); font-size: 13px; font-variant-numeric: tabular-nums; }
+.radar-rel { color: var(--ink-faint); font-size: 10.5px; }
+.radar-soon {
+  padding: 1px 6px; border-radius: 999px; font-size: 9.5px; font-weight: 600;
+  color: #ffd79a; background: rgba(255,192,97,.14);
+  border: 1px solid rgba(255,192,97,.4);
+}
+.radar-controls { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.radar-step, .radar-play {
+  height: 22px; flex: 0 0 auto; cursor: pointer; line-height: 1;
+  background: var(--bg-3); color: var(--ink-dim); font: inherit;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.radar-step { width: 22px; }
+.radar-play { flex: 1; font-size: 11px; }
+.radar-step:hover, .radar-play:hover { color: var(--ink); }
+.radar-scrub, .radar-fade input { accent-color: #3ee39f; flex: 1; min-width: 0; }
+.radar-scrub { width: 100%; margin-top: 8px; }
+.radar-fade { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.radar-note {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 10px; line-height: 1.45; color: var(--ink-faint);
+}

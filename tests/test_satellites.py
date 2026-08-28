@@ -80,7 +80,7 @@ def test_both_satellites_are_fully_described():
         assert sat["collection"] and sat["short"] and sat["platform"]
         assert sat["resolution"] > 0 and sat["repeat_days"] > 0
         assert sat["default_composite"] in config.COMPOSITES
-        assert config.COMPOSITES[sat["default_composite"]]["sat"] == key
+        assert key in config.COMPOSITES[sat["default_composite"]]["sat"]
         assert isinstance(sat["can_superres"], bool)
 
 
@@ -97,7 +97,7 @@ def test_a_collection_maps_back_to_its_satellite():
     for key, sat in config.SATELLITES.items():
         assert config.satellite_for_collection(sat["collection"]) == key
     # Anything unrecognised falls back rather than failing a search.
-    assert config.satellite_for_collection("landsat-c2-l2") == config.DEFAULT_SATELLITE
+    assert config.satellite_for_collection("modis-09a1-061") == config.DEFAULT_SATELLITE
 
 
 # ── Reading radar ──────────────────────────────────────────────
@@ -349,14 +349,14 @@ def test_a_search_can_be_narrowed_to_one_satellite_or_widened_to_both():
         stac.normalise_satellites(["sentinel-9"])
 
 
-def test_the_offline_catalogue_flies_both_satellites():
+def test_the_offline_catalogue_flies_every_satellite():
     from backend.geo import normalise_aoi
 
     found = stac.search_scenes(normalise_aoi({"bbox": [-0.2, 51.4, 0.0, 51.6]}),
                                "2024-01-01", "2024-06-01", max_cloud=100,
                                limit=40, demo=True)["scenes"]
     kinds = {s["satellite"] for s in found}
-    assert kinds == {"sentinel-1", "sentinel-2"}
+    assert kinds == set(config.SATELLITES)
     # Newest first, whichever satellite it came from.
     assert found == sorted(found, key=lambda s: s["datetime"], reverse=True)
     for scene in found:

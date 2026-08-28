@@ -12,6 +12,7 @@ import { $, $$, toast, fmt, el } from './ui.js';
 import { copyRegion, saveRegion, WATERMARK } from './capture.js';
 import { initFires, POPUP } from './fires.js';
 import { initClouds } from './clouds.js';
+import { initRadar } from './radar.js';
 
 let map;
 let aoiLayer = null;
@@ -62,6 +63,7 @@ export function initMap() {
   bindPassLookup();
   initFires(map);
   initClouds(map);
+  initRadar(map);
 
   on('image', showOverlay);
   return map;

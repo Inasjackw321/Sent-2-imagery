@@ -13,6 +13,7 @@ import os
 STAC_URL = os.environ.get("STAC_URL", "https://earth-search.aws.element84.com/v1")
 STAC_COLLECTION = os.environ.get("STAC_COLLECTION", "sentinel-2-l2a")
 STAC_COLLECTION_S1 = os.environ.get("STAC_COLLECTION_S1", "sentinel-1-grd")
+STAC_COLLECTION_LANDSAT = os.environ.get("STAC_COLLECTION_LANDSAT", "landsat-c2-l2")
 
 # Where each satellite's pixels come from. Sentinel-2 has one obvious home;
 # Sentinel-1 does not, and the difference is worth spelling out because it is
@@ -117,6 +118,42 @@ SATELLITES = {
         # does do -- and radar needs badly -- is average the speckle away.
         "can_superres": False,
         "colour": "#ffb347",
+    },
+    # Landsat is the long memory. Sentinel-2 starts in 2015; Landsat has been
+    # photographing the same ground since 1982, which is the difference between
+    # seeing a place change and seeing what it used to be.
+    "landsat": {
+        "key": "landsat",
+        "short": "Landsat",
+        "label": "Landsat 8/9 · surface reflectance",
+        "kind": "optical",
+        "platform": "Landsat 8 and 9",
+        "collection": STAC_COLLECTION_LANDSAT,
+        "sources": ("planetary-computer", "earth-search"),
+        "resolution": 30,
+        "since": "1982-08-22",
+        "revisit": "≈8 days",
+        # One satellite repeats its ground track every 16 days; the two are
+        # offset by eight, which is where the ≈8 day revisit comes from.
+        "repeat_days": 16,
+        "swath_hint": "30 m visible, near-infrared and short-wave infrared; 100 m thermal",
+        "attribution": "Contains USGS Landsat data",
+        "provider": "USGS / NASA, via the Planetary Computer",
+        "notes": "Collection 2 Level-2 surface reflectance. Coarser than "
+                 "Sentinel-2 but reaches back four decades, and carries a "
+                 "thermal band that Sentinel-2 has nothing to match.",
+        "units": "surface reflectance",
+        "default_composite": "true_color",
+        "cloud_filter": True,
+        # Landsat products are resampled onto a fixed grid, so every date lands
+        # on the same pixel boundaries. There is no sub-pixel diversity between
+        # passes for merging to exploit -- unlike Sentinel-2, where there is.
+        "can_superres": False,
+        # Collection 2 Level-2 stores reflectance scaled and shifted, rather
+        # than Sentinel-2's plain ten-thousandths.
+        "scale": 0.0000275,
+        "offset": -0.2,
+        "colour": "#8fd98f",
     },
 }
 
@@ -223,8 +260,32 @@ BANDS = {
              "sat": "sentinel-1", "unit": "dB"},
 }
 
+# Landsat carries most of the same wavelengths under different asset names, so
+# a band says where it lives on each satellite that has it rather than being
+# duplicated per mission.
+_LANDSAT_ASSETS = {
+    "coastal": "coastal", "blue": "blue", "green": "green", "red": "red",
+    # Landsat has no 10 m broad NIR: its near-infrared is the narrow one, which
+    # is what "nir" resolves to when the satellite is Landsat.
+    "nir": "nir08", "nir08": "nir08",
+    "swir16": "swir16", "swir22": "swir22",
+}
+
 for _name, _band in BANDS.items():
-    _band.setdefault("sat", "sentinel-2")
+    _band.setdefault("sat", ["sentinel-2"])
+    if isinstance(_band["sat"], str):
+        _band["sat"] = [_band["sat"]]
+    if _name in _LANDSAT_ASSETS and "sentinel-2" in _band["sat"]:
+        _band["sat"].append("landsat")
+        _band.setdefault("assets", {})["landsat"] = _LANDSAT_ASSETS[_name]
+
+# Landsat's thermal band has no Sentinel-2 counterpart at all: nothing on
+# Sentinel-2 measures emitted heat.
+BANDS["lwir11"] = {
+    # Sampled onto the 30 m grid, but the sensor itself resolves about 100 m.
+    "asset": "lwir11", "res": 100, "nm": 10900, "label": "Thermal infrared",
+    "sat": ["landsat"], "unit": "K",
+}
 
 SCL_ASSET = "scl"
 
@@ -356,7 +417,14 @@ COMPOSITES = {
 }
 
 for _name, _preset in COMPOSITES.items():
-    _preset.setdefault("sat", "sentinel-2")
+    _preset.setdefault("sat", ["sentinel-2"])
+    if isinstance(_preset["sat"], str):
+        _preset["sat"] = [_preset["sat"]]
+    # An optical preset works on Landsat too when every band it asks for is
+    # one Landsat carries -- which is checked here rather than assumed.
+    if "sentinel-2" in _preset["sat"] and all(
+            "landsat" in BANDS[_b]["sat"] for _b in _preset["bands"]):
+        _preset["sat"].append("landsat")
 
 # ---------------------------------------------------------------------------
 # Spectral indices
@@ -439,7 +507,12 @@ INDICES = {
 }
 
 for _name, _index in INDICES.items():
-    _index.setdefault("sat", "sentinel-2")
+    _index.setdefault("sat", ["sentinel-2"])
+    if isinstance(_index["sat"], str):
+        _index["sat"] = [_index["sat"]]
+    if "sentinel-2" in _index["sat"] and all(
+            "landsat" in BANDS[_b]["sat"] for _b in _index["bands"]):
+        _index["sat"].append("landsat")
 
 # ---------------------------------------------------------------------------
 # Colormaps: control points as (position, r, g, b)

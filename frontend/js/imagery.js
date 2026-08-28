@@ -109,8 +109,10 @@ const SAT_HINTS = {
   'sentinel-2': 'Optical, 10 m, daylight only — and only where there is no cloud.',
   'sentinel-1': 'Radar, ~20 m, through cloud and at night. Brightness is roughness, '
     + 'not colour: still water is black, towns are white.',
-  both: 'Every pass from both, newest first. A render uses one satellite; put the '
-    + 'other on the map too and fade between them.',
+  landsat: 'Optical, 30 m, back to 1982. Coarser than Sentinel-2 but decades '
+    + 'deeper, and it measures heat as well as light.',
+  both: 'Every pass from all three, newest first. A render uses one satellite; '
+    + 'put another on the map too and fade between them.',
 };
 
 /** The satellite the next render will be of, and its record from the config. */
@@ -179,7 +181,7 @@ function buildSatellitePicker() {
   host.innerHTML = '';
   const keys = Object.keys(store.config.satellites);
   const options = [...keys.map((k) => ({ key: k, label: store.config.satellites[k].short })),
-    { key: 'both', label: 'Both' }];
+    { key: 'both', label: 'All' }];
 
   for (const opt of options) {
     const dots = opt.key === 'both'
@@ -198,7 +200,7 @@ function buildSatellitePicker() {
 function setSatellite(key) {
   if (key === satFilter) return;
   satFilter = key;
-  // "Both" lists everything but a render is still of one satellite, so the
+  // "All" lists everything but a render is still of one satellite, so the
   // one on show only changes when the choice actually names one.
   if (key !== 'both') satShown = key;
   markSatellite();
@@ -271,7 +273,7 @@ const satOf = (date) => date?.satellite ?? store.config.default_satellite;
 /**
  * Follow the dates: whichever satellite took them is the one being shown.
  *
- * With both satellites listed, picking a radar date is itself the choice of
+ * With every satellite listed, picking a radar date is itself the choice of
  * radar, and everything downstream -- the visualisations on offer, the tuning
  * presets, what a merge is even for -- has to follow it.
  */
@@ -331,11 +333,11 @@ function buildVisualisationOptions() {
   compGroup.innerHTML = idxGroup.innerHTML = '';
 
   for (const [key, spec] of Object.entries(composites)) {
-    if (spec.sat !== sat.key) continue;
+    if (!spec.sat.includes(sat.key)) continue;
     compGroup.append(el('option', { value: `composite:${key}` }, spec.label));
   }
   for (const [key, spec] of Object.entries(indices)) {
-    if (spec.sat !== sat.key) continue;
+    if (!spec.sat.includes(sat.key)) continue;
     idxGroup.append(el('option', { value: `index:${key}` }, spec.label));
   }
   idxGroup.hidden = !idxGroup.children.length;

@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import math
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import numpy as np
 import rasterio
@@ -58,7 +59,7 @@ def _resolve_assets(scene: dict, bands: list[str]) -> tuple[list[str], dict[str,
     if unknown:
         raise BandReadError(f"{sat['short']} has no {', '.join(unknown)} band")
 
-    wrong = [b for b in bands if config.BANDS[b]["sat"] != sat["key"]]
+    wrong = [b for b in bands if sat["key"] not in config.BANDS[b]["sat"]]
     if wrong:
         raise BandReadError(
             f"{', '.join(wrong)} is not a {sat['short']} band")
@@ -71,7 +72,9 @@ def _resolve_assets(scene: dict, bands: list[str]) -> tuple[list[str], dict[str,
     assets = scene.get("assets", {})
     targets = {}
     for band in needed:
-        name = config.BANDS[band]["asset"]
+        spec = config.BANDS[band]
+        # The same wavelength is called different things by different missions.
+        name = spec.get("assets", {}).get(sat["key"], spec["asset"])
         # Catalogues are not always consistent about case, and a radar scene
         # naming its polarisation VV rather than vv should not be a failure.
         href = assets.get(name) or _case_insensitive(assets, name)
@@ -162,8 +165,8 @@ def _read_one(href: str, grid: Grid, resampling: Resampling):
         with rasterio.open(href) as src:
             _check_georeferencing(src, href)
             nodata = 0 if src.nodata is None else src.nodata
-            with WarpedVRT(
-                src,
+            with _placed(src, nodata) as placed, WarpedVRT(
+                placed,
                 crs=grid.crs,
                 transform=grid.transform,
                 width=grid.width,
@@ -177,22 +180,50 @@ def _read_one(href: str, grid: Grid, resampling: Resampling):
         raise BandReadError(_explain(href, exc)) from exc
 
 
-def _check_georeferencing(src, href: str) -> None:
-    """Refuse a file that has no map transform, rather than warping nonsense.
+@contextmanager
+def _placed(src, nodata):
+    """The source as something that knows where it is on the Earth.
 
-    Raw Sentinel-1 measurement files are georeferenced by ground control points
-    rather than by a map transform. Warping one without honouring its GCPs does
-    not raise anything -- it silently produces a smooth smear with no ground in
-    it, which looks like imagery and is not. Better to say so.
+    Sentinel-1 GRD carries no map transform. It is georeferenced by a grid of
+    ground control points, because the geometry of a radar pass is not a
+    rectangle laid on the ground and no single affine transform describes it.
+
+    Warping straight onto the output grid does not honour those points -- GDAL
+    only builds a GCP transformer when it is left to work the extent out for
+    itself, and asking for an explicit destination grid in the same breath
+    quietly loses them. The result reads without error and contains no ground,
+    which is worse than a failure.
+
+    So it is done in two steps: let the GCP warp settle first, then resample
+    that onto the grid we actually want. A file that already has a transform
+    skips this and is handed straight through.
+    """
+    if src.crs is not None and src.transform and not src.transform.is_identity:
+        yield src
+        return
+
+    _gcps, gcp_crs = src.gcps
+    with WarpedVRT(src, src_crs=gcp_crs, crs=gcp_crs,
+                   src_nodata=nodata, nodata=nodata) as inner:
+        yield inner
+
+
+def _check_georeferencing(src, href: str) -> None:
+    """Refuse a file that cannot be placed at all, rather than warping nonsense.
+
+    Warping a file with no georeferencing of any kind does not raise anything --
+    it silently produces a smooth smear with no ground in it, which looks like
+    imagery and is not. Better to say so. Ground control points are not that
+    case: those can be placed, and `_placed` does it.
     """
     if src.crs is not None and src.transform and not src.transform.is_identity:
         return
-    where = _host(href)
-    extra = (" It is georeferenced by ground control points, which this "
-             "reader cannot place on a map." if src.gcps and src.gcps[0] else "")
+    if src.gcps and src.gcps[0] and src.gcps[1] is not None:
+        return
     raise BandReadError(
-        f"The file served by {where} carries no map projection.{extra} "
-        "Try a different source for this satellite.")
+        f"The file served by {_host(href)} carries no map projection and no "
+        "ground control points, so there is no way to say where on Earth it "
+        "belongs. Try a different source for this satellite.")
 
 
 def _explain(href: str, exc: Exception) -> str:
@@ -217,10 +248,17 @@ def _host(href: str) -> str:
 
 def _to_physical(raw, scene: dict) -> np.ma.MaskedArray:
     """Stored numbers to the units the band is actually in."""
-    if config.satellite(scene.get("satellite"))["kind"] == "radar":
+    sat = config.satellite(scene.get("satellite"))
+    if sat["kind"] == "radar":
         return _to_decibels(raw)
+
+    # Sentinel-2 stores reflectance in ten-thousandths, with a baseline offset
+    # on newer scenes. Landsat Collection 2 scales and shifts it instead. Each
+    # satellite says which, so neither has to be special-cased here.
+    scale = sat.get("scale", config.REFLECTANCE_SCALE)
+    offset = sat.get("offset", 0.0)
     data = np.ma.filled(raw.astype("float32"), 0.0) + stac.boa_offset(scene)
-    return np.ma.masked_array((data * config.REFLECTANCE_SCALE).astype("float32"),
+    return np.ma.masked_array((data * scale + offset).astype("float32"),
                               mask=np.ma.getmaskarray(raw))
 
 

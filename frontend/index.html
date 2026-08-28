@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EarthViewer · Sentinel imagery</title>
-<meta name="description" content="Look at any place on Earth in free Sentinel-1 and Sentinel-2 satellite imagery, from one date or merged from several into one sharper, cloud-free picture — and find out when either satellite next flies over.">
+<title>EarthViewer · free satellite imagery</title>
+<meta name="description" content="Look at any place on Earth in free Sentinel-2, Sentinel-1 and Landsat imagery, from one date or merged from several into one sharper, cloud-free picture — with live cloud, rain radar and active fires on the map.">
 <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="/css/app.css">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -20,10 +20,10 @@
 <body>
 
 <header class="topbar">
-  <div class="brand"><span class="brand-mark">🛰️</span><span>EarthViewer<small>sentinel-1 &amp; 2 imagery</small></span></div>
+  <div class="brand"><span class="brand-mark">🛰️</span><span>EarthViewer<small>free satellite imagery</small></span></div>
   <div class="topbar-right">
     <span class="badge badge-demo" id="demoBadge" hidden>Demo data — synthetic</span>
-    <span class="badge" id="sourceBadge">Sentinel-1 &amp; 2</span>
+    <span class="badge" id="sourceBadge">Sentinel &amp; Landsat</span>
     <button class="btn-install" id="installBtn" hidden title="Install EarthViewer as an app">
       <span>↓</span> Install app
     </button>
@@ -159,6 +159,7 @@
     <div class="side-docks">
       <div class="fire-dock" id="fireDock"></div>
       <div class="cloud-dock" id="cloudDock"></div>
+      <div class="radar-dock" id="radarDock"></div>
     </div>
   </section>
 </main>

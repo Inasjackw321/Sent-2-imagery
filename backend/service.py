@@ -49,19 +49,27 @@ def _cache_key(*parts) -> str:
 # ── What a render needs ────────────────────────────────────────
 
 
+def _named(keys: list[str]) -> str:
+    """The satellites a preset works on, read out for a person."""
+    names = [config.satellite(k)["short"] for k in keys]
+    if len(names) == 1:
+        return names[0]
+    return " or ".join([", ".join(names[:-1]), names[-1]])
+
+
 def _needed_bands(mode: str, preset: str, index: str, sat: dict) -> list[str]:
     if mode == "index":
         spec = config.INDICES.get(index)
         if not spec:
             raise RenderError(f"Unknown index {index!r}")
-        if spec["sat"] != sat["key"]:
-            raise RenderError(f"{spec['label']} needs {config.satellite(spec['sat'])['short']}")
+        if sat["key"] not in spec["sat"]:
+            raise RenderError(f"{spec['label']} needs {_named(spec['sat'])}")
         return list(spec["bands"])
     spec = config.COMPOSITES.get(preset)
     if not spec:
         raise RenderError(f"Unknown composite {preset!r}")
-    if spec["sat"] != sat["key"]:
-        raise RenderError(f"{spec['label']} needs {config.satellite(spec['sat'])['short']}")
+    if sat["key"] not in spec["sat"]:
+        raise RenderError(f"{spec['label']} needs {_named(spec['sat'])}")
     return list(dict.fromkeys(spec["bands"]))
 
 
@@ -414,7 +422,7 @@ def probe(req: dict) -> dict:
     around = circle_to_polygon(lon, lat, max(sat["resolution"] * 15, 200))
     grid = Grid(geometry_bounds(around), config.MIN_SIZE)
 
-    names = [b for b in PROBE_BANDS[sat["kind"]] if config.BANDS[b]["sat"] == sat["key"]]
+    names = [b for b in PROBE_BANDS[sat["kind"]] if sat["key"] in config.BANDS[b]["sat"]]
     stacks = [raster.read_bands(s, grid, names)[0] for s in scenes]
     bands = enhance.composite(stacks, "median") if len(stacks) > 1 else stacks[0]
 

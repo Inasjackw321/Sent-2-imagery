@@ -306,14 +306,23 @@ def boa_offset(scene: dict) -> int:
     """
     if scene.get("boa_offset_applied"):
         return 0
+    # The offset is a Sentinel-2 processing-baseline quirk. Nothing else has it.
+    if scene.get("satellite") not in (None, "sentinel-2"):
+        return 0
     return config.BOA_OFFSET if scene.get("date", "") >= config.BOA_OFFSET_DATE else 0
 
 
 # ── Synthetic scenes (DEMO_MODE) ───────────────────────────────
 
 
-_DEMO_CADENCE = {"sentinel-2": 5, "sentinel-1": 6}
-_DEMO_HOUR = {"sentinel-2": "10:30:00", "sentinel-1": "17:52:00"}
+_DEMO_CADENCE = {"sentinel-2": 5, "sentinel-1": 6, "landsat": 8}
+# A demo scene has to say which satellite it came from inside its own id, since
+# that id is all the client hands back when it asks for the scene again.
+# Sentinel-2 carries no tag so ids made before there was a third satellite
+# still read correctly.
+_DEMO_TAG = {"sentinel-2": "", "sentinel-1": "s1", "landsat": "ls"}
+_DEMO_HOUR = {"sentinel-2": "10:30:00", "sentinel-1": "17:52:00",
+              "landsat": "10:05:00"}
 
 
 def _demo_scenes(geometry, start, end, max_cloud, limit, satellites=None) -> list[dict]:
@@ -353,7 +362,8 @@ def _demo_scene(day: dt.date, cloud: float, seed: int, satellite: str | None = N
     key = satellite or config.DEFAULT_SATELLITE
     sat = config.satellite(key)
     radar = sat["kind"] == "radar"
-    suffix = "-s1" if radar else ""
+    tag = _DEMO_TAG.get(key, "")
+    suffix = f"-{tag}" if tag else ""
     return {
         "id": f"demo-{day.isoformat()}-{seed % 9973}-{int(round(cloud * 10))}{suffix}",
         "satellite": key,
@@ -363,7 +373,7 @@ def _demo_scene(day: dt.date, cloud: float, seed: int, satellite: str | None = N
         # date list lie about what the pass can see through.
         "cloud": None if radar else cloud,
         "platform": f"{sat['platform']} (synthetic)",
-        "tile": "IW ASC #59" if radar else "DEMO",
+        "tile": "IW ASC #59" if radar else ("199/024" if key == "landsat" else "DEMO"),
         "epsg": 3857,
         "orbit": 59 if radar else 108,
         "orbit_state": "ascending" if radar else None,
@@ -380,5 +390,6 @@ def _demo_scene_from_id(scene_id: str) -> dict:
     if len(parts) < 6:
         raise SceneSearchError(f"Malformed demo scene id: {scene_id}")
     day = dt.date.fromisoformat("-".join(parts[1:4]))
-    satellite = "sentinel-1" if parts[-1] == "s1" else config.DEFAULT_SATELLITE
+    tagged = {tag: key for key, tag in _DEMO_TAG.items() if tag}
+    satellite = tagged.get(parts[-1], config.DEFAULT_SATELLITE)
     return _demo_scene(day, int(parts[5]) / 10.0, int(parts[4]), satellite)
