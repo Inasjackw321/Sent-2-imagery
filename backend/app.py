@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import composite, config, fires, passes, service, stac
+from . import composite, config, fires, passes, service, stac, version
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -42,6 +42,7 @@ def get_config() -> dict[str, Any]:
     """Everything the front end needs to build itself, in one call."""
     return {
         "demo": config.DEMO_MODE,
+        "build": version.described(),
         "stac_url": config.STAC_URL,
         "collection": config.STAC_COLLECTION,
         "satellite": config.SATELLITE,
@@ -79,7 +80,8 @@ def get_config() -> dict[str, Any]:
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "demo": config.DEMO_MODE, "time": dt.datetime.utcnow().isoformat()}
+    return {"ok": True, "demo": config.DEMO_MODE, "build": version.described(),
+            "time": dt.datetime.utcnow().isoformat()}
 
 
 # ---------------------------------------------------------------------------

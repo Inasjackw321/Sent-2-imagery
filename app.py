@@ -110,7 +110,9 @@ def main() -> int:
     port = launcher.choose_port(host, port)
     url = f"http://localhost:{port}"
 
+    from backend import version
     print(f"\n  EarthViewer → {url}")
+    print(f"  Build: {version.described()}")
     print(f"  Imagery: {'SYNTHETIC DEMO DATA' if '--demo' in argv else 'live satellites'}\n")
 
     import uvicorn

@@ -19,6 +19,14 @@ async function main() {
     return;
   }
 
+  // Which build is on screen. It lives in a tooltip rather than on the bar
+  // because it matters exactly once -- when something behaves like a bug that
+  // was already fixed, and the answer is that this copy predates the fix.
+  if (store.config.build) {
+    const brand = document.querySelector('.brand');
+    if (brand) brand.title = `EarthViewer · build ${store.config.build}`;
+  }
+
   if (store.config.demo) {
     $('#demoBadge').hidden = false;
     $('#sourceBadge').textContent = 'Synthetic imagery';
