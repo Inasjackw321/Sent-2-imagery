@@ -226,7 +226,10 @@ def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:
     b = {k: v.astype("float32") for k, v in bands.items()}
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        if name == "radar_ratio":
+        if name == "surface_temp":
+            # Already a temperature: kelvin to celsius, not a ratio of bands.
+            out = b["lwir11"] - 273.15
+        elif name == "radar_ratio":
             # Already in decibels, so subtracting is dividing.
             out = b["vv"] - b["vh"]
         elif name == "evi":

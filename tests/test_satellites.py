@@ -616,3 +616,58 @@ def test_both_satellites_are_answered_soonest_first():
     aways = [s["next"]["hours_away"] for s in out["satellites"]]
     assert aways == sorted(aways)
     assert all(a > 0 for a in aways)
+
+
+def test_landsat_reflectance_is_scaled_its_own_way():
+    """Sentinel-2 stores ten-thousandths; Landsat scales and shifts.
+
+    Using one satellite's numbers on the other is silent -- the picture still
+    renders, it is just wrong -- so it is worth pinning down.
+    """
+    import numpy as np
+
+    from backend import raster
+
+    stored = np.ma.masked_array(np.array([[10000.0]], dtype="float32"), mask=[[False]])
+
+    s2 = raster._to_physical(stored, {"satellite": "sentinel-2", "date": "2020-01-01",
+                                      "boa_offset_applied": True}, "red")
+    assert s2[0, 0] == pytest.approx(1.0)
+
+    ls = raster._to_physical(stored, {"satellite": "landsat", "date": "2020-01-01",
+                                      "boa_offset_applied": True}, "red")
+    assert ls[0, 0] == pytest.approx(10000 * 0.0000275 - 0.2)
+
+
+def test_the_thermal_band_is_kelvin_not_reflectance():
+    """Landsat's thermal band has its own scaling, and needs it.
+
+    Run through the satellite's reflectance figures a stored 44000 would come
+    out near 1.0 -- a plausible-looking reflectance, and about 272 degrees off
+    as a temperature. Nothing would look broken while it happened.
+    """
+    import numpy as np
+
+    from backend import composite, config, raster
+
+    stored = np.ma.masked_array(np.array([[44000.0, 0.0]], dtype="float32"),
+                                mask=[[False, False]])
+    out = raster._to_physical(stored, {"satellite": "landsat", "date": "2020-01-01"}, "lwir11")
+
+    kelvin = out[0, 0]
+    assert 250 < kelvin < 350, f"{kelvin} is not a surface temperature"
+    assert config.BANDS["lwir11"]["unit"] == "K"
+    # A stored zero is no data, not absolute zero.
+    assert np.ma.getmaskarray(out)[0, 1]
+
+    celsius = composite.compute_index({"lwir11": out}, "surface_temp")
+    assert celsius[0, 0] == pytest.approx(kelvin - 273.15, abs=1e-3)
+
+
+def test_surface_temperature_belongs_to_landsat_alone():
+    """Nothing on Sentinel-2 measures emitted heat, so it must not be offered."""
+    from backend import config
+
+    assert config.INDICES["surface_temp"]["sat"] == ["landsat"]
+    assert "landsat" in config.BANDS["lwir11"]["sat"]
+    assert "sentinel-2" not in config.BANDS["lwir11"]["sat"]

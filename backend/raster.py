@@ -143,7 +143,7 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
             mask_future = (pool.submit(_read_one, scene["assets"][config.SCL_ASSET],
                                        grid, Resampling.nearest) if want_mask else None)
 
-            out = {band: _to_physical(fut.result(), scene)
+            out = {band: _to_physical(fut.result(), scene, band)
                    for band, fut in futures.items()}
             scl = mask_future.result() if mask_future else None
 
@@ -246,20 +246,30 @@ def _host(href: str) -> str:
     return without.split("/", 1)[0] or "the source"
 
 
-def _to_physical(raw, scene: dict) -> np.ma.MaskedArray:
+def _to_physical(raw, scene: dict, band: str | None = None) -> np.ma.MaskedArray:
     """Stored numbers to the units the band is actually in."""
     sat = config.satellite(scene.get("satellite"))
     if sat["kind"] == "radar":
         return _to_decibels(raw)
 
     # Sentinel-2 stores reflectance in ten-thousandths, with a baseline offset
-    # on newer scenes. Landsat Collection 2 scales and shifts it instead. Each
-    # satellite says which, so neither has to be special-cased here.
-    scale = sat.get("scale", config.REFLECTANCE_SCALE)
-    offset = sat.get("offset", 0.0)
-    data = np.ma.filled(raw.astype("float32"), 0.0) + stac.boa_offset(scene)
-    return np.ma.masked_array((data * scale + offset).astype("float32"),
-                              mask=np.ma.getmaskarray(raw))
+    # on newer scenes. Landsat Collection 2 scales and shifts it instead. A
+    # band that is not reflectance at all -- Landsat's thermal one is kelvin --
+    # overrides both, because the satellite's own figures would be nonsense
+    # for it and nothing would look broken while it happened.
+    spec = config.BANDS.get(band or "", {})
+    key = sat["key"]
+    scale = spec.get("scale", {}).get(key, sat.get("scale", config.REFLECTANCE_SCALE))
+    offset = spec.get("offset", {}).get(key, sat.get("offset", 0.0))
+    thermal = "scale" in spec
+
+    data = np.ma.filled(raw.astype("float32"), 0.0)
+    if not thermal:
+        data = data + stac.boa_offset(scene)
+    # A stored zero is no data, not absolute zero, and offsetting it would put
+    # a plausible-looking temperature where there is no measurement.
+    mask = np.ma.getmaskarray(raw) | (raw.data == 0) if thermal else np.ma.getmaskarray(raw)
+    return np.ma.masked_array((data * scale + offset).astype("float32"), mask=mask)
 
 
 def _to_decibels(raw) -> np.ma.MaskedArray:
@@ -334,6 +344,18 @@ _ENDMEMBERS = {
 # that scatter in a volume, so vegetation returns relatively much more of it
 # than bare ground does -- a small VV-VH gap for foliage, a wide one for soil.
 # Get that ordering wrong and the false colour is merely decorative.
+# What each kind of ground reads at on a thermal band, in kelvin, on a mild
+# day. These are the differences that make a thermal picture worth looking at:
+# water barely moves because it takes so much energy to warm, tarmac and roofs
+# run far above the fields beside them, and snow pins itself near freezing.
+_THERMAL_K = {
+    "water": 288.0, "veg": 295.0, "soil": 303.0, "urban": 310.0, "snow": 272.0,
+}
+
+# Cloud top, on a thermal band. Around -23 C, which is what a few kilometres
+# of altitude does.
+_CLOUD_TOP_K = 250.0
+
 _RADAR_ENDMEMBERS = {
     "water": dict(vv=-22.5, vh=-30.5),      # ratio 8.0 -- near black
     "veg": dict(vv=-8.5, vh=-13.5),         # ratio 5.0 -- volume scatter, green
@@ -446,12 +468,26 @@ def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool,
     if config.satellite(scene.get("satellite"))["kind"] == "radar":
         return _demo_radar(fractions, grid, phase, sampling, bands, date_seed), 0.0
 
+    # A thermal band is a temperature, not a reflectance, so it is mixed from
+    # its own endmembers and swings with the season rather than with the sun
+    # angle. Without this it would fall through to the reflectance default and
+    # read as roughly absolute zero.
+    warmth = 273.15 + (season - 0.5) * 18.0
+
     out = {}
     for band in bands:
         acc = np.zeros((h, w), dtype="float32")
+        thermal = config.BANDS.get(band, {}).get("unit") == "K"
+        table = _THERMAL_K if thermal else None
         for name, frac in fractions.items():
-            acc += frac * _ENDMEMBERS[name].get(band, 0.1)
-        acc = _as_the_satellite_saw_it(acc * grain, grid, phase, sampling)
+            acc += frac * (table[name] if table else _ENDMEMBERS[name].get(band, 0.1))
+        if thermal:
+            # Seasonal swing about the endmembers, and a gentler grain: a
+            # thermal sensor is coarser than the bands beside it.
+            acc = acc + (warmth - 273.15) + 0.6 * (grain - 1.0) * 100.0
+        else:
+            acc = acc * grain
+        acc = _as_the_satellite_saw_it(acc, grid, phase, sampling)
         out[band] = np.ma.masked_array(acc.astype("float32"),
                                        mask=np.zeros((h, w), dtype=bool))
 
@@ -462,8 +498,16 @@ def _demo_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool,
         clouds = _smoothstep(1.0 - cover - 0.10, 1.0 - cover + 0.04, cloud_field)
         shadow = np.roll(np.roll(clouds, 8, axis=0), 10, axis=1) * (clouds < 0.15)
         for band in out:
-            data = out[band].data * (1 - 0.75 * shadow)
-            data = data * (1 - clouds) + clouds * 0.62
+            thermal = config.BANDS.get(band, {}).get("unit") == "K"
+            data = out[band].data
+            if thermal:
+                # Cloud is cold on a thermal band, not bright: the sensor sees
+                # the top of it, several kilometres up. Blending toward a
+                # reflectance value here would put 0.6 kelvin on the map.
+                data = data * (1 - clouds) + clouds * _CLOUD_TOP_K
+            else:
+                data = data * (1 - 0.75 * shadow)
+                data = data * (1 - clouds) + clouds * 0.62
             out[band] = np.ma.masked_array(data.astype("float32"), mask=out[band].mask)
         # Mask everything the cloud touched, not just the solid centres --
         # the real scene classification flags thin edges and shadows too, and

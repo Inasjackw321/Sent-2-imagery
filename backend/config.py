@@ -283,8 +283,14 @@ for _name, _band in BANDS.items():
 # Sentinel-2 measures emitted heat.
 BANDS["lwir11"] = {
     # Sampled onto the 30 m grid, but the sensor itself resolves about 100 m.
-    "asset": "lwir11", "res": 100, "nm": 10900, "label": "Thermal infrared",
+    "asset": "lwir11", "res": 100, "nm": 10900, "label": "Surface temperature",
     "sat": ["landsat"], "unit": "K",
+    # Not reflectance, so not the satellite's reflectance scaling. Collection 2
+    # stores surface temperature in kelvin under its own scale and offset, and
+    # applying the wrong one would turn 300 K into a number near zero without
+    # anything looking broken.
+    "scale": {"landsat": 0.00341802},
+    "offset": {"landsat": 149.0},
 }
 
 SCL_ASSET = "scl"
@@ -504,6 +510,20 @@ INDICES = {
         "colormap": "magma",
         "hint": "Low where the ground scatters in a volume: forest, dense crops.",
     },
+}
+
+# Not a ratio like the rest: a measurement in its own units, shown in degrees
+# rather than kelvin because nobody thinks in kelvin about a car park.
+INDICES["surface_temp"] = {
+    "label": "Surface temperature",
+    "bands": ["lwir11"],
+    "formula": "lwir11 - 273.15",
+    "range": [-5.0, 55.0],
+    "colormap": "inferno",
+    "hint": "How hot the ground itself is, in °C. Cities read far above the "
+            "fields around them.",
+    "sat": ["landsat"],
+    "unit": "°C",
 }
 
 for _name, _index in INDICES.items():

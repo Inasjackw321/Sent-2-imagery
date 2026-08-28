@@ -581,3 +581,34 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
   font-size: 10px; line-height: 1.45; color: var(--ink-faint);
 }
+
+/* Which of the two weather views, and how fast the loop runs. */
+.radar-modes, .radar-speeds { display: flex; gap: 4px; margin-bottom: 8px; }
+.radar-speeds { margin: 8px 0 0; }
+.radar-mode, .radar-speed {
+  flex: 1; padding: 4px 2px; cursor: pointer; font: inherit;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.radar-mode { font-size: 10.5px; }
+.radar-speed { font-size: 9.5px; text-transform: lowercase; }
+.radar-mode:hover, .radar-speed:hover { color: var(--ink); }
+.radar-mode.is-on, .radar-speed.is-on {
+  color: #d9ffe9; background: rgba(62,227,159,.14); border-color: rgba(62,227,159,.5);
+}
+.radar-now {
+  padding: 0 8px; height: 22px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.radar-now:hover { color: var(--ink); }
+/* What the colours mean. Without it the picture is only decorative. */
+.radar-key {
+  display: flex; flex-wrap: wrap; gap: 3px 8px; margin-top: 8px;
+  font-size: 9.5px; color: var(--ink-faint);
+}
+.radar-swatch { display: inline-flex; align-items: center; gap: 4px; }
+.radar-swatch i {
+  width: 9px; height: 9px; border-radius: 2px; display: inline-block;
+  border: 1px solid rgba(255,255,255,.18);
+}
