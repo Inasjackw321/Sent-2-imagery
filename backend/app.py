@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import composite, config, fires, passes, service, stac, version
+from . import composite, config, fires, passes, service, stac, version, vessels
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -66,6 +66,11 @@ def get_config() -> dict[str, Any]:
             for name in config.COLORMAPS
         },
         "bands": config.BANDS,
+        "vessels": {
+            "source": vessels.SOURCE["label"],
+            "bounds": list(vessels.SOURCE["bounds"]),
+            "attribution": vessels.SOURCE["attribution"],
+        },
         "fires": {
             "windows": sorted(fires.WINDOWS),
             "sensors": {k: v["label"] for k, v in fires.SENSORS.items()},
@@ -160,6 +165,23 @@ def active_fires(
     try:
         return fires.active_fires((west, south, east, north), hours=hours)
     except fires.FireLookupError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/vessels")
+def ships(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+) -> dict:
+    """Every ship broadcasting AIS inside a rectangle."""
+    box = (west, south, east, north)
+    if config.DEMO_MODE:
+        return vessels.demo_vessels(box)
+    try:
+        return vessels.vessels_in(box)
+    except vessels.VesselLookupError as exc:
         raise _fail(exc)
 
 

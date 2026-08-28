@@ -13,6 +13,7 @@ import { copyRegion, saveRegion, WATERMARK } from './capture.js';
 import { initFires, POPUP } from './fires.js';
 import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
+import { initVessels } from './vessels.js';
 
 let map;
 let aoiLayer = null;
@@ -37,25 +38,99 @@ const HINTS = {
   capture: `Drag over the part you want — it is copied marked ${WATERMARK} — Esc to cancel`,
 };
 
+// Basemaps that need no key.
+//
+// The dark one used to come from CARTO, which started requiring an API key and
+// stamped "API KEY REQUIRED" across every tile -- the map still drew, so
+// nothing failed, it just went wrong in public. Everything here is keyless,
+// and if one of them goes the same way the next in the list takes over rather
+// than leaving a watermarked map on screen.
+const BASEMAPS = [
+  {
+    key: 'dark', label: 'Dark',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    options: { maxNativeZoom: 16, maxZoom: 19, attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors' },
+    // Place names, drawn over the imagery rather than under it.
+    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+  },
+  {
+    key: 'satellite', label: 'Satellite',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    options: { maxNativeZoom: 19, maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' },
+  },
+  {
+    key: 'ocean', label: 'Ocean',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+    options: { maxNativeZoom: 13, maxZoom: 19, attribution: 'Esri, GEBCO, NOAA, National Geographic' },
+  },
+  {
+    key: 'streets', label: 'Streets',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 19, attribution: '© OpenStreetMap contributors' },
+  },
+];
+
+// How many tiles have to fail before a basemap is judged unusable. One is
+// noise -- a tile at the edge of the world, a dropped connection. A dozen in a
+// row is the service saying no.
+const DEAD_TILES = 12;
+
+let basemapLayers = null;
+// Falling through several basemaps in a row -- which is what happens with no
+// connection at all -- should say one thing, not one thing per hop.
+let fallbackReported = false;
+
+/**
+ * Put the basemaps on the map, and move on from one that stops working.
+ *
+ * A tile service that starts refusing usually does it by degrees -- a
+ * watermark, a placeholder, an error -- so the fallback watches for outright
+ * failures and takes the next one down the list. Whichever ends up on screen,
+ * the layer control still offers all of them.
+ */
+function buildBasemaps() {
+  basemapLayers = new Map();
+  const named = {};
+
+  for (const spec of BASEMAPS) {
+    const layer = L.tileLayer(spec.url, spec.options);
+    if (spec.reference) {
+      // Base and labels move together, so they are one entry in the control.
+      const labels = L.tileLayer(spec.reference, { ...spec.options, pane: 'shadowPane' });
+      const group = L.layerGroup([layer, labels]);
+      basemapLayers.set(spec.key, group);
+      named[spec.label] = group;
+    } else {
+      basemapLayers.set(spec.key, layer);
+      named[spec.label] = layer;
+    }
+
+    let failures = 0;
+    layer.on('tileerror', () => {
+      failures += 1;
+      if (failures !== DEAD_TILES) return;
+      const current = basemapLayers.get(spec.key);
+      if (!map.hasLayer(current)) return;
+      const next = BASEMAPS[BASEMAPS.indexOf(spec) + 1];
+      if (!next) return;
+      map.removeLayer(current);
+      basemapLayers.get(next.key).addTo(map);
+      if (!fallbackReported) {
+        fallbackReported = true;
+        toast(`The ${spec.label.toLowerCase()} basemap is not answering — falling back`);
+      }
+    });
+  }
+
+  basemapLayers.get('dark').addTo(map);
+  L.control.layers(named, {}, { position: 'topright' }).addTo(map);
+}
+
 export function initMap() {
   map = L.map('map', { zoomControl: true, worldCopyJump: true, preferCanvas: true })
     .setView([48.86, 2.35], 11);
 
-  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OpenStreetMap contributors',
-  });
-  const esri = L.tileLayer(
-    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    { maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' },
-  );
-  const labels = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 20, attribution: '© OpenStreetMap contributors © CARTO',
-  });
-  labels.addTo(map);
-  L.control.layers(
-    { 'Dark basemap': labels, 'Street map': osm, 'Satellite context': esri },
-    {}, { position: 'topright' },
-  ).addTo(map);
+  buildBasemaps();
 
   L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 
@@ -64,6 +139,16 @@ export function initMap() {
   initFires(map);
   initClouds(map);
   initRadar(map);
+  initVessels(map);
+
+  // Four panels in one column: opening the last one can leave its own button
+  // below the fold. Bring whichever was just pressed back into view.
+  $('.side-docks')?.addEventListener('click', (e) => {
+    const button = e.target.closest('button');
+    if (button?.id?.endsWith('Toggle')) {
+      requestAnimationFrame(() => button.scrollIntoView({ block: 'nearest' }));
+    }
+  });
 
   on('image', showOverlay);
   return map;

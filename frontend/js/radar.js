@@ -63,15 +63,23 @@ const REST_MS = 1100;
 // than this is worth replacing even if the tab has been sitting open.
 const REFRESH_MS = 5 * 60 * 1000;
 
+// Remembered between visits. Someone who prefers the satellite view at half
+// opacity should not have to say so again every time they open the app. Read
+// before any of the state below, since three of those defaults come from it.
+const SETTINGS_KEY = 'earthviewer.weather';
+const remembered = (() => {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; }
+})();
+
 let map = null;
 let frames = [];          // [{ time, path, forecast }]
 let layers = new Map();   // key -> L.TileLayer, built as needed
 let at = 0;               // which frame is showing
 let enabled = false;
 let playing = true;
-let opacity = 0.75;
-let mode = 'radar';
-let speed = 'normal';
+let opacity = typeof remembered.opacity === 'number' ? remembered.opacity : 0.75;
+let mode = MODES[remembered.mode] ? remembered.mode : 'radar';
+let speed = SPEEDS[remembered.speed] ? remembered.speed : 'normal';
 let timer = null;
 let refresher = null;
 let failed = '';
@@ -226,6 +234,7 @@ async function refresh({ keepPosition = false, fetchIndex = true } = {}) {
 async function setMode(next) {
   if (next === mode) return;
   mode = next;
+  remember();
   // The other mode's layers are kept: switching back should be instant, and
   // they are already paid for.
   for (const [key, layer] of layers) {
@@ -316,7 +325,7 @@ function buildDock() {
           el('button', {
             class: `radar-speed${key === speed ? ' is-on' : ''}`,
             dataset: { speed: key },
-            onclick: () => { speed = key; step(); paintDock(); },
+            onclick: () => { speed = key; step(); remember(); paintDock(); },
           }, key))),
 
       el('label', { class: 'radar-fade' }, 'Fade',
@@ -325,6 +334,7 @@ function buildDock() {
           oninput: (e) => {
             opacity = e.target.valueAsNumber / 100;
             queueOpacity();
+            remember();
           },
         })),
 
@@ -335,11 +345,30 @@ function buildDock() {
   paintDock();
 }
 
+const remember = debounce(() => {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ mode, speed, opacity })); } catch {}
+}, 400);
+
 function togglePlay() {
   playing = !playing;
   if (playing) step(); else clearTimeout(timer);
   paintDock();
 }
+
+// A tab nobody is looking at should not be fetching tiles or racing the loop
+// forward. It picks up where it left off, at the newest frame, rather than
+// wherever the timer happened to have got to.
+let heldForHidden = false;
+addEventListener('visibilitychange', () => {
+  if (!enabled) return;
+  if (document.hidden) {
+    heldForHidden = playing;
+    clearTimeout(timer);
+  } else if (heldForHidden) {
+    heldForHidden = false;
+    refresh({ fetchIndex: true }).then(step).catch(() => {});
+  }
+});
 
 // Keyboard, once the layer is on and the focus is not in a field.
 //
