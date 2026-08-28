@@ -123,6 +123,9 @@ def _all_names() -> dict[int, dict]:
         # A ship with no name is still a ship. Losing the lookup should not
         # lose the positions with it.
         return _names["data"]
+    if isinstance(rows, dict):
+        # Some responses wrap the list; take whichever list is in there.
+        rows = next((v for v in rows.values() if isinstance(v, list)), [])
     table = {}
     for row in rows if isinstance(rows, list) else []:
         mmsi = row.get("mmsi")
@@ -179,7 +182,9 @@ def vessels_in(bbox: tuple[float, float, float, float], limit: int = 900) -> dic
         if lon is None or not (west <= lon <= east and south <= lat <= north):
             continue
         props = feature.get("properties", {})
-        mmsi = feature.get("mmsi") or props.get("mmsi")
+        # The identifier sits beside the geometry in this feed, but a GeoJSON
+        # producer could as easily put it in the properties or in the id.
+        mmsi = feature.get("mmsi") or props.get("mmsi") or feature.get("id")
         known = names.get(int(mmsi), {}) if mmsi is not None else {}
         category, type_label = _kind(known.get("type"))
 

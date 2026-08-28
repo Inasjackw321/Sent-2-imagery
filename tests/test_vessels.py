@@ -214,3 +214,84 @@ def test_changing_the_key_discards_what_the_old_one_collected():
         assert aisstream.seconds_until_next() == 0
     finally:
         aisstream.set_key(None)
+
+
+def test_a_later_position_report_replaces_an_earlier_one():
+    """Within one listening window a ship reports several times.
+
+    Merging the new report *under* what was already known -- which is how this
+    was first written -- freezes every vessel at the first position it sent
+    and silently ignores the rest of the window. The ships would be real and
+    in the wrong place, which is worse than no ships at all.
+    """
+    import datetime as dt
+
+    from backend import aisstream
+
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") + " +0000 UTC"
+
+    def report(lat, lon, speed):
+        return {
+            "MessageType": "PositionReport",
+            "MetaData": {"MMSI": 123, "ShipName": "ALPHA", "time_utc": now},
+            "Message": {"PositionReport": {
+                "Latitude": lat, "Longitude": lon, "Sog": speed,
+                "Cog": 90.0, "TrueHeading": 91}},
+        }
+
+    seen, static = {}, {}
+    aisstream._absorb(report(60.0, 22.0, 5.0), seen, static)
+    aisstream._absorb(report(60.5, 22.5, 9.0), seen, static)
+
+    assert seen[123]["lat"] == 60.5
+    assert seen[123]["lon"] == 22.5
+    assert seen[123]["speed"] == 9.0
+    assert seen[123]["age_min"] is not None
+
+
+def test_static_data_names_a_ship_without_moving_it():
+    """Names and types arrive on their own message type, usually later."""
+    from backend import aisstream
+
+    seen = {123: {"mmsi": 123, "lat": 60.5, "lon": 22.5, "name": None,
+                  "category": "other", "type": "Unknown"}}
+    static = {}
+    aisstream._absorb({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 123},
+        "Message": {"ShipStaticData": {
+            "Name": "ALPHA MARU", "Type": 80, "CallSign": "AB12",
+            "Destination": "HELSINKI", "Dimension": {"A": 100, "B": 50}}},
+    }, seen, static)
+
+    for mmsi, extra in static.items():
+        seen[mmsi].update({k: v for k, v in extra.items() if v is not None})
+
+    assert seen[123]["name"] == "ALPHA MARU"
+    assert seen[123]["category"] == "tanker"
+    assert seen[123]["length"] == 150
+    assert seen[123]["lat"] == 60.5, "naming a ship must not move it"
+
+
+def test_the_interference_view_is_a_picture_of_the_whole_swath():
+    """The detector answers "how much"; this answers "show me".
+
+    VV to red and blue, VH to green: ordinary ground has almost no
+    cross-polarised return and comes out violet, and interference lifts the
+    green until the band blazes. The green window has to sit above what
+    vegetation returns or every field saturates and the streaks vanish into a
+    uniformly green scene -- which is what a first attempt at 0.045 did.
+    """
+    from backend import config
+
+    preset = config.COMPOSITES["radar_interference"]
+    assert preset["sat"] == ["sentinel-1"]
+    assert preset["bands"] == ["vv", "vh", "vv"]
+    assert preset["from_db"] is True
+
+    red, green, blue = preset["windows"]
+    # Forest returns about -13 dB in VH, which is 0.045 in power.
+    assert green[1] > 0.045 * 2, "green saturates on vegetation"
+    # And interference, nearer -10 dB, must reach the top of it.
+    assert green[1] <= 10 ** (-8.0 / 10.0)
+    assert red[1] > green[1] and blue[1] > green[1], "the base would not read violet"

@@ -96,6 +96,9 @@ async function maybeRefetch() {
 
 async function load(box) {
   const ask = padded(box);
+  // The global feed listens to the stream for a few seconds before answering,
+  // which is a long time to sit in front of a panel that says nothing.
+  note(source === 'aisstream' ? 'Listening to the stream…' : 'Loading…');
   try {
     const data = await api.vessels(ask, source);
     covered = ask;
@@ -189,10 +192,16 @@ function draw(data) {
   }
   const shown = ships.length;
   const total = data?.count ?? shown;
-  note(shown
-    ? `${shown} vessel${shown === 1 ? '' : 's'}${total > shown ? ` of ${total}` : ''}`
-      + `${data?.demo ? ' — synthetic' : ''}`
-    : 'No vessels broadcasting here right now.');
+  if (shown) {
+    note(`${shown} vessel${shown === 1 ? '' : 's'}${total > shown ? ` of ${total}` : ''}`
+      + `${data?.demo ? ' — synthetic' : ''}${data?.cached ? ' · from the last look' : ''}`);
+  } else if (data?.messages === 0) {
+    // Nothing arrived at all, which is a different problem from an empty sea
+    // and wants a different answer from whoever is looking at it.
+    note('Connected, but the stream sent nothing. Try a wider area.');
+  } else {
+    note('No vessels broadcasting here right now.');
+  }
   legend();
 }
 

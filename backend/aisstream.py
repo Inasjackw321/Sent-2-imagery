@@ -16,12 +16,22 @@ can break.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 import threading
 import time
 
 import websockets
+import websockets.exceptions as ws_errors
+
+# The name of the "server said no" exception moved between websockets
+# releases. Catching whichever exists keeps a rejected API key reading as a
+# rejected API key rather than as an AttributeError from the except clause.
+_REFUSED = tuple(
+    getattr(ws_errors, name) for name in ("InvalidStatus", "InvalidStatusCode")
+    if hasattr(ws_errors, name)
+) or (ws_errors.WebSocketException,)
 
 
 class StreamError(RuntimeError):
@@ -35,9 +45,10 @@ ENDPOINT = "wss://stream.aisstream.io/v0/stream"
 # collected.
 MIN_INTERVAL_SECONDS = 300
 
-# How long to listen once connected. Long enough for a busy box to fill up,
-# short enough that nobody is waiting on it.
-LISTEN_SECONDS = 8.0
+# How long to listen once connected. Long enough for a quiet box to say
+# something, short enough that nobody is left staring at a spinner. Only asked
+# for once every five minutes, so a few extra seconds costs little.
+LISTEN_SECONDS = 12.0
 
 # And a hard ceiling on how many messages to take, so a shipping lane in rush
 # hour cannot hold the connection open on volume alone.
@@ -98,7 +109,7 @@ def _kind(ship_type) -> tuple[str, str]:
     return TYPES.get(tens, ("other", "Other"))
 
 
-async def _collect(key: str, box: tuple[float, float, float, float]) -> dict[int, dict]:
+async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[dict, int]:
     """Open the stream, take what arrives for a few seconds, close it."""
     west, south, east, north = box
     subscribe = {
@@ -113,29 +124,36 @@ async def _collect(key: str, box: tuple[float, float, float, float]) -> dict[int
 
     seen: dict[int, dict] = {}
     static: dict[int, dict] = {}
+    messages = 0
     try:
-        async with websockets.connect(ENDPOINT, open_timeout=15, close_timeout=5) as socket:
+        async with websockets.connect(ENDPOINT, open_timeout=20, close_timeout=5) as socket:
             await socket.send(json.dumps(subscribe))
             deadline = time.monotonic() + LISTEN_SECONDS
-            while time.monotonic() < deadline and len(seen) < MAX_MESSAGES:
+            while time.monotonic() < deadline and messages < MAX_MESSAGES:
                 left = deadline - time.monotonic()
                 try:
                     raw = await asyncio.wait_for(socket.recv(), timeout=max(0.1, left))
                 except asyncio.TimeoutError:
                     break
-                _absorb(json.loads(raw), seen, static)
-    except websockets.exceptions.InvalidStatus as exc:
+                messages += 1
+                # A bad key comes back as a plain text line rather than as a
+                # refused handshake, so it has to be recognised here or it
+                # looks like an empty sea.
+                text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+                if not text.lstrip().startswith("{"):
+                    raise StreamError(f"aisstream said: {text.strip()[:160]}")
+                with contextlib.suppress(json.JSONDecodeError):
+                    _absorb(json.loads(text), seen, static)
+    except _REFUSED as exc:
         raise StreamError("aisstream refused the connection — check the API key.") from exc
-    except (OSError, websockets.exceptions.WebSocketException, asyncio.TimeoutError) as exc:
+    except (OSError, ws_errors.WebSocketException, asyncio.TimeoutError) as exc:
         raise StreamError(f"aisstream could not be reached: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise StreamError("aisstream sent something unreadable.") from exc
 
     # Names arrive on a different message type to positions, and often later.
     for mmsi, extra in static.items():
         if mmsi in seen:
-            seen[mmsi].update(extra)
-    return seen
+            seen[mmsi].update({k: v for k, v in extra.items() if v is not None})
+    return seen, messages
 
 
 def _absorb(message: dict, seen: dict, static: dict) -> None:
@@ -157,9 +175,18 @@ def _absorb(message: dict, seen: dict, static: dict) -> None:
         speed = report.get("Sog")
         course = report.get("Cog")
         heading = report.get("TrueHeading")
-        seen[mmsi] = {
+        # Whatever is already known about this ship comes first, so a later
+        # report overwrites an earlier one. The other way round -- which is
+        # how this was first written -- freezes every vessel at the first
+        # position it sent and quietly ignores the rest of the window.
+        entry = {
             "mmsi": mmsi,
-            "name": (meta.get("ShipName") or "").strip() or None,
+            "name": None, "callsign": None, "destination": None,
+            "draught": None, "length": None,
+            "category": "other", "type": "Unknown",
+            **seen.get(mmsi, {}),
+        }
+        entry.update({
             "lat": float(lat), "lon": float(lon),
             # The same "not available" values as everywhere else in AIS:
             # 102.3 knots, 360 degrees, heading 511.
@@ -167,11 +194,12 @@ def _absorb(message: dict, seen: dict, static: dict) -> None:
             "course": None if course is None or course >= 360 else round(float(course), 1),
             "heading": None if heading is None or heading >= 511 else int(heading),
             "status": NAV_STATUS.get(report.get("NavigationalStatus")),
-            "category": "other", "type": "Unknown",
-            "callsign": None, "destination": None, "draught": None, "length": None,
-            "age_min": 0.0,
-            **seen.get(mmsi, {}),
-        }
+            "age_min": _age(meta.get("time_utc")),
+        })
+        name = (meta.get("ShipName") or "").strip()
+        if name:
+            entry["name"] = name
+        seen[mmsi] = entry
     elif kind == "ShipStaticData":
         data = (message.get("Message") or {}).get("ShipStaticData") or {}
         category, label = _kind(data.get("Type"))
@@ -185,6 +213,24 @@ def _absorb(message: dict, seen: dict, static: dict) -> None:
             "length": length or None,
             "category": category, "type": label,
         }
+
+
+def _age(stamp) -> float | None:
+    """Minutes since the message was sent, from aisstream's own timestamp.
+
+    It arrives as "2026-08-28 10:00:00.123 +0000 UTC", which is Go's layout
+    rather than anything datetime parses, so the useful part is taken off the
+    front and the rest ignored.
+    """
+    if not isinstance(stamp, str):
+        return None
+    head = stamp.strip()[:19]
+    try:
+        when = dt.datetime.strptime(head, "%Y-%m-%d %H:%M:%S").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+    now = dt.datetime.now(dt.timezone.utc)
+    return max(0.0, round((now - when).total_seconds() / 60.0, 1))
 
 
 def vessels_in(box: tuple[float, float, float, float], limit: int = 900) -> dict:
@@ -207,7 +253,7 @@ def vessels_in(box: tuple[float, float, float, float], limit: int = 900) -> dict
         return {**cached, "cached": True, "next_in": round(seconds_until_next())}
 
     try:
-        found = asyncio.run(_collect(key, box))
+        found, messages = asyncio.run(_collect(key, box))
     except RuntimeError as exc:
         # asyncio.run refuses to nest, which would mean a caller already
         # inside a loop -- worth naming rather than surfacing as a mystery.
@@ -222,6 +268,9 @@ def vessels_in(box: tuple[float, float, float, float], limit: int = 900) -> dict
         "attribution": "aisstream.io",
         "fetched": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "window_seconds": LISTEN_SECONDS,
+        # How much arrived at all, which is the difference between "nothing is
+        # sailing there" and "nothing is getting through".
+        "messages": messages,
     }
     with _lock:
         _cache.update(at=time.time(), box=box, data=out)

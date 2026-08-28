@@ -411,6 +411,31 @@ COMPOSITES = {
         "from_db": True,
         "windows": [[0.0, 0.35]] * 3,
     },
+    # The interference view, and the reason it is a picture rather than a
+    # number. Ground radars transmitting in Sentinel-1's band put energy
+    # straight into the receiver, and it lands hardest on VH -- the channel
+    # whose genuine return is weakest. So VV is sent to red and blue and VH
+    # to green: ordinary ground, with almost no cross-polarised return, comes
+    # out violet, and a streak of interference lifts the green until the band
+    # blazes white across the swath.
+    "radar_interference": {
+        "label": "Radar interference",
+        "sat": ["sentinel-1"],
+        "bands": ["vv", "vh", "vv"],
+        "hint": "Violet is ordinary ground. Bright bands across the swath are "
+                "a ground radar transmitting in Sentinel-1's band.",
+        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "from_db": True,
+        # The green window is the one that matters, and it is set from what
+        # the two channels actually read. Cross-polarised return from ordinary
+        # ground runs about -22 dB over bare soil to -13 dB over forest, which
+        # is 0.006 to 0.045 in power; interference lands nearer -10 dB, which
+        # is 0.1. Topping green out at 0.15 leaves forest a dark tint and lets
+        # a streak saturate. Tighter than that -- an earlier try used 0.045 --
+        # and every field saturates too, and the whole scene comes out green
+        # with nothing standing out of it.
+        "windows": [[0.0, 0.30], [0.0, 0.15], [0.0, 0.18]],
+    },
     "radar_water": {
         "label": "Radar water & flood",
         "sat": "sentinel-1",
@@ -525,14 +550,17 @@ INDICES = {
 # so interference stands proudest against it -- and over water, where real
 # backscatter is near the noise floor, a streak is unmistakable.
 INDICES["rfi"] = {
-    "label": "Radar interference",
+    # Named apart from the composite of the same subject. That one is the
+    # picture you look at; this is the number that says how strongly, and
+    # having both called "Radar interference" in one menu helped nobody.
+    "label": "Interference strength",
     "bands": ["vh", "vv"],
     "formula": "how far VH stands above its own surroundings, where the "
                "brightness runs in a line",
     "range": [0.0, 12.0],
     "colormap": "inferno",
-    "hint": "Streaks from ground radars transmitting in Sentinel-1's band. "
-            "Step through dates to see when one was switched on.",
+    "hint": "How far a streak stands above the ground around it, in decibels. "
+            "Use the interference view to see them; use this to measure one.",
     "sat": ["sentinel-1"],
     "unit": "dB above local",
 }
