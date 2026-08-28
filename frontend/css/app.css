@@ -677,3 +677,27 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 }
 .ship-card dt { color: var(--ink-faint); }
 .ship-card dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Which AIS feed, and the key the global one needs. */
+.vessel-sources { display: flex; gap: 4px; margin-bottom: 8px; }
+.vessel-source {
+  flex: 1; padding: 4px 2px; cursor: pointer; font: inherit; font-size: 10.5px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.vessel-source:hover { color: var(--ink); }
+.vessel-source.is-on {
+  color: #ffe6d2; background: rgba(255,143,94,.14); border-color: rgba(255,143,94,.5);
+}
+.vessel-keyrow { display: flex; gap: 5px; margin-bottom: 6px; }
+.vessel-keyrow input {
+  flex: 1; min-width: 0; padding: 4px 7px; font: inherit; font-size: 10.5px;
+  background: var(--bg-3); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.vessel-save {
+  padding: 0 9px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--accent);
+  border: 1px solid rgba(76,194,255,.35); border-radius: 6px;
+}
+.vessel-save:hover { background: rgba(76,194,255,.12); }

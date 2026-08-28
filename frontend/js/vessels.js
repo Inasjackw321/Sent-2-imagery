@@ -35,6 +35,24 @@ const MOVING_KNOTS = 0.6;
 // how much slack there is before it does.
 const PAD = 0.25;
 
+// Where the ships come from.
+//
+// Digitraffic is open and asks for nothing, and covers the Baltic. aisstream
+// covers the world and wants a free API key. Neither is better; they answer
+// different questions, and the panel says which is which rather than leaving
+// an empty map to be interpreted.
+const SOURCES = {
+  digitraffic: {
+    label: 'Baltic', needsKey: false,
+    note: 'Digitraffic, open and keyless — Baltic and Gulf of Finland only.',
+  },
+  aisstream: {
+    label: 'Global', needsKey: true,
+    note: 'aisstream.io, worldwide. Needs a free API key, and asks the '
+      + 'service at most once every five minutes.',
+  },
+};
+
 let map = null;
 let layer = null;
 let enabled = false;
@@ -42,6 +60,11 @@ let showNames = false;
 let covered = null;      // last box fetched, padded
 let ships = [];
 let refresher = null;
+let source = 'digitraffic';
+// How long before the global feed may be asked again. The backend enforces
+// this; the panel only reports it, so a reload cannot talk it into going
+// sooner.
+let nextIn = 0;
 
 export function initVessels(leafletMap) {
   map = leafletMap;
@@ -74,8 +97,9 @@ async function maybeRefetch() {
 async function load(box) {
   const ask = padded(box);
   try {
-    const data = await api.vessels(ask);
+    const data = await api.vessels(ask, source);
     covered = ask;
+    nextIn = data.next_in ?? 0;
     ships = data.vessels ?? [];
     draw(data);
   } catch (err) {
@@ -201,28 +225,80 @@ async function toggle() {
     return;
   }
   await load(boxOf(map.getBounds()));
-  // AIS moves. Half a minute is slower than the feed publishes and faster
-  // than a ship crosses the screen, which is about the right place to sit.
-  refresher = setInterval(() => { covered = null; maybeRefetch(); }, 30000);
+  // Half a minute suits the keyless Baltic feed, which is a plain HTTP
+  // request against a cache. The global one has a five-minute floor of its
+  // own in the backend, so asking more often would only be answered from
+  // what it already has -- there is no point pretending otherwise.
+  const every = source === 'aisstream' ? 5 * 60 * 1000 : 30000;
+  refresher = setInterval(() => { covered = null; maybeRefetch(); }, every);
 }
 
 // ── The panel ──────────────────────────────────────────────────
 
+async function setSource(next) {
+  if (next === source) return;
+  source = next;
+  covered = null;
+  clearInterval(refresher);
+  buildDock();
+  if (!enabled) return;
+  await load(boxOf(map.getBounds()));
+  const every = source === 'aisstream' ? 5 * 60 * 1000 : 30000;
+  refresher = setInterval(() => { covered = null; maybeRefetch(); }, every);
+}
+
+async function saveKey(value) {
+  try {
+    const out = await api.aisKey(value);
+    note(out.set ? 'Key accepted. Fetching…' : 'Key cleared.');
+    if (out.set && enabled) { covered = null; await load(boxOf(map.getBounds())); }
+    buildDock();
+  } catch (err) {
+    note(err.message);
+  }
+}
+
 function buildDock() {
   const dock = $('#vesselDock');
   if (!dock) return;
+  const keySet = store.config?.vessels?.global_key_set;
   dock.innerHTML = '';
   dock.append(
     el('button', { class: 'vessel-toggle', id: 'vesselToggle', onclick: toggle },
       el('span', { class: 'vessel-mark' }, '⛴'), 'Ships'),
-    el('div', { class: 'vessel-body', id: 'vesselBody', hidden: true },
+    el('div', { class: 'vessel-body', id: 'vesselBody', hidden: !enabled },
+      el('div', { class: 'vessel-sources' },
+        ...Object.entries(SOURCES).map(([key, spec]) =>
+          el('button', {
+            class: `vessel-source${key === source ? ' is-on' : ''}`,
+            dataset: { source: key },
+            onclick: () => setSource(key),
+          }, spec.label))),
+
+      // The key field only when the chosen source wants one.
+      ...(SOURCES[source].needsKey ? [
+        el('div', { class: 'vessel-keyrow' },
+          el('input', {
+            type: 'password', id: 'aisKey', placeholder: keySet ? '•••••• saved' : 'aisstream API key',
+            autocomplete: 'off', spellcheck: false,
+            onkeydown: (e) => { if (e.key === 'Enter') saveKey(e.target.value); },
+          }),
+          el('button', {
+            class: 'vessel-save', id: 'aisKeySave',
+            onclick: () => saveKey($('#aisKey').value),
+          }, keySet ? 'Replace' : 'Use')),
+        el('div', { class: 'vessel-where' },
+          'Free from aisstream.io. Kept in memory only — never written to disk, '
+          + 'and gone when the app closes.'),
+      ] : []),
+
       el('label', { class: 'vessel-check' },
         el('input', {
-          type: 'checkbox',
+          type: 'checkbox', checked: showNames,
           onchange: (e) => { showNames = e.target.checked; draw(null); },
         }), 'Show names'),
       el('div', { class: 'vessel-key', id: 'vesselKey' }),
-      el('div', { class: 'vessel-note', id: 'vesselNote' }, 'Loading…'),
+      el('div', { class: 'vessel-note', id: 'vesselNote' }, enabled ? 'Loading…' : ''),
       el('div', { class: 'vessel-where', id: 'vesselWhere' })),
   );
   paintDock();
@@ -238,10 +314,8 @@ function paintDock() {
   if (where && enabled) {
     // Say where the feed reaches, up front. A blank map over the Atlantic is
     // otherwise indistinguishable from a broken layer.
-    const source = store.config?.vessels;
-    where.textContent = source
-      ? `${source.source.split(' (')[0]} — Baltic and Gulf of Finland only. `
-        + 'No open global AIS exists without an account.'
-      : '';
+    const wait = nextIn > 0 && source === 'aisstream'
+      ? ` Next look in ${Math.ceil(nextIn / 60)} min.` : '';
+    where.textContent = SOURCES[source].note + wait;
   }
 }

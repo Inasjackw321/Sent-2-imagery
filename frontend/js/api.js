@@ -28,11 +28,12 @@ export const api = {
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4), hours,
     })}`, { method: 'GET' }),
-  vessels: ([west, south, east, north]) => request(
+  vessels: ([west, south, east, north], source = 'digitraffic') => request(
     `/api/vessels?${new URLSearchParams({
       west: west.toFixed(4), south: south.toFixed(4),
-      east: east.toFixed(4), north: north.toFixed(4),
+      east: east.toFixed(4), north: north.toFixed(4), source,
     })}`, { method: 'GET' }),
+  aisKey: (key) => request('/api/vessels/key', { body: { key } }),
   probe: (body) => request('/api/probe', { body }),
   render: (body) => request('/api/render', { body }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),

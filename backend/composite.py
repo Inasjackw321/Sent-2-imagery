@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import io
+import math
 
 import numpy as np
 import rasterio
 from PIL import Image
+from scipy import ndimage
 
 from . import config
 from .geo import Grid
@@ -221,12 +223,156 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
     return rgb, valid, {"mode": mode, "gamma": gamma, "knee": knee, "bands": bounds}
 
 
+# How far out to look for "the surroundings". Wide enough that a streak does
+# not become its own background, narrow enough to follow a coastline.
+RFI_BACKGROUND = 41
+
+# How much the picture is shrunk before the background is worked out. A
+# background is low-frequency by definition, so computing it at full size is
+# paying sixty-four times over for an answer that cannot carry the detail.
+RFI_COARSEN = 8
+
+# How far to either side of a candidate streak to look for the ground it is
+# supposed to stand above. Several distances, because streaks are not all the
+# same width and a test tuned to one width is blind to the others.
+RFI_ACROSS = (3, 6, 10)
+
+# How far a streak has to run, in pixels, and in how many directions that is
+# tested. Interference crosses the swath; speckle is a pixel or two.
+RFI_LENGTH = 21
+RFI_DIRECTIONS = 8
+
+
+def interference(vh, vv=None):
+    """How much of this looks like a radar transmitting at the satellite.
+
+    Three things have to be true at once, and it takes all three.
+
+    The pixel must be brighter than its surroundings. Interference arrives
+    without having made the round trip to the ground, so it lands well above
+    what the surface returns.
+
+    It must be lower on *both* sides. This is the test that does the real
+    work, and the one that took two attempts to get right. Measuring how
+    oriented the brightness is looked sufficient -- interference runs in
+    lines -- but a coastline is beautifully oriented too, and so is the edge
+    of a town, and an earlier version of this reported both of them as
+    interference more strongly than it reported an actual streak. What
+    separates them is not direction but shape: across a streak the brightness
+    rises and falls again, while across a coastline it rises and stays. So
+    both flanks are checked, and a step edge fails on the side that does not
+    come back down.
+
+    And it must run. A streak crosses the swath; speckle is a pixel or two.
+    A line-shaped opening keeps only what continues in the same direction for
+    twenty pixels.
+
+    The answer is in decibels above the surrounding ground, zero where
+    nothing qualifies, so it reads as a quantity rather than a flag.
+    """
+    data = np.ma.filled(np.ma.masked_invalid(vh), 0.0).astype("float32")
+    excess = np.clip(data - _background(data), 0.0, None)
+
+    best = np.zeros_like(data)
+    for i in range(RFI_DIRECTIONS):
+        angle = 180.0 * i / RFI_DIRECTIONS
+        along = _offsets(angle)
+        ridge = np.minimum(excess, _stands_proud(data, angle + 90.0))
+        # Erode then dilate along the line: a streak survives in the
+        # direction it runs, a speck survives in none of them.
+        opened = _along(_along(ridge, along, np.minimum), along, np.maximum)
+        best = np.maximum(best, opened)
+
+    mask = np.ma.getmaskarray(vh)
+    if vv is not None:
+        mask = mask | np.ma.getmaskarray(vv)
+    return np.ma.masked_array(best.astype("float32"), mask=mask)
+
+
+def _stands_proud(data, across_deg):
+    """How far each pixel rises above the ground on both sides of it.
+
+    Taken as the smaller of the two flanks, so a pixel only scores where it
+    is higher than what lies on either hand -- which a crest is and the top
+    of a step is not.
+    """
+    t = np.deg2rad(across_deg)
+    best = None
+    for reach in RFI_ACROSS:
+        dy = int(round(-reach * math.sin(t)))
+        dx = int(round(reach * math.cos(t)))
+        if dy == 0 and dx == 0:
+            continue
+        one = _shifted(data, dy, dx)
+        other = _shifted(data, -dy, -dx)
+        flanks = np.minimum(data - one, data - other)
+        best = flanks if best is None else np.maximum(best, flanks)
+    return np.clip(best, 0.0, None) if best is not None else np.zeros_like(data)
+
+
+def _shifted(data, dy, dx):
+    """The picture moved by whole pixels, holding its edge values."""
+    pad = max(abs(dy), abs(dx))
+    wide = np.pad(data, pad, mode="edge")
+    h, w = data.shape
+    return wide[pad + dy:pad + dy + h, pad + dx:pad + dx + w]
+
+
+def _background(data):
+    """What the surroundings are doing, without the streaks in them.
+
+    A median rather than a mean: a mean is dragged upward by the very streaks
+    being looked for, and would hide them inside their own background.
+
+    Taken on a shrunk copy, because a full-size median over a forty-one pixel
+    window was twenty-two of the twenty-four seconds this used to take on a
+    1024-pixel scene -- almost all of the cost, for a quantity that is smooth
+    to begin with.
+    """
+    k = RFI_COARSEN
+    small = data[::k, ::k]
+    window = max(3, RFI_BACKGROUND // k)
+    if window % 2 == 0:
+        window += 1
+    smoothed = ndimage.median_filter(small, size=window, mode="nearest")
+    return ndimage.zoom(smoothed, (data.shape[0] / smoothed.shape[0],
+                                   data.shape[1] / smoothed.shape[1]),
+                        order=1, mode="nearest")
+
+
+def _offsets(angle_deg, length=RFI_LENGTH):
+    """Where the pixels of a line at this angle sit, relative to its middle."""
+    half = length // 2
+    t = np.deg2rad(angle_deg)
+    seen = {(int(round(-k * math.sin(t))), int(round(k * math.cos(t))))
+            for k in range(-half, half + 1)}
+    return sorted(seen)
+
+
+def _along(score, offsets, reduce_):
+    """Reduce a picture along a line, by shifting rather than by footprint.
+
+    A line-shaped structuring element passed to a general filter costs its
+    whole bounding box -- twenty-one by twenty-one for a line of twenty-one
+    pixels, so four hundred times the work for nothing. Shifting once per
+    pixel of the line and taking the running minimum or maximum is the same
+    answer for a fraction of the time.
+    """
+    out = None
+    for dy, dx in offsets:
+        window = _shifted(score, dy, dx)
+        out = window.copy() if out is None else reduce_(out, window)
+    return out
+
+
 def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:
     """An index from its bands. Most are the normalised difference of two."""
     b = {k: v.astype("float32") for k, v in bands.items()}
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        if name == "surface_temp":
+        if name == "rfi":
+            out = interference(b["vh"], b["vv"])
+        elif name == "surface_temp":
             # Already a temperature: kelvin to celsius, not a ratio of bands.
             out = b["lwir11"] - 273.15
         elif name == "radar_ratio":

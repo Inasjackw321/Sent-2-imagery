@@ -90,3 +90,127 @@ def test_a_ship_that_reports_no_heading_is_not_pointed_north():
     # 102.3 knots is the "speed not available" value, not a speed.
     assert ship["speed"] is None
     assert ship["status"] == "moored"
+
+
+# ── Radar interference ─────────────────────────────────────────
+
+
+def _radar_scene(rng, h=260, w=260, floor=-22.0):
+    """Calm water at the noise floor, with speckle, in decibels."""
+    import numpy as np
+    return (np.full((h, w), floor, dtype="float32")
+            + rng.normal(0, 1.6, (h, w)).astype("float32"))
+
+
+def _add_streak(scene, angle_deg, width=2.0, boost=9.0):
+    import numpy as np
+    h, w = scene.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    t = np.deg2rad(angle_deg)
+    across = np.abs((xx - w / 2) * np.sin(t) - (yy - h / 2) * np.cos(t))
+    return scene + boost * np.exp(-(across / width) ** 2)
+
+
+def _score(image):
+    import numpy as np
+
+    from backend.composite import interference
+    masked = np.ma.masked_array(image, mask=np.zeros_like(image, dtype=bool))
+    return float(interference(masked).max())
+
+
+@pytest.mark.parametrize("angle", [0, 30, 45, 70, 90, 135])
+def test_interference_is_found_at_any_angle(angle):
+    """Interference crosses the swath at whatever angle the pass was flown."""
+    import numpy as np
+    rng = np.random.default_rng(11)
+    assert _score(_add_streak(_radar_scene(rng), angle)) > 4.0
+
+
+def test_bright_things_that_are_not_streaks_are_not_reported():
+    """The hard part is what it refuses.
+
+    A ship is a bright pixel; so is a city; so is a coastline, which is even
+    beautifully straight. None of them is a radar transmitting at the
+    satellite, and an earlier version of this reported the bright field as
+    though it were -- oriented is not the same as being a ridge.
+    """
+    import numpy as np
+    rng = np.random.default_rng(11)
+    water = _radar_scene(rng)
+    h, w = water.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+
+    ship = water + 9.0 * np.exp(-(np.hypot(xx - w / 2, yy - h / 2) / 6.0) ** 2)
+    town = water.copy()
+    town[h // 4:3 * h // 4, w // 4:3 * w // 4] += 9.0
+    coast = water.copy()
+    coast[:, w // 2:] += 9.0
+
+    streak = _score(_add_streak(water, 35))
+    for label, image in (("plain water", water), ("a ship", ship),
+                         ("a town", town), ("a coastline", coast)):
+        assert _score(image) < streak, f"{label} scored as high as a streak"
+
+    # Not merely lower than a streak: nowhere near one. The gap is what makes
+    # the number readable as a quantity instead of needing a threshold tuned
+    # per scene.
+    assert streak > 3.0
+    for label, image in (("plain water", water), ("a ship", ship),
+                         ("a town", town), ("a coastline", coast)):
+        assert _score(image) < streak / 3.0, f"{label} is too close to a streak"
+
+
+def test_the_interference_index_is_radar_only():
+    from backend import config
+    assert config.INDICES["rfi"]["sat"] == ["sentinel-1"]
+    assert config.INDICES["rfi"]["bands"] == ["vh", "vv"]
+
+
+def test_the_global_feed_will_not_be_asked_more_than_once_in_five_minutes():
+    """The floor is the backend's, not the page's.
+
+    A rule the front end keeps is a rule a reload can break, so this one lives
+    where the request is actually made.
+    """
+    import time
+
+    from backend import aisstream
+
+    assert aisstream.MIN_INTERVAL_SECONDS == 300
+
+    aisstream.set_key("pretend-key")
+    try:
+        # Pretend a collection just happened.
+        aisstream._cache.update(at=time.time(), box=(0, 0, 1, 1),
+                                data={"vessels": [], "count": 0, "covered": True})
+        out = aisstream.vessels_in((0, 0, 1, 1))
+        assert out["cached"] is True
+        assert 0 < out["next_in"] <= 300
+        assert aisstream.seconds_until_next() > 290
+    finally:
+        aisstream._cache.update(at=0.0, box=None, data=None)
+        aisstream.set_key(None)
+
+
+def test_no_key_means_a_clear_refusal_rather_than_an_empty_map():
+    from backend import aisstream
+
+    aisstream.set_key(None)
+    with pytest.raises(aisstream.StreamError, match="API key"):
+        aisstream.vessels_in((0, 0, 1, 1))
+
+
+def test_changing_the_key_discards_what_the_old_one_collected():
+    import time
+
+    from backend import aisstream
+
+    aisstream.set_key("one")
+    aisstream._cache.update(at=time.time(), box=(0, 0, 1, 1), data={"vessels": []})
+    aisstream.set_key("two")
+    try:
+        assert aisstream._cache["data"] is None
+        assert aisstream.seconds_until_next() == 0
+    finally:
+        aisstream.set_key(None)

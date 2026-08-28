@@ -512,6 +512,31 @@ INDICES = {
     },
 }
 
+# Radio-frequency interference in the radar.
+#
+# Sentinel-1 listens on C-band, and it is not the only thing transmitting
+# there. Ground radars -- air surveillance, naval, some marine sets -- put
+# energy straight into the satellite's receiver, which is a very different
+# thing from the ground scattering a pulse back. It arrives without having
+# made the round trip, so it lands far above what the surface itself returns
+# and shows up as long bright streaks across the swath.
+#
+# The cross-polarised channel is where to look. Genuine VH return is weak,
+# so interference stands proudest against it -- and over water, where real
+# backscatter is near the noise floor, a streak is unmistakable.
+INDICES["rfi"] = {
+    "label": "Radar interference",
+    "bands": ["vh", "vv"],
+    "formula": "how far VH stands above its own surroundings, where the "
+               "brightness runs in a line",
+    "range": [0.0, 12.0],
+    "colormap": "inferno",
+    "hint": "Streaks from ground radars transmitting in Sentinel-1's band. "
+            "Step through dates to see when one was switched on.",
+    "sat": ["sentinel-1"],
+    "unit": "dB above local",
+}
+
 # Not a ratio like the rest: a measurement in its own units, shown in degrees
 # rather than kelvin because nobody thinks in kelvin about a car park.
 INDICES["surface_temp"] = {

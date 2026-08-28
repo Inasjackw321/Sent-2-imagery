@@ -568,9 +568,49 @@ def _demo_radar(fractions: dict, grid: Grid, phase: float, sampling: Resampling,
         # scene looks noisy zoomed in and clean zoomed out.
         acc = acc + rng.normal(0.0, 1.5 / math.sqrt(_looks(grid)),
                                size=(h, w)).astype("float32")
+        acc = acc + _demo_interference(grid, band, date_seed)
         out[band] = np.ma.masked_array(acc.astype("float32"),
                                        mask=np.zeros((h, w), dtype=bool))
     return _add_derived(out, bands)
+
+
+# Roughly one demo pass in three carries interference, which is about how often
+# it turns up over a busy coast. Anything more and it would stop looking like
+# something worth finding.
+_RFI_ODDS = 3
+
+
+def _demo_interference(grid: Grid, band: str, date_seed: int):
+    """Streaks from a ground radar, on some of the synthetic passes.
+
+    Without this the interference view has nothing to show offline, and a
+    feature nobody can try is a feature nobody trusts. The shape is the real
+    one: a few long straight bands at a shared angle, brighter in the
+    cross-polarised channel because genuine VH return is so much weaker that
+    the same injected power stands proud of it.
+    """
+    if date_seed % _RFI_ODDS:
+        return 0.0
+
+    h, w = grid.shape
+    rng = np.random.default_rng(date_seed + 4242)
+    angle = math.radians(rng.uniform(0, 180))
+    yy, xx = np.mgrid[0:h, 0:w]
+    across = (xx - w / 2) * math.sin(angle) - (yy - h / 2) * math.cos(angle)
+
+    # A handful of bands, unevenly spaced, as a radar's sweep leaves them.
+    field = np.zeros((h, w), dtype="float32")
+    spacing = max(18.0, min(h, w) / rng.uniform(4.0, 8.0))
+    for k in range(-4, 5):
+        offset = (k + rng.uniform(-0.25, 0.25)) * spacing
+        width = rng.uniform(1.4, 3.2)
+        field += np.exp(-((across - offset) / width) ** 2).astype("float32")
+
+    # Interference arrives without having made the round trip to the ground,
+    # so it does not care what the surface is -- but it stands out far more
+    # against VH, whose real return is weak to begin with.
+    strength = 11.0 if band == "vh" else 6.0
+    return field * strength
 
 
 def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import composite, config, fires, passes, service, stac, version, vessels
+from . import aisstream, composite, config, fires, passes, service, stac, version, vessels
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -70,6 +70,9 @@ def get_config() -> dict[str, Any]:
             "source": vessels.SOURCE["label"],
             "bounds": list(vessels.SOURCE["bounds"]),
             "attribution": vessels.SOURCE["attribution"],
+            "global_source": "aisstream.io",
+            "global_key_set": aisstream.has_key(),
+            "min_interval": aisstream.MIN_INTERVAL_SECONDS,
         },
         "fires": {
             "windows": sorted(fires.WINDOWS),
@@ -174,15 +177,33 @@ def ships(
     south: float = Query(..., ge=-90, le=90),
     east: float = Query(..., ge=-180, le=180),
     north: float = Query(..., ge=-90, le=90),
+    source: str = Query("digitraffic"),
 ) -> dict:
     """Every ship broadcasting AIS inside a rectangle."""
     box = (west, south, east, north)
     if config.DEMO_MODE:
-        return vessels.demo_vessels(box)
+        return {**vessels.demo_vessels(box), "next_in": aisstream.MIN_INTERVAL_SECONDS}
+    if source == "aisstream":
+        try:
+            return aisstream.vessels_in(box)
+        except aisstream.StreamError as exc:
+            raise _fail(exc)
     try:
         return vessels.vessels_in(box)
     except vessels.VesselLookupError as exc:
         raise _fail(exc)
+
+
+@app.post("/api/vessels/key")
+def ais_key(body: dict = Body(...)) -> dict:
+    """Hand the app an aisstream API key, or take it away again.
+
+    Kept in memory for as long as the process lives and written nowhere. It
+    is the operator's own key on the operator's own machine, and it should not
+    outlive the run.
+    """
+    ok = aisstream.set_key(body.get("key"))
+    return {"set": ok, "min_interval": aisstream.MIN_INTERVAL_SECONDS}
 
 
 @app.get("/api/geocode")
