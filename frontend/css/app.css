@@ -767,3 +767,18 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 }
 .vessel-test:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-faint); }
 .vessel-test:disabled { opacity: .5; cursor: wait; }
+
+/* How far back to search, as spans rather than a date to work out. */
+.spans { display: flex; gap: 4px; margin-bottom: 9px; }
+.span {
+  flex: 1; min-width: 0; padding: 5px 2px; cursor: pointer; font: inherit;
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  background: var(--bg-3); color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.span:hover { color: var(--ink); border-color: #3a4a66; }
+.span.is-active {
+  color: #d7ecff; background: rgba(76, 194, 255, .16);
+  border-color: rgba(76, 194, 255, .55);
+}

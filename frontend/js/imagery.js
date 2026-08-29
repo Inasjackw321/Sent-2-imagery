@@ -122,13 +122,69 @@ export const activeSat = () => store.config.satellites[satShown]
 const isRadar = () => activeSat().kind === 'radar';
 const family = () => (isRadar() ? 'radar' : 'optical');
 
+// How far back to look, as spans rather than as a date somebody has to work
+// out. "Everything" starts at the satellite's own first light, which is 2015
+// for Sentinel-2 and 2014 for Sentinel-1 -- and is the point of the whole
+// exercise, since the archive is the thing free imagery has that a live feed
+// does not.
+const SPANS = [
+  { key: '3m', label: '3 months', days: 91 },
+  { key: '1y', label: '1 year', days: 365 },
+  { key: '3y', label: '3 years', days: 365 * 3 },
+  { key: 'all', label: 'Everything', days: null },
+];
+
+// Roughly how many passes a span is worth, so the search asks for enough of
+// them. Sentinel-2 comes round about every five days and Sentinel-1 every six,
+// so a year is around seventy each -- and asking for sixty, as this used to,
+// threw away most of anything longer than that.
+const PASSES_PER_YEAR = 80;
+
+let span = '1y';
+
+function spanStart() {
+  const chosen = SPANS.find((s) => s.key === span) ?? SPANS[1];
+  if (chosen.days === null) {
+    // The earliest first light among the satellites being searched.
+    const keys = satFilter === 'both'
+      ? Object.keys(store.config.satellites) : [satFilter];
+    return keys.map((k) => store.config.satellites[k].since).sort()[0];
+  }
+  return new Date(Date.now() - chosen.days * 864e5).toISOString().slice(0, 10);
+}
+
+/** How many scenes to ask for, from how long a span was chosen. */
+function askFor() {
+  const start = new Date(spanStart());
+  const years = Math.max(0.25, (Date.now() - start.getTime()) / (365 * 864e5));
+  const satellites = satFilter === 'both' ? Object.keys(store.config.satellites).length : 1;
+  return Math.ceil(Math.min(1200, years * PASSES_PER_YEAR * satellites));
+}
+
+function buildSpans() {
+  const host = $('#dateSpans');
+  if (!host) return;
+  host.replaceChildren(...SPANS.map((s) => el('button', {
+    class: `span${s.key === span ? ' is-active' : ''}`,
+    dataset: { span: s.key },
+    onclick: () => {
+      span = s.key;
+      $('#dateStart').value = spanStart();
+      $('#dateEnd').value = new Date().toISOString().slice(0, 10);
+      buildSpans();
+      sync();
+      if (store.aoi) runSearch();
+    },
+  }, s.label)));
+}
+
 export function initImagery() {
   satFilter = satShown = store.config.default_satellite ?? 'sentinel-2';
 
   const today = new Date();
-  const yearAgo = new Date(today.getTime() - 365 * 864e5);
   $('#dateEnd').value = today.toISOString().slice(0, 10);
-  $('#dateStart').value = yearAgo.toISOString().slice(0, 10);
+  $('#dateStart').value = spanStart();
+  buildSpans();
 
   cloudControl = sliderBank($('#cloudSlider'), [{
     key: 'cloud', label: 'Maximum cloud cover', min: 0, max: 100, step: 5, value: 30, unit: '%',
@@ -509,9 +565,14 @@ async function runSearch() {
       end: $('#dateEnd').value,
       max_cloud: cloudControl.cloud.get(),
       satellites: satFilter === 'both' ? null : [satFilter],
-      limit: 60,
+      limit: askFor(),
     }));
     store.dates = data.scenes;
+    // What the catalogue holds, against what was actually fetched. They part
+    // company once a search runs past the page budget, and saying so is the
+    // difference between "that is the whole archive" and "that is as far as
+    // this went".
+    store.matched = data.matched ?? data.scenes.length;
     store.selected.clear();
     store.activeDateId = data.scenes[0]?.id ?? null;
 
@@ -632,8 +693,13 @@ function sync() {
   $('#stepAdjust').classList.toggle('is-locked', !store.image);
   $('#searchDates').disabled = !hasAoi;
   $('#dateEmpty').hidden = store.dates.length > 0 || !hasAoi;
+  const held = store.matched ?? 0;
+  const shown = store.dates.length;
+  const tally = shown
+    ? ` · ${shown} pass${shown === 1 ? '' : 'es'}${held > shown ? ` of ${held}` : ''}`
+    : '';
   $('#whenSummary').textContent =
-    `${$('#dateStart').value} → ${$('#dateEnd').value} · under ${cloudControl.cloud.get()}% cloud`;
+    `${$('#dateStart').value} → ${$('#dateEnd').value} · under ${cloudControl.cloud.get()}% cloud${tally}`;
 
   const tuned = Object.keys(enhancementValues()).length;
   $('#tuningSummary').textContent = tuned ? `${tuned} adjusted` : 'off';

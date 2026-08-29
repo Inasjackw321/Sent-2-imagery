@@ -121,7 +121,8 @@ def search(body: dict = Body(...)) -> dict:
             start=body.get("start"),
             end=body.get("end"),
             max_cloud=float(body.get("max_cloud", 30)),
-            limit=int(body.get("limit", 60)),
+            limit=max(1, min(int(body.get("limit", stac.DEFAULT_LIMIT)),
+                             stac.MAX_LIMIT)),
             demo=body.get("demo"),
             satellites=body.get("satellites") or body.get("satellite"),
         )

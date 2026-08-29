@@ -32,6 +32,23 @@ class SceneSearchError(RuntimeError):
     pass
 
 
+# How many items to ask for per page. Catalogues cap this themselves; 100 is
+# what both of the ones used here accept.
+PAGE_SIZE = 100
+
+# How many pages to follow before stopping. Enough to reach back over the
+# whole Sentinel-2 archive for one place -- about 900 passes since 2015 --
+# without letting a search over a whole country run away with itself.
+MAX_PAGES = 12
+
+# What a search returns when nobody says otherwise. A year over one place is
+# roughly seventy Sentinel-2 passes, so this comfortably clears it.
+DEFAULT_LIMIT = 250
+
+# And the ceiling, however much is asked for.
+MAX_LIMIT = 1200
+
+
 def _best_href(asset: dict) -> str | None:
     """Prefer an https URL; fall back to whatever the item offers."""
     alternates = asset.get("alternate") or {}
@@ -69,7 +86,7 @@ def search_scenes(
     start: str | None = None,
     end: str | None = None,
     max_cloud: float = 30.0,
-    limit: int = 60,
+    limit: int = DEFAULT_LIMIT,
     demo: bool | None = None,
     satellites=None,
 ) -> dict[str, Any]:
@@ -92,7 +109,11 @@ def search_scenes(
         matched += count or 0
 
     scenes.sort(key=lambda s: s["datetime"], reverse=True)
-    return {"scenes": scenes, "demo": False, "matched": matched, "satellites": wanted}
+    # `matched` is what the catalogue holds; `scenes` is what was fetched. The
+    # two differ once a search runs past the page budget, and the front end
+    # says so rather than implying the archive stops here.
+    return {"scenes": scenes, "demo": False, "matched": matched,
+            "fetched": len(scenes), "satellites": wanted}
 
 
 def sources_for(sat: dict) -> list[dict]:
@@ -137,25 +158,76 @@ def _search_one(sat: dict, geometry: dict, start: str, end: str,
 
 def _search_source(source: dict, sat: dict, geometry: dict, start: str, end: str,
                    max_cloud: float, limit: int) -> tuple[list[dict], int]:
+    """Every matching pass, following the catalogue's pages until there are
+    enough of them.
+
+    A STAC search answers one page at a time and says where the next one is.
+    Asking once and stopping -- which is what this did -- caps the archive at
+    whatever fits in a single response however wide a date range was asked
+    for, so a search over ten years came back with the most recent handful and
+    looked like the satellite had only just launched.
+
+    Sorting is asked for explicitly as well. Without it the order across pages
+    is whatever the catalogue felt like, and taking the first page of an
+    unordered result is not the same as taking the newest scenes.
+    """
     payload: dict[str, Any] = {
         "collections": [sat["collection"]],
         "intersects": geometry,
         "datetime": f"{start}T00:00:00Z/{end}T23:59:59Z",
-        "limit": min(int(limit), 100),
+        "limit": min(int(limit), PAGE_SIZE),
+        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
     }
     if sat["cloud_filter"]:
         payload["query"] = {"eo:cloud_cover": {"lt": float(max_cloud)}}
-    try:
-        resp = _session.post(f"{source['stac']}/search", json=payload, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.RequestException as exc:
-        raise SceneSearchError(
-            f"Could not reach {source['label']} for {sat['short']}: {exc}") from exc
 
-    found = [s for s in (scene_summary(item, sat["key"], source["key"])
-                         for item in data.get("features", [])) if s]
-    return found, data.get("numberMatched") or 0
+    found: list[dict] = []
+    matched = 0
+    url = f"{source['stac']}/search"
+    body: dict | None = payload
+
+    for _ in range(MAX_PAGES):
+        try:
+            resp = (_session.post(url, json=body, timeout=60) if body is not None
+                    else _session.get(url, timeout=60))
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as exc:
+            if found:
+                # Some of the archive is better than none of it: a page that
+                # fails after several have worked should not lose those.
+                break
+            raise SceneSearchError(
+                f"Could not reach {source['label']} for {sat['short']}: {exc}") from exc
+
+        matched = matched or data.get("numberMatched") or 0
+        found.extend(s for s in (scene_summary(item, sat["key"], source["key"])
+                                 for item in data.get("features", [])) if s)
+        if len(found) >= limit:
+            break
+
+        step = _next_page(data)
+        if not step:
+            break
+        url, body = step
+
+    return found[:limit], matched or len(found)
+
+
+def _next_page(data: dict) -> tuple[str, dict | None] | None:
+    """Where the catalogue says the next page is, if there is one.
+
+    Two conventions are in the wild and both are met here: a POST link that
+    carries its own body, and a plain GET link with the paging token already
+    in the query string.
+    """
+    for link in data.get("links") or []:
+        if link.get("rel") != "next" or not link.get("href"):
+            continue
+        if str(link.get("method", "GET")).upper() == "POST":
+            return link["href"], link.get("body") or {}
+        return link["href"], None
+    return None
 
 
 def scene_summary(item: dict, satellite: str | None = None,
@@ -335,7 +407,10 @@ def _demo_scenes(geometry, start, end, max_cloud, limit, satellites=None) -> lis
     west, south, _, _ = geometry_bounds(geometry)
     seed = int(hashlib.sha1(f"{west:.3f},{south:.3f}".encode()).hexdigest()[:8], 16)
     end_d = dt.date.fromisoformat(end)
-    per_satellite = max(1, min(int(limit), 60) // max(len(satellites or [1]), 1))
+    # The offline catalogue used to stop at sixty however far back it was
+    # asked to go, which made the demo look like the archive began two months
+    # ago -- exactly the thing the real search was also doing.
+    per_satellite = max(1, min(int(limit), MAX_LIMIT) // max(len(satellites or [1]), 1))
 
     scenes: list[dict] = []
     for key in satellites or [config.DEFAULT_SATELLITE]:
