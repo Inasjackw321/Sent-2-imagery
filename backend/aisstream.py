@@ -28,10 +28,13 @@ import websockets.exceptions as ws_errors
 # The name of the "server said no" exception moved between websockets
 # releases. Catching whichever exists keeps a rejected API key reading as a
 # rejected API key rather than as an AttributeError from the except clause.
-_REFUSED = tuple(
-    getattr(ws_errors, name) for name in ("InvalidStatus", "InvalidStatusCode")
-    if hasattr(ws_errors, name)
-) or (ws_errors.WebSocketException,)
+# Newest name first, and only fall back if it is absent -- naming the old one
+# on a release that still carries it for compatibility raises a deprecation
+# warning for nothing.
+_REFUSED = next(
+    ((getattr(ws_errors, name),) for name in ("InvalidStatus", "InvalidStatusCode")
+     if hasattr(ws_errors, name)),
+    (ws_errors.WebSocketException,))
 
 
 class StreamError(RuntimeError):

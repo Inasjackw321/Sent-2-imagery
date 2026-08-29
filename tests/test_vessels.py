@@ -295,3 +295,96 @@ def test_the_interference_view_is_a_picture_of_the_whole_swath():
     # And interference, nearer -10 dB, must reach the top of it.
     assert green[1] <= 10 ** (-8.0 / 10.0)
     assert red[1] > green[1] and blue[1] > green[1], "the base would not read violet"
+
+
+def _terrain(seed=0, n=420, with_streak=False):
+    """A radar scene with the things real land actually has in it.
+
+    Water alone was too easy a test, and passing it is what let a detector
+    ship that reported every hedgerow. Fields have boundaries, roads and
+    railways run dead straight for miles and bounce brilliantly, towns are
+    bright and busy -- and all of those are the bright *lines* that a streak
+    detector has to not report.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:n, 0:n]
+
+    vv = np.full((n, n), -13.0, dtype="float32")
+    vh = np.full((n, n), -20.0, dtype="float32")
+
+    river = np.abs(yy - (n * 0.62 + 26 * np.sin(xx / 48.0))) < 4
+    vv[river], vh[river] = -22.0, -29.0
+
+    for k in range(7):                       # hedges and fences, both channels
+        c = int(n * (k + 1) / 8.0)
+        vv[:, c - 1:c + 1] += 6.0
+        vh[:, c - 1:c + 1] += 6.0
+        vv[c - 1:c + 1, :] += 5.0
+        vh[c - 1:c + 1, :] += 5.0
+
+    for off, boost in ((-40, 8.0), (70, 6.0)):   # railway and road
+        line = np.abs(xx - yy + off) < 2
+        vv[line] += boost
+        vh[line] += boost
+
+    town = (np.abs(xx - n * 0.28) < n * 0.10) & (np.abs(yy - n * 0.30) < n * 0.09)
+    vv[town] += 11.0
+    vh[town] += 10.0
+
+    vv = vv + rng.normal(0, 1.5, (n, n)).astype("float32")
+    vh = vh + rng.normal(0, 1.5, (n, n)).astype("float32")
+
+    if with_streak:
+        # Interference lifts VH far more than VV: cross-polarised return is
+        # about ten decibels weaker to begin with, so the same injected power
+        # stands much prouder of it.
+        t = np.deg2rad(28.0)
+        across = (xx - n / 2) * np.sin(t) - (yy - n / 2) * np.cos(t)
+        bands = np.zeros((n, n), dtype="float32")
+        for k in range(-3, 4):
+            bands += np.exp(-((across - k * 62) / 2.2) ** 2).astype("float32")
+        vh = vh + bands * 11.0
+        vv = vv + bands * 4.0
+
+    def masked(a):
+        import numpy as np
+        return np.ma.masked_array(a, mask=np.zeros_like(a, dtype=bool))
+
+    return masked(vv), masked(vh)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_ordinary_land_does_not_read_as_interference(seed):
+    """The test that matters, and the one that was missing.
+
+    Water plus a streak is easy and everything passes it. On land, before VV
+    was brought in, hedgerows and a railway scored 7.0 dB against streaks at
+    9.2 -- no separation worth the name, and the layer reported field
+    boundaries with total confidence.
+    """
+    from backend.composite import interference
+
+    vv, vh = _terrain(seed, with_streak=False)
+    quiet = float(interference(vh, vv).max())
+
+    vv, vh = _terrain(seed, with_streak=True)
+    loud = float(interference(vh, vv).max())
+
+    assert loud > 4.0, "interference over land must still be found"
+    assert quiet < 1.5, f"terrain alone scored {quiet:.2f} dB"
+    assert loud > quiet * 4, "the two must not be close"
+
+
+def test_the_co_polarised_channel_is_what_rejects_ground_features():
+    """A hedge brightens both polarisations; interference brightens one.
+
+    Handing the same scene over without VV should measurably lose that, which
+    is what makes this worth asserting rather than assuming.
+    """
+    from backend.composite import interference
+
+    vv, vh = _terrain(0, with_streak=False)
+    with_vv = float(interference(vh, vv).max())
+    without = float(interference(vh).max())
+    assert without > with_vv * 3, "VV is doing the work it is supposed to do"

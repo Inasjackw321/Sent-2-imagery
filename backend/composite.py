@@ -246,32 +246,45 @@ RFI_DIRECTIONS = 8
 def interference(vh, vv=None):
     """How much of this looks like a radar transmitting at the satellite.
 
-    Three things have to be true at once, and it takes all three.
+    Four things have to be true at once, and it takes all four. The order
+    below is the order they were learned in, each one added because the ones
+    before it were not enough.
 
-    The pixel must be brighter than its surroundings. Interference arrives
-    without having made the round trip to the ground, so it lands well above
-    what the surface returns.
+    **Brighter than its surroundings.** Interference arrives without having
+    made the round trip to the ground, so it lands well above what the
+    surface returns. On its own this flags every ship and every wet roof.
 
-    It must be lower on *both* sides. This is the test that does the real
-    work, and the one that took two attempts to get right. Measuring how
-    oriented the brightness is looked sufficient -- interference runs in
-    lines -- but a coastline is beautifully oriented too, and so is the edge
-    of a town, and an earlier version of this reported both of them as
-    interference more strongly than it reported an actual streak. What
-    separates them is not direction but shape: across a streak the brightness
-    rises and falls again, while across a coastline it rises and stays. So
-    both flanks are checked, and a step edge fails on the side that does not
-    come back down.
+    **Lower on both sides.** Across a streak the brightness rises and falls
+    again; across a coastline it rises and stays. Measuring how *oriented*
+    the brightness is looked sufficient -- a streak runs in a line -- but so
+    does a shoreline, and an earlier version scored a coastline higher than a
+    real streak. Checking both flanks is what tells a crest from a step.
 
-    And it must run. A streak crosses the swath; speckle is a pixel or two.
-    A line-shaped opening keeps only what continues in the same direction for
-    twenty pixels.
+    **It runs.** A streak crosses the swath; speckle is a pixel or two. A
+    line-shaped opening keeps only what continues for twenty pixels.
 
-    The answer is in decibels above the surrounding ground, zero where
-    nothing qualifies, so it reads as a quantity rather than a flag.
+    **VV does not explain it.** This is the one that makes the difference
+    over land, and leaving it out was why this reported field boundaries and
+    railways as confidently as interference: on a realistic scene the streaks
+    scored 9.2 dB and the hedgerows 7.0, which is no separation at all.
+    Anything genuinely on the ground -- a fence, a railway, a street with a
+    good double bounce -- brightens both polarisations together. Interference
+    enters the receiver directly, and because real cross-polarised return is
+    some ten decibels weaker than co-polarised, the same injected power lifts
+    VH far more than VV. So what is scored is the part of VH's local excess
+    that VV cannot account for, which a hedge has none of.
+
+    The answer is in decibels of unexplained cross-polarised excess, zero
+    where nothing qualifies, so it reads as a quantity rather than a flag.
     """
     data = np.ma.filled(np.ma.masked_invalid(vh), 0.0).astype("float32")
     excess = np.clip(data - _background(data), 0.0, None)
+
+    if vv is not None:
+        # How much of that excess the co-polarised channel also shows. A
+        # feature on the ground raises both; interference raises this one.
+        other = np.ma.filled(np.ma.masked_invalid(vv), 0.0).astype("float32")
+        excess = np.clip(excess - np.clip(other - _background(other), 0.0, None), 0.0, None)
 
     best = np.zeros_like(data)
     for i in range(RFI_DIRECTIONS):

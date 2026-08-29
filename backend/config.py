@@ -422,8 +422,9 @@ COMPOSITES = {
         "label": "Radar interference",
         "sat": ["sentinel-1"],
         "bands": ["vv", "vh", "vv"],
-        "hint": "Violet is ordinary ground. Bright bands across the swath are "
-                "a ground radar transmitting in Sentinel-1's band.",
+        "hint": "Violet is ordinary ground; cities are bright here too, so it "
+                "is the long straight bands across the swath that are a radar "
+                "transmitting in Sentinel-1's band.",
         "default_stretch": {"mode": "fixed", "gamma": 1.0},
         "from_db": True,
         # The green window is the one that matters, and it is set from what
@@ -557,7 +558,11 @@ INDICES["rfi"] = {
     "bands": ["vh", "vv"],
     "formula": "how far VH stands above its own surroundings, where the "
                "brightness runs in a line",
-    "range": [0.0, 12.0],
+    # Now that VV explains away the ground, what is left is a much smaller
+    # number: real streaks land around 3 to 6 dB of unexplained cross-pol
+    # excess, and everything else at zero. A range of 12 spent half the
+    # colour ramp on values that never occur.
+    "range": [0.0, 6.0],
     "colormap": "inferno",
     "hint": "How far a streak stands above the ground around it, in decibels. "
             "Use the interference view to see them; use this to measure one.",
