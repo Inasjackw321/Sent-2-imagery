@@ -44,12 +44,13 @@ const PAD = 0.25;
 const SOURCES = {
   digitraffic: {
     label: 'Baltic', needsKey: false,
-    note: 'Digitraffic, open and keyless — Baltic and Gulf of Finland only.',
+    reach: 'Baltic & Gulf of Finland',
+    note: 'Digitraffic — open, no key needed.',
   },
   aisstream: {
     label: 'Global', needsKey: true,
-    note: 'aisstream.io, worldwide. Needs a free API key, and asks the '
-      + 'service at most once every five minutes.',
+    reach: 'Anywhere, with a key',
+    note: 'aisstream.io — asks the service at most once every five minutes.',
   },
 };
 
@@ -65,6 +66,10 @@ let source = 'digitraffic';
 // this; the panel only reports it, so a reload cannot talk it into going
 // sooner.
 let nextIn = 0;
+// Whether the backend is holding a key. Tracked here as well as in the config
+// because the config is read once at startup and would still say "no key" for
+// the rest of the session after one was pasted in.
+let keySaved = false;
 
 export function initVessels(leafletMap) {
   map = leafletMap;
@@ -106,8 +111,10 @@ async function load(box) {
     ships = data.vessels ?? [];
     draw(data);
   } catch (err) {
-    toast(`No AIS: ${err.message}`, 'err');
-    note(err.message);
+    // The panel carries the detail; the toast only says something went wrong,
+    // since the message can be a paragraph and a toast is not the place.
+    toast('AIS: no ships loaded', 'err');
+    note(err.message, 'bad');
   }
 }
 
@@ -187,7 +194,7 @@ function draw(data) {
   layer.addTo(map);
 
   if (data && !data.covered) {
-    note(data.note ?? 'No AIS coverage here.');
+    note(data.note ?? 'No AIS coverage here.', 'warn');
     return;
   }
   const shown = ships.length;
@@ -198,16 +205,18 @@ function draw(data) {
   } else if (data?.messages === 0) {
     // Nothing arrived at all, which is a different problem from an empty sea
     // and wants a different answer from whoever is looking at it.
-    note('Connected, but the stream sent nothing. Try a wider area.');
+    note('Connected, but nothing came through. Try a wider area.', 'warn');
   } else {
-    note('No vessels broadcasting here right now.');
+    note('No vessels broadcasting here right now.', 'warn');
   }
   legend();
 }
 
-function note(text) {
-  const el2 = $('#vesselNote');
-  if (el2) el2.textContent = text;
+function note(text, kind = '') {
+  const box = $('#vesselNote');
+  if (!box) return;
+  box.className = `vessel-status${kind ? ` is-${kind}` : ''}`;
+  box.textContent = text;
 }
 
 function legend() {
@@ -259,46 +268,59 @@ async function setSource(next) {
 async function saveKey(value) {
   try {
     const out = await api.aisKey(value);
-    note(out.set ? 'Key accepted. Fetching…' : 'Key cleared.');
-    if (out.set && enabled) { covered = null; await load(boxOf(map.getBounds())); }
+    keySaved = out.set;
     buildDock();
+    note(out.set ? 'Key saved. Listening…' : 'Key cleared.');
+    if (out.set && enabled) { covered = null; await load(boxOf(map.getBounds())); }
   } catch (err) {
-    note(err.message);
+    note(err.message, 'bad');
   }
 }
 
 function buildDock() {
   const dock = $('#vesselDock');
   if (!dock) return;
-  const keySet = store.config?.vessels?.global_key_set;
+  const spec = SOURCES[source];
   dock.innerHTML = '';
   dock.append(
     el('button', { class: 'vessel-toggle', id: 'vesselToggle', onclick: toggle },
       el('span', { class: 'vessel-mark' }, '⛴'), 'Ships'),
     el('div', { class: 'vessel-body', id: 'vesselBody', hidden: !enabled },
-      el('div', { class: 'vessel-sources' },
-        ...Object.entries(SOURCES).map(([key, spec]) =>
-          el('button', {
-            class: `vessel-source${key === source ? ' is-on' : ''}`,
-            dataset: { source: key },
-            onclick: () => setSource(key),
-          }, spec.label))),
 
-      // The key field only when the chosen source wants one.
-      ...(SOURCES[source].needsKey ? [
-        el('div', { class: 'vessel-keyrow' },
+      // A segmented control rather than two buttons that happen to sit
+      // together: one track, one lit segment, so which of the two is in force
+      // reads at a glance instead of having to be compared.
+      el('div', { class: 'seg', role: 'tablist' },
+        ...Object.entries(SOURCES).map(([key, opt]) =>
+          el('button', {
+            class: `seg-item${key === source ? ' is-on' : ''}`,
+            dataset: { source: key }, role: 'tab',
+            'aria-selected': String(key === source),
+            title: opt.reach,
+            onclick: () => setSource(key),
+          }, opt.label))),
+
+      el('div', { class: 'vessel-reach', id: 'vesselReach' }, spec.reach),
+
+      // The key, and only when the chosen feed wants one.
+      ...(spec.needsKey ? [
+        el('div', { class: 'keyfield', id: 'keyField' },
           el('input', {
-            type: 'password', id: 'aisKey', placeholder: keySet ? '•••••• saved' : 'aisstream API key',
-            autocomplete: 'off', spellcheck: false,
+            type: 'password', id: 'aisKey', autocomplete: 'off', spellcheck: false,
+            placeholder: keySaved ? 'Key saved' : 'Paste your API key',
             onkeydown: (e) => { if (e.key === 'Enter') saveKey(e.target.value); },
+            oninput: () => paintKeyButton(),
           }),
           el('button', {
-            class: 'vessel-save', id: 'aisKeySave',
+            class: 'keyfield-go', id: 'aisKeySave', type: 'button',
             onclick: () => saveKey($('#aisKey').value),
-          }, keySet ? 'Replace' : 'Use')),
-        el('div', { class: 'vessel-where' },
-          'Free from aisstream.io. Kept in memory only — never written to disk, '
-          + 'and gone when the app closes.'),
+          }, keySaved ? 'Change' : 'Save')),
+        el('div', { class: 'vessel-hint' },
+          keySaved ? el('span', { class: 'ok-dot' }, '● key saved') : '',
+          el('a', {
+            href: 'https://aisstream.io/', target: '_blank', rel: 'noopener noreferrer',
+          }, 'Get a free key'),
+          ' · kept in memory only'),
       ] : []),
 
       el('label', { class: 'vessel-check' },
@@ -306,11 +328,22 @@ function buildDock() {
           type: 'checkbox', checked: showNames,
           onchange: (e) => { showNames = e.target.checked; draw(null); },
         }), 'Show names'),
+
       el('div', { class: 'vessel-key', id: 'vesselKey' }),
-      el('div', { class: 'vessel-note', id: 'vesselNote' }, enabled ? 'Loading…' : ''),
+      el('div', { class: 'vessel-status', id: 'vesselNote' }, enabled ? 'Loading…' : ''),
       el('div', { class: 'vessel-where', id: 'vesselWhere' })),
   );
+  // The button starts out with nothing to save, and should say so.
+  paintKeyButton();
   paintDock();
+}
+
+/** The save button only offers itself when there is something to save. */
+function paintKeyButton() {
+  const field = $('#aisKey');
+  const button = $('#aisKeySave');
+  if (!field || !button) return;
+  button.disabled = !field.value.trim();
 }
 
 function paintDock() {
@@ -319,6 +352,7 @@ function paintDock() {
   if (!button || !body) return;
   button.classList.toggle('is-on', enabled);
   body.hidden = !enabled;
+  keySaved = keySaved || Boolean(store.config?.vessels?.global_key_set);
   const where = $('#vesselWhere');
   if (where && enabled) {
     // Say where the feed reaches, up front. A blank map over the Atlantic is

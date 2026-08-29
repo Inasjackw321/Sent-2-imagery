@@ -356,7 +356,9 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
    grew to. */
 .side-docks {
   position: absolute; top: 62px; right: 12px; z-index: 500;
-  display: grid; gap: 8px; width: 186px; align-content: start;
+  /* Wide enough for the panels the docks have grown: a segmented control and
+     a key field both need more room than a row of toggles did. */
+  display: grid; gap: 8px; width: 208px; align-content: start;
   /* Four panels, all of which can be open at once, and a short window: the
      column has to be able to scroll or the last one is simply unreachable. */
   max-height: calc(100% - 88px); overflow-y: auto; overscroll-behavior: contain;
@@ -678,26 +680,82 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .ship-card dt { color: var(--ink-faint); }
 .ship-card dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 
-/* Which AIS feed, and the key the global one needs. */
-.vessel-sources { display: flex; gap: 4px; margin-bottom: 8px; }
-.vessel-source {
-  flex: 1; padding: 4px 2px; cursor: pointer; font: inherit; font-size: 10.5px;
+
+/* ── Choosing an AIS feed ───────────────────────────────────── */
+
+/* A segmented control: one recessed track with a single lit segment, so which
+   of the two is in force reads at a glance instead of having to be compared
+   against its neighbour. */
+.seg {
+  display: flex; gap: 2px; padding: 2px; margin-bottom: 9px;
+  background: rgba(0, 0, 0, .32); border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.seg-item {
+  /* min-width:0 because a flex item will not shrink below its own content by
+     default, so a long label pushes the whole control past the panel and gets
+     clipped rather than tightening up. */
+  flex: 1; min-width: 0; padding: 5px 4px; cursor: pointer; font: inherit;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: transparent; color: var(--ink-faint);
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 0; border-radius: 6px;
+  transition: background .16s, color .16s;
 }
-.vessel-source:hover { color: var(--ink); }
-.vessel-source.is-on {
-  color: #ffe6d2; background: rgba(255,143,94,.14); border-color: rgba(255,143,94,.5);
+.seg-item:hover { color: var(--ink); }
+.seg-item.is-on {
+  color: #ffe6d2; background: rgba(255, 143, 94, .22);
+  box-shadow: inset 0 0 0 1px rgba(255, 143, 94, .45);
 }
-.vessel-keyrow { display: flex; gap: 5px; margin-bottom: 6px; }
-.vessel-keyrow input {
-  flex: 1; min-width: 0; padding: 4px 7px; font: inherit; font-size: 10.5px;
-  background: var(--bg-3); color: var(--ink);
-  border: 1px solid var(--line); border-radius: 6px;
+.seg-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.vessel-reach {
+  margin: -4px 0 9px; font-size: 10px; color: var(--ink-faint);
+  letter-spacing: .02em;
 }
-.vessel-save {
-  padding: 0 9px; cursor: pointer; font: inherit; font-size: 10px;
-  background: transparent; color: var(--accent);
-  border: 1px solid rgba(76,194,255,.35); border-radius: 6px;
+
+/* The key: one field, with its button joined to it rather than floating
+   alongside, so the pair reads as a single control. */
+.keyfield {
+  display: flex; align-items: stretch; margin-bottom: 6px;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px;
+  overflow: hidden;
 }
-.vessel-save:hover { background: rgba(76,194,255,.12); }
+.keyfield:focus-within { border-color: rgba(255, 143, 94, .55); }
+.keyfield input {
+  flex: 1; min-width: 0; padding: 6px 8px; font: inherit; font-size: 10.5px;
+  background: transparent; color: var(--ink); border: 0; outline: none;
+}
+.keyfield input::placeholder { color: var(--ink-faint); }
+.keyfield-go {
+  flex: 0 0 auto; padding: 0 10px; cursor: pointer; font: inherit; font-size: 10px; font-weight: 650;
+  background: rgba(255, 143, 94, .16); color: #ffd0b4;
+  border: 0; border-left: 1px solid var(--line);
+  transition: background .16s;
+}
+.keyfield-go:hover:not(:disabled) { background: rgba(255, 143, 94, .3); }
+.keyfield-go:disabled { opacity: .4; cursor: not-allowed; }
+
+.vessel-hint {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 9.5px; color: var(--ink-faint); line-height: 1.5;
+}
+.vessel-hint a { color: var(--accent); }
+.ok-dot { color: #3ee39f; }
+
+/* A status line that can be a count, a warning or a failure, and looks like
+   whichever it is instead of all three looking like body text. */
+.vessel-status {
+  margin-top: 9px; padding: 6px 8px; border-radius: 6px;
+  font-size: 10.5px; line-height: 1.45; color: var(--ink);
+  background: rgba(255, 255, 255, .04);
+}
+.vessel-status:empty { display: none; }
+.vessel-status.is-warn {
+  color: #ffd79a; background: rgba(255, 192, 97, .1);
+  box-shadow: inset 0 0 0 1px rgba(255, 192, 97, .28);
+}
+.vessel-status.is-bad {
+  color: #ffb3b3; background: rgba(255, 128, 128, .1);
+  box-shadow: inset 0 0 0 1px rgba(255, 128, 128, .3);
+}

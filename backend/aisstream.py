@@ -113,7 +113,18 @@ def _kind(ship_type) -> tuple[str, str]:
 
 
 async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[dict, int]:
-    """Open the stream, take what arrives for a few seconds, close it."""
+    """Open the stream, take what arrives for a few seconds, close it.
+
+    The awkward part is the ending. aisstream hangs up by dropping the socket
+    rather than by exchanging a close frame, so leaving the connection through
+    a context manager raises "no close frame received or sent" -- and an
+    earlier version let that exception escape, which threw away every ship
+    already collected and reported a working feed as unreachable.
+
+    So the close is separated from the listening. Anything that goes wrong
+    while shutting down is nothing to do with what was heard, and what was
+    heard is kept.
+    """
     west, south, east, north = box
     subscribe = {
         "APIKey": key,
@@ -128,29 +139,55 @@ async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[di
     seen: dict[int, dict] = {}
     static: dict[int, dict] = {}
     messages = 0
+
     try:
-        async with websockets.connect(ENDPOINT, open_timeout=20, close_timeout=5) as socket:
-            await socket.send(json.dumps(subscribe))
-            deadline = time.monotonic() + LISTEN_SECONDS
-            while time.monotonic() < deadline and messages < MAX_MESSAGES:
-                left = deadline - time.monotonic()
-                try:
-                    raw = await asyncio.wait_for(socket.recv(), timeout=max(0.1, left))
-                except asyncio.TimeoutError:
-                    break
-                messages += 1
-                # A bad key comes back as a plain text line rather than as a
-                # refused handshake, so it has to be recognised here or it
-                # looks like an empty sea.
-                text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
-                if not text.lstrip().startswith("{"):
-                    raise StreamError(f"aisstream said: {text.strip()[:160]}")
-                with contextlib.suppress(json.JSONDecodeError):
-                    _absorb(json.loads(text), seen, static)
+        socket = await websockets.connect(ENDPOINT, open_timeout=20, close_timeout=3)
     except _REFUSED as exc:
         raise StreamError("aisstream refused the connection — check the API key.") from exc
     except (OSError, ws_errors.WebSocketException, asyncio.TimeoutError) as exc:
         raise StreamError(f"aisstream could not be reached: {exc}") from exc
+
+    opened = time.monotonic()
+    trouble: str | None = None
+    try:
+        await socket.send(json.dumps(subscribe))
+        deadline = opened + LISTEN_SECONDS
+        while time.monotonic() < deadline and messages < MAX_MESSAGES:
+            left = deadline - time.monotonic()
+            try:
+                raw = await asyncio.wait_for(socket.recv(), timeout=max(0.1, left))
+            except asyncio.TimeoutError:
+                break
+            messages += 1
+            # A rejected key arrives as a line of plain text rather than as a
+            # refused handshake, so it has to be recognised here or it looks
+            # like an empty sea.
+            text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+            if not text.lstrip().startswith("{"):
+                raise StreamError(f"aisstream said: {text.strip()[:160]}")
+            with contextlib.suppress(json.JSONDecodeError):
+                _absorb(json.loads(text), seen, static)
+    except ws_errors.ConnectionClosed as exc:
+        # The far end hung up. If it had already sent something that is simply
+        # the end of the window; if it had not, it is worth saying so.
+        trouble = str(exc)
+    except (OSError, ws_errors.WebSocketException) as exc:
+        if not seen:
+            raise StreamError(f"aisstream could not be reached: {exc}") from exc
+        trouble = str(exc)
+    finally:
+        # Closing can fail for the same reason the read did, and by this point
+        # it cannot cost anything worth having.
+        with contextlib.suppress(Exception):
+            await socket.close()
+
+    if not seen and not messages:
+        held = time.monotonic() - opened
+        if held < LISTEN_SECONDS - 1.0:
+            raise StreamError(
+                "aisstream accepted the connection and then closed it without "
+                "sending anything, which usually means the key was not "
+                f"accepted{f' ({trouble})' if trouble else ''}.")
 
     # Names arrive on a different message type to positions, and often later.
     for mmsi, extra in static.items():
@@ -257,6 +294,12 @@ def vessels_in(box: tuple[float, float, float, float], limit: int = 900) -> dict
 
     try:
         found, messages = asyncio.run(_collect(key, box))
+    except StreamError:
+        # Already said what went wrong, in its own words. Catching RuntimeError
+        # below would otherwise swallow this and wrap it a second time, since
+        # StreamError is one -- which is how "Could not run the stream:
+        # aisstream could not be reached: ..." came to be printed.
+        raise
     except RuntimeError as exc:
         # asyncio.run refuses to nest, which would mean a caller already
         # inside a loop -- worth naming rather than surfacing as a mystery.
