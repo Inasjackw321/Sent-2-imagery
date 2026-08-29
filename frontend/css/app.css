@@ -681,6 +681,105 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .ship-card dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 
+/* ── Live cameras ───────────────────────────────────────────── */
+
+.cam-dock { display: grid; gap: 8px; }
+.cam-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.cam-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.cam-toggle.is-on {
+  color: #ffdae6; border-color: rgba(255,95,141,.6); background: rgba(66,18,36,.85);
+  font-weight: 600;
+}
+.cam-mark { font-size: 11px; opacity: .65; }
+.cam-toggle.is-on .cam-mark { opacity: 1; color: #ff5f8d; }
+
+.cam-body {
+  padding: 10px 11px; border-radius: 10px; font-size: 11.5px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+.cam-list { display: grid; gap: 4px; }
+.cam-item {
+  display: grid; gap: 1px; text-align: left; cursor: pointer; font: inherit;
+  padding: 6px 8px; border-radius: 7px; color: var(--ink-dim);
+  background: rgba(0,0,0,.28); border: 1px solid transparent;
+}
+.cam-item b { font-size: 11.5px; font-weight: 600; color: var(--ink); }
+.cam-item span { font-size: 10px; color: var(--ink-faint); }
+.cam-item:hover { border-color: #3a4a66; }
+.cam-item.is-on {
+  border-color: rgba(255,95,141,.6); background: rgba(66,18,36,.7);
+}
+.cam-item.is-on b { color: #ffdae6; }
+.cam-note {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 10px; line-height: 1.45; color: var(--ink-faint);
+}
+
+/* The pin. A camera is a fixed point, so it stays a plain circle rather than
+   borrowing the ship arrow's sense of direction. */
+.cam-pin { background: none; border: 0; }
+.cam-pin svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 3px rgba(0,0,0,.7)); }
+.cam-label {
+  background: rgba(13,16,21,.82); border: 0; color: #ffdae6;
+  font-size: 10px; padding: 1px 5px; border-radius: 4px; box-shadow: none;
+  white-space: nowrap;
+}
+.cam-label::before { display: none; }
+
+/* The player floats over the map rather than displacing it: the point of
+   putting a webcam on a map is seeing both at once. */
+.cam-viewer {
+  /* Fixed, not absolute: it is appended to <body>, which is not a positioned
+     ancestor, so absolute would anchor it to the page rather than the view and
+     let it scroll away from the map it belongs to. */
+  position: fixed; right: 14px; bottom: 14px; z-index: 900;
+  width: min(420px, calc(100vw - 28px));
+  border-radius: 12px; overflow: hidden;
+  background: rgba(9,11,15,.96); border: 1px solid var(--line);
+  box-shadow: 0 12px 34px rgba(0,0,0,.55); backdrop-filter: blur(8px);
+}
+.cam-bar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); font-size: 12px;
+}
+.cam-live {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  padding: 2px 5px; border-radius: 4px; color: #fff; background: #d92b57;
+}
+.cam-bar b { color: var(--ink); font-weight: 600; }
+/* min-width:0 so a long place name ellipsises instead of shoving the close
+   button off the end of the bar. */
+.cam-where {
+  flex: 1; min-width: 0; color: var(--ink-faint); font-size: 10.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cam-out, .cam-close {
+  flex: 0 0 auto; cursor: pointer; font: inherit; text-decoration: none;
+  background: none; border: 0; color: var(--ink-faint); padding: 0 3px;
+  line-height: 1;
+}
+.cam-out:hover, .cam-close:hover { color: var(--ink); }
+.cam-close { font-size: 18px; }
+
+.cam-frame { position: relative; aspect-ratio: 16 / 9; background: #05070a; }
+.cam-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.cam-wait {
+  position: absolute; inset: 0; display: grid; align-content: center;
+  justify-items: center; gap: 5px; padding: 0 22px; text-align: center;
+  font-size: 11px; color: var(--ink-faint); background: #05070a;
+}
+.cam-wait small { font-size: 9.5px; line-height: 1.5; }
+.cam-foot {
+  padding: 7px 10px; font-size: 9.5px; line-height: 1.5; color: var(--ink-faint);
+  border-top: 1px solid var(--line);
+}
+
 /* ── Choosing an AIS feed ───────────────────────────────────── */
 
 /* A segmented control: one recessed track with a single lit segment, so which

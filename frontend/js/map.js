@@ -14,6 +14,7 @@ import { initFires, POPUP } from './fires.js';
 import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
 import { initVessels } from './vessels.js';
+import { initCams } from './cams.js';
 
 let map;
 let aoiLayer = null;
@@ -140,8 +141,9 @@ export function initMap() {
   initClouds(map);
   initRadar(map);
   initVessels(map);
+  initCams(map);
 
-  // Four panels in one column: opening the last one can leave its own button
+  // Five panels in one column: opening the last one can leave its own button
   // below the fold. Bring whichever was just pressed back into view.
   $('.side-docks')?.addEventListener('click', (e) => {
     const button = e.target.closest('button');
