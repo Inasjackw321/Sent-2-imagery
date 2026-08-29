@@ -87,7 +87,14 @@ const boxOf = (bounds) => [
 function padded([w, s, e, n]) {
   const dx = (e - w) * PAD;
   const dy = (n - s) * PAD;
-  return [w - dx, s - dy, e + dx, n + dy];
+  // Clamped to the actual planet. Zoomed out, padding pushes the edges past
+  // the poles and the antimeridian, and a service that validates its inputs
+  // rejects the whole request -- so the layer works everywhere except the one
+  // view where you are looking for everything at once.
+  return [
+    Math.max(w - dx, -180), Math.max(s - dy, -90),
+    Math.min(e + dx, 180), Math.min(n + dy, 90),
+  ];
 }
 
 const inside = (box, outer) =>

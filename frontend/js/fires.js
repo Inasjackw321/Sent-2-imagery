@@ -8,7 +8,7 @@
 
 import { api } from './api.js';
 import { store } from './store.js';
-import { $, el, toast, fmt, debounce } from './ui.js';
+import { $, el, toast, fmt, debounce, askableBounds } from './ui.js';
 
 let map = null;
 let layer = null;
@@ -107,10 +107,7 @@ async function refresh({ force = false } = {}) {
   inFlight = true;
   $('#fireCount').textContent = 'Asking NASA…';
   try {
-    const data = await api.fires({
-      west: box.getWest(), south: box.getSouth(),
-      east: box.getEast(), north: box.getNorth(), hours,
-    });
+    const data = await api.fires({ ...askableBounds(map, MARGIN), hours });
     covered = box;
     draw(data);
   } catch (err) {

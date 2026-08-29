@@ -10,8 +10,9 @@
 
 import { api } from './api.js';
 import { store } from './store.js';
-import { $, el, toast, fmt, debounce } from './ui.js';
+import { $, el, toast, fmt, debounce, askableBounds } from './ui.js';
 import { POPUP } from './fires.js';
+import { openWindow, closeWindow, closeAll, isOpen } from './windows.js';
 
 let map = null;
 let quakeLayer = null;
@@ -23,10 +24,9 @@ let hours = 168;
 let minMagnitude = 2.5;
 let traceMinutes = 60;
 let open = false;          // is the panel expanded
-let showing = null;        // the station whose trace is plotted
-// Bumped on every plot request, so a slow answer for a station you have since
-// clicked away from cannot overwrite the one you are actually looking at.
-let traceToken = 0;
+// Stations whose traces are on screen, so switching the window length can
+// redraw all of them rather than only the last one clicked.
+const showing = new Map();
 let inFlight = false;
 // The ground already fetched for. Asked for over rather more than the screen,
 // so an ordinary pan is answered from what is already drawn.
@@ -54,7 +54,6 @@ export function initSeismic(leafletMap) {
   quakeLayer = L.layerGroup();
   stationLayer = L.layerGroup();
   buildDock();
-  buildTracePanel();
   map.on('moveend', debounce(() => refresh(), 700));
 }
 
@@ -135,7 +134,7 @@ function setLayer(which, on) {
     showStations = on;
     $('#seisStationOpts').hidden = !on;
     if (on) stationLayer.addTo(map);
-    else { stationLayer.remove(); stationLayer.clearLayers(); showTrace(null); }
+    else { stationLayer.remove(); stationLayer.clearLayers(); closeAll((id) => id.startsWith(WIN)); }
   }
   covered = null;
   if (showQuakes || showStations) refresh({ force: true });
@@ -166,9 +165,9 @@ function setTraceWindow(minutes) {
   for (const b of document.querySelectorAll('.seis-chip[data-minutes]')) {
     b.classList.toggle('is-active', Number(b.dataset.minutes) === traceMinutes);
   }
-  // A trace already on screen is now showing the wrong window, so redraw it
-  // rather than leaving the buttons disagreeing with the picture.
-  if (showing) showTrace(showing);
+  // Traces already on screen are now showing the wrong window, so they are all
+  // redrawn rather than left disagreeing with the buttons.
+  for (const station of [...showing.values()]) plotStation(station, { redraw: true });
 }
 
 // ── Fetching ───────────────────────────────────────────────────
@@ -179,10 +178,7 @@ async function refresh({ force = false } = {}) {
   if (!force && covered?.contains(view)) return;
 
   const box = view.pad(MARGIN);
-  const bounds = {
-    west: box.getWest(), south: box.getSouth(),
-    east: box.getEast(), north: box.getNorth(),
-  };
+  const bounds = askableBounds(map, MARGIN);
   inFlight = true;
   $('#seisCount').textContent = 'Asking…';
   const said = [];
@@ -266,7 +262,7 @@ function drawStations(data) {
           + ' stroke-width="1.6" stroke-linejoin="round"/></svg>',
         iconSize: [24, 24], iconAnchor: [12, 12],
       }),
-    }).on('click', () => showTrace(s)).addTo(stationLayer);
+    }).on('click', () => plotStation(s)).addTo(stationLayer);
   }
   if (!data.count) return 'No open seismographs in view';
   return `<b>${data.count.toLocaleString()}</b> seismograph${data.count === 1 ? '' : 's'}`
@@ -275,54 +271,63 @@ function drawStations(data) {
 
 // ── The trace ──────────────────────────────────────────────────
 
-function buildTracePanel() {
-  if ($('#tracePanel')) return;
-  document.body.append(
-    el('div', { class: 'trace-panel', id: 'tracePanel', hidden: true },
-      el('div', { class: 'trace-bar' },
-        // Close on the left, unlike every other panel here. The camera player
-        // is anchored to the other corner and overlaps this one on a narrow
-        // window; a control at the far left stays reachable underneath it.
-        el('button', { class: 'trace-close', title: 'Close', onclick: () => showTrace(null) }, '×'),
-        el('b', { id: 'traceName' }, ''),
-        el('span', { class: 'trace-where', id: 'traceWhere' }, '')),
-      el('div', { class: 'trace-plot', id: 'tracePlot' }),
-      el('div', { class: 'trace-foot', id: 'traceFoot' })),
-  );
-}
+// Window ids are prefixed so the cameras' windows and these cannot collide.
+const WIN = 'trace:';
 
 /**
- * Plot one station's recent ground motion, or close the panel.
+ * Plot one station's recent ground motion, or close it if already open.
+ *
+ * Several can be open at once. Comparing the same minute at two instruments is
+ * how you tell a local event from a distant one, and that is impossible if
+ * opening the second closes the first.
  *
  * The data centre draws the plot and hands back a PNG. Fetching samples and
  * rendering them here would mean a waveform library in the browser for a
- * picture that already exists, and the plot it returns is the conventional one.
+ * picture that already exists.
  */
-function showTrace(station) {
-  showing = station;
-  const panel = $('#tracePanel');
-  const plot = $('#tracePlot');
-  if (!panel || !plot) return;
-
-  plot.replaceChildren();
-  if (!station) { panel.hidden = true; return; }
+function plotStation(station, { redraw = false } = {}) {
+  const id = WIN + `${station.network}.${station.station}`;
+  if (isOpen(id) && !redraw) {
+    closeWindow(id);
+    return;
+  }
 
   const label = `${station.network}.${station.station}`;
   const span = store.config.seismic?.trace_minutes?.[traceMinutes] ?? `${traceMinutes} min`;
+  const plot = el('div', { class: 'trace-plot' });
 
   const waiting = el('div', { class: 'trace-wait' },
     el('span', {}, `Plotting ${label}…`),
     el('small', {}, 'The data centre draws it on request, which takes a moment.'));
   plot.append(waiting);
-  fetchTrace(station, label, span, plot, waiting);
 
-  $('#traceName').textContent = `${label} · ${station.channel}`;
-  $('#traceWhere').textContent = station.instrument || fmt.coord(station.lon, station.lat);
-  $('#traceFoot').textContent =
-    `Last ${span} of vertical ground motion at ${fmt.coord(station.lon, station.lat)}, `
-    + `${station.elevation_m} m elevation. `
+  // Redrawing replaces the body of a window that is already open, rather than
+  // closing and reopening it -- which would throw away wherever it was dragged
+  // to and shuffle every other window along the cascade.
+  if (redraw && isOpen(id)) {
+    const existing = document.querySelector(`[data-win="${CSS.escape(id)}"]`);
+    existing?.querySelector('.win-body')?.replaceChildren(plot);
+    existing?.querySelector('.win-foot')?.replaceWith(
+      el('div', { class: 'win-foot' }, footnote(station, span)));
+  } else {
+    showing.set(id, station);
+    openWindow({
+      id,
+      title: `${label} · ${station.channel}`,
+      where: station.instrument || fmt.coord(station.lon, station.lat),
+      body: plot,
+      foot: footnote(station, span),
+      onClose: () => showing.delete(id),
+    });
+  }
+
+  fetchTrace(id, station, label, span, plot, waiting);
+}
+
+function footnote(station, span) {
+  return `Last ${span} of vertical ground motion at `
+    + `${fmt.coord(station.lon, station.lat)}, ${station.elevation_m} m elevation. `
     + `${store.config.seismic?.stations ?? 'EarthScope / FDSN'}.`;
-  panel.hidden = false;
 }
 
 /**
@@ -334,8 +339,10 @@ function showTrace(station) {
  * every failure ended up reading as the same unhelpful "no data". Fetching it
  * means the reason reaches the reader.
  */
-async function fetchTrace(station, label, span, plot, waiting) {
-  const token = ++traceToken;
+async function fetchTrace(id, station, label, span, plot, waiting) {
+  const token = (traceTokens.get(id) ?? 0) + 1;
+  traceTokens.set(id, token);
+
   const url = api.traceUrl({
     network: station.network, station: station.station,
     channel: station.channel, loc: station.loc, minutes: traceMinutes,
@@ -354,16 +361,16 @@ async function fetchTrace(station, label, span, plot, waiting) {
     }
     blobUrl = URL.createObjectURL(await res.blob());
   } catch (err) {
-    // Another station was clicked while this was in the air: its plot is the
-    // one on screen now, and this answer is about a panel that has moved on.
-    if (token !== traceToken) return;
+    // The window length was changed, or the window closed, while this was in
+    // the air: this answer is about a picture nobody is waiting for now.
+    if (traceTokens.get(id) !== token) return;
     waiting.replaceChildren(
       el('span', {}, `${label} could not be plotted`),
       el('small', {}, err.message));
     return;
   }
 
-  if (token !== traceToken) { URL.revokeObjectURL(blobUrl); return; }
+  if (traceTokens.get(id) !== token) { URL.revokeObjectURL(blobUrl); return; }
 
   const image = el('img', { src: blobUrl, alt: `Ground motion at ${label}, last ${span}` });
   // The bytes are held by the object URL, not the element, so it has to be
@@ -373,3 +380,7 @@ async function fetchTrace(station, label, span, plot, waiting) {
   waiting.remove();
   plot.append(image);
 }
+
+// One per window, so a slow answer for a trace that has since been redrawn or
+// closed cannot overwrite the picture that replaced it.
+const traceTokens = new Map();

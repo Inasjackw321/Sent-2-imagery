@@ -228,6 +228,21 @@ def test_station_positions_and_elevation_are_read(monkeypatch):
     assert bks["elevation_m"] == 244
 
 
+def test_the_nearest_stations_are_the_ones_kept(monkeypatch):
+    """A wide view holds more stations than can be drawn, so the list is cut.
+
+    It used to be sorted by network name before cutting, which meant a wide
+    view returned whichever networks sorted early in the alphabet and dropped
+    everything else -- while the interface called it "nearest shown".
+    """
+    monkeypatch.setattr(seismic, "MAX_STATIONS", 1)
+    _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    # A box centred on CAD, which sorts second alphabetically.
+    out = seismic.stations((-122.5, 37.9, -122.4, 38.1))
+    assert [s["station"] for s in out["stations"]] == ["CAD"]
+    assert out["capped"] is True
+
+
 def test_the_instrument_is_read_from_the_right_column(monkeypatch):
     """Counting back from the end of the row lands on the sample rate.
 

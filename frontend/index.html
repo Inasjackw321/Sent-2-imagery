@@ -20,12 +20,15 @@
 <body>
 
 <header class="topbar">
-  <div class="brand"><span class="brand-mark">🛰️</span><span>EarthViewer<small>free satellite imagery</small></span></div>
+  <div class="brand"><span class="brand-mark">🛰️</span><span>EarthViewer<small>free monitoring imagery</small></span></div>
   <div class="topbar-right">
     <span class="badge badge-demo" id="demoBadge" hidden>Demo data — synthetic</span>
     <span class="badge" id="sourceBadge">Sentinel &amp; Landsat</span>
     <button class="btn-install" id="installBtn" hidden title="Install EarthViewer as an app">
       <span>↓</span> Install app
+    </button>
+    <button class="btn-full" id="fullBtn" title="Full screen (F11)" aria-label="Full screen">
+      <span id="fullIcon">⤢</span>
     </button>
   </div>
 </header>

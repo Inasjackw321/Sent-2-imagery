@@ -64,6 +64,14 @@ html, body {
   font: inherit; font-size: 12px; font-weight: 550; transition: .15s;
 }
 .btn-install:hover { background: rgba(76,194,255,.12); }
+.btn-full {
+  display: grid; place-items: center; width: 30px; height: 30px;
+  border-radius: 8px; cursor: pointer; font: inherit; font-size: 14px;
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--line); transition: .15s;
+}
+.btn-full:hover { color: var(--ink); border-color: #3a4a66; }
+.btn-full.is-on { color: var(--accent); border-color: rgba(76,194,255,.45); }
 .btn-install span { font-size: 13px; line-height: 1; }
 
 /* Installed / app-window mode: the OS supplies the title bar, so reclaim room
@@ -544,15 +552,9 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 @media (max-width: 900px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; flex: 0 0 46%; border-right: 0; border-bottom: 1px solid var(--line); }
-  /* The sidebar is above the map now rather than beside it, and there is no
-     room to dodge the dock column, so the floating panels take the full width
-     and simply sit on top. */
-  .cam-viewer, .trace-panel {
-    left: 14px; right: 14px; width: auto;
-  }
-  /* One at each end, so having both open is crowded rather than impossible. */
-  .trace-panel { top: 14px; bottom: auto; }
-  .cam-viewer { bottom: 14px; }
+  /* No room to cascade on a narrow screen, so windows take the width and
+     stack. Dragging still works if one needs moving out of the way. */
+  .win { left: 10px !important; right: 10px !important; width: auto; }
 }
 
 /* Enhancement controls */
@@ -764,33 +766,7 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .seis-popup-head { font-size: 15px; color: var(--ink); margin-bottom: 4px; }
 .seis-warn { color: #ffd166; }
 
-/* The plotted trace. Bottom-left, opposite the camera panel, so both can be
-   open at once without one hiding the other -- and clear of the sidebar, whose
-   controls it would otherwise cover while you are still using them. */
-.trace-panel {
-  /* Below the camera player rather than above it, so where they overlap the
-     one you just opened is the one on top. */
-  position: fixed; left: calc(var(--sidebar-w) + 14px); bottom: 14px; z-index: 899;
-  width: min(520px, calc(100vw - var(--sidebar-w) - 28px));
-  border-radius: 12px; overflow: hidden;
-  background: rgba(9,11,15,.96); border: 1px solid var(--line);
-  box-shadow: 0 12px 34px rgba(0,0,0,.55); backdrop-filter: blur(8px);
-}
-.trace-bar {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  border-bottom: 1px solid var(--line); font-size: 12px;
-}
-.trace-bar b { color: #d8f2ff; font-weight: 600; }
-.trace-where {
-  flex: 1; min-width: 0; color: var(--ink-faint); font-size: 10.5px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.trace-close {
-  flex: 0 0 auto; cursor: pointer; font: inherit; font-size: 18px;
-  background: none; border: 0; color: var(--ink-faint); line-height: 1;
-}
-.trace-close:hover { color: var(--ink); }
-.trace-plot { position: relative; min-height: 120px; background: #05070a; }
+.trace-plot { position: relative; min-height: 110px; background: #05070a; }
 .trace-plot img { display: block; width: 100%; }
 .trace-wait {
   position: absolute; inset: 0; display: grid; align-content: center;
@@ -798,10 +774,6 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   font-size: 11px; color: var(--ink-faint); background: #05070a;
 }
 .trace-wait small { font-size: 9.5px; line-height: 1.5; }
-.trace-foot {
-  padding: 7px 10px; font-size: 9.5px; line-height: 1.5; color: var(--ink-faint);
-  border-top: 1px solid var(--line);
-}
 
 /* ── Live cameras ───────────────────────────────────────────── */
 
@@ -825,19 +797,13 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   background: rgba(13,16,21,.9); border: 1px solid var(--line);
   color: var(--ink-dim); backdrop-filter: blur(6px);
 }
-.cam-list { display: grid; gap: 4px; }
-.cam-item {
-  display: grid; gap: 1px; text-align: left; cursor: pointer; font: inherit;
-  padding: 6px 8px; border-radius: 7px; color: var(--ink-dim);
-  background: rgba(0,0,0,.28); border: 1px solid transparent;
+.cam-count { color: var(--ink); font-size: 11px; }
+.cam-fit {
+  width: 100%; margin-top: 7px; padding: 5px 8px; cursor: pointer; font: inherit;
+  font-size: 10.5px; border-radius: 7px; color: var(--ink-dim);
+  background: rgba(0,0,0,.3); border: 1px solid var(--line);
 }
-.cam-item b { font-size: 11.5px; font-weight: 600; color: var(--ink); }
-.cam-item span { font-size: 10px; color: var(--ink-faint); }
-.cam-item:hover { border-color: #3a4a66; }
-.cam-item.is-on {
-  border-color: rgba(255,95,141,.6); background: rgba(66,18,36,.7);
-}
-.cam-item.is-on b { color: #ffdae6; }
+.cam-fit:hover { color: var(--ink); border-color: #3a4a66; }
 .cam-note {
   margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
   font-size: 10px; line-height: 1.45; color: var(--ink-faint);
@@ -846,6 +812,7 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 /* The pin. A camera is a fixed point, so it stays a plain circle rather than
    borrowing the ship arrow's sense of direction. */
 .cam-pin { background: none; border: 0; }
+.cam-pin.is-on svg { filter: drop-shadow(0 0 6px #ff5f8d); }
 .cam-pin svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 3px rgba(0,0,0,.7)); }
 .cam-label {
   background: rgba(13,16,21,.82); border: 0; color: #ffdae6;
@@ -854,43 +821,49 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 }
 .cam-label::before { display: none; }
 
-/* The player floats over the map rather than displacing it: the point of
-   putting a webcam on a map is seeing both at once. */
-.cam-viewer {
-  /* Fixed, not absolute: it is appended to <body>, which is not a positioned
-     ancestor, so absolute would anchor it to the page rather than the view and
-     let it scroll away from the map it belongs to. */
-  /* Clear of the dock column (right: 12px, 208px wide). Overlapping it meant
-     that once a camera was open you could not pick the next one from the list
-     underneath -- the panel swallowed the clicks. */
-  position: fixed; right: 234px; bottom: 14px; z-index: 900;
-  width: min(420px, calc(100vw - 262px));
-  border-radius: 12px; overflow: hidden;
+/* Windows: cameras and traces, several at once, dragged by the title bar.
+
+   Fixed rather than absolute -- they are appended to <body>, which is not a
+   positioned ancestor, so absolute would anchor them to the page and let them
+   scroll away from the map they belong to. */
+.win-layer { position: fixed; inset: 0; z-index: 900; pointer-events: none; }
+.win {
+  position: fixed; width: min(420px, calc(100vw - 40px));
+  border-radius: 12px; overflow: hidden; pointer-events: auto;
   background: rgba(9,11,15,.96); border: 1px solid var(--line);
   box-shadow: 0 12px 34px rgba(0,0,0,.55); backdrop-filter: blur(8px);
 }
-.cam-bar {
+.win.is-dragging { box-shadow: 0 20px 48px rgba(0,0,0,.7); user-select: none; }
+.win-bar {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-  border-bottom: 1px solid var(--line); font-size: 12px;
+  border-bottom: 1px solid var(--line); font-size: 12px; cursor: move;
+  touch-action: none;
 }
-.cam-live {
-  flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .08em;
-  padding: 2px 5px; border-radius: 4px; color: #fff; background: #d92b57;
-}
-.cam-bar b { color: var(--ink); font-weight: 600; }
+.win-title { color: var(--ink); font-weight: 600; white-space: nowrap; }
 /* min-width:0 so a long place name ellipsises instead of shoving the close
    button off the end of the bar. */
-.cam-where {
+.win-where {
   flex: 1; min-width: 0; color: var(--ink-faint); font-size: 10.5px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cam-out, .cam-close {
-  flex: 0 0 auto; cursor: pointer; font: inherit; text-decoration: none;
-  background: none; border: 0; color: var(--ink-faint); padding: 0 3px;
-  line-height: 1;
+.win-badge {
+  flex: 0 0 auto; font-size: 9px; font-weight: 700; letter-spacing: .08em;
+  padding: 2px 5px; border-radius: 4px; color: #fff;
 }
-.cam-out:hover, .cam-close:hover { color: var(--ink); }
-.cam-close { font-size: 18px; }
+.win-badge.is-live { background: #d92b57; }
+.win-badge.is-still { background: #4a5a72; }
+.win-out, .win-close {
+  flex: 0 0 auto; cursor: pointer; font: inherit; text-decoration: none;
+  background: none; border: 0; color: var(--ink-faint); padding: 0 3px; line-height: 1;
+}
+.win-out:hover, .win-close:hover { color: var(--ink); }
+.win-close { font-size: 18px; }
+.win-foot {
+  padding: 7px 10px; font-size: 9.5px; line-height: 1.5; color: var(--ink-faint);
+  border-top: 1px solid var(--line);
+}
+/* min-width:0 so a long place name ellipsises instead of shoving the close
+   button off the end of the bar. */
 
 .cam-frame { position: relative; aspect-ratio: 16 / 9; background: #05070a; }
 .cam-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
@@ -908,7 +881,6 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   color: var(--ink-dim); background: rgba(5,7,10,.78);
   font-variant-numeric: tabular-nums; pointer-events: none;
 }
-.cam-live.is-still { background: #4a5a72; }
 .cam-wait {
   position: absolute; inset: 0; display: grid; align-content: center;
   justify-items: center; gap: 5px; padding: 0 22px; text-align: center;
@@ -921,11 +893,6 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   border: 1px solid rgba(255,95,141,.6);
 }
 .cam-go:hover { background: rgba(96,26,52,.95); }
-.cam-away { font-style: normal; margin-left: 5px; font-size: 9px; opacity: .7; }
-.cam-foot {
-  padding: 7px 10px; font-size: 9.5px; line-height: 1.5; color: var(--ink-faint);
-  border-top: 1px solid var(--line);
-}
 
 /* ── Choosing an AIS feed ───────────────────────────────────── */
 

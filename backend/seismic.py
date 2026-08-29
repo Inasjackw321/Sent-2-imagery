@@ -91,7 +91,10 @@ TRACE_MINUTES = {10: "10 min", 60: "1 hour", 360: "6 hours"}
 CHANNELS = "BHZ,HHZ,SHZ,EHZ,LHZ"
 
 MAX_EVENTS = 1200
-MAX_STATIONS = 600
+# Raised from 600, which was cutting a wide view down to a fraction of what
+# was there. Markers are drawn on a canvas rather than as elements, so several
+# thousand costs the browser little.
+MAX_STATIONS = 4000
 
 # The station index changes when someone installs an instrument, so it is
 # barely worth re-asking. Events move constantly.
@@ -248,11 +251,13 @@ def stations(bbox: tuple[float, float, float, float]) -> dict:
         except SeismicLookupError as exc:
             last = exc
             continue
-        return _keep(key, _parse_channels(resp.text if resp.content else ""))
+        return _keep(key, _parse_channels(
+            resp.text if resp.content else "",
+            centre=((west + east) / 2, (south + north) / 2)))
     raise last or SeismicLookupError("no station service answered")
 
 
-def _parse_channels(text: str) -> dict:
+def _parse_channels(text: str, centre: tuple[float, float] | None = None) -> dict:
     """Pipe-separated FDSN channel rows to one entry per station.
 
     A station reports several channels and often several instrument
@@ -288,7 +293,16 @@ def _parse_channels(text: str) -> dict:
         if _rank(cha) < _rank(entry["channel"]):
             entry["channel"], entry["loc"] = cha, loc
 
-    out = sorted(held.values(), key=lambda s: (s["network"], s["station"]))
+    # Nearest the middle of the view first. This used to sort by network name
+    # and then truncate, which meant a wide view silently returned whichever
+    # networks happened to sort early in the alphabet -- and the interface
+    # described that as "nearest shown", which it was not.
+    if centre is not None:
+        cx, cy = centre
+        out = sorted(held.values(),
+                     key=lambda s: math.hypot(s["lon"] - cx, s["lat"] - cy))
+    else:
+        out = sorted(held.values(), key=lambda s: (s["network"], s["station"]))
     return {
         "stations": out[:MAX_STATIONS],
         "count": len(out),

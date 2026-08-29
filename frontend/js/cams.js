@@ -19,6 +19,7 @@
 // town-level pin honestly labelled beats a precise-looking guess.
 
 import { $, el } from './ui.js';
+import { openWindow, closeWindow, closeAll, isOpen, openIds } from './windows.js';
 
 export const CAMS = [
   {
@@ -41,35 +42,6 @@ export const CAMS = [
     host: 'ipcamlive.com',
   },
   {
-    id: 'slovyansk',
-    name: 'Slovyansk',
-    place: 'Slovyansk, Ukraine',
-    lat: 48.8531, lon: 37.6069,
-    precision: 'town',
-    src: 'https://rtsp.me/embed/7yyGSRHn/',
-    host: 'rtsp.me',
-  },
-  {
-    id: 'belgorod',
-    name: 'Belgorod',
-    place: 'Belgorod, Russia',
-    lat: 50.5952, lon: 36.5872,
-    precision: 'town',
-    src: 'https://rtsp.me/embed/2fyb9tn3/',
-    host: 'rtsp.me',
-  },
-  {
-    id: 'romankiv',
-    name: 'Romankiv',
-    place: 'Romankiv, Ukraine',
-    // A village south of Kyiv, on the Dnipro. Placed from the name alone and
-    // the least certain of the six -- worth correcting if you know better.
-    lat: 50.1900, lon: 30.6800,
-    precision: 'village, approximate',
-    src: 'https://rtsp.me/embed/7dh4ra77/',
-    host: 'rtsp.me',
-  },
-  {
     id: 'moscow-progress-city',
     name: 'Progress City',
     place: 'Moscow, Russia',
@@ -90,15 +62,6 @@ export const CAMS = [
     src: 'https://www.earthcam.com/world/russia/moscow/?cam=moscow_hd',
     host: 'earthcam.com',
     offsite: true,
-  },
-  {
-    id: 'novi-petrivtsi',
-    name: 'Novi Petrivtsi 559',
-    place: 'Novi Petrivtsi, Ukraine',
-    lat: 50.5628, lon: 30.4472,
-    precision: 'village',
-    src: 'https://rtsp.me/embed/5R3EQY32/',
-    host: 'rtsp.me',
   },
 
   // ── Cameras given by position ────────────────────────────────
@@ -173,13 +136,16 @@ const STILL_SECONDS = 60;
 // every page view to serve two of sixteen cameras would be rude.
 const HLS_LIBRARY = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
 
+// Windows are keyed by camera id with this in front, so the seismographs'
+// windows and these cannot collide in the same register.
+const WIN = 'cam:';
+
 let map = null;
 let layer = null;
 let enabled = false;
-let watching = null;     // the cam whose player is open
-// Whatever the open camera left running -- a snapshot timer, an HLS player --
-// so that closing the panel can actually stop it.
-let playing = {};
+// What each open camera left running -- a snapshot timer, an HLS player --
+// keyed by camera id, so closing one window stops that one and no other.
+const playing = new Map();
 
 export function initCams(leafletMap) {
   map = leafletMap;
@@ -187,7 +153,6 @@ export function initCams(leafletMap) {
   // end up underneath a passing tanker.
   map.createPane('cams').style.zIndex = 480;
   buildDock();
-  buildViewer();
 }
 
 // ── On the map ─────────────────────────────────────────────────
@@ -207,6 +172,11 @@ function marker(cam) {
     }),
   });
   pin.on('click', () => watch(cam.id));
+  pin.on('add', () => {
+    // Tag the element so the dock can light the pins whose windows are open.
+    pin.getElement()?.setAttribute('data-cam', cam.id);
+    paintDock();
+  });
   pin.bindTooltip(cam.name, { direction: 'top', offset: [0, -12], className: 'cam-label' });
   return pin;
 }
@@ -219,73 +189,62 @@ function drawPins() {
 
 // ── The player ─────────────────────────────────────────────────
 
-function buildViewer() {
-  if ($('#camViewer')) return;
-  document.body.append(
-    el('div', { class: 'cam-viewer', id: 'camViewer', hidden: true },
-      el('div', { class: 'cam-bar' },
-        el('span', { class: 'cam-live', id: 'camLive' }, 'LIVE'),
-        el('b', { id: 'camTitle' }, ''),
-        el('span', { class: 'cam-where', id: 'camWhere' }, ''),
-        el('a', {
-          class: 'cam-out', id: 'camOut', target: '_blank', rel: 'noopener noreferrer',
-          title: 'Open the stream in a new tab',
-        }, '↗'),
-        el('button', { class: 'cam-close', title: 'Close', onclick: () => watch(null) }, '×')),
-      el('div', { class: 'cam-frame', id: 'camFrame' }),
-      el('div', { class: 'cam-foot', id: 'camFoot' })),
-  );
-}
-
 /**
- * Show one camera, or none.
+ * Open a camera, or close it if it is already open.
  *
- * Whatever is playing is created and destroyed rather than hidden: leaving a
- * player in the document keeps a video stream running, or a snapshot timer
- * ticking, for a window nobody is looking at -- which costs bandwidth all
- * afternoon and is rude to whoever is hosting the camera for nothing.
+ * Several can be open at once: the reason to put cameras on a map of
+ * satellite imagery is to compare them, and comparing means seeing more than
+ * one at a time. Each gets its own window.
+ *
+ * Whatever is playing is created and destroyed with the window rather than
+ * hidden. Leaving a player in the document keeps a video stream running, or a
+ * snapshot timer ticking, for a window nobody is looking at -- which costs
+ * bandwidth all afternoon and is rude to whoever is hosting the camera.
  */
 function watch(id) {
-  const cam = CAMS.find((c) => c.id === id) ?? null;
-  watching = cam;
-  const viewer = $('#camViewer');
-  const frame = $('#camFrame');
-  if (!viewer || !frame) return;
-
-  stopPlaying();
-  frame.replaceChildren();
-  if (!cam) {
-    viewer.hidden = true;
-    paintDock();
+  const cam = CAMS.find((c) => c.id === id);
+  if (!cam) return;
+  if (isOpen(WIN + cam.id)) {
+    closeWindow(WIN + cam.id);
     return;
   }
 
-  if (cam.kind === 'still') {
-    frame.append(...snapshot(cam));
-    describe(cam);
-    reveal(cam);
-    return;
-  }
+  const frame = el('div', { class: 'cam-frame' });
+  frame.append(...body(cam));
 
-  if (cam.kind === 'hls') {
-    frame.append(...stream(cam));
-    describe(cam);
-    reveal(cam);
-    return;
-  }
+  openWindow({
+    id: WIN + cam.id,
+    title: cam.name,
+    where: cam.place,
+    badge: {
+      text: cam.kind === 'still' ? 'STILL' : 'LIVE',
+      className: cam.kind === 'still' ? 'is-still' : 'is-live',
+    },
+    link: cam.src,
+    body: frame,
+    foot: footnote(cam),
+    onClose: () => { stopPlaying(cam.id); paintDock(); },
+  });
 
+  if (!map.getBounds().contains([cam.lat, cam.lon])) {
+    map.flyTo([cam.lat, cam.lon], Math.max(map.getZoom(), 11), { duration: 0.8 });
+  }
+  paintDock();
+}
+
+/** Whatever plays this particular kind of camera. */
+function body(cam) {
+  if (cam.kind === 'still') return snapshot(cam);
+  if (cam.kind === 'hls') return stream(cam);
   if (cam.offsite) {
     // No iframe at all: this host refuses to be framed, so an embed here would
     // be a panel that is blank for ever with nothing to explain itself.
-    frame.append(el('div', { class: 'cam-wait' },
+    return [el('div', { class: 'cam-wait' },
       el('span', {}, `${cam.host} does not allow embedding`),
       el('small', {}, 'It plays on its own site rather than in here.'),
       el('a', {
         class: 'cam-go', href: cam.src, target: '_blank', rel: 'noopener noreferrer',
-      }, `Watch on ${cam.host} ↗`)));
-    describe(cam);
-    reveal(cam);
-    return;
+      }, `Watch on ${cam.host} ↗`))];
   }
 
   // Covers the frame until the player answers. It has to sit on top rather
@@ -306,10 +265,25 @@ function watch(id) {
   // The frame is cross-origin, so there is no telling a stream from an error
   // page. Either way something is now on screen and the notice is in the way.
   player.addEventListener('load', () => waiting.remove(), { once: true });
-  frame.append(player, waiting);
+  return [player, waiting];
+}
 
-  describe(cam);
-  reveal(cam);
+/**
+ * What the window says about itself underneath the picture.
+ *
+ * A still is not a live view, and calling one "live" would be the single most
+ * misleading thing this could say: a snapshot from before an event looks
+ * exactly like a snapshot from after it.
+ */
+function footnote(cam) {
+  const carrier = cam.kind === 'still'
+    ? `A still from ${cam.host}, refreshed every ${STILL_SECONDS} seconds — not continuous video.`
+    : `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}.`;
+  const placed = cam.precision === 'given position'
+    ? 'Pinned to the position it was given, so the marker is the camera.'
+    : `Pinned to the ${cam.precision} — the player carries no coordinates, so `
+      + 'the marker is the place, not the lens.';
+  return `${carrier} ${placed}`;
 }
 
 /**
@@ -343,7 +317,7 @@ function snapshot(cam) {
   });
 
   pull();
-  playing = { timer: setInterval(pull, STILL_SECONDS * 1000) };
+  playing.set(cam.id, { timer: setInterval(pull, STILL_SECONDS * 1000) });
   return [image, stamp, waiting];
 }
 
@@ -375,15 +349,15 @@ function stream(cam) {
     video.src = cam.src;
     video.addEventListener('loadeddata', () => waiting.remove(), { once: true });
     video.addEventListener('error', () => failed('The stream is offline or unreachable.'), { once: true });
-    playing = {};
+    playing.set(cam.id, {});
     return [video, waiting];
   }
 
-  playing = {};
+  playing.set(cam.id, {});
   loadHls().then((Hls) => {
     // Opened, then closed again before the library arrived: attaching now
-    // would start a stream into a panel nobody is looking at.
-    if (watching?.id !== cam.id) return;
+    // would start a stream into a window nobody is looking at.
+    if (!isOpen(WIN + cam.id)) return;
     if (!Hls?.isSupported()) {
       failed('This browser cannot play HLS video.');
       return;
@@ -398,7 +372,9 @@ function stream(cam) {
     player.on(Hls.Events.ERROR, (_event, data) => {
       if (data.fatal) failed('The stream is offline or unreachable.');
     });
-    playing.player = player;
+    const held = playing.get(cam.id);
+    if (held) held.player = player;
+    else player.destroy();   // closed while the manifest was being parsed
   }).catch(() => failed('The video player could not be loaded. ↗ opens the stream directly.'));
 
   return [video, waiting];
@@ -424,42 +400,15 @@ function loadHls() {
   return hlsLoading;
 }
 
-/** Stop whatever the last camera left running. */
-function stopPlaying() {
-  if (playing.timer) clearInterval(playing.timer);
+/** Stop whatever one camera left running. */
+function stopPlaying(id) {
+  const held = playing.get(id);
+  if (!held) return;
+  playing.delete(id);
+  if (held.timer) clearInterval(held.timer);
   // Without this the player keeps pulling video segments off the host for a
-  // panel that is no longer on screen.
-  playing.player?.destroy();
-  playing = {};
-}
-
-/** Fill in the bar and the footer for whichever camera is open. */
-function describe(cam) {
-  $('#camTitle').textContent = cam.name;
-  $('#camWhere').textContent = cam.place;
-  $('#camOut').href = cam.src;
-  // A still is not a live view, and calling one "live" would be the single
-  // most misleading thing this panel could say: a snapshot from before an
-  // event looks exactly like a snapshot from after it.
-  const carrier = cam.kind === 'still'
-    ? `A still from ${cam.host}, refreshed every ${STILL_SECONDS} seconds — not continuous video.`
-    : `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}.`;
-  const placed = cam.precision === 'given position'
-    ? 'Pinned to the position it was given, so the marker is the camera.'
-    : `Pinned to the ${cam.precision} — the player carries no coordinates, so `
-      + 'the marker is the place, not the lens.';
-  $('#camFoot').textContent = `${carrier} ${placed}`;
-  $('#camLive').textContent = cam.kind === 'still' ? 'STILL' : 'LIVE';
-  $('#camLive').classList.toggle('is-still', cam.kind === 'still');
-}
-
-/** Show the panel, and bring the camera into view if it is off screen. */
-function reveal(cam) {
-  $('#camViewer').hidden = false;
-  if (!map.getBounds().contains([cam.lat, cam.lon])) {
-    map.flyTo([cam.lat, cam.lon], Math.max(map.getZoom(), 11), { duration: 0.8 });
-  }
-  paintDock();
+  // window that is no longer on screen.
+  held.player?.destroy();
 }
 
 // ── The panel ──────────────────────────────────────────────────
@@ -471,11 +420,22 @@ function toggle() {
   } else {
     layer?.remove();
     layer = null;
-    watch(null);
+    // Turning the layer off takes its windows with it. Leaving them behind
+    // would mean streams playing for pins that are no longer on the map.
+    closeAll((id) => id.startsWith(WIN));
   }
   paintDock();
 }
 
+/**
+ * The dock: a switch and a count, and nothing else.
+ *
+ * There used to be a list of every camera here. Twelve of them made a column
+ * taller than the window, which pushed the other panels off the bottom of the
+ * screen and buried the thing it was listing. The map already shows where each
+ * camera is, which is the useful half of a list of places -- so the pins are
+ * the list, and this is only the switch that puts them there.
+ */
 function buildDock() {
   const dock = $('#camDock');
   if (!dock) return;
@@ -484,19 +444,24 @@ function buildDock() {
     el('button', { class: 'cam-toggle', id: 'camToggle', onclick: toggle },
       el('span', { class: 'cam-mark' }, '◉'), 'Live cams'),
     el('div', { class: 'cam-body', id: 'camBody', hidden: true },
-      el('div', { class: 'cam-list', id: 'camList' },
-        ...CAMS.map((cam) => el('button', {
-          class: 'cam-item', dataset: { cam: cam.id },
-          onclick: () => watch(watching?.id === cam.id ? null : cam.id),
-        }, el('b', {}, cam.name, cam.offsite ? el('i', { class: 'cam-away' }, '↗') : null),
-           el('span', {}, cam.place)))),
+      el('div', { class: 'cam-count', id: 'camCount' }, ''),
+      // With the list gone the map is the index, which leaves nothing to find
+      // a camera that is off screen. This is the list's one useful job kept.
+      el('button', { class: 'cam-fit', id: 'camFit', onclick: fitAll },
+        'Zoom out to all of them'),
       el('div', { class: 'cam-note' },
-        `${CAMS.length} public cameras, played from their own hosts. `
+        `${CAMS.length} public cameras, played from their own hosts. Click a `
+        + 'pin to open one, and again to close it — several can be open at once. '
         + 'The ones given a position are pinned to the camera; the rest are '
-        + 'town-level, because an embedded player carries no coordinates. '
-        + '↗ marks one that only plays on its own site.')),
+        + 'town-level, because an embedded player carries no coordinates.')),
   );
   paintDock();
+}
+
+/** Pull the map back until every camera is on it. */
+function fitAll() {
+  if (!CAMS.length) return;
+  map.fitBounds(L.latLngBounds(CAMS.map((c) => [c.lat, c.lon])), { padding: [60, 60] });
 }
 
 function paintDock() {
@@ -505,7 +470,17 @@ function paintDock() {
   if (!button || !body) return;
   button.classList.toggle('is-on', enabled);
   body.hidden = !enabled;
-  for (const item of document.querySelectorAll('.cam-item')) {
-    item.classList.toggle('is-on', item.dataset.cam === watching?.id);
+
+  const watching = openIds().filter((id) => id.startsWith(WIN)).length;
+  const count = $('#camCount');
+  if (count) {
+    count.textContent = watching
+      ? `${watching} open of ${CAMS.length}`
+      : `${CAMS.length} on the map`;
+  }
+  // A pin whose window is open is lit, so the map says which is which without
+  // a list to cross-reference against.
+  for (const pin of document.querySelectorAll('.cam-pin')) {
+    pin.classList.toggle('is-on', isOpen(WIN + pin.dataset.cam));
   }
 }

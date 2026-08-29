@@ -12,7 +12,45 @@ export function initInstall() {
 
   registerServiceWorker();
   wireInstallButton();
+  wireFullScreen();
   applyStartupTab();
+}
+
+/**
+ * Full screen, for when the map is the only thing you want on the monitor.
+ *
+ * The button tracks the browser rather than its own idea of the state: the
+ * user can leave full screen with Escape or F11 without touching it, and a
+ * button still offering to "exit" after that is a button that lies.
+ */
+function wireFullScreen() {
+  const button = $('#fullBtn');
+  if (!button) return;
+
+  // Safari on iPhone has no Fullscreen API at all. Offering a control that
+  // cannot do anything is worse than not offering one.
+  if (!document.documentElement.requestFullscreen) {
+    button.hidden = true;
+    return;
+  }
+
+  button.addEventListener('click', async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    } catch (err) {
+      toast(`Full screen was refused: ${err.message}`, 'err');
+    }
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    const on = Boolean(document.fullscreenElement);
+    document.body.classList.toggle('is-fullscreen', on);
+    $('#fullIcon').textContent = on ? '⤡' : '⤢';
+    button.title = on ? 'Leave full screen (Esc)' : 'Full screen';
+    button.setAttribute('aria-label', button.title);
+    button.classList.toggle('is-on', on);
+  });
 }
 
 function registerServiceWorker() {

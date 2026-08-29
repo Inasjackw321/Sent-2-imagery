@@ -145,3 +145,23 @@ export function debounce(fn, ms = 120) {
   let t = 0;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
+
+/**
+ * The rectangle on screen, widened a little, as something an API will accept.
+ *
+ * Two things have to happen here. The padding is what stops an ordinary pan
+ * from re-asking for data that is already drawn -- but zoomed out, padding a
+ * world view pushes the edges past the poles and past the antimeridian, and a
+ * service that validates its inputs rejects the whole request. That was a
+ * layer that worked everywhere except zoomed out, which is exactly where you
+ * would go looking for everything at once.
+ */
+export function askableBounds(map, margin = 0.35) {
+  const box = map.getBounds().pad(margin);
+  return {
+    west: Math.max(box.getWest(), -180),
+    south: Math.max(box.getSouth(), -90),
+    east: Math.min(box.getEast(), 180),
+    north: Math.min(box.getNorth(), 90),
+  };
+}
