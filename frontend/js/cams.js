@@ -6,10 +6,17 @@
 // harbour was full on Tuesday, and the camera tells you what it looks like
 // while you are reading that.
 //
-// The positions are the honest weak part. An embedded player carries no
-// coordinates, so each camera is pinned to the place in its title rather than
-// to wherever the lens actually sits. That is a town-level pin, and the popup
-// says so instead of implying a surveyed position.
+// Three kinds, because "webcam" covers three unrelated things and pretending
+// otherwise breaks two of them:
+//
+//   embed  a page built to be framed, which plays itself
+//   still  one JPEG the host overwrites every few minutes, fetched on a timer
+//   hls    a playlist of video segments, which needs an actual video player
+//
+// The positions are uneven and the interface says so. Cameras given
+// coordinates are pinned where the camera is; the rest are pinned to the place
+// in their title, because an embedded player carries no coordinates and a
+// town-level pin honestly labelled beats a precise-looking guess.
 
 import { $, el } from './ui.js';
 
@@ -93,12 +100,86 @@ export const CAMS = [
     src: 'https://rtsp.me/embed/5R3EQY32/',
     host: 'rtsp.me',
   },
+
+  // ── Cameras given by position ────────────────────────────────
+  //
+  // These came with coordinates, so unlike the ones above their pins are
+  // where the camera actually is rather than where its title says.
+  //
+  // They are also not embeddable pages, which is why they are not iframes.
+  // Six are single JPEGs -- a webcam snapshot the host overwrites every few
+  // minutes -- and framing one gives a picture that is right once and then
+  // silently wrong for the rest of the day, so they are fetched again on a
+  // timer. Two are HLS playlists, which are a list of video segments rather
+  // than anything a frame can display, and need a player.
+  {
+    id: 'gibraltar-bay', name: 'Bay of Gibraltar', place: 'Gibraltar',
+    lat: 36.1390, lon: -5.3413, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1645095187/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'europa-point', name: 'Europa Point', place: 'Gibraltar',
+    lat: 36.1153, lon: -5.3495, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1644919197/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'tarifa-strait', name: 'Strait of Gibraltar', place: 'Tarifa, Spain',
+    lat: 36.0519, lon: -5.6481, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1499427214/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'hampton-roads', name: 'Hampton Roads', place: 'Norfolk, Virginia, USA',
+    lat: 36.9626, lon: -76.2700, precision: 'given position',
+    kind: 'hls', src: 'https://media-sfs4.vdotcameras.com/rtplive/HamptonRoads782/playlist_sfm4s.m3u8',
+    host: 'vdotcameras.com',
+  },
+  {
+    id: 'temryuk', name: 'Taman peninsula', place: 'Temryuk, Russia',
+    lat: 45.3281, lon: 37.2623, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793909890/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'oresund', name: 'Øresund', place: 'Denmark',
+    lat: 55.5753, lon: 12.8264, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1638710999/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'panama-canal', name: 'Panama Canal', place: 'Panama City, Panama',
+    lat: 8.9966, lon: -79.5917, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1511843094/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'bosphorus', name: 'Bosphorus', place: 'Istanbul, Türkiye',
+    lat: 41.0800, lon: 29.0517, precision: 'given position',
+    kind: 'hls', src: 'https://601a43eea2819.streamlock.net/hls/268.stream/playlist.m3u8',
+    host: 'streamlock.net',
+  },
 ];
+
+// How often a snapshot camera is asked for again. Windy's hosts overwrite the
+// image every few minutes, so this is roughly the rate at which there is
+// anything new to see -- often enough to feel live, rarely enough to be
+// a reasonable way to treat somebody else's bandwidth.
+const STILL_SECONDS = 60;
+
+// hls.js, fetched only when an HLS camera is first opened. Browsers other than
+// Safari cannot play a playlist on their own, and loading a video library on
+// every page view to serve two of sixteen cameras would be rude.
+const HLS_LIBRARY = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js';
 
 let map = null;
 let layer = null;
 let enabled = false;
 let watching = null;     // the cam whose player is open
+// Whatever the open camera left running -- a snapshot timer, an HLS player --
+// so that closing the panel can actually stop it.
+let playing = {};
 
 export function initCams(leafletMap) {
   map = leafletMap;
@@ -143,7 +224,7 @@ function buildViewer() {
   document.body.append(
     el('div', { class: 'cam-viewer', id: 'camViewer', hidden: true },
       el('div', { class: 'cam-bar' },
-        el('span', { class: 'cam-live' }, 'LIVE'),
+        el('span', { class: 'cam-live', id: 'camLive' }, 'LIVE'),
         el('b', { id: 'camTitle' }, ''),
         el('span', { class: 'cam-where', id: 'camWhere' }, ''),
         el('a', {
@@ -159,10 +240,10 @@ function buildViewer() {
 /**
  * Show one camera, or none.
  *
- * The iframe is created and destroyed rather than hidden: leaving a player in
- * the document keeps a video stream running for a window nobody is looking
- * at, which costs bandwidth all afternoon and is rude to whoever is hosting
- * the camera for nothing.
+ * Whatever is playing is created and destroyed rather than hidden: leaving a
+ * player in the document keeps a video stream running, or a snapshot timer
+ * ticking, for a window nobody is looking at -- which costs bandwidth all
+ * afternoon and is rude to whoever is hosting the camera for nothing.
  */
 function watch(id) {
   const cam = CAMS.find((c) => c.id === id) ?? null;
@@ -171,10 +252,25 @@ function watch(id) {
   const frame = $('#camFrame');
   if (!viewer || !frame) return;
 
+  stopPlaying();
   frame.replaceChildren();
   if (!cam) {
     viewer.hidden = true;
     paintDock();
+    return;
+  }
+
+  if (cam.kind === 'still') {
+    frame.append(...snapshot(cam));
+    describe(cam);
+    reveal(cam);
+    return;
+  }
+
+  if (cam.kind === 'hls') {
+    frame.append(...stream(cam));
+    describe(cam);
+    reveal(cam);
     return;
   }
 
@@ -216,15 +312,145 @@ function watch(id) {
   reveal(cam);
 }
 
+/**
+ * A snapshot camera: one JPEG, fetched again on a timer.
+ *
+ * The cache-busting stamp is not optional. The host serves the same URL for
+ * every new picture, so without it the browser answers every refresh out of
+ * its own cache and the panel shows this morning's weather until the tab is
+ * reloaded -- which looks exactly like a working live camera.
+ */
+function snapshot(cam) {
+  const waiting = el('div', { class: 'cam-wait' },
+    el('span', {}, `Fetching from ${cam.host}…`),
+    el('small', {}, 'If nothing appears, the camera is offline or blocked. ↗ opens it directly.'));
+
+  const image = el('img', { class: 'cam-still', alt: `${cam.name} — ${cam.place}` });
+  const stamp = el('span', { class: 'cam-stamp' }, '');
+
+  const pull = () => {
+    image.src = `${cam.src}${cam.src.includes('?') ? '&' : '?'}t=${Date.now()}`;
+  };
+  image.addEventListener('load', () => {
+    waiting.remove();
+    stamp.textContent = new Date().toLocaleTimeString();
+  });
+  image.addEventListener('error', () => {
+    waiting.replaceChildren(
+      el('span', {}, `${cam.host} did not send a picture`),
+      el('small', {}, 'The camera may be offline, or the host may be refusing '
+        + 'requests from other sites. ↗ opens it directly.'));
+  });
+
+  pull();
+  playing = { timer: setInterval(pull, STILL_SECONDS * 1000) };
+  return [image, stamp, waiting];
+}
+
+/**
+ * An HLS camera: a playlist of video segments, which needs a real player.
+ *
+ * Safari plays these natively; nothing else does, so hls.js is fetched the
+ * first time one is opened. Loading a video library on every page view to
+ * serve two of sixteen cameras would be paying for it sixteen times over.
+ */
+function stream(cam) {
+  const waiting = el('div', { class: 'cam-wait' },
+    el('span', {}, `Connecting to ${cam.host}…`),
+    el('small', {}, 'Live video takes a moment to start.'));
+
+  const video = el('video', {
+    class: 'cam-video', controls: true, playsinline: true,
+    // Muted because a panel that starts shouting when you click a pin is not
+    // a feature, and because autoplay is blocked outright without it.
+    muted: true, autoplay: true,
+  });
+  video.muted = true;
+
+  const failed = (why) => waiting.replaceChildren(
+    el('span', {}, `${cam.name} could not be played`),
+    el('small', {}, why));
+
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = cam.src;
+    video.addEventListener('loadeddata', () => waiting.remove(), { once: true });
+    video.addEventListener('error', () => failed('The stream is offline or unreachable.'), { once: true });
+    playing = {};
+    return [video, waiting];
+  }
+
+  playing = {};
+  loadHls().then((Hls) => {
+    // Opened, then closed again before the library arrived: attaching now
+    // would start a stream into a panel nobody is looking at.
+    if (watching?.id !== cam.id) return;
+    if (!Hls?.isSupported()) {
+      failed('This browser cannot play HLS video.');
+      return;
+    }
+    const player = new Hls({ liveDurationInfinity: true });
+    player.loadSource(cam.src);
+    player.attachMedia(video);
+    player.on(Hls.Events.MANIFEST_PARSED, () => {
+      waiting.remove();
+      video.play().catch(() => { /* the browser declined to autoplay */ });
+    });
+    player.on(Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal) failed('The stream is offline or unreachable.');
+    });
+    playing.player = player;
+  }).catch(() => failed('The video player could not be loaded. ↗ opens the stream directly.'));
+
+  return [video, waiting];
+}
+
+let hlsLoading = null;
+
+/** Fetch hls.js once, and hand the same promise to everyone after that. */
+function loadHls() {
+  if (window.Hls) return Promise.resolve(window.Hls);
+  hlsLoading ??= new Promise((resolve, reject) => {
+    const script = el('script', { src: HLS_LIBRARY });
+    script.addEventListener('load', () => resolve(window.Hls));
+    script.addEventListener('error', () => {
+      // Let a later attempt try again rather than remembering the failure for
+      // the life of the page: this is usually a network that has since come
+      // back, not a library that has ceased to exist.
+      hlsLoading = null;
+      reject(new Error('hls.js did not load'));
+    });
+    document.head.append(script);
+  });
+  return hlsLoading;
+}
+
+/** Stop whatever the last camera left running. */
+function stopPlaying() {
+  if (playing.timer) clearInterval(playing.timer);
+  // Without this the player keeps pulling video segments off the host for a
+  // panel that is no longer on screen.
+  playing.player?.destroy();
+  playing = {};
+}
+
 /** Fill in the bar and the footer for whichever camera is open. */
 function describe(cam) {
   $('#camTitle').textContent = cam.name;
   $('#camWhere').textContent = cam.place;
   $('#camOut').href = cam.src;
-  $('#camFoot').textContent =
-    `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}. Pinned to the `
-    + `${cam.precision} — the player carries no coordinates, so the marker is `
-    + 'the place, not the lens.';
+  // A still is not a live view, and calling one "live" would be the single
+  // most misleading thing this panel could say: a snapshot from before an
+  // event looks exactly like a snapshot from after it.
+  const carrier = cam.kind === 'still'
+    ? `A still from ${cam.host}, refreshed every ${STILL_SECONDS} seconds — not continuous video.`
+    : `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}.`;
+  const placed = cam.precision === 'given position'
+    ? 'Pinned to the position it was given, so the marker is the camera.'
+    : `Pinned to the ${cam.precision} — the player carries no coordinates, so `
+      + 'the marker is the place, not the lens.';
+  $('#camFoot').textContent = `${carrier} ${placed}`;
+  $('#camLive').textContent = cam.kind === 'still' ? 'STILL' : 'LIVE';
+  $('#camLive').classList.toggle('is-still', cam.kind === 'still');
 }
 
 /** Show the panel, and bring the camera into view if it is off screen. */
@@ -266,7 +492,8 @@ function buildDock() {
            el('span', {}, cam.place)))),
       el('div', { class: 'cam-note' },
         `${CAMS.length} public cameras, played from their own hosts. `
-        + 'Pins are town-level: an embedded player carries no coordinates. '
+        + 'The ones given a position are pinned to the camera; the rest are '
+        + 'town-level, because an embedded player carries no coordinates. '
         + '↗ marks one that only plays on its own site.')),
   );
   paintDock();
