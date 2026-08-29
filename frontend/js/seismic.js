@@ -24,6 +24,9 @@ let minMagnitude = 2.5;
 let traceMinutes = 60;
 let open = false;          // is the panel expanded
 let showing = null;        // the station whose trace is plotted
+// Bumped on every plot request, so a slow answer for a station you have since
+// clicked away from cannot overwrite the one you are actually looking at.
+let traceToken = 0;
 let inFlight = false;
 // The ground already fetched for. Asked for over rather more than the screen,
 // so an ordinary pan is answered from what is already drawn.
@@ -107,7 +110,8 @@ function buildDock() {
             onclick: () => setTraceWindow(m),
           }, m === 10 ? '10 min' : m === 60 ? '1 h' : '6 h'))),
         el('div', { class: 'seis-hint' },
-          'Click a station to plot that much of its ground motion.')),
+          'Click a station to plot that much of its ground motion. Only '
+          + 'stations whose recordings this data centre holds are shown.')),
 
       el('div', { class: 'seis-count', id: 'seisCount' }, 'Nothing loaded yet'),
       el('div', { class: 'seis-note', id: 'seisNote' },
@@ -264,10 +268,19 @@ function drawStations(data) {
       }),
     }).on('click', () => showTrace(s)).addTo(stationLayer);
   }
-  return data.count
-    ? `<b>${data.count.toLocaleString()}</b> seismograph${data.count === 1 ? '' : 's'}`
-      + (data.capped ? ' <span class="dim">(nearest shown)</span>' : '')
-    : 'No open seismographs in view';
+  if (!data.count) {
+    // Not the same as "no instruments here". The list is narrowed to stations
+    // whose recordings this data centre actually holds, and saying so is the
+    // difference between an explained empty map and a broken-looking one.
+    return data.checked === false
+      ? 'No open seismographs in view'
+      : 'No seismographs here with recordings held at this data centre';
+  }
+  return `<b>${data.count.toLocaleString()}</b> seismograph${data.count === 1 ? '' : 's'}`
+    + (data.capped ? ' <span class="dim">(nearest shown)</span>' : '')
+    + (data.checked === false
+      ? '<br><span class="dim">availability unchecked — some may not plot</span>'
+      : '');
 }
 
 // ── The trace ──────────────────────────────────────────────────
@@ -310,26 +323,9 @@ function showTrace(station) {
   const waiting = el('div', { class: 'trace-wait' },
     el('span', {}, `Plotting ${label}…`),
     el('small', {}, 'The data centre draws it on request, which takes a moment.'));
+  plot.append(waiting);
+  fetchTrace(station, label, span, plot, waiting);
 
-  const image = el('img', {
-    src: api.traceUrl({
-      network: station.network, station: station.station,
-      channel: station.channel, loc: station.loc, minutes: traceMinutes,
-    }),
-    alt: `Ground motion at ${label}, last ${span}`,
-  });
-  image.addEventListener('load', () => waiting.remove(), { once: true });
-  // A station with no recent data answers with an error, not a picture. Saying
-  // which is far better than a broken-image icon.
-  image.addEventListener('error', () => {
-    waiting.replaceChildren(
-      el('span', {}, `${label} returned no data`),
-      el('small', {}, 'Stations go offline and telemetry can run hours behind. '
-        + 'Try a longer window, or another station.'));
-    image.remove();
-  }, { once: true });
-
-  plot.append(image, waiting);
   $('#traceName').textContent = `${label} · ${station.channel}`;
   $('#traceWhere').textContent = station.instrument || fmt.coord(station.lon, station.lat);
   $('#traceFoot').textContent =
@@ -337,4 +333,53 @@ function showTrace(station) {
     + `${station.elevation_m} m elevation. `
     + `${store.config.seismic?.stations ?? 'EarthScope / FDSN'}.`;
   panel.hidden = false;
+}
+
+/**
+ * Fetch the plot, and say what went wrong when it does not arrive.
+ *
+ * Deliberately not an <img src>. The backend explains a failure in words --
+ * the station is behind, or its waveforms live at another data centre -- and
+ * an <img> throws all of that away and fires a bare error event, which is how
+ * every failure ended up reading as the same unhelpful "no data". Fetching it
+ * means the reason reaches the reader.
+ */
+async function fetchTrace(station, label, span, plot, waiting) {
+  const token = ++traceToken;
+  const url = api.traceUrl({
+    network: station.network, station: station.station,
+    channel: station.channel, loc: station.loc, minutes: traceMinutes,
+  });
+
+  let blobUrl = null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body.detail) detail = body.detail;
+      } catch { /* the error body was not JSON */ }
+      throw new Error(detail);
+    }
+    blobUrl = URL.createObjectURL(await res.blob());
+  } catch (err) {
+    // Another station was clicked while this was in the air: its plot is the
+    // one on screen now, and this answer is about a panel that has moved on.
+    if (token !== traceToken) return;
+    waiting.replaceChildren(
+      el('span', {}, `${label} could not be plotted`),
+      el('small', {}, err.message));
+    return;
+  }
+
+  if (token !== traceToken) { URL.revokeObjectURL(blobUrl); return; }
+
+  const image = el('img', { src: blobUrl, alt: `Ground motion at ${label}, last ${span}` });
+  // The bytes are held by the object URL, not the element, so it has to be
+  // handed back once the browser has decoded them or the blob leaks for the
+  // life of the page.
+  image.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
+  waiting.remove();
+  plot.append(image);
 }

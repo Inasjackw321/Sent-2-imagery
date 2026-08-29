@@ -29,6 +29,19 @@ def _empty_cache():
     seismic._cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Nothing reaches the network by accident.
+
+    The availability check is a POST that every station lookup now makes, so a
+    test that forgets to stub it would otherwise sit waiting on a real service.
+    """
+    def refuse(*a, **kw):
+        raise AssertionError("unstubbed network call")
+    monkeypatch.setattr(seismic._session, "get", refuse)
+    monkeypatch.setattr(seismic._session, "post", refuse)
+
+
 class FakeResponse:
     def __init__(self, *, status=200, payload=None, text="", content=b"x"):
         self.status_code = status
@@ -43,11 +56,25 @@ class FakeResponse:
 
 
 def _answer(monkeypatch, response, captured=None):
-    def fake_get(url, params=None, timeout=None):
+    """Answer every GET with one response, and record what was asked."""
+    replies = response if isinstance(response, list) else None
+
+    def fake_get(url, params=None, timeout=None, **kw):
         if captured is not None:
             captured.append((url, params))
+        if replies is not None:
+            return replies.pop(0) if replies else FakeResponse(status=204)
         return response
     monkeypatch.setattr(seismic._session, "get", fake_get)
+
+
+def _availability(monkeypatch, response, captured=None):
+    """Answer the availability POST, which narrows the station list."""
+    def fake_post(url, data=None, timeout=None, **kw):
+        if captured is not None:
+            captured.append((url, data))
+        return response
+    monkeypatch.setattr(seismic._session, "post", fake_post)
 
 
 # ── Events ─────────────────────────────────────────────────────
@@ -166,6 +193,19 @@ NC|CAD|--|EHZ|38.0430|-122.4720|180.0|0.0|0.0|-90.0|Mark Products L-4C|1.0|1.0|M
 """
 
 
+# What the availability service says it holds, in its text format.
+AVAILABLE_BOTH = """\
+#Network Station Location Channel Quality SampleRate Earliest Latest
+BK BKS 00 HHZ M 100.0 2026-08-27T00:00:00Z 2026-08-29T00:00:00Z
+NC CAD -- EHZ M 100.0 2026-08-27T00:00:00Z 2026-08-29T00:00:00Z
+"""
+
+AVAILABLE_ONE = """\
+#Network Station Location Channel Quality SampleRate Earliest Latest
+BK BKS 00 HHZ M 100.0 2026-08-27T00:00:00Z 2026-08-29T00:00:00Z
+"""
+
+
 def test_a_station_listed_many_times_is_still_one_dot(monkeypatch):
     """Four rows, two stations.
 
@@ -174,6 +214,7 @@ def test_a_station_listed_many_times_is_still_one_dot(monkeypatch):
     difference between two markers and four stacked on top of each other.
     """
     _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_BOTH))
     out = seismic.stations(BOX)
     assert out["count"] == 2
     assert [s["station"] for s in out["stations"]] == ["BKS", "CAD"]
@@ -186,6 +227,7 @@ def test_the_broadband_channel_wins_the_trace_button(monkeypatch):
     depends on the order the data centre happened to list its rows in.
     """
     _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_BOTH))
     bks = seismic.stations(BOX)["stations"][0]
     assert bks["channel"] == "HHZ"
     assert set(bks["channels"]) == {"BHZ", "HHZ"}
@@ -193,6 +235,7 @@ def test_the_broadband_channel_wins_the_trace_button(monkeypatch):
 
 def test_station_positions_and_elevation_are_read(monkeypatch):
     _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_BOTH))
     bks = seismic.stations(BOX)["stations"][0]
     assert bks["lat"] == pytest.approx(37.8762)
     assert bks["lon"] == pytest.approx(-122.2356)
@@ -207,6 +250,7 @@ def test_the_instrument_is_read_from_the_right_column(monkeypatch):
     description, by index from the front.
     """
     _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_BOTH))
     bks = seismic.stations(BOX)["stations"][0]
     assert bks["instrument"] == "Streckeisen STS-1"
 
@@ -229,10 +273,89 @@ def test_only_stations_still_recording_are_asked_for(monkeypatch):
     """A station decommissioned in 1998 has no live trace to plot."""
     seen = []
     _answer(monkeypatch, FakeResponse(text=CHANNELS), captured=seen)
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_BOTH))
     seismic.stations(BOX)
     _, params = seen[0]
     assert "endafter" in params
     assert params["includerestricted"] == "false"
+
+
+# ── Only the stations that can actually be plotted ─────────────
+
+
+def test_a_station_archived_elsewhere_is_not_put_on_the_map(monkeypatch):
+    """This is the bug the whole check exists for.
+
+    The station service answers for the federation and will happily describe
+    an instrument whose waveforms are held at another data centre. Plotting it
+    here returns nothing, correctly, and the reader is left thinking the app is
+    broken. So it is never offered in the first place.
+    """
+    _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_ONE))
+    out = seismic.stations(BOX)
+    assert [s["station"] for s in out["stations"]] == ["BKS"]
+    assert out["count"] == 1
+    assert out["checked"] is True
+
+
+def test_every_station_is_asked_about_by_name(monkeypatch):
+    """One selection line each, because the query form would ask about the
+    cross product of the networks and the station names instead."""
+    posted = []
+    _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(text=AVAILABLE_BOTH), captured=posted)
+    seismic.stations(BOX)
+    url, body = posted[0]
+    assert url == seismic.AVAILABILITY_URL
+    lines = [ln for ln in body.splitlines() if not ln.startswith("format")
+             and "=" not in ln]
+    assert any(ln.startswith("BK BKS 00 HHZ ") for ln in lines)
+    # A blank location code has to be spelled out, not left as a gap.
+    assert any(ln.startswith("NC CAD -- EHZ ") for ln in lines)
+
+
+def test_an_unreachable_availability_check_keeps_the_stations(monkeypatch):
+    """Degrade to showing everything, not to showing nothing.
+
+    A pin that might not plot is a smaller failure than an empty map, so long
+    as the caller is told which of the two it is looking at.
+    """
+    _answer(monkeypatch, FakeResponse(text=CHANNELS))
+
+    def boom(url, data=None, timeout=None, **kw):
+        raise requests.ConnectionError("no route to host")
+    monkeypatch.setattr(seismic._session, "post", boom)
+
+    out = seismic.stations(BOX)
+    assert out["count"] == 2
+    assert out["checked"] is False
+
+
+def test_an_availability_error_keeps_the_stations(monkeypatch):
+    _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(status=500, text="upstream broke"))
+    out = seismic.stations(BOX)
+    assert out["count"] == 2
+    assert out["checked"] is False
+
+
+def test_nothing_available_is_an_answer(monkeypatch):
+    """204 here means the check ran and found no recordings, which is
+    different from the check having failed."""
+    _answer(monkeypatch, FakeResponse(text=CHANNELS))
+    _availability(monkeypatch, FakeResponse(status=204))
+    out = seismic.stations(BOX)
+    assert out["stations"] == []
+    assert out["checked"] is True
+
+
+def test_no_stations_means_no_availability_call(monkeypatch):
+    """Nothing to ask about, so nothing is asked."""
+    _answer(monkeypatch, FakeResponse(status=204))
+    out = seismic.stations(BOX)
+    assert out["count"] == 0
+    assert out["checked"] is True
 
 
 # ── The trace ──────────────────────────────────────────────────
@@ -248,10 +371,58 @@ def test_a_blank_location_code_is_spelled_out(monkeypatch):
     assert params["output"] == "plot"
 
 
-def test_a_station_with_nothing_to_give_says_so(monkeypatch):
+def test_a_station_with_nothing_to_give_names_the_likely_reason(monkeypatch):
+    """"No data" was true and useless.
+
+    The commonest cause is that the station's description is federated here
+    while its recordings live at another data centre, and a reader who is not
+    told that has no way to tell it apart from a broken app.
+    """
     _answer(monkeypatch, FakeResponse(status=204))
-    with pytest.raises(seismic.SeismicLookupError, match="no data"):
+    with pytest.raises(seismic.SeismicLookupError) as raised:
         seismic.trace("BK", "BKS", "HHZ", minutes=10)
+    said = str(raised.value)
+    assert "different data centre" in said
+    assert "longer window" in said.lower()
+
+
+def test_a_404_from_the_plotter_is_no_data_not_a_crash(monkeypatch):
+    """The plotting service says 404 where the others say 204."""
+    _answer(monkeypatch, FakeResponse(status=404, text="Not Found: no data"))
+    with pytest.raises(seismic.SeismicLookupError, match="holds no recording"):
+        seismic.trace("BK", "BKS", "HHZ", minutes=10)
+
+
+def test_a_location_code_mismatch_is_retried_with_any(monkeypatch):
+    """Metadata and archive disagree about location codes more often than
+    they should, and a mismatch returns nothing rather than an explanation."""
+    seen = []
+    _answer(monkeypatch, [
+        FakeResponse(status=204),
+        FakeResponse(content=b"\x89PNG\r\n\x1a\n"),
+    ], captured=seen)
+    assert seismic.trace("BK", "BKS", "HHZ", loc="00").startswith(b"\x89PNG")
+    assert [params["loc"] for _, params in seen] == ["00", "*"]
+
+
+def test_a_trace_that_works_first_time_is_not_asked_for_twice(monkeypatch):
+    seen = []
+    _answer(monkeypatch, FakeResponse(content=b"\x89PNG\r\n\x1a\n"), captured=seen)
+    seismic.trace("BK", "BKS", "HHZ", loc="00")
+    assert len(seen) == 1
+
+
+def test_the_window_ends_behind_now(monkeypatch):
+    """Asking up to the present returns an empty plot from a healthy station:
+    even good telemetry takes minutes to reach the archive."""
+    import datetime as dt
+    seen = []
+    _answer(monkeypatch, FakeResponse(content=b"\x89PNG"), captured=seen)
+    seismic.trace("BK", "BKS", "HHZ", minutes=60)
+    _, params = seen[0]
+    end = dt.datetime.strptime(params["endtime"], "%Y-%m-%dT%H:%M:%S")
+    behind = (dt.datetime.utcnow() - end).total_seconds() / 60
+    assert behind >= seismic.TRACE_LAG_MINUTES - 1
 
 
 def test_the_trace_comes_back_as_bytes(monkeypatch):

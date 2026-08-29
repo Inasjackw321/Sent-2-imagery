@@ -47,11 +47,18 @@ const HINTS = {
 // nothing failed, it just went wrong in public. Everything here is keyless,
 // and if one of them goes the same way the next in the list takes over rather
 // than leaving a watermarked map on screen.
-// The default is imagery rather than a grey canvas. The grey one was flat and
-// washed out, and it stopped drawing detail at zoom 16, so leaning in gave you
-// a blur; more to the point, this is an app for looking at the ground, and a
-// backdrop that shows the ground tells you what a scene is sitting on.
+// The default is plain OpenStreetMap: the map most people have already read a
+// thousand times, and the one whose place names are right. Esri's label layer
+// was putting wrong titles on cities, which is worse than an ugly backdrop --
+// a name you cannot trust makes the whole map suspect. OSM's names are edited
+// by the people who live there and are baked into the tile rather than
+// stacked on top of it, so there is no second layer to disagree with.
 const BASEMAPS = [
+  {
+    key: 'streets', label: 'OpenStreetMap',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 19, attribution: '© OpenStreetMap contributors' },
+  },
   {
     key: 'satellite', label: 'Satellite',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -91,15 +98,10 @@ const BASEMAPS = [
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
     options: { maxNativeZoom: 13, maxZoom: 19, attribution: 'Esri, GEBCO, NOAA, National Geographic' },
   },
-  {
-    key: 'streets', label: 'Streets',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    options: { maxZoom: 19, attribution: '© OpenStreetMap contributors' },
-  },
 ];
 
 // Which one is on screen at the start.
-const DEFAULT_BASEMAP = 'satellite';
+const DEFAULT_BASEMAP = 'streets';
 
 // How many tiles have to fail before a basemap is judged unusable. One is
 // noise -- a tile at the edge of the world, a dropped connection. A dozen in a

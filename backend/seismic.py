@@ -49,6 +49,21 @@ STATIONS_URL = "https://service.iris.edu/fdsnws/station/1/query"
 # library to the browser.
 TRACE_URL = "https://service.iris.edu/irisws/timeseries/1/query"
 
+# And this says which of those stations it actually holds recordings for.
+#
+# The two are not the same set, which is the trap. The station service answers
+# for the federation -- it will happily describe an Albanian instrument whose
+# waveforms are archived at a European node instead. Plot that station here and
+# you get nothing back, correctly, and the map has spent your attention on a
+# pin that could never have worked. So the list is narrowed to what this data
+# centre can actually draw.
+AVAILABILITY_URL = "https://service.iris.edu/fdsnws/availability/1/query"
+
+# How far back to look when asking what has data. Telemetry from a remote
+# station can run hours behind, so a window of minutes would throw away
+# instruments that are working perfectly well.
+AVAILABILITY_HOURS = 48
+
 ATTRIBUTION = {
     "events": "USGS Earthquake Hazards Program",
     "stations": "EarthScope / FDSN (formerly IRIS)",
@@ -78,6 +93,11 @@ STATIONS_SECONDS = 30 * 60
 # window over a slow link.
 TRACE_TIMEOUT = 60
 
+# How far behind "now" to end the window. Even a well-connected station takes a
+# few minutes to get its samples into the archive, and asking right up to the
+# present reliably returns an empty plot from an instrument that is fine.
+TRACE_LAG_MINUTES = 6
+
 _session = requests.Session()
 _session.headers["User-Agent"] = config.USER_AGENT
 
@@ -99,14 +119,16 @@ def _keep(key: str, value: dict) -> dict:
     return value
 
 
-def _get(url: str, params: dict, *, timeout: int = 30) -> requests.Response:
+def _get(url: str, params: dict, *, timeout: int = 30,
+         empty: tuple[int, ...] = (204,)) -> requests.Response:
     try:
         resp = _session.get(url, params=params, timeout=timeout)
     except requests.RequestException as exc:
         raise SeismicLookupError(f"{url.split('/')[2]} could not be reached: {exc}") from exc
     # FDSN says 204 for "your query was fine and matched nothing", which is an
-    # answer rather than a failure and must not be raised over.
-    if resp.status_code == 204:
+    # answer rather than a failure and must not be raised over. The plotting
+    # service says 404 for the same thing, so callers can name that too.
+    if resp.status_code in empty:
         return resp
     if not resp.ok:
         raise SeismicLookupError(
@@ -210,7 +232,59 @@ def stations(bbox: tuple[float, float, float, float]) -> dict:
         "includerestricted": "false",
         "nodata": "204",
     })
-    return _keep(key, _parse_channels(resp.text if resp.content else ""))
+    found = _parse_channels(resp.text if resp.content else "")
+    kept, checked = _with_recordings(found["stations"])
+    found.update(
+        stations=kept,
+        count=len(kept),
+        capped=found["capped"] or len(kept) == MAX_STATIONS,
+        # Whether the list was narrowed to what can actually be plotted, or
+        # whether the check itself failed and this is the unfiltered set.
+        checked=checked,
+    )
+    return _keep(key, found)
+
+
+def _with_recordings(entries: list[dict]) -> tuple[list[dict], bool]:
+    """Keep the stations this data centre holds recent recordings for.
+
+    Returns the survivors and whether the check actually ran. If the
+    availability service cannot be reached, everything is kept rather than
+    nothing: an unverified pin that might not plot is a smaller failure than an
+    empty map, and the caller is told which of the two it got.
+    """
+    if not entries:
+        return entries, True
+
+    end = dt.datetime.now(dt.timezone.utc)
+    start = end - dt.timedelta(hours=AVAILABILITY_HOURS)
+    # The POST form takes one selection line per channel, which is the only way
+    # to ask about a specific set of stations: the query form would take the
+    # cross product of the networks and the station names and ask about
+    # thousands of pairs that do not exist.
+    lines = ["format=text", "mergequality=true", "mergesamplerate=true"]
+    for entry in entries:
+        lines.append(
+            f"{entry['network']} {entry['station']} {entry['loc'] or '--'} "
+            f"{entry['channel']} {start:%Y-%m-%dT%H:%M:%S} {end:%Y-%m-%dT%H:%M:%S}"
+        )
+    try:
+        resp = _session.post(AVAILABILITY_URL, data="\n".join(lines) + "\n", timeout=45)
+    except requests.RequestException:
+        return entries, False
+    if resp.status_code == 204:
+        return [], True
+    if not resp.ok:
+        return entries, False
+
+    have = set()
+    for line in resp.text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            have.add((parts[0], parts[1]))
+    return [e for e in entries if (e["network"], e["station"]) in have], True
 
 
 def _parse_channels(text: str) -> dict:
@@ -276,26 +350,37 @@ def trace(network: str, station: str, channel: str, loc: str = "", minutes: int 
     difference between a 30 kB image and a waveform library in the browser, and
     the plot it returns is the one seismologists look at.
     """
-    end = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=2)
+    end = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=TRACE_LAG_MINUTES)
     start = end - dt.timedelta(minutes=minutes)
-    resp = _get(TRACE_URL, {
-        "net": network, "sta": station, "cha": channel,
-        # A blank location code means "whichever", but FDSN wants it spelled
-        # out as two dashes rather than left empty.
-        "loc": loc or "--",
-        "starttime": start.strftime("%Y-%m-%dT%H:%M:%S"),
-        "endtime": end.strftime("%Y-%m-%dT%H:%M:%S"),
-        # Strip the instrument response so the trace is ground motion rather
-        # than counts, and take out the long-period drift that would otherwise
-        # be most of what you see.
-        "demean": "true", "output": "plot",
-    }, timeout=TRACE_TIMEOUT)
-    if resp.status_code == 204 or not resp.content:
-        raise SeismicLookupError(
-            f"{network}.{station} has no data for the last {minutes} minutes. "
-            "Stations go offline, and telemetry can run hours behind."
-        )
-    return resp.content
+
+    # The location code in the metadata and the one the archive filed the
+    # recording under do not always agree, and a mismatch returns nothing at
+    # all rather than an explanation. So the exact code is tried first and any
+    # code second, which costs one extra request only when the first fails.
+    attempts = [loc or "--"]
+    if attempts[0] != "*":
+        attempts.append("*")
+
+    for location in attempts:
+        resp = _get(TRACE_URL, {
+            "net": network, "sta": station, "cha": channel,
+            "loc": location,
+            "starttime": start.strftime("%Y-%m-%dT%H:%M:%S"),
+            "endtime": end.strftime("%Y-%m-%dT%H:%M:%S"),
+            # Take out the long-period drift that would otherwise be most of
+            # what you see.
+            "demean": "true", "output": "plot",
+        }, timeout=TRACE_TIMEOUT, empty=(204, 404))
+        if resp.status_code not in (204, 404) and resp.content:
+            return resp.content
+
+    raise SeismicLookupError(
+        f"{TRACE_URL.split('/')[2]} holds no recording for {network}.{station} "
+        f"{channel} over the last {minutes} minutes. Either the station is "
+        "offline or running behind, or its waveforms are archived at a "
+        "different data centre and only its description is held here. "
+        "A longer window sometimes finds it."
+    )
 
 
 # ── Synthetic seismology (DEMO_MODE) ───────────────────────────
@@ -365,7 +450,7 @@ def demo_stations(bbox: tuple[float, float, float, float]) -> dict:
             "loc": "00", "channel": "BHZ",
         })
     return {
-        "stations": out, "count": len(out), "capped": False, "demo": True,
+        "stations": out, "count": len(out), "capped": False, "checked": True, "demo": True,
         "source": "Synthetic", "attribution": "Synthetic demo data",
     }
 
