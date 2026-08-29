@@ -16,7 +16,6 @@ import { initRadar } from './radar.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
-import { initAlerts } from './alerts.js';
 
 let map;
 let aoiLayer = null;
@@ -189,10 +188,9 @@ export function initMap() {
   initRadar(map);
   initVessels(map);
   initSeismic(map);
-  initAlerts(map);
   initCams(map);
 
-  // Seven panels in one column: opening the last one can leave its own button
+  // Six panels in one column: opening the last one can leave its own button
   // below the fold. Bring whichever was just pressed back into view.
   $('.side-docks')?.addEventListener('click', (e) => {
     const button = e.target.closest('button');
@@ -235,6 +233,18 @@ function bindDrawTools() {
   map.on('mouseup', onUp);
   map.on('click', onClick);
   map.on('dblclick', onDblClick);
+
+  // Releasing the button anywhere but over the map -- on the sidebar, on a
+  // panel, or outside the window entirely -- never reaches Leaflet, so the
+  // sketch was never finished and the tool stayed armed. From then on the map
+  // would not pan and would not answer a click, because every gesture was
+  // still feeding a drawing nobody could see. Ending the gesture wherever the
+  // button actually comes up is the fix.
+  document.addEventListener('pointerup', looseEnd);
+  document.addEventListener('pointercancel', looseEnd);
+  // Alt-tabbing away mid-drag comes back with the button already released.
+  window.addEventListener('blur', looseEnd);
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') setMode('none');
   });
@@ -249,6 +259,7 @@ function bindDrawTools() {
 /** Arm a drawing tool, or 'none' to hand the map back to panning and zooming. */
 function setMode(next) {
   cancelSketch();
+  drawing = null;
   mode = next;
   const drawingNow = mode !== 'none';
   $$('[data-draw]').forEach((b) => b.classList.toggle(
@@ -267,7 +278,13 @@ function setMode(next) {
 
 function onDown(e) {
   if (mode === 'none' || mode === 'polygon' || drawing) return;
-  drawing = { mode, start: e.latlng, points: [e.latlng], lastPoint: e.containerPoint };
+  drawing = {
+    mode, start: e.latlng, points: [e.latlng],
+    lastPoint: e.containerPoint,
+    // Where the pointer was last seen, so a gesture that ends off the map can
+    // still be finished at the last place it was actually over.
+    at: e.latlng,
+  };
   sketchLayer?.remove();
   sketchLayer = (mode === 'circle'
     ? L.circle(e.latlng, { radius: 1, ...SKETCH_STYLE })
@@ -278,6 +295,7 @@ function onDown(e) {
 
 function onMove(e) {
   if (!drawing) return;
+  drawing.at = e.latlng;
   if (drawing.mode === 'circle') {
     sketchLayer.setRadius(Math.max(map.distance(drawing.start, e.latlng), 1));
   } else if (drawing.mode === 'rect' || drawing.mode === 'capture') {
@@ -291,7 +309,22 @@ function onMove(e) {
   }
 }
 
+/**
+ * The button came up somewhere the map never heard about.
+ *
+ * A polygon is not affected: it is built by clicking, not dragging, and has
+ * no gesture to end here.
+ */
+function looseEnd() {
+  if (!drawing || drawing.mode === 'polygon') return;
+  finish(drawing.at ?? drawing.start);
+}
+
 function onUp(e) {
+  finish(e.latlng);
+}
+
+function finish(at) {
   if (!drawing) return;
   const sketch = drawing;
   // Finished or abandoned, the tool is done: the map goes back to navigating
@@ -299,15 +332,15 @@ function onUp(e) {
   setMode('none');
 
   if (sketch.mode === 'capture') {
-    if (map.distance(sketch.start, e.latlng) < 20) return;
-    takeRegion(sketch.start, e.latlng);
+    if (map.distance(sketch.start, at) < 20) return;
+    takeRegion(sketch.start, at);
   } else if (sketch.mode === 'circle') {
-    const radius = map.distance(sketch.start, e.latlng);
+    const radius = map.distance(sketch.start, at);
     if (radius < 20) return;
     setAoi({ type: 'circle', lon: sketch.start.lng, lat: sketch.start.lat, radius });
   } else if (sketch.mode === 'rect') {
-    if (map.distance(sketch.start, e.latlng) < 20) return;
-    setAoi(ringToPolygon(boxRing(sketch.start, e.latlng)));
+    if (map.distance(sketch.start, at) < 20) return;
+    setAoi(ringToPolygon(boxRing(sketch.start, at)));
   } else if (sketch.mode === 'lasso') {
     if (sketch.points.length < 4) return;
     setAoi(ringToPolygon(sketch.points));
@@ -407,6 +440,36 @@ function renderAoiSummary(info) {
  * looks like, Sentinel-1 for what is there under the cloud. Fading between the
  * two is the whole point, so each layer keeps its own opacity.
  */
+/**
+ * Keep the picture currently on the map when the next one replaces it.
+ *
+ * Overlays are keyed by satellite, so rendering a second date of Sentinel-2
+ * used to drop the first -- which meant the comparison slider could only ever
+ * put one satellite against another, and never the same ground a week apart.
+ * That is the comparison anyone actually wants. Pinning copies the layer under
+ * a key of its own so the next render has nothing to overwrite.
+ */
+let pins = 0;
+
+function pinOverlay(key) {
+  const entry = overlays.get(key);
+  const image = store.images.get(key);
+  if (!entry || !image) return;
+
+  pins += 1;
+  const pinKey = `pin:${pins}`;
+  const [w, s, e, n] = entry.meta.grid.bounds;
+  const layer = L.imageOverlay(image.src, [[s, w], [n, e]], {
+    opacity: entry.opacity, interactive: false, className: 'render-overlay',
+  }).addTo(map);
+  overlays.set(pinKey, {
+    layer, opacity: entry.opacity, visible: true, meta: entry.meta, pinned: key,
+  });
+  store.images.set(pinKey, image);
+  renderLayerDock();
+  toast('Pinned. Render another date and the two can be compared.');
+}
+
 function showOverlay(image) {
   if (!image?.meta?.grid) return;
   const key = image.meta.satellite ?? 'sentinel-2';
@@ -440,7 +503,7 @@ function renderLayerDock() {
     return;
   }
   for (const [key, entry] of overlays) {
-    const sat = store.config.satellites?.[key] ?? {};
+    const sat = store.config.satellites?.[entry.pinned ?? key] ?? {};
     const slider = el('input', {
       type: 'range', min: 0, max: 100, value: Math.round(entry.opacity * 100),
       oninput: (ev) => {
@@ -449,11 +512,18 @@ function renderLayerDock() {
         entry.layer.setOpacity(entry.opacity);
       },
     });
-    dock.append(el('div', { class: 'layer-row' },
+    dock.append(el('div', { class: `layer-row${entry.pinned ? ' is-pinned' : ''}` },
       el('span', { class: 'layer-dot', style: `background:${sat.colour ?? '#4cc2ff'}` }),
       el('span', { class: 'layer-name' }, sat.short ?? key,
-        el('small', {}, fmt.date(entry.meta.scene?.date))),
+        el('small', {}, fmt.date(entry.meta.scene?.date)),
+        entry.pinned ? el('em', { class: 'layer-pinned' }, 'kept') : null),
       slider,
+      // Only live layers can be pinned: a pin is already a copy, and copying
+      // a copy would fill the dock with the same picture.
+      entry.pinned ? null : el('button', {
+        class: 'layer-pin', title: 'Keep this picture when the next one is rendered',
+        onclick: () => pinOverlay(key),
+      }, '⊕'),
       el('button', {
         class: 'layer-x', title: 'Take this layer off the map',
         onclick: () => {
@@ -477,6 +547,9 @@ function renderLayerDock() {
       class: `compare-btn${compare ? ' is-on' : ''}`,
       onclick: toggleCompare,
     }, compare ? '✕ Stop comparing' : '⟺ Compare side by side'));
+  } else {
+    dock.append(el('div', { class: 'layer-tip' },
+      'Press ⊕ to keep this picture, then render another date to compare them.'));
   }
   dock.hidden = false;
 }
@@ -595,6 +668,8 @@ function toggleCompare() {
     toast('Show both satellites, or two dates, and they can be compared');
     return;
   }
+  // The last two are the two most recently put on the map, which is what
+  // somebody who has just rendered a second date is looking at.
   compare = { at: 0.5, keys: keys.slice(-2) };
   const handle = el('div', { class: 'compare-handle', id: 'compareHandle' },
     el('div', { class: 'compare-line' }),
@@ -674,24 +749,83 @@ function bindPassLookup() {
 }
 
 async function showPasses(latlng) {
+  const lon = latlng.lng.toFixed(5);
+  const lat = latlng.lat.toFixed(5);
+  const sky = el('div', { class: 'wx' }, el('div', { class: 'passes-wait' }, 'Asking Open-Meteo…'));
   const box = el('div', { class: 'passes' },
     el('div', { class: 'passes-head' }, fmt.coord(latlng.lng, latlng.lat)),
-    el('div', { class: 'passes-wait' }, 'Asking the catalogue…'));
-  const popup = L.popup({ className: 'pass-popup', maxWidth: 320, ...POPUP })
+    sky,
+    el('div', { class: 'passes-wait', id: 'passWait' }, 'Asking the catalogue…'));
+  const popup = L.popup({ className: 'pass-popup', maxWidth: 340, ...POPUP })
     .setLatLng(latlng).setContent(box).openOn(map);
 
-  try {
-    const data = await api.passes(latlng.lng.toFixed(5), latlng.lat.toFixed(5));
-    box.querySelector('.passes-wait').remove();
-    for (const sat of data.satellites) box.append(passRow(sat));
+  // Both at once. The pass prediction is the slower of the two and the
+  // weather has nothing to wait for.
+  const [weather, passes] = await Promise.allSettled([
+    api.weather(lon, lat), api.passes(lon, lat),
+  ]);
+
+  sky.replaceChildren(weather.status === 'fulfilled'
+    ? weatherBlock(weather.value)
+    : el('div', { class: 'wx-fail' }, `Weather unavailable: ${weather.reason.message}`));
+
+  box.querySelector('#passWait')?.remove();
+  if (passes.status === 'fulfilled') {
+    for (const sat of passes.value.satellites) box.append(passRow(sat));
     box.append(el('div', { class: 'passes-foot' },
       'Predicted from the passes already flown over this point, '
-      + `stepping each ground track on by the interval it actually repeats on.`));
-    popup.update();
-  } catch (err) {
-    box.querySelector('.passes-wait').textContent = `Could not look that up: ${err.message}`;
-    popup.update();
+      + 'stepping each ground track on by the interval it actually repeats on.'));
+  } else {
+    box.append(el('div', { class: 'wx-fail' }, `Passes unavailable: ${passes.reason.message}`));
   }
+  popup.update();
+}
+
+/**
+ * The weather half of the right-click.
+ *
+ * The cloud figure is given more room than the temperature, because it is the
+ * one that decides whether the satellite pass underneath is worth waiting for.
+ */
+function weatherBlock(w) {
+  const now = w.now ?? {};
+  const round = (v, unit = '') => (v == null ? '—' : `${Math.round(v)}${unit}`);
+
+  return el('div', {},
+    el('div', { class: 'wx-now' },
+      el('span', { class: 'wx-glyph' }, now.glyph ?? '•'),
+      el('span', { class: 'wx-temp' }, round(now.temperature, '°')),
+      el('span', { class: 'wx-label' }, now.label ?? ''),
+      w.demo ? el('span', { class: 'wx-demo' }, 'synthetic') : null),
+    el('dl', { class: 'wx-facts' },
+      ...factRows([
+        ['Cloud', now.cloud == null ? '—' : `${Math.round(now.cloud)}%`],
+        ['Wind', now.wind == null ? '—' : `${Math.round(now.wind)} km/h ${compass(now.wind_from)}`],
+        ['Feels', round(now.feels_like, '°')],
+        ['Humidity', round(now.humidity, '%')],
+        ['Visibility', now.visibility_km == null ? '—' : `${Math.round(now.visibility_km)} km`],
+      ])),
+    el('div', { class: 'wx-outlook' }, w.optical_outlook ?? ''),
+    el('div', { class: 'wx-days' },
+      ...(w.days ?? []).map((d) => el('div', { class: 'wx-day' },
+        el('b', {}, dayName(d.date)),
+        el('span', { class: 'wx-day-glyph' }, d.glyph),
+        el('span', {}, `${round(d.high, '°')} / ${round(d.low, '°')}`),
+        el('span', { class: 'dim' }, `${round(d.cloud, '%')} cloud`)))),
+    el('div', { class: 'wx-credit' }, w.attribution ?? 'Open-Meteo'));
+}
+
+function factRows(pairs) {
+  return pairs.flatMap(([label, value]) => [el('dt', {}, label), el('dd', {}, value)]);
+}
+
+const POINTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const compass = (deg) => (deg == null ? '' : POINTS[Math.round(deg / 45) % 8]);
+
+function dayName(iso) {
+  const d = new Date(`${iso}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? iso
+    : d.toLocaleDateString(undefined, { weekday: 'short' });
 }
 
 function passRow(sat) {

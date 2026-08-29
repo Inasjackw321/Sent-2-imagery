@@ -59,6 +59,13 @@ const TILE_SIZE = 256;
 const SPEEDS = { slow: 800, normal: 460, fast: 240 };
 const REST_MS = 1100;
 
+// How long one frame takes to fade into the next. Kept well under the fastest
+// step so the fade finishes before the following frame starts, which is the
+// difference between a crossfade and a permanent blur of three frames at once.
+// The fade itself is a CSS transition; this is handed to it at start-up so the
+// two cannot drift apart.
+const FADE_MS = 160;
+
 // Frames go stale: the service publishes every ten minutes, so anything older
 // than this is worth replacing even if the tab has been sitting open.
 const REFRESH_MS = 5 * 60 * 1000;
@@ -87,6 +94,7 @@ let index = null;         // the whole answer from the service, both modes
 const ready = new Set();  // keys of frames whose tiles are in hand
 
 export function initRadar(leafletMap) {
+  document.documentElement.style.setProperty('--radar-crossfade', `${FADE_MS}ms`);
   map = leafletMap;
   // Above the imagery and the cloud, because rain is the nearest thing to the
   // viewer and the thing being asked about.
@@ -139,7 +147,17 @@ function layerFor(frame) {
     pane: 'radar',
     maxNativeZoom: mode === 'radar' ? 12 : 8,
     maxZoom: 19,
-    attribution: '<a href="https://www.rainviewer.com/">RainViewer</a>',
+    // The fade between frames is a CSS transition on this class rather than a
+    // timer stepping opacity here: it runs on the compositor, so it stays
+    // smooth while the main thread is busy doing anything else.
+    className: 'radar-frame',
+    // Two extra rings of tiles either side of the viewport, kept rather than
+    // discarded. A small pan then reuses what is already fetched instead of
+    // blanking every frame in the loop at once.
+    keepBuffer: 4,
+    // Fetch while the map is still moving. Waiting for it to settle is what
+    // makes radar appear a beat late after every pan.
+    updateWhenIdle: false,
   });
   // Knowing when a frame is ready is what lets the panel say so. Recorded
   // against the frame rather than counted, because a layer built for an
@@ -181,6 +199,15 @@ const stillLoading = () => frames.filter((f) => !ready.has(keyOf(f))).length;
 function step() {
   clearTimeout(timer);
   if (!enabled || !playing || !frames.length) return;
+
+  // Nothing is smooth about a loop that runs while half its frames are still
+  // arriving: it plays blanks, then jumps. Wait until they are all in hand,
+  // checking often enough that the wait is not itself a stutter.
+  if (stillLoading()) {
+    timer = setTimeout(step, 200);
+    return;
+  }
+
   const last = at === frames.length - 1;
   timer = setTimeout(() => {
     showFrame(at + 1);

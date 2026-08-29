@@ -22,6 +22,7 @@ export const api = {
   describeAoi: (aoi) => request('/api/aoi', { body: { aoi } }),
   search: (body) => request('/api/search', { body }),
   geocode: (q) => request(`/api/geocode?q=${encodeURIComponent(q)}`, { method: 'GET' }),
+  weather: (lon, lat) => request(`/api/weather?lon=${lon}&lat=${lat}`, { method: 'GET' }),
   passes: (lon, lat) => request(`/api/passes?lon=${lon}&lat=${lat}`, { method: 'GET' }),
   fires: ({ west, south, east, north, hours }) => request(
     `/api/fires?${new URLSearchParams({
@@ -49,15 +50,6 @@ export const api = {
     `/api/seismographs/trace.png?${new URLSearchParams({
       network, station, channel, loc, minutes,
     })}`,
-  alerts: () => request('/api/alerts', { method: 'GET' }),
-  alertStatus: () => request('/api/alerts/status', { method: 'GET' }),
-  alertLogin: (body) => request('/api/alerts/login', { body }),
-  alertCode: (body) => request('/api/alerts/code', { body }),
-  alertLogout: () => request('/api/alerts/logout', { body: {} }),
-  alertChannels: () => request('/api/alerts/channels', { method: 'GET' }),
-  alertWatch: (body) => request('/api/alerts/watch', { body }),
-  alertPoll: () => request('/api/alerts/poll', { body: {} }),
-  alertModel: (model) => request('/api/alerts/model', { body: { model } }),
   aisKey: (key) => request('/api/vessels/key', { body: { key } }),
   aisTest: () => request('/api/vessels/test', { body: {} }),
   probe: (body) => request('/api/probe', { body }),

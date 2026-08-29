@@ -20,7 +20,30 @@ let inFlight = false;
 // redrawing on every move would throw away whichever popup was open and ask
 // NASA for the same fires again.
 let covered = null;
+// Whether the last answer was trimmed, and how much ground it covered. A
+// trimmed answer over a large area gets better when you look at a small one.
+let lastCapped = false;
+let coveredArea = 0;
 const MARGIN = 0.4;
+
+// How much smaller the view has to get before it is worth re-asking. A
+// quarter is one zoom level, which is roughly when the cap starts letting
+// through detections it had dropped before.
+const SHRUNK = 0.3;
+
+// Above this zoom a detection is drawn at the size of the pixel that saw it
+// -- 375 m for VIIRS, a kilometre for MODIS -- rather than as a fixed dot.
+// Below it those circles would be sub-pixel and the map would look empty.
+const FOOTPRINT_ZOOM = 11;
+
+const area = (bounds) => Math.abs(
+  (bounds.getEast() - bounds.getWest()) * (bounds.getNorth() - bounds.getSouth()));
+
+/** Is there more to be had by asking again for this smaller view? */
+function worthAnotherLook(view) {
+  if (!lastCapped || !coveredArea) return false;
+  return area(view.pad(MARGIN)) < coveredArea * SHRUNK;
+}
 
 // Fire radiative power, in megawatts. The scale is heavily skewed -- most
 // detections are a few MW and a big fire front is hundreds -- so the radius
@@ -51,6 +74,9 @@ export function initFires(leafletMap) {
   buildDock();
   // Panning to somewhere new is a request for that somewhere's fires.
   map.on('moveend', debounce(() => { if (enabled) refresh(); }, 600));
+  // Redrawing on zoom is separate from re-fetching: the shapes change at the
+  // footprint threshold even when the detections behind them have not.
+  map.on('zoomend', () => { if (enabled && shown.length) paint(); });
 }
 
 function buildDock() {
@@ -97,11 +123,24 @@ function setWindow(next) {
   refresh({ force: true });
 }
 
-/** Ask for the fires under whatever part of the world is on screen. */
+/**
+ * Ask for the fires under whatever part of the world is on screen.
+ *
+ * Zooming in re-asks, which it used to skip. A continent's worth of
+ * detections is more than the map can hold, so the service returns the
+ * fiercest few thousand and drops the rest -- which means the answer for a
+ * whole country is a different, coarser answer than the one for a single
+ * valley inside it. Treating the first as good enough for the second is why
+ * zooming in never revealed anything new: the small fires had already been
+ * discarded before the tiles were drawn.
+ *
+ * Only when the last answer was actually trimmed, though. If nothing was
+ * dropped there is no more detail to be had and re-asking is just traffic.
+ */
 async function refresh({ force = false } = {}) {
   if (!enabled || inFlight) return;
   const view = map.getBounds();
-  if (!force && covered?.contains(view)) return;
+  if (!force && covered?.contains(view) && !worthAnotherLook(view)) return;
 
   const box = view.pad(MARGIN);
   inFlight = true;
@@ -109,9 +148,12 @@ async function refresh({ force = false } = {}) {
   try {
     const data = await api.fires({ ...askableBounds(map, MARGIN), hours });
     covered = box;
+    lastCapped = Boolean(data.capped);
+    coveredArea = area(box);
     draw(data);
   } catch (err) {
     covered = null;
+    lastCapped = false;
     $('#fireCount').textContent = 'Could not load fires';
     toast(`Fire data unavailable: ${err.message}`, 'err');
   } finally {
@@ -119,19 +161,49 @@ async function refresh({ force = false } = {}) {
   }
 }
 
+let shown = [];
+
 function draw(data) {
-  layer.clearLayers();
-  for (const fire of data.fires) {
-    L.circleMarker([fire.lat, fire.lon], style(fire))
-      .bindPopup(() => popup(fire), POPUP)
-      .addTo(layer);
-  }
+  shown = data.fires;
+  paint();
   const window = hours === 168 ? '7 days' : `${hours} h`;
   $('#fireCount').innerHTML = data.count
     ? `<b>${data.count.toLocaleString()}</b> detection${data.count === 1 ? '' : 's'} · last ${window}`
-      + (data.capped ? `<br><span class="dim">strongest of ${data.total.toLocaleString()} —`
+      + (data.capped ? `<br><span class="dim">fiercest of ${data.total.toLocaleString()} —`
         + ' zoom in for the rest</span>' : '')
     : `Nothing burning here in the last ${window}`;
+}
+
+/**
+ * Draw what is held, at whatever detail the current zoom deserves.
+ *
+ * Zoomed out, a detection is a dot sized by how much energy it is radiating.
+ * Zoomed in, it becomes the actual footprint of the satellite pixel that saw
+ * it -- 375 m across for VIIRS, a kilometre for MODIS -- which is the honest
+ * shape of the evidence. A fixed dot at high zoom implies a precision the
+ * data does not have, in both directions: too small over a MODIS pixel, far
+ * too large over a city block.
+ */
+function paint() {
+  layer.clearLayers();
+  const footprints = map.getZoom() >= FOOTPRINT_ZOOM;
+  for (const fire of shown) {
+    const base = style(fire);
+    const marker = footprints
+      ? L.circle([fire.lat, fire.lon], {
+        ...base,
+        // Radius, so half the pixel's width.
+        radius: (fire.resolution_m ?? 375) / 2,
+        // Zoomed right in, a real 375 m footprint covers the screen. That is
+        // the honest size of the evidence, but filled solid it hides the
+        // ground it is evidence about -- so the outline carries it and the
+        // fill only tints.
+        fillOpacity: base.fillOpacity * 0.35,
+        weight: 1.5,
+      })
+      : L.circleMarker([fire.lat, fire.lon], base);
+    marker.bindPopup(() => popup(fire), POPUP).addTo(layer);
+  }
 }
 
 const band = (frp) => BANDS.find((b) => (frp ?? 0) > b.over) ?? BANDS.at(-1);

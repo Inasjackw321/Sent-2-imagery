@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, alerts, composite, config, fires, llm, passes, seismic, service, stac,
-    telegram, version, vessels,
+    aisstream, composite, config, fires, passes, seismic, service, stac, version,
+    vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -291,120 +291,23 @@ def ais_test() -> dict:
     return aisstream.test_key()
 
 
-# ---------------------------------------------------------------------------
-# Telegram alerts
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/alerts")
-def read_alerts(
-    kinds: str = Query(""),
-    placed: bool = Query(False),
+@app.get("/api/weather")
+def weather_at(
+    lon: float = Query(..., ge=-180, le=180),
+    lat: float = Query(..., ge=-90, le=90),
 ) -> dict:
-    """Everything read from the watched channels, newest first."""
-    if config.DEMO_MODE:
-        return {**alerts.demo(), "telegram": telegram.status()}
-    wanted = [k for k in kinds.split(",") if k]
-    return {**alerts.held(wanted or None, placed_only=placed),
-            "telegram": telegram.status()}
+    """Weather now and for the next few days, at one point.
 
-
-@app.get("/api/alerts/status")
-def alerts_status() -> dict:
-    return {
-        "telegram": telegram.status(),
-        "model": llm.available(),
-        "suggested": [{"name": n, "note": d} for n, d in llm.SUGGESTED],
-        "kinds": alerts.KINDS,
-    }
-
-
-@app.post("/api/alerts/login")
-def alerts_login(body: dict = Body(...)) -> dict:
-    """Start signing in: Telegram sends a code to the account.
-
-    The api_id and api_hash come from my.telegram.org and identify the
-    application rather than the person. Nothing is written to disk.
+    Sits beside the pass prediction because the two answer one question
+    between them: when there will be a picture, and whether there will be
+    anything visible in it.
     """
+    if config.DEMO_MODE:
+        return weather.demo(lon, lat)
     try:
-        return telegram.start_login(
-            int(body.get("api_id") or 0),
-            str(body.get("api_hash") or "").strip(),
-            str(body.get("phone") or "").strip(),
-        )
-    except (ValueError, TypeError) as exc:
-        raise _fail(exc, 400)
-    except telegram.TelegramError as exc:
+        return weather.at(lon, lat)
+    except weather.WeatherError as exc:
         raise _fail(exc)
-
-
-@app.post("/api/alerts/code")
-def alerts_code(body: dict = Body(...)) -> dict:
-    """Finish signing in with the code, and a 2FA password if one is set."""
-    try:
-        return telegram.finish_login(
-            str(body.get("code") or ""), body.get("password") or None)
-    except telegram.TelegramError as exc:
-        raise _fail(exc)
-
-
-@app.post("/api/alerts/logout")
-def alerts_logout() -> dict:
-    return telegram.sign_out()
-
-
-@app.get("/api/alerts/channels")
-def alerts_channels() -> dict:
-    """Every channel the signed-in account can read."""
-    try:
-        return {"channels": telegram.channels()}
-    except telegram.TelegramError as exc:
-        raise _fail(exc)
-
-
-@app.post("/api/alerts/watch")
-def alerts_watch(body: dict = Body(...)) -> dict:
-    """Choose the channels, and start or stop the once-a-minute reading."""
-    chosen = [str(c) for c in (body.get("channels") or [])]
-    telegram.watch(chosen)
-    try:
-        if body.get("running") and chosen:
-            return telegram.start_polling(_keep_alert)
-        return telegram.stop_polling()
-    except telegram.TelegramError as exc:
-        raise _fail(exc)
-
-
-@app.post("/api/alerts/poll")
-def alerts_poll() -> dict:
-    """Read the channels once, now, rather than waiting for the next minute."""
-    try:
-        found = telegram.poll_once(_keep_alert)
-    except telegram.TelegramError as exc:
-        raise _fail(exc)
-    return {"read": found, **alerts.held()}
-
-
-@app.post("/api/alerts/model")
-def alerts_model(body: dict = Body(...)) -> dict:
-    """Point the reader at a different local model."""
-    return llm.set_model(str(body.get("model") or ""))
-
-
-@app.post("/api/alerts/clear")
-def alerts_clear() -> dict:
-    alerts.forget()
-    return alerts.held()
-
-
-def _keep_alert(message: dict) -> None:
-    """One message from a channel, read and kept."""
-    if alerts.known(message["id"]):
-        return
-    try:
-        alerts.add(message)
-    except Exception as exc:  # a bad message must not stop the poll
-        log.warning("alert skipped: %s", exc)
 
 
 @app.get("/api/geocode")

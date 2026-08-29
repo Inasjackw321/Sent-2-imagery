@@ -54,8 +54,38 @@ const SOURCES = {
   },
 };
 
+// ── Tracking ───────────────────────────────────────────────────
+//
+// A position is a dot; a track is what a dot means. Each refresh appends the
+// new position of every ship already seen, so a vessel that has been on screen
+// for a while draws the path it took to get where it is -- which is the
+// difference between knowing a tanker is off Gotland and seeing that it has
+// been going in circles there for two hours.
+//
+// Held only in memory and only for this session. Nothing here is an archive.
+
+// Points kept per ship. At a refresh a minute apart this is about an hour of
+// track, which is as far back as a live picture is worth carrying.
+const TRACK_POINTS = 60;
+
+// Positions closer together than this are the same position reported twice,
+// and appending them turns a track into a smudge.
+const TRACK_MIN_METRES = 40;
+
+// Drawing every track at once is only worth it while there are few enough for
+// any of them to be followed by eye.
+const TRACK_LIMIT = 400;
+
+const tracks = new Map();     // mmsi -> [[lat, lon], …] oldest first
+
 let map = null;
 let layer = null;
+let trackLayer = null;
+let trackCanvas = null;
+let showTracks = true;
+let following = null;         // mmsi being kept in view
+let hidden = new Set();       // categories switched off
+let search = '';
 // The canvas the ships fall back to once there are too many for arrows.
 let shipCanvas = null;
 
@@ -82,6 +112,10 @@ export function initVessels(leafletMap) {
   map = leafletMap;
   map.createPane('vessels').style.zIndex = 470;
   shipCanvas = L.canvas({ pane: 'vessels', padding: 0.4 });
+  // Tracks go under the ships, on their own canvas, so redrawing one does not
+  // redraw the other.
+  trackCanvas = L.canvas({ pane: 'vessels', padding: 0.4 });
+  trackLayer = L.layerGroup();
   buildDock();
   map.on('moveend', debounce(() => { if (enabled) maybeRefetch(); }, 350));
 }
@@ -124,12 +158,67 @@ async function load(box) {
     covered = ask;
     nextIn = data.next_in ?? 0;
     ships = data.vessels ?? [];
+    remember(ships);
     draw(data);
   } catch (err) {
     // The panel carries the detail; the toast only says something went wrong,
     // since the message can be a paragraph and a toast is not the place.
     toast('AIS: no ships loaded', 'err');
     note(err.message, 'bad');
+  }
+}
+
+/** Append this round's positions to the tracks. */
+function remember(rows) {
+  for (const ship of rows) {
+    if (ship.mmsi == null || ship.lat == null) continue;
+    const key = String(ship.mmsi);
+    const path = tracks.get(key) ?? [];
+    const last = path.at(-1);
+    // A ship reporting the same position again is not a new point on its
+    // track, and stringing those together is how a track becomes a smudge.
+    if (last && map.distance(last, [ship.lat, ship.lon]) < TRACK_MIN_METRES) continue;
+    path.push([ship.lat, ship.lon]);
+    if (path.length > TRACK_POINTS) path.splice(0, path.length - TRACK_POINTS);
+    tracks.set(key, path);
+  }
+  // A ship that has left the view keeps its track for as long as it is
+  // remembered, but the table must not grow without limit over an afternoon.
+  if (tracks.size > 4000) {
+    const keep = new Set(rows.map((r) => String(r.mmsi)));
+    for (const key of tracks.keys()) if (!keep.has(key)) tracks.delete(key);
+  }
+}
+
+/** Which ships pass the filters currently set. */
+function visible() {
+  const needle = search.trim().toLowerCase();
+  return ships.filter((ship) => {
+    if (hidden.has(ship.category)) return false;
+    if (!needle) return true;
+    return (ship.name ?? '').toLowerCase().includes(needle)
+      || String(ship.mmsi ?? '').includes(needle)
+      || (ship.callsign ?? '').toLowerCase().includes(needle)
+      || (ship.destination ?? '').toLowerCase().includes(needle);
+  });
+}
+
+function drawTracks(rows) {
+  trackLayer.clearLayers();
+  if (!showTracks) return;
+  // Only when there are few enough for any one of them to be followed by eye.
+  // Four hundred overlapping tracks is a texture, not information.
+  if (rows.length > TRACK_LIMIT) return;
+
+  for (const ship of rows) {
+    const path = tracks.get(String(ship.mmsi));
+    if (!path || path.length < 2) continue;
+    const spec = CATEGORIES[ship.category] ?? CATEGORIES.other;
+    L.polyline(path, {
+      renderer: trackCanvas, pane: 'vessels',
+      color: spec.colour, weight: following === String(ship.mmsi) ? 2.5 : 1.2,
+      opacity: following === String(ship.mmsi) ? 0.95 : 0.45,
+    }).addTo(trackLayer);
   }
 }
 
@@ -181,6 +270,11 @@ function marker(ship, arrows = true) {
     title: ship.name || `MMSI ${ship.mmsi}`,
   });
   pin.bindPopup(() => describe(ship), { className: 'ship-popup', maxWidth: 260 });
+  pin.on('popupopen', () => {
+    // Wired after the popup exists, since its content is built on opening.
+    document.querySelector('.ship-follow')
+      ?.addEventListener('click', () => follow(ship.mmsi), { once: true });
+  });
 
   if (showNames && ship.name) {
     pin.bindTooltip(ship.name, {
@@ -214,21 +308,39 @@ function describe(ship) {
       el('b', {}, ship.name || `MMSI ${ship.mmsi}`)),
     el('dl', {}, ...rows.flatMap(([label, value]) =>
       [el('dt', {}, label), el('dd', {}, String(value))])),
+    el('div', { class: 'ship-track-note' },
+      (tracks.get(String(ship.mmsi))?.length ?? 0) > 1
+        ? `${tracks.get(String(ship.mmsi)).length} positions this session.`
+        : 'No track yet — it builds as the feed refreshes.'),
+    el('button', { class: 'ship-follow' },
+      following === String(ship.mmsi) ? 'Stop following' : 'Follow this ship'),
   ).outerHTML;
 }
 
 function draw(data) {
   layer?.remove();
-  const arrows = ships.length <= ARROW_LIMIT;
-  layer = L.layerGroup(ships.map((ship) => marker(ship, arrows)), { pane: 'vessels' });
+  const rows = visible();
+  const arrows = rows.length <= ARROW_LIMIT;
+  drawTracks(rows);
+  trackLayer.addTo(map);
+  layer = L.layerGroup(rows.map((ship) => marker(ship, arrows)), { pane: 'vessels' });
   layer.addTo(map);
+
+  // Keep whatever is being followed in view, without wrenching the map about
+  // if it has barely moved.
+  if (following) {
+    const ship = rows.find((r) => String(r.mmsi) === following);
+    if (ship && !map.getBounds().pad(-0.25).contains([ship.lat, ship.lon])) {
+      map.panTo([ship.lat, ship.lon], { animate: true, duration: 0.6 });
+    }
+  }
 
   if (data && !data.covered) {
     note(data.note ?? 'No AIS coverage here.', 'warn');
     return;
   }
-  const shown = ships.length;
-  const total = data?.count ?? shown;
+  const shown = rows.length;
+  const total = data?.count ?? ships.length;
   if (shown) {
     note(`${shown} vessel${shown === 1 ? '' : 's'}${total > shown ? ` of ${total}` : ''}`
       + `${data?.demo ? ' — synthetic' : ''}${data?.cached ? ' · from the last look' : ''}`
@@ -243,6 +355,7 @@ function draw(data) {
     note('No vessels broadcasting here right now.', 'warn');
   }
   legend();
+  paintFollowing();
 }
 
 function note(text, kind = '') {
@@ -252,14 +365,38 @@ function note(text, kind = '') {
   box.textContent = text;
 }
 
+/** Follow a ship, or stop. */
+function follow(mmsi) {
+  following = following === String(mmsi) ? null : String(mmsi);
+  draw(null);
+  paintFollowing();
+}
+
+function paintFollowing() {
+  const box = $('#vesselFollowing');
+  if (!box) return;
+  if (!following) { box.hidden = true; return; }
+  const ship = ships.find((r) => String(r.mmsi) === following);
+  box.replaceChildren(
+    el('span', {}, `Following ${ship?.name || `MMSI ${following}`}`),
+    el('button', { class: 'vessel-unfollow', onclick: () => follow(following) }, '×'));
+  box.hidden = false;
+}
+
 function legend() {
-  const host = $('#vesselKey');
-  if (!host) return;
-  const seen = new Set(ships.map((s) => s.category));
-  host.replaceChildren(...Object.entries(CATEGORIES)
-    .filter(([key]) => seen.has(key))
-    .map(([, spec]) => el('span', { class: 'ship-swatch' },
-      el('i', { style: `background:${spec.colour}` }), spec.label)));
+  const box = $('#vesselKey');
+  if (!box) return;
+  box.replaceChildren(...Object.entries(CATEGORIES).map(([key, spec]) => el('button', {
+    // The legend is the filter. A key that only explains colours, next to a
+    // second control that switches them off, is two things saying one thing.
+    class: `ship-swatch${hidden.has(key) ? ' is-off' : ''}`,
+    title: hidden.has(key) ? `Show ${spec.label.toLowerCase()}` : `Hide ${spec.label.toLowerCase()}`,
+    onclick: () => {
+      if (hidden.has(key)) hidden.delete(key); else hidden.add(key);
+      legend();
+      draw(null);
+    },
+  }, el('i', { style: `background:${spec.colour}` }), spec.label)));
 }
 
 // ── Turning it on and off ──────────────────────────────────────
@@ -271,6 +408,8 @@ async function toggle() {
     clearInterval(refresher);
     layer?.remove();
     layer = null;
+    trackLayer?.remove();
+    trackLayer?.clearLayers();
     covered = null;
     ships = [];
     return;
@@ -363,12 +502,28 @@ function buildDock() {
         }, 'Test the connection'),
       ] : []),
 
+      el('input', {
+        type: 'search', class: 'vessel-find', id: 'vesselFind',
+        placeholder: 'Name, MMSI, callsign, destination…',
+        value: search, autocomplete: 'off',
+        oninput: (e) => { search = e.target.value; draw(null); },
+      }),
+
       el('label', { class: 'vessel-check' },
         el('input', {
           type: 'checkbox', checked: showNames,
           onchange: (e) => { showNames = e.target.checked; draw(null); },
         }), 'Show names'),
+      el('label', { class: 'vessel-check' },
+        el('input', {
+          type: 'checkbox', checked: showTracks,
+          onchange: (e) => { showTracks = e.target.checked; draw(null); },
+        }), 'Show tracks'),
 
+      el('div', { class: 'vessel-following', id: 'vesselFollowing', hidden: true }),
+
+      // The key doubles as the filter: a legend you can switch off is one
+      // control instead of two saying the same thing.
       el('div', { class: 'vessel-key', id: 'vesselKey' }),
       el('div', { class: 'vessel-status', id: 'vesselNote' }, enabled ? 'Loading…' : ''),
       el('div', { class: 'vessel-where', id: 'vesselWhere' })),
