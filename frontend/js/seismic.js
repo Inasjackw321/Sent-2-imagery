@@ -17,6 +17,10 @@ import { openWindow, closeWindow, closeAll, isOpen } from './windows.js';
 let map = null;
 let quakeLayer = null;
 let stationLayer = null;
+// One canvas for the stations and one for the quakes, rather than the default
+// shared renderer: redrawing one layer then leaves the other alone.
+let stationCanvas = null;
+let quakeCanvas = null;
 
 let showQuakes = false;
 let showStations = false;
@@ -51,6 +55,10 @@ const DEPTHS = [
 
 export function initSeismic(leafletMap) {
   map = leafletMap;
+  // padding: the canvas is drawn larger than the viewport so a small pan does
+  // not expose an unpainted edge before the next redraw.
+  quakeCanvas = L.canvas({ padding: 0.4 });
+  stationCanvas = L.canvas({ padding: 0.4 });
   quakeLayer = L.layerGroup();
   stationLayer = L.layerGroup();
   buildDock();
@@ -217,6 +225,7 @@ function drawQuakes(data) {
   for (const q of data.quakes) {
     const { colour, edge } = depthBand(q.depth_km);
     L.circleMarker([q.lat, q.lon], {
+      renderer: quakeCanvas,
       radius: RADIUS_MIN + RADIUS_PER_MAG * Math.max(q.magnitude ?? 0, 0.5),
       color: edge, weight: 1, fillColor: colour, fillOpacity: 0.45, opacity: 0.9,
     }).bindPopup(() => quakePopup(q), POPUP).addTo(quakeLayer);
@@ -248,21 +257,31 @@ function quakePopup(q) {
 
 // ── Stations on the map ────────────────────────────────────────
 
+/**
+ * Draw the stations.
+ *
+ * On a canvas, not as elements. Each station used to be a marker carrying an
+ * inline SVG, which is four DOM nodes each: three thousand of them put twelve
+ * thousand nodes in the document, and every mouse move during a drag cost the
+ * browser about 600 ms of hit-testing and repositioning. Dragging the map was
+ * seven seconds of frozen main thread. The earthquakes, which were already
+ * drawn this way, cost nothing measurable at the same count.
+ *
+ * What is lost is the little waveform glyph. What is kept is everything the
+ * glyph was for: a distinct colour and outline that says "instrument, not
+ * event", a click that plots it, and a name on hover.
+ */
 function drawStations(data) {
   stationLayer.clearLayers();
   for (const s of data.stations) {
-    L.marker([s.lat, s.lon], {
-      riseOnHover: true,
-      title: `${s.network}.${s.station}`,
-      icon: L.divIcon({
-        className: 'seis-pin',
-        html: '<svg viewBox="0 0 24 24" aria-hidden="true">'
-          + '<circle cx="12" cy="12" r="9" fill="#0d1015" stroke="#7ed6ff" stroke-width="2"/>'
-          + '<path d="M4 12h3l2-4 3 8 2.5-6 1.5 2h4" fill="none" stroke="#7ed6ff"'
-          + ' stroke-width="1.6" stroke-linejoin="round"/></svg>',
-        iconSize: [24, 24], iconAnchor: [12, 12],
-      }),
-    }).on('click', () => plotStation(s)).addTo(stationLayer);
+    L.circleMarker([s.lat, s.lon], {
+      renderer: stationCanvas,
+      radius: 5, weight: 1.6,
+      color: '#7ed6ff', fillColor: '#0d1015', fillOpacity: 0.85, opacity: 0.95,
+    })
+      .bindTooltip(`${s.network}.${s.station}`, { direction: 'top', offset: [0, -6] })
+      .on('click', () => plotStation(s))
+      .addTo(stationLayer);
   }
   if (!data.count) return 'No open seismographs in view';
   return `<b>${data.count.toLocaleString()}</b> seismograph${data.count === 1 ? '' : 's'}`

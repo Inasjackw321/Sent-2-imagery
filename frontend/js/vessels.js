@@ -56,6 +56,13 @@ const SOURCES = {
 
 let map = null;
 let layer = null;
+// The canvas the ships fall back to once there are too many for arrows.
+let shipCanvas = null;
+
+// Above this many ships, arrows become canvas dots. Chosen because a few
+// hundred marker elements is where dragging the map starts to stutter, and
+// because arrows that small stop being legible at about the same density.
+const ARROW_LIMIT = 250;
 let enabled = false;
 let showNames = false;
 let covered = null;      // last box fetched, padded
@@ -74,6 +81,7 @@ let keySaved = false;
 export function initVessels(leafletMap) {
   map = leafletMap;
   map.createPane('vessels').style.zIndex = 470;
+  shipCanvas = L.canvas({ pane: 'vessels', padding: 0.4 });
   buildDock();
   map.on('moveend', debounce(() => { if (enabled) maybeRefetch(); }, 350));
 }
@@ -134,10 +142,24 @@ async function load(box) {
  * travelling; they differ in a current or a crosswind. Heading is used when
  * the ship reports one, because that is what a shape on a map is showing.
  */
-function marker(ship) {
+function marker(ship, arrows = true) {
   const spec = CATEGORIES[ship.category] ?? CATEGORIES.other;
   const moving = (ship.speed ?? 0) >= MOVING_KNOTS;
   const angle = ship.heading ?? ship.course ?? 0;
+
+  // Past a certain number, arrows stop being worth what they cost. Each one is
+  // a marker element carrying an inline SVG, and a few hundred of those turn
+  // every mouse move during a drag into hundreds of milliseconds of layout.
+  // On a canvas the same ships are free -- and at that density an 18-pixel
+  // arrow is unreadable anyway, so what is given up is a direction nobody
+  // could see for a map that moves.
+  if (!arrows) {
+    return L.circleMarker([ship.lat, ship.lon], {
+      renderer: shipCanvas, pane: 'vessels',
+      radius: moving ? 4.5 : 3.5, weight: 1,
+      color: 'rgba(0,0,0,.55)', fillColor: spec.colour, fillOpacity: 0.95,
+    }).bindPopup(() => describe(ship), { className: 'ship-popup', maxWidth: 260 });
+  }
 
   const icon = moving
     ? L.divIcon({
@@ -197,7 +219,8 @@ function describe(ship) {
 
 function draw(data) {
   layer?.remove();
-  layer = L.layerGroup(ships.map(marker), { pane: 'vessels' });
+  const arrows = ships.length <= ARROW_LIMIT;
+  layer = L.layerGroup(ships.map((ship) => marker(ship, arrows)), { pane: 'vessels' });
   layer.addTo(map);
 
   if (data && !data.covered) {
@@ -208,7 +231,10 @@ function draw(data) {
   const total = data?.count ?? shown;
   if (shown) {
     note(`${shown} vessel${shown === 1 ? '' : 's'}${total > shown ? ` of ${total}` : ''}`
-      + `${data?.demo ? ' — synthetic' : ''}${data?.cached ? ' · from the last look' : ''}`);
+      + `${data?.demo ? ' — synthetic' : ''}${data?.cached ? ' · from the last look' : ''}`
+      // Say why the arrows went away, rather than leaving it looking like a
+      // glitch the first time a busy strait fills the screen with dots.
+      + `${arrows ? '' : ' · dots, not arrows — too many to draw as headings'}`);
   } else if (data?.messages === 0) {
     // Nothing arrived at all, which is a different problem from an empty sea
     // and wants a different answer from whoever is looking at it.

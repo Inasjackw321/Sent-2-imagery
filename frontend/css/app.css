@@ -995,3 +995,102 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   color: #d7ecff; background: rgba(76, 194, 255, .16);
   border-color: rgba(76, 194, 255, .55);
 }
+
+/* ── Telegram alerts ────────────────────────────────────────── */
+
+.alert-dock { display: grid; gap: 8px; }
+.alert-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.alert-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.alert-toggle.is-on {
+  color: #ffd9d4; border-color: rgba(255,95,77,.6); background: rgba(66,22,18,.85);
+  font-weight: 600;
+}
+.alert-mark { font-size: 11px; opacity: .65; }
+.alert-toggle.is-on .alert-mark { opacity: 1; color: #ff5f4d; }
+
+.alert-body {
+  padding: 10px 11px; border-radius: 10px; font-size: 11.5px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+.alert-state { font-size: 10px; line-height: 1.5; margin-bottom: 8px; }
+.alert-state .ok { color: var(--accent-2); font-weight: 600; }
+.alert-state .warn { color: var(--warn); font-weight: 600; }
+
+.alert-form { display: grid; gap: 6px; }
+.alert-hint { margin: 0 0 2px; font-size: 9.5px; line-height: 1.45; color: var(--ink-faint); }
+.alert-form input[type=text],
+.alert-form input[type=password],
+.alert-form input[type=tel] {
+  width: 100%; padding: 6px 8px; font: inherit; font-size: 11px;
+  border-radius: 7px; background: rgba(0,0,0,.32);
+  border: 1px solid var(--line); color: var(--ink);
+}
+#tgCodeRow { display: grid; gap: 6px; }
+.alert-row { display: flex; gap: 5px; }
+.alert-go, .alert-ghost {
+  flex: 1; min-width: 0; padding: 6px 8px; cursor: pointer; font: inherit;
+  font-size: 10.5px; font-weight: 600; border-radius: 7px;
+  color: #ffd9d4; background: rgba(66,22,18,.85);
+  border: 1px solid rgba(255,95,77,.5);
+}
+.alert-ghost { color: var(--ink-dim); background: rgba(0,0,0,.3); border-color: var(--line); }
+.alert-go:hover { background: rgba(96,32,26,.9); }
+.alert-ghost:hover { color: var(--ink); border-color: #3a4a66; }
+.alert-go.is-on { background: rgba(255,95,77,.85); color: #170707; }
+.alert-go:disabled { opacity: .5; cursor: not-allowed; }
+
+/* The channel list can be long, so it scrolls inside the panel rather than
+   pushing every other dock off the bottom of the screen. */
+.alert-channels {
+  display: grid; gap: 2px; max-height: 148px; overflow-y: auto;
+  padding: 5px; border-radius: 7px; background: rgba(0,0,0,.28);
+  border: 1px solid var(--line); scrollbar-width: thin;
+}
+.alert-chan { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 10.5px; }
+.alert-chan input { accent-color: #ff5f4d; flex: 0 0 auto; }
+.alert-chan span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-count { font-size: 11px; color: var(--ink); }
+.alert-err { color: var(--danger); font-size: 10px; line-height: 1.4; }
+.alert-need { display: grid; gap: 5px; font-size: 10.5px; }
+.alert-need code {
+  padding: 4px 7px; border-radius: 6px; background: rgba(0,0,0,.4);
+  border: 1px solid var(--line); color: var(--accent); font-size: 10.5px;
+}
+.alert-note {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 9.5px; line-height: 1.45; color: var(--ink-faint);
+}
+
+/* The pin. Few enough of these to stay as elements: a mass attack is dozens,
+   not thousands, and the glyph is the whole point of them. */
+.alert-pin { background: none; border: 0; }
+.alert-pin svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 3px rgba(0,0,0,.8)); }
+/* Something from the last quarter of an hour, which is the difference between
+   news and history on a map like this. */
+.alert-pin.is-fresh svg { animation: alert-throb 1.8s ease-in-out infinite; }
+@keyframes alert-throb {
+  0%, 100% { filter: drop-shadow(0 1px 3px rgba(0,0,0,.8)); }
+  50% { filter: drop-shadow(0 0 7px rgba(255,120,90,.95)); }
+}
+/* Anyone who finds motion on a map distracting, or is bothered by it, has
+   usually already said so at the system level. */
+@media (prefers-reduced-motion: reduce) {
+  .alert-pin.is-fresh svg { animation: none; }
+}
+
+.alert-popup { max-width: 260px; }
+.alert-popup-head { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); margin-bottom: 5px; }
+.alert-unsure {
+  font-size: 8.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 4px; color: var(--warn);
+  background: rgba(255,180,84,.16); border: 1px solid rgba(255,180,84,.4);
+}
+.alert-dot { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+.alert-text { margin-bottom: 5px; color: var(--ink); font-size: 11.5px; line-height: 1.45; }
+.alert-caveat { margin-top: 4px; font-size: 9.5px; line-height: 1.45; color: var(--ink-faint); }

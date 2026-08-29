@@ -16,6 +16,7 @@ import { initRadar } from './radar.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
+import { initAlerts } from './alerts.js';
 
 let map;
 let aoiLayer = null;
@@ -188,9 +189,10 @@ export function initMap() {
   initRadar(map);
   initVessels(map);
   initSeismic(map);
+  initAlerts(map);
   initCams(map);
 
-  // Six panels in one column: opening the last one can leave its own button
+  // Seven panels in one column: opening the last one can leave its own button
   // below the fold. Bring whichever was just pressed back into view.
   $('.side-docks')?.addEventListener('click', (e) => {
     const button = e.target.closest('button');
