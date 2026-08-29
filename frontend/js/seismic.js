@@ -110,8 +110,8 @@ function buildDock() {
             onclick: () => setTraceWindow(m),
           }, m === 10 ? '10 min' : m === 60 ? '1 h' : '6 h'))),
         el('div', { class: 'seis-hint' },
-          'Click a station to plot that much of its ground motion. Only '
-          + 'stations whose recordings this data centre holds are shown.')),
+          'Click a station to plot that much of its ground motion. The '
+          + 'recording is fetched from whichever data centre holds it.')),
 
       el('div', { class: 'seis-count', id: 'seisCount' }, 'Nothing loaded yet'),
       el('div', { class: 'seis-note', id: 'seisNote' },
@@ -268,19 +268,9 @@ function drawStations(data) {
       }),
     }).on('click', () => showTrace(s)).addTo(stationLayer);
   }
-  if (!data.count) {
-    // Not the same as "no instruments here". The list is narrowed to stations
-    // whose recordings this data centre actually holds, and saying so is the
-    // difference between an explained empty map and a broken-looking one.
-    return data.checked === false
-      ? 'No open seismographs in view'
-      : 'No seismographs here with recordings held at this data centre';
-  }
+  if (!data.count) return 'No open seismographs in view';
   return `<b>${data.count.toLocaleString()}</b> seismograph${data.count === 1 ? '' : 's'}`
-    + (data.capped ? ' <span class="dim">(nearest shown)</span>' : '')
-    + (data.checked === false
-      ? '<br><span class="dim">availability unchecked — some may not plot</span>'
-      : '');
+    + (data.capped ? ' <span class="dim">(nearest shown)</span>' : '');
 }
 
 // ── The trace ──────────────────────────────────────────────────

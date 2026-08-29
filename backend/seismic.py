@@ -24,12 +24,14 @@ from __future__ import annotations
 import datetime as dt
 import io
 import math
+import re
 import threading
 import time
 
+import numpy as np
 import requests
 
-from . import config
+from . import config, miniseed
 
 
 class SeismicLookupError(RuntimeError):
@@ -40,29 +42,36 @@ class SeismicLookupError(RuntimeError):
 # the station service below takes -- one of the nicer things about the format.
 EVENTS_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
-# EarthScope (formerly IRIS) runs the FDSN data centre most open networks
-# archive to, and answers for stations far beyond its own instruments.
-STATIONS_URL = "https://service.iris.edu/fdsnws/station/1/query"
+# The station index. EarthScope's copy answers for the whole federation, which
+# is what puts instruments from every continent on the map. Two hosts because
+# the organisation is midway through renaming itself and the old one is being
+# retired service by service.
+STATION_SERVICES = [
+    "https://service.earthscope.org/fdsnws/station/1/query",
+    "https://service.iris.edu/fdsnws/station/1/query",
+]
 
-# The same data centre will plot a channel for you and hand back a PNG. This is
-# what turns a dot on a map into a seismogram without shipping a waveform
-# library to the browser.
-TRACE_URL = "https://service.iris.edu/irisws/timeseries/1/query"
-
-# And this says which of those stations it actually holds recordings for.
+# Where the recordings come from.
 #
-# The two are not the same set, which is the trap. The station service answers
-# for the federation -- it will happily describe an Albanian instrument whose
-# waveforms are archived at a European node instead. Plot that station here and
-# you get nothing back, correctly, and the map has spent your attention on a
-# pin that could never have worked. So the list is narrowed to what this data
-# centre can actually draw.
-AVAILABILITY_URL = "https://service.iris.edu/fdsnws/availability/1/query"
-
-# How far back to look when asking what has data. Telemetry from a remote
-# station can run hours behind, so a window of minutes would throw away
-# instruments that are working perfectly well.
-AVAILABILITY_HOURS = 48
+# This used to be one archive's own endpoint that drew the picture for you.
+# That was a mistake twice over: it was a single archive's extension rather
+# than a standard, and it has since been retired -- it answers 410 Gone with a
+# page of HTML. Worse, one archive was never going to be enough. The station
+# index is federated, so it describes instruments all over the world, but each
+# one's waveforms are held wherever its network archives them. A Turkish or
+# Albanian station's data has never been in Seattle.
+#
+# So: fdsnws/dataselect, which is a published standard that every one of these
+# implements, asked of each in turn until one has the recording. The reply is
+# raw miniSEED and is decoded and drawn here.
+DATA_CENTRES = [
+    ("EarthScope", "https://service.earthscope.org/fdsnws/dataselect/1/query"),
+    ("EarthScope (legacy)", "https://service.iris.edu/fdsnws/dataselect/1/query"),
+    ("ORFEUS", "https://www.orfeus-eu.org/fdsnws/dataselect/1/query"),
+    ("GEOFON", "https://geofon.gfz-potsdam.de/fdsnws/dataselect/1/query"),
+    ("INGV", "https://webservices.ingv.it/fdsnws/dataselect/1/query"),
+    ("RESIF", "https://ws.resif.fr/fdsnws/dataselect/1/query"),
+]
 
 ATTRIBUTION = {
     "events": "USGS Earthquake Hazards Program",
@@ -133,7 +142,7 @@ def _get(url: str, params: dict, *, timeout: int = 30,
     if not resp.ok:
         raise SeismicLookupError(
             f"{url.split('/')[2]} answered {resp.status_code}: "
-            f"{resp.text.strip()[:200] or resp.reason}"
+            f"{_short(resp.text) or resp.reason}"
         )
     return resp
 
@@ -219,7 +228,7 @@ def stations(bbox: tuple[float, float, float, float]) -> dict:
         return hit
 
     now = dt.datetime.now(dt.timezone.utc)
-    resp = _get(STATIONS_URL, {
+    params = {
         # Text is a fraction of the size of StationXML and carries everything
         # needed to put a dot on a map and ask for its trace afterwards.
         "format": "text", "level": "channel",
@@ -231,60 +240,16 @@ def stations(bbox: tuple[float, float, float, float]) -> dict:
         "endafter": now.strftime("%Y-%m-%dT%H:%M:%S"),
         "includerestricted": "false",
         "nodata": "204",
-    })
-    found = _parse_channels(resp.text if resp.content else "")
-    kept, checked = _with_recordings(found["stations"])
-    found.update(
-        stations=kept,
-        count=len(kept),
-        capped=found["capped"] or len(kept) == MAX_STATIONS,
-        # Whether the list was narrowed to what can actually be plotted, or
-        # whether the check itself failed and this is the unfiltered set.
-        checked=checked,
-    )
-    return _keep(key, found)
-
-
-def _with_recordings(entries: list[dict]) -> tuple[list[dict], bool]:
-    """Keep the stations this data centre holds recent recordings for.
-
-    Returns the survivors and whether the check actually ran. If the
-    availability service cannot be reached, everything is kept rather than
-    nothing: an unverified pin that might not plot is a smaller failure than an
-    empty map, and the caller is told which of the two it got.
-    """
-    if not entries:
-        return entries, True
-
-    end = dt.datetime.now(dt.timezone.utc)
-    start = end - dt.timedelta(hours=AVAILABILITY_HOURS)
-    # The POST form takes one selection line per channel, which is the only way
-    # to ask about a specific set of stations: the query form would take the
-    # cross product of the networks and the station names and ask about
-    # thousands of pairs that do not exist.
-    lines = ["format=text", "mergequality=true", "mergesamplerate=true"]
-    for entry in entries:
-        lines.append(
-            f"{entry['network']} {entry['station']} {entry['loc'] or '--'} "
-            f"{entry['channel']} {start:%Y-%m-%dT%H:%M:%S} {end:%Y-%m-%dT%H:%M:%S}"
-        )
-    try:
-        resp = _session.post(AVAILABILITY_URL, data="\n".join(lines) + "\n", timeout=45)
-    except requests.RequestException:
-        return entries, False
-    if resp.status_code == 204:
-        return [], True
-    if not resp.ok:
-        return entries, False
-
-    have = set()
-    for line in resp.text.splitlines():
-        if not line or line.startswith("#"):
+    }
+    last = None
+    for url in STATION_SERVICES:
+        try:
+            resp = _get(url, params)
+        except SeismicLookupError as exc:
+            last = exc
             continue
-        parts = line.split()
-        if len(parts) >= 2:
-            have.add((parts[0], parts[1]))
-    return [e for e in entries if (e["network"], e["station"]) in have], True
+        return _keep(key, _parse_channels(resp.text if resp.content else ""))
+    raise last or SeismicLookupError("no station service answered")
 
 
 def _parse_channels(text: str) -> dict:
@@ -346,9 +311,9 @@ def _rank(channel: str) -> int:
 def trace(network: str, station: str, channel: str, loc: str = "", minutes: int = 60) -> bytes:
     """A plotted seismogram: the last `minutes` of ground motion, as a PNG.
 
-    Asking the data centre to draw it rather than shipping the samples is the
-    difference between a 30 kB image and a waveform library in the browser, and
-    the plot it returns is the one seismologists look at.
+    The data centres are tried in turn, because which one holds a given
+    station's recordings depends on the network that runs it and there is no
+    way to know from the metadata alone. The first one with data wins.
     """
     end = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=TRACE_LAG_MINUTES)
     start = end - dt.timedelta(minutes=minutes)
@@ -356,31 +321,107 @@ def trace(network: str, station: str, channel: str, loc: str = "", minutes: int 
     # The location code in the metadata and the one the archive filed the
     # recording under do not always agree, and a mismatch returns nothing at
     # all rather than an explanation. So the exact code is tried first and any
-    # code second, which costs one extra request only when the first fails.
-    attempts = [loc or "--"]
-    if attempts[0] != "*":
-        attempts.append("*")
+    # code second.
+    locations = [loc or "--"]
+    if locations[0] != "*":
+        locations.append("*")
 
-    for location in attempts:
-        resp = _get(TRACE_URL, {
-            "net": network, "sta": station, "cha": channel,
-            "loc": location,
-            "starttime": start.strftime("%Y-%m-%dT%H:%M:%S"),
-            "endtime": end.strftime("%Y-%m-%dT%H:%M:%S"),
-            # Take out the long-period drift that would otherwise be most of
-            # what you see.
-            "demean": "true", "output": "plot",
-        }, timeout=TRACE_TIMEOUT, empty=(204, 404))
-        if resp.status_code not in (204, 404) and resp.content:
-            return resp.content
+    troubles: list[str] = []
+    for label, url in DATA_CENTRES:
+        for location in locations:
+            try:
+                resp = _get(url, {
+                    "net": network, "sta": station, "cha": channel, "loc": location,
+                    "starttime": start.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "endtime": end.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "nodata": "204",
+                }, timeout=TRACE_TIMEOUT, empty=(204, 404))
+            except SeismicLookupError as exc:
+                troubles.append(f"{label}: {_short(str(exc))}")
+                break
+            if resp.status_code in (204, 404) or not resp.content:
+                continue
+            try:
+                reading = miniseed.samples(resp.content)
+            except miniseed.MiniSeedError as exc:
+                troubles.append(f"{label}: {exc}")
+                continue
+            return plot(reading, f"{network}.{station}.{channel}", label, minutes)
 
+    detail = f" Tried: {'; '.join(troubles)}." if troubles else ""
     raise SeismicLookupError(
-        f"{TRACE_URL.split('/')[2]} holds no recording for {network}.{station} "
-        f"{channel} over the last {minutes} minutes. Either the station is "
-        "offline or running behind, or its waveforms are archived at a "
-        "different data centre and only its description is held here. "
-        "A longer window sometimes finds it."
+        f"No data centre has a recording of {network}.{station} {channel} for "
+        f"the last {minutes} minutes. Either the station is offline or its "
+        f"telemetry is running behind.{detail} A longer window often finds it."
     )
+
+
+def _short(message: str, limit: int = 120) -> str:
+    """One line of an error, with any HTML page taken out of it.
+
+    A retired endpoint answers with a whole document, and pasting that into the
+    interface buries the one useful sentence in markup.
+    """
+    text = re.sub(r"<[^>]*>", " ", message)
+    text = " ".join(text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+# ── Drawing it ─────────────────────────────────────────────────
+
+PLOT_SIZE = (760, 250)
+
+
+def plot(reading: dict, title: str, source: str, minutes: int) -> bytes:
+    """Draw a seismogram.
+
+    Down-sampled to the width of the plot by taking the highest and lowest
+    sample in each column rather than every nth one. Picking every nth sample
+    would drop the peaks -- which are the entire point of a seismogram -- and
+    quietly turn an earthquake into a quiet afternoon.
+    """
+    from PIL import Image, ImageDraw
+
+    values = np.asarray(reading["samples"], dtype="float64")
+    values = values[np.isfinite(values)]
+    if not values.size:
+        raise SeismicLookupError("the recording held no usable samples")
+    values = values - np.median(values)
+
+    width, height = PLOT_SIZE
+    middle = height // 2
+    image = Image.new("RGB", (width, height), (12, 15, 20))
+    draw = ImageDraw.Draw(image)
+
+    plot_top, plot_bottom = 26, height - 26
+    span = (plot_bottom - plot_top) / 2
+
+    for x in range(0, width, width // 6):
+        draw.line([(x, plot_top), (x, plot_bottom)], fill=(28, 34, 45))
+    draw.line([(0, middle), (width, middle)], fill=(40, 50, 66))
+
+    # Scaled to the strongest excursion, ignoring the very largest few samples
+    # so that one spike of instrument noise does not flatten the whole trace.
+    peak = float(np.percentile(np.abs(values), 99.9)) or float(np.abs(values).max()) or 1.0
+
+    columns = np.array_split(values, min(width, values.size))
+    for x, column in enumerate(columns):
+        low, high = float(column.min()), float(column.max())
+        y1 = middle - max(-1.0, min(1.0, high / peak)) * span
+        y2 = middle - max(-1.0, min(1.0, low / peak)) * span
+        draw.line([(x, y1), (x, y2)], fill=(126, 214, 255))
+
+    rate = reading.get("rate") or 1.0
+    seconds = values.size / rate
+    draw.text((10, 8), f"{title}   {rate:g} Hz", fill=(150, 165, 185))
+    draw.text((10, height - 18),
+              f"{seconds / 60:.0f} min of {minutes} asked for   -   {source}",
+              fill=(120, 134, 152))
+    draw.text((width - 92, height - 18), "counts, demeaned", fill=(120, 134, 152))
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 # ── Synthetic seismology (DEMO_MODE) ───────────────────────────
@@ -450,7 +491,7 @@ def demo_stations(bbox: tuple[float, float, float, float]) -> dict:
             "loc": "00", "channel": "BHZ",
         })
     return {
-        "stations": out, "count": len(out), "capped": False, "checked": True, "demo": True,
+        "stations": out, "count": len(out), "capped": False, "demo": True,
         "source": "Synthetic", "attribution": "Synthetic demo data",
     }
 
@@ -459,35 +500,41 @@ def demo_trace(network: str, station: str, channel: str, minutes: int = 60) -> b
     """A drawn seismogram that looks like one, without pretending to be real.
 
     Background noise with one arrival in it: a sharp onset that decays away,
-    which is the shape a distant earthquake actually makes.
+    which is the shape a distant earthquake actually makes. Drawn through the
+    same plotting code as a real recording, so what is on screen offline is
+    laid out exactly like what arrives when the services are reachable.
     """
     from PIL import Image, ImageDraw
 
-    width, height, mid = 720, 240, 120
-    image = Image.new("RGB", (width, height), (12, 15, 20))
-    draw = ImageDraw.Draw(image)
-
-    for x in range(0, width, 60):
-        draw.line([(x, 24), (x, height - 24)], fill=(28, 34, 45))
-    draw.line([(0, mid), (width, mid)], fill=(40, 50, 66))
-
-    onset = int(width * 0.42)
-    # Deterministic wiggle: the same station always draws the same trace, so a
-    # redraw does not look like new data arriving.
+    rate = 20.0
+    count = int(minutes * 60 * rate)
+    # Deterministic: the same station always draws the same trace, so a redraw
+    # does not look like new data arriving.
     seed = sum(ord(c) for c in f"{network}{station}{channel}")
-    points = []
-    for x in range(width):
-        phase = x * 0.35 + seed
-        noise = 2.5 * math.sin(phase) + 1.6 * math.sin(phase * 2.7 + 1) + 1.1 * math.sin(phase * 0.31)
-        if x >= onset:
-            decay = math.exp(-(x - onset) / (width * 0.16))
-            noise += 46 * decay * math.sin((x - onset) * 0.55 + seed * 0.1)
-        points.append((x, mid - noise))
-    draw.line(points, fill=(126, 214, 255), width=1)
+    t = np.arange(count) / rate
+    ground = (
+        220 * np.sin(t * 1.7 + seed)
+        + 140 * np.sin(t * 4.3 + seed * 0.7)
+        + 90 * np.sin(t * 0.41)
+    )
+    onset = int(count * 0.42)
+    arrival = np.zeros(count)
+    after = np.arange(count - onset)
+    arrival[onset:] = (
+        4200 * np.exp(-after / (count * 0.06)) * np.sin(after * 0.9 + seed * 0.1)
+    )
 
-    draw.text((10, 8), f"{network}.{station}.{channel}  -  last {minutes} min", fill=(150, 165, 185))
-    draw.text((10, height - 18), "SYNTHETIC - demo mode, not a real recording", fill=(255, 170, 90))
+    png = plot(
+        {"samples": ground + arrival, "rate": rate, "start": None, "channel": channel},
+        f"{network}.{station}.{channel}", "Synthetic demo data", minutes,
+    )
 
+    # Say so on the picture itself. A seismogram is exactly the kind of image
+    # that gets screenshotted away from the app that made it.
+    image = Image.open(io.BytesIO(png)).convert("RGB")
+    ImageDraw.Draw(image).text(
+        (10, image.height - 32), "SYNTHETIC - demo mode, not a real recording",
+        fill=(255, 170, 90))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()

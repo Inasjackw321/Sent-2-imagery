@@ -69,17 +69,31 @@ const BASEMAPS = [
       // the brightest thing on screen instead of competing with the backdrop.
       className: 'tiles-imagery',
     },
-    // Names and borders, over the imagery rather than under it.
-    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    // No label layer. Esri's is the one that was captioning cities with names
+    // decades out of date -- Kiev, Kishinev -- and there is no keyless
+    // alternative to draw over imagery. Imagery with no names beats imagery
+    // with wrong ones, and every other basemap here carries correct ones.
   },
   {
-    key: 'terrain', label: 'Terrain',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
+    // Replaces a "Terrain" layer that did not work. It was Esri's hillshade,
+    // which is relief drawn dark-on-white for a white page; inverted to suit a
+    // dark interface, everything flat -- which is most of the world -- came out
+    // black, so the map was a black rectangle with borders on it. OpenTopoMap
+    // is a real topographic map with contours and its own correct labels.
+    key: 'topo', label: 'Topographic',
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
     options: {
-      maxNativeZoom: 16, maxZoom: 19, attribution: 'Esri, USGS, NOAA',
-      className: 'tiles-terrain',
+      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 19,
+      attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)',
     },
-    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+  },
+  {
+    key: 'humanitarian', label: 'Humanitarian',
+    url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    options: {
+      subdomains: 'abc', maxNativeZoom: 19, maxZoom: 19,
+      attribution: '© OpenStreetMap contributors · Humanitarian OSM Team',
+    },
   },
   {
     key: 'dark', label: 'Dark',
@@ -91,7 +105,6 @@ const BASEMAPS = [
       // a background rather than as the subject.
       className: 'tiles-dark',
     },
-    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
   },
   {
     key: 'ocean', label: 'Ocean',
@@ -126,21 +139,12 @@ function buildBasemaps() {
   const named = {};
 
   for (const spec of BASEMAPS) {
+    // Every basemap here is a single layer: the place names are drawn into
+    // the tiles by whoever made them, rather than stacked on afterwards from
+    // a separate gazetteer that can disagree with the map underneath.
     const layer = L.tileLayer(spec.url, spec.options);
-    if (spec.reference) {
-      // Base and labels move together, so they are one entry in the control.
-      // The base's className is deliberately not passed on: it exists to knock
-      // the backdrop back, and dimming the place names with it would defeat
-      // the reason for having them.
-      const { className, ...shared } = spec.options;
-      const labels = L.tileLayer(spec.reference, { ...shared, pane: 'shadowPane' });
-      const group = L.layerGroup([layer, labels]);
-      basemapLayers.set(spec.key, group);
-      named[spec.label] = group;
-    } else {
-      basemapLayers.set(spec.key, layer);
-      named[spec.label] = layer;
-    }
+    basemapLayers.set(spec.key, layer);
+    named[spec.label] = layer;
 
     let failures = 0;
     layer.on('tileerror', () => {

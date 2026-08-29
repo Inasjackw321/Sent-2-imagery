@@ -269,9 +269,6 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
    overlays, pins and drawn shapes have to stay the brightest things on the
    map, and a tile service tuned for a white page is never that by default. */
 .tiles-imagery { filter: brightness(.78) saturate(.85) contrast(1.05); }
-/* Hillshade arrives as near-white relief on white. Inverted it becomes a dark
-   relief map, which is what the rest of the interface expects. */
-.tiles-terrain { filter: invert(1) brightness(.42) contrast(1.3) sepia(.35) hue-rotate(160deg); }
 /* Esri's "dark" canvas is really a mid grey -- the flat, washed-out look this
    replaces. Deepened until it reads as background. */
 .tiles-dark { filter: brightness(.6) contrast(1.25) saturate(.9); }
