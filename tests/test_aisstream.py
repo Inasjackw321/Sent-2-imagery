@@ -87,11 +87,13 @@ def test_ships_survive_a_server_that_hangs_up_rudely():
     assert len(outcome["ok"]["vessels"]) == 5
 
 
-def test_a_server_that_says_nothing_and_leaves_is_reported_as_a_key_problem():
+def test_a_server_that_says_nothing_and_leaves_is_explained():
     """Accepted, then dropped, with nothing sent.
 
-    That is what aisstream does with a key it does not like, and "no vessels
-    here" would be the wrong thing to tell someone about it.
+    "No vessels here" would be the wrong thing to say about it, and so would
+    "the key was rejected" on its own -- an abrupt drop with no close frame is
+    equally what a proxy does to a connection it let through the handshake.
+    Both possibilities get named.
     """
     async def handler(socket):
         await socket.recv()
@@ -99,7 +101,20 @@ def test_a_server_that_says_nothing_and_leaves_is_reported_as_a_key_problem():
 
     outcome = _serve(handler)
     assert "ok" not in outcome
-    assert "key was not accepted" in outcome["err"]
+    said = outcome["err"].lower()
+    assert "key" in said
+    assert any(word in said for word in ("proxy", "vpn", "firewall"))
+
+
+def test_a_server_that_closes_politely_with_a_reason_quotes_it():
+    """When there is a close frame with a reason, that is the whole answer."""
+    async def handler(socket):
+        await socket.recv()
+        await socket.close(code=1008, reason="Invalid API key")
+
+    outcome = _serve(handler)
+    assert "ok" not in outcome
+    assert "Invalid API key" in outcome["err"]
 
 
 def test_an_error_is_not_wrapped_twice():
@@ -152,3 +167,65 @@ def test_the_five_minute_floor_holds_across_calls():
     assert "err" not in outcome, outcome.get("err")
     assert opened["count"] == 1, "the second ask opened another connection"
     assert outcome["second"]["cached"] is True
+
+
+def test_a_close_frame_with_a_reason_is_repeated_verbatim():
+    """When the server says why, nothing here can improve on it.
+
+    The previous message asserted "the key was not accepted" for every way a
+    connection could end with nothing in it, which is a guess -- and the wrong
+    one when a proxy is cutting the connection after letting the handshake
+    through.
+    """
+    from backend.aisstream import _why_nothing
+
+    said = _why_nothing(0.3, {"code": 1008, "reason": "Invalid API key", "clean": True}, "x")
+    assert "Invalid API key" in said
+    assert "usually means" not in said
+
+
+def test_a_clean_close_with_no_reason_still_points_at_the_key():
+    from backend.aisstream import _why_nothing
+
+    said = _why_nothing(0.4, {"code": 1000, "reason": None, "clean": True}, "x")
+    assert "1000" in said
+    assert "key" in said.lower()
+
+
+def test_an_abrupt_drop_names_both_possibilities():
+    """No close frame at all is not how a server refuses a key.
+
+    It is how a connection gets cut by something in the middle, and saying so
+    is the difference between someone checking their key forever and someone
+    checking their proxy.
+    """
+    from backend.aisstream import _why_nothing
+
+    said = _why_nothing(0.2, None, "no close frame received or sent")
+    assert "key" in said.lower()
+    assert any(word in said.lower() for word in ("proxy", "vpn", "firewall"))
+
+
+def test_the_subscription_carries_no_optional_filters():
+    """An optional field is a suspect that costs nothing to drop.
+
+    A subscription the server dislikes is answered by hanging up rather than
+    by saying so, and everything unwanted is ignored on arrival anyway.
+    """
+    import inspect
+
+    from backend import aisstream
+
+    source = inspect.getsource(aisstream._collect)
+    assert '"BoundingBoxes"' in source
+    assert '"FilterMessageTypes"' not in source.split("# No FilterMessageTypes")[0]
+
+
+def test_the_connection_test_reports_a_failure_rather_than_raising():
+    """The diagnostic must always answer, including when nothing works."""
+    from backend import aisstream
+
+    aisstream.set_key(None)
+    out = aisstream.test_key()
+    assert out["ok"] is False
+    assert out["stage"] == "key"

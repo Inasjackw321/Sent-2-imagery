@@ -133,7 +133,10 @@ async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[di
         # rest of this app. Getting it backwards returns nothing rather than
         # an error, so it is worth being explicit.
         "BoundingBoxes": [[[south, west], [north, east]]],
-        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+        # No FilterMessageTypes. It is optional, and a subscription the server
+        # dislikes is answered by hanging up rather than by saying so, which
+        # makes every optional field a suspect that costs nothing to drop.
+        # Everything unwanted is ignored on arrival anyway.
     }
 
     seen: dict[int, dict] = {}
@@ -149,6 +152,7 @@ async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[di
 
     opened = time.monotonic()
     trouble: str | None = None
+    closed: dict | None = None
     try:
         await socket.send(json.dumps(subscribe))
         deadline = opened + LISTEN_SECONDS
@@ -169,8 +173,15 @@ async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[di
                 _absorb(json.loads(text), seen, static)
     except ws_errors.ConnectionClosed as exc:
         # The far end hung up. If it had already sent something that is simply
-        # the end of the window; if it had not, it is worth saying so.
+        # the end of the window; if it had not, what it said on the way out is
+        # the only evidence there is, so it is kept rather than summarised.
         trouble = str(exc)
+        frame = exc.rcvd or exc.sent
+        closed = {
+            "code": getattr(frame, "code", None),
+            "reason": (getattr(frame, "reason", "") or "").strip() or None,
+            "clean": exc.rcvd is not None,
+        }
     except (OSError, ws_errors.WebSocketException) as exc:
         if not seen:
             raise StreamError(f"aisstream could not be reached: {exc}") from exc
@@ -184,16 +195,78 @@ async def _collect(key: str, box: tuple[float, float, float, float]) -> tuple[di
     if not seen and not messages:
         held = time.monotonic() - opened
         if held < LISTEN_SECONDS - 1.0:
-            raise StreamError(
-                "aisstream accepted the connection and then closed it without "
-                "sending anything, which usually means the key was not "
-                f"accepted{f' ({trouble})' if trouble else ''}.")
+            raise StreamError(_why_nothing(held, closed, trouble))
 
     # Names arrive on a different message type to positions, and often later.
     for mmsi, extra in static.items():
         if mmsi in seen:
             seen[mmsi].update({k: v for k, v in extra.items() if v is not None})
     return seen, messages
+
+
+def _why_nothing(held: float, closed: dict | None, trouble: str | None) -> str:
+    """Say what happened, without pretending to know more than that.
+
+    The handshake succeeded and then the connection ended with nothing sent.
+    Which of the possible reasons it was depends on *how* it ended, and an
+    earlier version asserted "the key was not accepted" for all of them --
+    which is a guess, and the wrong one if a proxy is quietly cutting the
+    connection after letting the HTTP upgrade through.
+    """
+    when = f"after {held:.1f}s"
+    if closed and closed.get("reason"):
+        # The server said why. Nothing here can improve on that.
+        return (f"aisstream closed the connection {when}: {closed['reason']} "
+                f"(code {closed.get('code')})")
+    if closed and closed.get("clean"):
+        return (f"aisstream closed the connection {when} with code "
+                f"{closed.get('code')} and no reason given. A rejected API key "
+                "is the usual cause.")
+    return (
+        f"The connection to aisstream was accepted and then dropped {when} "
+        "without a close frame or a single message. That is either an API key "
+        "the service would not take, or something between this machine and "
+        "aisstream cutting the connection after letting the handshake through "
+        "-- a proxy, a VPN or a firewall will do exactly this."
+        + (f" ({trouble})" if trouble else ""))
+
+
+def test_key() -> dict:
+    """Connect once and report exactly what happened, whatever that was.
+
+    Deliberately outside the five-minute floor and outside the cache: this is
+    the button someone presses when the map is empty and they want to know
+    which of the several possible reasons it is. It uses a box over the
+    English Channel, which is busy at every hour, so "no ships" here means
+    something other than an empty sea.
+    """
+    if not has_key():
+        return {"ok": False, "stage": "key", "detail": "No API key has been set."}
+
+    busy = (0.5, 50.0, 2.5, 51.5)          # Dover Strait
+    with _lock:
+        key = _key
+    started = time.monotonic()
+    try:
+        found, messages = asyncio.run(_collect(key, busy))
+    except StreamError as exc:
+        return {"ok": False, "stage": "stream", "detail": str(exc),
+                "seconds": round(time.monotonic() - started, 1)}
+    except RuntimeError as exc:
+        return {"ok": False, "stage": "runtime", "detail": str(exc)}
+
+    return {
+        "ok": bool(found),
+        "stage": "done",
+        "messages": messages,
+        "vessels": len(found),
+        "seconds": round(time.monotonic() - started, 1),
+        "detail": (f"Connected and heard {messages} messages from "
+                   f"{len(found)} vessels over the Dover Strait."
+                   if found else
+                   f"Connected and stayed open, but only {messages} messages "
+                   "arrived and none carried a position."),
+    }
 
 
 def _absorb(message: dict, seen: dict, static: dict) -> None:

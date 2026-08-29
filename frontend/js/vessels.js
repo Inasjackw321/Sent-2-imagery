@@ -321,6 +321,13 @@ function buildDock() {
             href: 'https://aisstream.io/', target: '_blank', rel: 'noopener noreferrer',
           }, 'Get a free key'),
           ' · kept in memory only'),
+        // When the map is empty, guessing stops being useful. This connects
+        // once over the Dover Strait -- busy at every hour -- and says what
+        // actually happened.
+        el('button', {
+          class: 'vessel-test', id: 'aisTest', type: 'button',
+          onclick: runTest,
+        }, 'Test the connection'),
       ] : []),
 
       el('label', { class: 'vessel-check' },
@@ -336,6 +343,20 @@ function buildDock() {
   // The button starts out with nothing to save, and should say so.
   paintKeyButton();
   paintDock();
+}
+
+async function runTest() {
+  const button = $('#aisTest');
+  if (button) { button.disabled = true; button.textContent = 'Testing…'; }
+  note('Connecting over the Dover Strait…');
+  try {
+    const out = await api.aisTest();
+    note(out.detail, out.ok ? '' : 'bad');
+  } catch (err) {
+    note(err.message, 'bad');
+  } finally {
+    if (button) { button.disabled = false; button.textContent = 'Test the connection'; }
+  }
 }
 
 /** The save button only offers itself when there is something to save. */

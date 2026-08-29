@@ -34,6 +34,7 @@ export const api = {
       east: east.toFixed(4), north: north.toFixed(4), source,
     })}`, { method: 'GET' }),
   aisKey: (key) => request('/api/vessels/key', { body: { key } }),
+  aisTest: () => request('/api/vessels/test', { body: {} }),
   probe: (body) => request('/api/probe', { body }),
   render: (body) => request('/api/render', { body }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),

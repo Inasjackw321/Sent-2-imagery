@@ -206,6 +206,16 @@ def ais_key(body: dict = Body(...)) -> dict:
     return {"set": ok, "min_interval": aisstream.MIN_INTERVAL_SECONDS}
 
 
+@app.post("/api/vessels/test")
+def ais_test() -> dict:
+    """Try the key once, over busy water, and say exactly what happened.
+
+    Outside the five-minute floor on purpose: it is the button someone
+    presses when the map is empty and guessing has stopped being useful.
+    """
+    return aisstream.test_key()
+
+
 @app.get("/api/geocode")
 def geocode(q: str = Query(..., min_length=2)) -> dict:
     try:
