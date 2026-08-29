@@ -63,6 +63,28 @@ export const CAMS = [
     host: 'rtsp.me',
   },
   {
+    id: 'moscow-progress-city',
+    name: 'Progress City',
+    place: 'Moscow, Russia',
+    lat: 55.7558, lon: 37.6173,
+    precision: 'city',
+    src: 'https://rtsp.me/embed/2EeYnYti/',
+    host: 'rtsp.me',
+  },
+  {
+    id: 'moscow-earthcam',
+    name: 'Moscow HD',
+    place: 'Moscow, Russia',
+    lat: 55.7520, lon: 37.6175,
+    precision: 'city',
+    // EarthCam serves a page, not a player, and refuses to be framed by
+    // anyone else. Embedding it would give a permanently blank panel, so this
+    // one opens on its own site instead of pretending to play here.
+    src: 'https://www.earthcam.com/world/russia/moscow/?cam=moscow_hd',
+    host: 'earthcam.com',
+    offsite: true,
+  },
+  {
     id: 'novi-petrivtsi',
     name: 'Novi Petrivtsi 559',
     place: 'Novi Petrivtsi, Ukraine',
@@ -156,6 +178,20 @@ function watch(id) {
     return;
   }
 
+  if (cam.offsite) {
+    // No iframe at all: this host refuses to be framed, so an embed here would
+    // be a panel that is blank for ever with nothing to explain itself.
+    frame.append(el('div', { class: 'cam-wait' },
+      el('span', {}, `${cam.host} does not allow embedding`),
+      el('small', {}, 'It plays on its own site rather than in here.'),
+      el('a', {
+        class: 'cam-go', href: cam.src, target: '_blank', rel: 'noopener noreferrer',
+      }, `Watch on ${cam.host} ↗`)));
+    describe(cam);
+    reveal(cam);
+    return;
+  }
+
   // Covers the frame until the player answers. It has to sit on top rather
   // than behind: an iframe paints its own background, including the browser's
   // error page, so anything underneath is never seen.
@@ -176,14 +212,24 @@ function watch(id) {
   player.addEventListener('load', () => waiting.remove(), { once: true });
   frame.append(player, waiting);
 
+  describe(cam);
+  reveal(cam);
+}
+
+/** Fill in the bar and the footer for whichever camera is open. */
+function describe(cam) {
   $('#camTitle').textContent = cam.name;
   $('#camWhere').textContent = cam.place;
   $('#camOut').href = cam.src;
   $('#camFoot').textContent =
-    `Streamed by ${cam.host}. Pinned to the ${cam.precision} — the player carries `
-    + 'no coordinates, so the marker is the place, not the lens.';
-  viewer.hidden = false;
+    `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}. Pinned to the `
+    + `${cam.precision} — the player carries no coordinates, so the marker is `
+    + 'the place, not the lens.';
+}
 
+/** Show the panel, and bring the camera into view if it is off screen. */
+function reveal(cam) {
+  $('#camViewer').hidden = false;
   if (!map.getBounds().contains([cam.lat, cam.lon])) {
     map.flyTo([cam.lat, cam.lon], Math.max(map.getZoom(), 11), { duration: 0.8 });
   }
@@ -216,10 +262,12 @@ function buildDock() {
         ...CAMS.map((cam) => el('button', {
           class: 'cam-item', dataset: { cam: cam.id },
           onclick: () => watch(watching?.id === cam.id ? null : cam.id),
-        }, el('b', {}, cam.name), el('span', {}, cam.place)))),
+        }, el('b', {}, cam.name, cam.offsite ? el('i', { class: 'cam-away' }, '↗') : null),
+           el('span', {}, cam.place)))),
       el('div', { class: 'cam-note' },
         `${CAMS.length} public cameras, played from their own hosts. `
-        + 'Pins are town-level: an embedded player carries no coordinates.')),
+        + 'Pins are town-level: an embedded player carries no coordinates. '
+        + '↗ marks one that only plays on its own site.')),
   );
   paintDock();
 }

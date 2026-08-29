@@ -14,7 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import aisstream, composite, config, fires, passes, service, stac, version, vessels
+from . import (
+    aisstream, composite, config, fires, passes, seismic, service, stac, version, vessels,
+)
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
 
@@ -79,6 +81,12 @@ def get_config() -> dict[str, Any]:
             "sensors": {k: v["label"] for k, v in fires.SENSORS.items()},
             "attribution": "NASA FIRMS",
             "keyed": bool(fires.MAP_KEY),
+        },
+        "seismic": {
+            "windows": {str(k): v for k, v in seismic.WINDOWS.items()},
+            "trace_minutes": {str(k): v for k, v in seismic.TRACE_MINUTES.items()},
+            "events": seismic.ATTRIBUTION["events"],
+            "stations": seismic.ATTRIBUTION["stations"],
         },
         "max_size": config.MAX_SIZE,
         "max_superres": config.MAX_SUPERRES,
@@ -193,6 +201,71 @@ def ships(
         return vessels.vessels_in(box)
     except vessels.VesselLookupError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/quakes")
+def earthquakes(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    hours: int = Query(168, ge=1, le=720),
+    min_magnitude: float = Query(2.5, ge=-1.0, le=10.0),
+) -> dict:
+    """Every earthquake the USGS has located inside a rectangle."""
+    box = (west, south, east, north)
+    if config.DEMO_MODE:
+        return seismic.demo_quakes(box, hours=hours, min_magnitude=min_magnitude)
+    try:
+        return seismic.quakes(box, hours=hours, min_magnitude=min_magnitude)
+    except seismic.SeismicLookupError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/seismographs")
+def seismographs(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+) -> dict:
+    """Open seismograph stations in a rectangle, still recording today."""
+    box = (west, south, east, north)
+    if config.DEMO_MODE:
+        return seismic.demo_stations(box)
+    try:
+        return seismic.stations(box)
+    except seismic.SeismicLookupError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/seismographs/trace.png")
+def seismograph_trace(
+    network: str = Query(..., min_length=1, max_length=8),
+    station: str = Query(..., min_length=1, max_length=8),
+    channel: str = Query("BHZ", min_length=2, max_length=4),
+    loc: str = Query("", max_length=2),
+    minutes: int = Query(60, ge=1, le=1440),
+) -> Response:
+    """The last few minutes of ground motion at one station, plotted.
+
+    Proxied rather than linked so a station with nothing to give says so in
+    words, instead of the browser showing a broken image and leaving the
+    reader to guess whether the instrument or the app is at fault.
+    """
+    if config.DEMO_MODE:
+        png = seismic.demo_trace(network, station, channel, minutes=minutes)
+    else:
+        try:
+            png = seismic.trace(network, station, channel, loc=loc, minutes=minutes)
+        except seismic.SeismicLookupError as exc:
+            raise _fail(exc)
+    return Response(
+        content=png, media_type="image/png",
+        # The window ends a couple of minutes ago and moves on, so a cached
+        # copy would quietly stop being live.
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/vessels/key")

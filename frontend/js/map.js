@@ -15,6 +15,7 @@ import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
+import { initSeismic } from './seismic.js';
 
 let map;
 let aoiLayer = null;
@@ -46,18 +47,44 @@ const HINTS = {
 // nothing failed, it just went wrong in public. Everything here is keyless,
 // and if one of them goes the same way the next in the list takes over rather
 // than leaving a watermarked map on screen.
+// The default is imagery rather than a grey canvas. The grey one was flat and
+// washed out, and it stopped drawing detail at zoom 16, so leaning in gave you
+// a blur; more to the point, this is an app for looking at the ground, and a
+// backdrop that shows the ground tells you what a scene is sitting on.
 const BASEMAPS = [
-  {
-    key: 'dark', label: 'Dark',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-    options: { maxNativeZoom: 16, maxZoom: 19, attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors' },
-    // Place names, drawn over the imagery rather than under it.
-    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
-  },
   {
     key: 'satellite', label: 'Satellite',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    options: { maxNativeZoom: 19, maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' },
+    options: {
+      maxNativeZoom: 19, maxZoom: 19,
+      attribution: 'Esri, Maxar, Earthstar Geographics',
+      // Taken down a little so the app's own overlays, markers and pins stay
+      // the brightest thing on screen instead of competing with the backdrop.
+      className: 'tiles-imagery',
+    },
+    // Names and borders, over the imagery rather than under it.
+    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+  },
+  {
+    key: 'terrain', label: 'Terrain',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
+    options: {
+      maxNativeZoom: 16, maxZoom: 19, attribution: 'Esri, USGS, NOAA',
+      className: 'tiles-terrain',
+    },
+    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+  },
+  {
+    key: 'dark', label: 'Dark',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    options: {
+      maxNativeZoom: 16, maxZoom: 19,
+      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+      // Esri's dark canvas is really a mid grey. Deepened here so it reads as
+      // a background rather than as the subject.
+      className: 'tiles-dark',
+    },
+    reference: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
   },
   {
     key: 'ocean', label: 'Ocean',
@@ -70,6 +97,9 @@ const BASEMAPS = [
     options: { maxZoom: 19, attribution: '© OpenStreetMap contributors' },
   },
 ];
+
+// Which one is on screen at the start.
+const DEFAULT_BASEMAP = 'satellite';
 
 // How many tiles have to fail before a basemap is judged unusable. One is
 // noise -- a tile at the edge of the world, a dropped connection. A dozen in a
@@ -97,7 +127,11 @@ function buildBasemaps() {
     const layer = L.tileLayer(spec.url, spec.options);
     if (spec.reference) {
       // Base and labels move together, so they are one entry in the control.
-      const labels = L.tileLayer(spec.reference, { ...spec.options, pane: 'shadowPane' });
+      // The base's className is deliberately not passed on: it exists to knock
+      // the backdrop back, and dimming the place names with it would defeat
+      // the reason for having them.
+      const { className, ...shared } = spec.options;
+      const labels = L.tileLayer(spec.reference, { ...shared, pane: 'shadowPane' });
       const group = L.layerGroup([layer, labels]);
       basemapLayers.set(spec.key, group);
       named[spec.label] = group;
@@ -112,7 +146,13 @@ function buildBasemaps() {
       if (failures !== DEAD_TILES) return;
       const current = basemapLayers.get(spec.key);
       if (!map.hasLayer(current)) return;
-      const next = BASEMAPS[BASEMAPS.indexOf(spec) + 1];
+      // Skip to a different provider. Most of this list is Esri, so falling to
+      // the next entry when Esri itself is unreachable just fails again three
+      // more times before landing anywhere useful.
+      const host = new URL(spec.url).host;
+      const next = BASEMAPS.slice(BASEMAPS.indexOf(spec) + 1)
+        .find((other) => new URL(other.url).host !== host)
+        ?? BASEMAPS[BASEMAPS.indexOf(spec) + 1];
       if (!next) return;
       map.removeLayer(current);
       basemapLayers.get(next.key).addTo(map);
@@ -123,7 +163,7 @@ function buildBasemaps() {
     });
   }
 
-  basemapLayers.get('dark').addTo(map);
+  basemapLayers.get(DEFAULT_BASEMAP).addTo(map);
   L.control.layers(named, {}, { position: 'topright' }).addTo(map);
 }
 
@@ -141,9 +181,10 @@ export function initMap() {
   initClouds(map);
   initRadar(map);
   initVessels(map);
+  initSeismic(map);
   initCams(map);
 
-  // Five panels in one column: opening the last one can leave its own button
+  // Six panels in one column: opening the last one can leave its own button
   // below the fold. Bring whichever was just pressed back into view.
   $('.side-docks')?.addEventListener('click', (e) => {
     const button = e.target.closest('button');

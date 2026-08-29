@@ -33,6 +33,22 @@ export const api = {
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4), source,
     })}`, { method: 'GET' }),
+  quakes: ({ west, south, east, north, hours, minMagnitude }) => request(
+    `/api/quakes?${new URLSearchParams({
+      west: west.toFixed(4), south: south.toFixed(4),
+      east: east.toFixed(4), north: north.toFixed(4),
+      hours, min_magnitude: minMagnitude,
+    })}`, { method: 'GET' }),
+  seismographs: ({ west, south, east, north }) => request(
+    `/api/seismographs?${new URLSearchParams({
+      west: west.toFixed(4), south: south.toFixed(4),
+      east: east.toFixed(4), north: north.toFixed(4),
+    })}`, { method: 'GET' }),
+  // A URL rather than a request: it goes straight into an <img src>.
+  traceUrl: ({ network, station, channel, loc = '', minutes }) =>
+    `/api/seismographs/trace.png?${new URLSearchParams({
+      network, station, channel, loc, minutes,
+    })}`,
   aisKey: (key) => request('/api/vessels/key', { body: { key } }),
   aisTest: () => request('/api/vessels/test', { body: {} }),
   probe: (body) => request('/api/probe', { body }),
