@@ -297,6 +297,12 @@ export const CAMS = [
     host: 'pildid.teeilm.ee',
   },
   {
+    id: 'odesa-coast', name: 'Odesa Oblast coast', place: 'Ukraine',
+    lat: 46.4129, lon: 30.1209, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1668778986/original.jpg',
+    host: 'windy.com',
+  },
+  {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
     // VK's video_ext player is built to be framed, so this one is an embed
