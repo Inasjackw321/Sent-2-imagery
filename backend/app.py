@@ -54,7 +54,8 @@ CSP = "; ".join([
     "https://server.arcgisonline.com https://*.rainviewer.com "
     "https://gibs.earthdata.nasa.gov "
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
-    "https://airtw.moenv.gov.tw https://pildid.teeilm.ee",
+    "https://airtw.moenv.gov.tw https://pildid.teeilm.ee "
+    "https://pics.starvisor.net",
     # Everything the browser fetches by script: this backend, the radar index,
     # and the HLS playlists and segments.
     "connect-src 'self' https://api.rainviewer.com "

@@ -174,6 +174,72 @@ export const CAMS = [
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1762140071/original.jpg',
     host: 'windy.com',
   },
+  // Western Russia, roughly north-east from the Sea of Azov to the Volga.
+  // Each is placed exactly where its position says; the labels are the nearest
+  // recognisable place to that point rather than a claim about what the camera
+  // is pointed at.
+  {
+    id: 'azov-coast', name: 'Sea of Azov coast', place: 'Krasnodar Krai, Russia',
+    lat: 46.6647, lon: 37.7529, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1689404487/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'kursk', name: 'Kursk', place: 'Kursk Oblast, Russia',
+    lat: 51.7299, lon: 36.1327, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1610395347/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'volgograd', name: 'Volgograd', place: 'Volgograd Oblast, Russia',
+    lat: 48.7552, lon: 44.5065, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1747888923/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'kaluga', name: 'Kaluga', place: 'Kaluga Oblast, Russia',
+    lat: 54.5293, lon: 36.2754, precision: 'given position',
+    // A fixed filename that the host overwrites, so it refreshes like any
+    // other snapshot rather than being a single frame.
+    kind: 'still', src: 'https://pics.starvisor.net/galleries/orig/cap_klg.jpg',
+    host: 'starvisor.net',
+  },
+  {
+    id: 'kolomna', name: 'Kolomna', place: 'Moscow Oblast, Russia',
+    lat: 55.0958, lon: 38.7644, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793907411/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'moscow-oblast-nw', name: 'Moscow Oblast north-west', place: 'Russia',
+    lat: 56.0960, lon: 36.5520, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793903294/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'konakovo', name: 'Konakovo', place: 'Tver Oblast, Russia',
+    lat: 56.7205, lon: 36.7719, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1624789022/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'tver-west', name: 'Tver Oblast west', place: 'Russia',
+    lat: 56.2278, lon: 32.7650, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793868708/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'nizhny-novgorod', name: 'Nizhny Novgorod', place: 'Nizhny Novgorod Oblast, Russia',
+    lat: 56.2375, lon: 43.9596, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1731429998/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'udmurtia', name: 'Udmurtia', place: 'Russia',
+    lat: 56.0600, lon: 53.0500, precision: 'given position',
+    kind: 'still', src: 'https://pics.starvisor.net/galleries/orig/cap_azv.jpg',
+    host: 'starvisor.net',
+  },
   {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
