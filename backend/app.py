@@ -25,6 +25,68 @@ log = logging.getLogger("sent2")
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="EarthViewer", version="1.0.0")
+
+# What the page in the browser is allowed to load, and from where.
+#
+# Most of this app's traffic goes out from Python, where a policy like this
+# does nothing. What it constrains is the browser: map tiles, the webcam
+# embeds, and the one library fetched from a CDN at runtime. Those are the
+# parts that run somebody else's code in your session, and the reason to
+# enumerate them is that anything not on this list simply does not load --
+# including anything a compromised camera host or CDN might try to pull in.
+#
+# The frames are the point of it. A webcam page is another site's JavaScript
+# running in your browser; the sandbox attribute on the iframe limits what it
+# may do, and frame-src here limits which sites may be framed at all.
+CSP = "; ".join([
+    "default-src 'self'",
+    # Leaflet and this app's own modules are served from here. jsDelivr carries
+    # hls.js, fetched only when an HLS camera is opened.
+    "script-src 'self' https://cdn.jsdelivr.net",
+    # Inline styles are unavoidable: element styles are set from JavaScript all
+    # over the interface, and every one of them is a string this code wrote.
+    "style-src 'self' 'unsafe-inline'",
+    # Map tiles come from several providers, and a rendered scene arrives as a
+    # data: URL. blob: is the decoded seismogram.
+    "img-src 'self' data: blob: "
+    "https://*.tile.openstreetmap.org https://tile.openstreetmap.org "
+    "https://*.tile.openstreetmap.fr https://*.tile.opentopomap.org "
+    "https://server.arcgisonline.com https://*.rainviewer.com "
+    "https://gibs.earthdata.nasa.gov "
+    "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
+    "https://airtw.moenv.gov.tw https://pildid.teeilm.ee",
+    # Everything the browser fetches by script: this backend, the radar index,
+    # and the HLS playlists and segments.
+    "connect-src 'self' https://api.rainviewer.com "
+    "https://*.streamlock.net https://*.vdotcameras.com https://cdn.jsdelivr.net",
+    "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com",
+    # The camera embeds, named one host at a time.
+    "frame-src https://ipcamlive.com https://rtsp.me https://vkvideo.ru "
+    "https://www.earthcam.com",
+    # Nothing here submits a form, embeds a plugin, or should ever be framed
+    # by anybody else.
+    "form-action 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+])
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    """Headers that only matter for the page, applied to everything.
+
+    Cheaper and harder to forget than remembering to attach them to each of
+    the handful of routes that return HTML.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CSP)
+    # A browser guessing at content types is how an image becomes a script.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
+
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )

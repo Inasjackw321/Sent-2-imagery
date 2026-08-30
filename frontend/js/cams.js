@@ -129,6 +129,37 @@ export const CAMS = [
     host: 'windy.com',
   },
   {
+    id: 'ndbc-44014', name: 'NOAA buoy 44014', place: '64 NM east of Virginia Beach, USA',
+    lat: 36.6030, lon: -74.8370, precision: 'given position',
+    // The buoy's own camera: a six-panel panorama of the horizon, remade
+    // hourly. A stable URL, so it needs no date arithmetic.
+    kind: 'still', src: 'https://www.ndbc.noaa.gov/buoycam.php?station=44014',
+    host: 'ndbc.noaa.gov',
+  },
+  {
+    id: 'kinmen-air', name: 'Kinmen air quality', place: 'Kinmen, Taiwan',
+    lat: 24.4321, lon: 118.3123, precision: 'given position',
+    // The address carries the minute it was taken, so a fixed one is a
+    // photograph of a moment rather than a camera. The template is filled in
+    // from the clock and walked backwards until a picture answers.
+    kind: 'dated',
+    template: 'https://airtw.moenv.gov.tw/AirSitePic/{YYYY}{MM}{DD}/077-{YYYY}{MM}{DD}{HH}{mm}.jpg',
+    // Taiwan is UTC+8 all year -- no daylight saving to track.
+    tzOffsetMinutes: 8 * 60,
+    stepMinutes: 10, backSteps: 12,
+    host: 'airtw.moenv.gov.tw',
+  },
+  {
+    id: 'narva-road', name: 'Narva road camera', place: 'Ida-Viru, Estonia',
+    lat: 59.4064, lon: 28.0356, precision: 'given position',
+    // The address ends in the exact second the frame was taken, which cannot
+    // be guessed, so this one is a single frame rather than a live camera and
+    // says so instead of refreshing an address that will stop answering.
+    kind: 'still', frozen: true,
+    src: 'https://pildid.teeilm.ee/2026/08_20/cam/ee/cam_112_1787178307.jpg',
+    host: 'pildid.teeilm.ee',
+  },
+  {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
     // VK's video_ext player is built to be framed, so this one is an embed
@@ -230,10 +261,12 @@ function watch(id) {
     id: WIN + cam.id,
     title: cam.name,
     where: cam.place,
-    badge: {
-      text: cam.kind === 'still' ? 'STILL' : 'LIVE',
-      className: cam.kind === 'still' ? 'is-still' : 'is-live',
-    },
+    badge: cam.frozen
+      ? { text: 'FRAME', className: 'is-frozen' }
+      : {
+        text: cam.kind === 'still' || cam.kind === 'dated' ? 'STILL' : 'LIVE',
+        className: cam.kind === 'still' || cam.kind === 'dated' ? 'is-still' : 'is-live',
+      },
     link: cam.src,
     body: frame,
     // Small, half the screen, then nearly all of it. A webcam is the one thing
@@ -253,6 +286,7 @@ function watch(id) {
 /** Whatever plays this particular kind of camera. */
 function body(cam) {
   if (cam.kind === 'still') return snapshot(cam);
+  if (cam.kind === 'dated') return dated(cam);
   if (cam.kind === 'hls') return stream(cam);
   if (cam.offsite) {
     // No iframe at all: this host refuses to be framed, so an embed here would
@@ -279,6 +313,13 @@ function body(cam) {
     allowfullscreen: '',
     referrerpolicy: 'no-referrer',
     loading: 'eager',
+    // A camera page needs to run a player and nothing else. Without this it
+    // also gets to open windows, submit forms, and -- given a click anywhere
+    // inside it -- navigate the whole tab somewhere else. allow-same-origin
+    // is granted because the players load their own streams and storage, and
+    // withholding it breaks them; it does not give the frame access to this
+    // page, which is a different origin.
+    sandbox: 'allow-scripts allow-same-origin allow-presentation',
   });
   // The frame is cross-origin, so there is no telling a stream from an error
   // page. Either way something is now on screen and the notice is in the way.
@@ -294,14 +335,117 @@ function body(cam) {
  * exactly like a snapshot from after it.
  */
 function footnote(cam) {
-  const carrier = cam.kind === 'still'
-    ? `A still from ${cam.host}, refreshed every ${STILL_SECONDS} seconds — not continuous video.`
-    : `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}.`;
+  const carrier = cam.frozen
+    ? `A single frame from ${cam.host}, at the moment its address names. It does `
+      + 'not refresh: each picture there has its own address and there is no way '
+      + 'to ask for the newest one.'
+    : cam.kind === 'dated'
+      ? `Stills from ${cam.host}, one every ${cam.stepMinutes} minutes. Each has its `
+        + 'own dated address, so the newest few minutes are tried in turn — the '
+        + 'time in the corner is the frame actually on screen.'
+      : cam.kind === 'still'
+        ? `A still from ${cam.host}, refreshed every ${STILL_SECONDS} seconds — not continuous video.`
+        : `${cam.offsite ? 'Hosted by' : 'Streamed by'} ${cam.host}.`;
   const placed = cam.precision === 'given position'
     ? 'Pinned to the position it was given, so the marker is the camera.'
     : `Pinned to the ${cam.precision} — the player carries no coordinates, so `
       + 'the marker is the place, not the lens.';
   return `${carrier} ${placed}`;
+}
+
+/**
+ * Fill a dated address in from the clock.
+ *
+ * Some hosts publish each frame at its own address, stamped with the minute it
+ * was taken. There is no "latest" to ask for, so the address has to be worked
+ * out -- and since publishing lags capture by an unknown few minutes, the only
+ * honest approach is to try the newest slot and walk backwards until one
+ * answers. `back` is how many slots to step back from now.
+ */
+/**
+ * The instant of the slot `back` steps before now, on the host's clock.
+ *
+ * Their clock, not yours. The frames are stamped in the host's own timezone,
+ * so a viewer in London asking a camera in Taiwan from their own local time
+ * would name an hour eight hours in the past and get nothing but 404s for
+ * every slot it tried -- which looks exactly like a dead camera.
+ *
+ * The returned Date is shifted so that its *UTC* fields read as the host's
+ * local ones; read it back with getUTC*, never getHours.
+ */
+function datedSlot(cam, back = 0) {
+  const step = cam.stepMinutes ?? 10;
+  const shifted = new Date(
+    Date.now() + (cam.tzOffsetMinutes ?? 0) * 60000 - back * step * 60000);
+  shifted.setUTCMinutes(Math.floor(shifted.getUTCMinutes() / step) * step, 0, 0);
+  return shifted;
+}
+
+/** The real instant a slot was captured, for showing to the viewer. */
+function datedAt(cam, back = 0) {
+  return new Date(datedSlot(cam, back).getTime() - (cam.tzOffsetMinutes ?? 0) * 60000);
+}
+
+function datedUrl(cam, back = 0) {
+  const at = datedSlot(cam, back);
+  const pad = (n) => String(n).padStart(2, '0');
+  return cam.template
+    .replace(/\{YYYY\}/g, String(at.getUTCFullYear()))
+    .replace(/\{MM\}/g, pad(at.getUTCMonth() + 1))
+    .replace(/\{DD\}/g, pad(at.getUTCDate()))
+    .replace(/\{HH\}/g, pad(at.getUTCHours()))
+    .replace(/\{mm\}/g, pad(at.getUTCMinutes()));
+}
+
+/**
+ * A camera whose frames each have their own dated address.
+ *
+ * Walks back through the recent slots until one loads. Whatever it finds, the
+ * footer says which minute it is showing, because "a few minutes ago" and
+ * "two hours ago" look identical in a photograph of a hillside.
+ */
+function dated(cam) {
+  const waiting = el('div', { class: 'cam-wait' },
+    el('span', {}, `Looking for the newest frame from ${cam.host}…`),
+    el('small', {}, 'Each picture has its own address, so the recent minutes are tried in turn.'));
+
+  const image = el('div', { class: 'cam-still-wrap' });
+  const stamp = el('span', { class: 'cam-stamp' }, '');
+  const limit = cam.backSteps ?? 12;
+
+  let back = 0;
+  const attempt = () => {
+    const url = datedUrl(cam, back);
+    const img = el('img', { class: 'cam-still', referrerpolicy: 'no-referrer',
+      alt: `${cam.name} — ${cam.place}` });
+    img.addEventListener('load', () => {
+      image.replaceChildren(img);
+      waiting.remove();
+      // The slot's own instant, shown in the viewer's timezone -- so the
+      // clock time on screen is one they can compare against their own.
+      const when = datedAt(cam, back);
+      const old = Math.round((Date.now() - when.getTime()) / 60000);
+      stamp.textContent = old < (cam.stepMinutes ?? 10)
+        ? when.toLocaleTimeString()
+        : `${when.toLocaleTimeString()} · ${old} min old`;
+    }, { once: true });
+    img.addEventListener('error', () => {
+      back += 1;
+      if (back <= limit) { attempt(); return; }
+      waiting.replaceChildren(
+        el('span', {}, `No frame found from ${cam.host}`),
+        el('small', {}, `Tried the last ${limit * (cam.stepMinutes ?? 10)} minutes. `
+          + 'The camera may be down, or the address pattern may have changed.'));
+    }, { once: true });
+    img.src = url;
+  };
+  attempt();
+
+  // Re-resolve on the same timer as an ordinary snapshot, from the top.
+  playing.set(cam.id, {
+    timer: setInterval(() => { back = 0; attempt(); }, STILL_SECONDS * 1000),
+  });
+  return [image, stamp, waiting];
 }
 
 /**
@@ -317,11 +461,19 @@ function snapshot(cam) {
     el('span', {}, `Fetching from ${cam.host}…`),
     el('small', {}, 'If nothing appears, the camera is offline or blocked. ↗ opens it directly.'));
 
-  const image = el('img', { class: 'cam-still', alt: `${cam.name} — ${cam.place}` });
+  const image = el('img', {
+    class: 'cam-still', alt: `${cam.name} — ${cam.place}`,
+    // The host has no business knowing which page asked for the picture.
+    referrerpolicy: 'no-referrer',
+  });
   const stamp = el('span', { class: 'cam-stamp' }, '');
 
   const pull = () => {
-    image.src = `${cam.src}${cam.src.includes('?') ? '&' : '?'}t=${Date.now()}`;
+    // A frozen frame is fetched once and wants the cache, not a way around
+    // it -- and a host that signs its addresses may refuse an extra parameter.
+    image.src = cam.frozen
+      ? cam.src
+      : `${cam.src}${cam.src.includes('?') ? '&' : '?'}t=${Date.now()}`;
   };
   image.addEventListener('load', () => {
     waiting.remove();
@@ -335,7 +487,12 @@ function snapshot(cam) {
   });
 
   pull();
-  playing.set(cam.id, { timer: setInterval(pull, STILL_SECONDS * 1000) });
+  // A frame with a fixed address is not a camera: asking again returns the
+  // same picture until the host stops answering at all, and a timer would
+  // only make that look like activity.
+  if (!cam.frozen) {
+    playing.set(cam.id, { timer: setInterval(pull, STILL_SECONDS * 1000) });
+  }
   return [image, stamp, waiting];
 }
 
