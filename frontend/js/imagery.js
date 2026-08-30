@@ -809,6 +809,7 @@ async function showImagery() {
     setImage({ src: data.image, meta: data.meta, element, request: body });
     sync();
     toast(describeResult(data.meta), 'ok');
+    reportCoverage(data.meta, dates.length);
   } catch (err) {
     toast(`Could not show that: ${err.message}`, 'err');
   }
@@ -836,6 +837,40 @@ function describeResult(meta) {
   const clear = meta.composite_report?.combined_pct;
   if (clear != null) bits.push(`${clear}% clear`);
   return bits.join(' · ');
+}
+
+// Below this, a picture with holes in it needs explaining rather than
+// leaving on screen to be puzzled over.
+const THIN_COVER = 92;
+const VERY_THIN_COVER = 65;
+
+/**
+ * Say when the picture does not fill the area asked for.
+ *
+ * The imagery is drawn with the ground the satellite did not measure left
+ * transparent, so a pass that clips the corner of your shape, or a day with
+ * cloud over half of it, comes out as a picture with pieces missing -- and
+ * nothing on screen said why. The number was there in the metadata all along;
+ * it was simply never shown, so the only available reading was that the app
+ * had drawn the imagery wrong.
+ *
+ * Both causes have a different answer, so the message names which one it is
+ * and what to do about it.
+ */
+function reportCoverage(meta, dateCount) {
+  const pct = meta.valid_pct;
+  if (pct == null || pct >= THIN_COVER) return;
+
+  const masked = Boolean(meta.request?.mask_clouds ?? true);
+  const cure = dateCount > 1
+    ? 'Merging more dates fills more of it.'
+    : 'Try another date, or merge several — the gaps rarely fall in the same place twice.';
+  const why = masked
+    ? 'cloud was masked out, or the pass clipped the edge of your shape'
+    : 'the pass clipped the edge of your shape';
+
+  toast(`${Math.round(pct)}% of your area has imagery — ${why}. ${cure}`,
+        pct < VERY_THIN_COVER ? 'err' : '');
 }
 
 async function downloadImagery(format) {

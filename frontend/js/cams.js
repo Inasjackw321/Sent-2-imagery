@@ -236,6 +236,10 @@ function watch(id) {
     },
     link: cam.src,
     body: frame,
+    // Small, half the screen, then nearly all of it. A webcam is the one thing
+    // here worth filling a monitor with, and the panel it started in is a
+    // thumbnail of a video.
+    sizes: [420, 'min(760px, calc(100vw - 40px))', 'calc(100vw - 40px)'],
     foot: footnote(cam),
     onClose: () => { stopPlaying(cam.id); paintDock(); },
   });

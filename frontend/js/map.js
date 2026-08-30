@@ -601,6 +601,12 @@ function renderLayerDock() {
       el('span', { class: 'layer-dot', style: `background:${sat.colour ?? '#4cc2ff'}` }),
       el('span', { class: 'layer-name' }, sat.short ?? key,
         el('small', {}, fmt.date(entry.meta.scene?.date)),
+        // How much of the shape this picture actually covers. Shown only when
+        // it is not most of it: a toast scrolls away, and the holes do not.
+        entry.meta.valid_pct != null && entry.meta.valid_pct < 92
+          ? el('em', { class: 'layer-thin', title: 'Share of your area with imagery' },
+            `${Math.round(entry.meta.valid_pct)}%`)
+          : null,
         entry.pinned ? el('em', { class: 'layer-pinned' }, 'kept') : null),
       slider,
       // Only live layers can be pinned: a pin is already a copy, and copying

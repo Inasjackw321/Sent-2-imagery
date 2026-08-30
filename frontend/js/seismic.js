@@ -43,6 +43,27 @@ const MARGIN = 0.35;
 const RADIUS_MIN = 2.5;
 const RADIUS_PER_MAG = 1.8;
 
+// How close the pointer has to get before a dot counts as clicked.
+//
+// Leaflet gives a canvas circle a hit area of its own radius plus half its
+// stroke -- about six pixels for a station -- and then cancels the click
+// outright if the map moved even slightly while the button was down. Between
+// the two, aiming at a small dot and missing by a pixel does not select
+// anything; it pans the map instead, which feels exactly like the pointer
+// being stuck in drag mode. Every dot therefore carries an invisible target
+// this big, which is roughly a fingertip on a trackpad.
+const HIT_RADIUS = 12;
+
+/** An invisible, comfortably large circle that carries the click. */
+function hitTarget(latlng, renderer, radius = HIT_RADIUS) {
+  return L.circleMarker(latlng, {
+    renderer, radius: Math.max(radius, HIT_RADIUS),
+    // Drawn, but with nothing to see: a canvas path has to be painted to be
+    // hit-tested, so it cannot simply be skipped.
+    stroke: false, fill: true, fillOpacity: 0, interactive: true,
+  });
+}
+
 // Depth, not magnitude, decides the colour. A shallow quake does far more at
 // the surface than a deep one of the same size, and it is the fact a magnitude
 // alone hides.
@@ -239,8 +260,8 @@ function drawQuakes(data) {
     // which a stack of translucent discs does not.
     L.circleMarker([q.lat, q.lon], {
       renderer: quakeCanvas, radius,
-      color: colour, weight: 2, opacity: 0.95, fill: false,
-    }).bindPopup(() => quakePopup(q), POPUP).addTo(quakeLayer);
+      color: colour, weight: 2, opacity: 0.95, fill: false, interactive: false,
+    }).addTo(quakeLayer);
 
     // The centre dot marks the epicentre itself, and keeps a small distant
     // event visible when its ring is only a few pixels across.
@@ -249,6 +270,10 @@ function drawQuakes(data) {
       color: edge, weight: 0, fillColor: edge, fillOpacity: 0.95,
       interactive: false,
     }).addTo(quakeLayer);
+
+    hitTarget([q.lat, q.lon], quakeCanvas, radius)
+      .bindPopup(() => quakePopup(q), POPUP)
+      .addTo(quakeLayer);
   }
   const window = hours === 24 ? '24 h' : hours === 168 ? '7 days' : '30 days';
   return data.count
@@ -298,8 +323,11 @@ function drawStations(data) {
       renderer: stationCanvas,
       radius: 5, weight: 1.6,
       color: '#7ed6ff', fillColor: '#0d1015', fillOpacity: 0.85, opacity: 0.95,
-    })
-      .bindTooltip(`${s.network}.${s.station}`, { direction: 'top', offset: [0, -6] })
+      interactive: false,
+    }).addTo(stationLayer);
+
+    hitTarget([s.lat, s.lon], stationCanvas)
+      .bindTooltip(`${s.network}.${s.station}`, { direction: 'top', offset: [0, -12] })
       .on('click', () => plotStation(s))
       .addTo(stationLayer);
   }
@@ -361,6 +389,8 @@ function plotStation(station, { redraw = false } = {}) {
       title: `${label} · ${station.channel}`,
       where: station.instrument || fmt.coord(station.lon, station.lat),
       body: plot,
+      // A trace is wide and short, so bigger means wider rather than square.
+      sizes: [420, 'min(820px, calc(100vw - 40px))'],
       foot: footnote(station, span),
       onClose: () => showing.delete(id),
     });

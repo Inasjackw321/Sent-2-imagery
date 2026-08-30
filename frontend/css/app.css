@@ -1146,3 +1146,21 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   color: var(--accent); border-color: rgba(76,194,255,.5);
   background: rgba(14,45,64,.7);
 }
+
+/* A picture that does not fill the shape it was asked for. Amber rather than
+   red: it is usually the weather, not a fault. */
+.layer-thin {
+  font-style: normal; font-size: 8.5px; font-weight: 700; margin-left: 5px;
+  padding: 1px 4px; border-radius: 4px; color: var(--warn);
+  background: rgba(255,180,84,.16); border: 1px solid rgba(255,180,84,.4);
+}
+
+/* A window stepped up in size. The frame follows the width so a video keeps
+   its shape instead of being letterboxed into the small panel's aspect. */
+.win-size {
+  flex: 0 0 auto; cursor: pointer; font: inherit; font-size: 12px; line-height: 1;
+  background: none; border: 0; color: var(--ink-faint); padding: 0 3px;
+}
+.win-size:hover { color: var(--ink); }
+.win.is-big { box-shadow: 0 18px 46px rgba(0,0,0,.65); }
+.win.is-big .win-title { font-size: 13px; }

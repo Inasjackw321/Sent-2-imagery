@@ -40,7 +40,7 @@ function layer() {
  * so whatever the body left running can be stopped in one place instead of
  * three.
  */
-export function openWindow({ id, title, where, badge, link, body, foot, onClose }) {
+export function openWindow({ id, title, where, badge, link, body, foot, onClose, sizes }) {
   const already = open.get(id);
   if (already) {
     raise(already.node);
@@ -52,6 +52,12 @@ export function openWindow({ id, title, where, badge, link, body, foot, onClose 
       badge ? el('span', { class: `win-badge ${badge.className ?? ''}` }, badge.text) : null,
       el('b', { class: 'win-title' }, title),
       el('span', { class: 'win-where' }, where ?? ''),
+      // Bigger, then bigger again, then back to where it started. A camera
+      // is worth filling the screen with; a trace is worth a corner of it.
+      sizes ? el('button', {
+        class: 'win-size', title: 'Make this bigger',
+        onclick: (e) => { e.stopPropagation(); resize(id); },
+      }, '⤢') : null,
       link ? el('a', {
         class: 'win-out', href: link, target: '_blank', rel: 'noopener noreferrer',
         title: 'Open the source in a new tab',
@@ -65,8 +71,13 @@ export function openWindow({ id, title, where, badge, link, body, foot, onClose 
   place(node);
   node.addEventListener('pointerdown', () => raise(node));
   drag(node);
+  // Double-clicking the bar is the other way people expect to do this.
+  if (sizes) {
+    node.querySelector('.win-bar').addEventListener('dblclick', () => resize(id));
+  }
 
-  open.set(id, { node, onClose });
+  open.set(id, { node, onClose, sizes, step: 0 });
+  if (sizes) applySize(id);
   layer().append(node);
   raise(node);
   return node;
@@ -87,6 +98,51 @@ export function closeAll(match = () => true) {
   for (const id of [...open.keys()]) {
     if (match(id)) closeWindow(id);
   }
+}
+
+/**
+ * Step a window through its sizes and back to the first.
+ *
+ * The widths are handed in by the caller because what "bigger" means depends
+ * on the content: a video is worth most of the screen and a plotted trace is
+ * not. Growing left and up from wherever the window sits keeps the title bar
+ * where the hand already is.
+ */
+function resize(id) {
+  const held = open.get(id);
+  if (!held?.sizes?.length) return;
+  held.step = (held.step + 1) % held.sizes.length;
+  applySize(id);
+  raise(held.node);
+}
+
+function applySize(id) {
+  const held = open.get(id);
+  if (!held?.sizes?.length) return;
+  const width = held.sizes[held.step];
+  const node = held.node;
+  const before = node.getBoundingClientRect();
+
+  node.style.width = typeof width === 'number' ? `${width}px` : width;
+  node.classList.toggle('is-big', held.step > 0);
+
+  // Grown past the edge of the screen, a window would be unreachable, so it is
+  // pulled back on -- keeping its bottom-right corner where it was if it is
+  // anchored that way, and its top-left if it has been dragged.
+  requestAnimationFrame(() => {
+    const box = node.getBoundingClientRect();
+    if (node.style.left && node.style.left !== 'auto') {
+      const x = Math.min(before.left, window.innerWidth - box.width - 8);
+      node.style.left = `${Math.max(8, x)}px`;
+      const y = Math.min(before.top, window.innerHeight - box.height - 8);
+      node.style.top = `${Math.max(8, y)}px`;
+    }
+    const title = node.querySelector('.win-size');
+    if (title) {
+      title.textContent = held.step === held.sizes.length - 1 ? '⤡' : '⤢';
+      title.title = held.step === held.sizes.length - 1 ? 'Back to the small size' : 'Make this bigger';
+    }
+  });
 }
 
 export const isOpen = (id) => open.has(id);
@@ -134,10 +190,21 @@ function drag(node) {
     node.classList.add('is-dragging');
 
     const move = (e) => {
-      // Kept on screen: a window dragged off the edge cannot be dragged back,
-      // and its title bar is the only handle it has.
-      const x = Math.min(Math.max(e.clientX - grabX, 8 - box.width + 90), window.innerWidth - 90);
-      const y = Math.min(Math.max(e.clientY - grabY, 0), window.innerHeight - 34);
+      // Kept wholly on screen while it fits.
+      //
+      // The controls -- resize, open, close -- sit at the right-hand end of
+      // the bar, so an earlier version that guaranteed only the left edge
+      // stayed visible let a wide window be dragged until every button was
+      // off the screen and nothing could reach it again.
+      const room = window.innerWidth - box.width - 8;
+      const wider = box.width + 16 > window.innerWidth;
+      const x = wider
+        // Too wide to fit: hold the right edge on screen instead, since that
+        // is the end the buttons are at.
+        ? Math.min(Math.max(e.clientX - grabX, room), 8)
+        : Math.min(Math.max(e.clientX - grabX, 8), room);
+      const y = Math.min(Math.max(e.clientY - grabY, 8),
+                         Math.max(8, window.innerHeight - box.height - 8));
       node.style.left = `${x}px`;
       node.style.top = `${y}px`;
     };
