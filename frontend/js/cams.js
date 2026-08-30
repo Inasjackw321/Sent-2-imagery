@@ -23,16 +23,6 @@ import { openWindow, closeWindow, closeAll, isOpen, openIds } from './windows.js
 
 export const CAMS = [
   {
-    id: 'tarifa',
-    name: 'Kite surfing beach',
-    place: 'Tarifa, Spain',
-    lat: 36.0290, lon: -5.6180,
-    // Playa de los Lances, the beach the camera is named for.
-    precision: 'beach',
-    src: 'https://ipcamlive.com/player/player.php?alias=kite&mute=1',
-    host: 'ipcamlive.com',
-  },
-  {
     id: 'dubai-marina',
     name: 'Dubai Marina',
     place: 'Dubai, United Arab Emirates',
@@ -122,6 +112,30 @@ export const CAMS = [
     lat: 41.0800, lon: 29.0517, precision: 'given position',
     kind: 'hls', src: 'https://601a43eea2819.streamlock.net/hls/268.stream/playlist.m3u8',
     host: 'streamlock.net',
+  },
+
+  // The names below are read off the coordinates rather than given with them,
+  // so the position is exact and the label is a best reading of where that is.
+  {
+    id: 'kingisepp', name: 'Kingisepp', place: 'Leningrad Oblast, Russia',
+    lat: 59.3750, lon: 28.5965, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1744011569/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'lomonosov', name: 'Lomonosov', place: 'Gulf of Finland, Russia',
+    lat: 59.9104, lon: 29.7756, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1623730451/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
+    lat: 60.0040, lon: 30.4680, precision: 'given position',
+    // VK's video_ext player is built to be framed, so this one is an embed
+    // rather than a still or a playlist.
+    kind: 'embed',
+    src: 'https://vkvideo.ru/video_ext.php?oid=1025087646&id=456239017&hash=42c649342965ddbe&hd=3',
+    host: 'vkvideo.ru',
   },
 ];
 

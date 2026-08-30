@@ -195,6 +195,119 @@ NC|CAD|--|EHZ|38.0430|-122.4720|180.0|0.0|0.0|-90.0|Mark Products L-4C|1.0|1.0|M
 """
 
 
+# One row, from a node that only this one knows about.
+GREEK_ONLY = """\
+HL|ATH|--|HHZ|37.9724|23.7176|110.0|0.0|0.0|-90.0|Guralp CMG-3ESP|1.0|1.0|M/S|100.0|2005-01-01T00:00:00|2599-12-31T23:59:59
+"""
+
+# A strong-motion station, which the old channel list would have dropped.
+ACCELEROMETER = """\
+IV|MILN|00|HNZ|45.4780|9.2300|130.0|0.0|0.0|-90.0|Kinemetrics EpiSensor|1.0|1.0|M/S**2|200.0|2012-01-01T00:00:00|2599-12-31T23:59:59
+"""
+
+
+def _url_of(name):
+    return dict((n, u) for n, u in seismic.STATION_SERVICES)[name]
+
+
+def test_every_index_is_asked_and_the_answers_merged(monkeypatch):
+    """No single index knows about every instrument.
+
+    A European node lists stations that never reach an American one, and the
+    reverse is true too. Asking one and calling it the world is how a map of
+    twenty thousand open seismographs shows four hundred.
+    """
+    def answer(url, params):
+        if url == _url_of("NOA"):
+            return FakeResponse(text=GREEK_ONLY)
+        if url == _url_of("EarthScope"):
+            return FakeResponse(text=CHANNELS)
+        return FakeResponse(status=204)
+
+    _by_url(monkeypatch, answer)
+    out = seismic.stations(BOX)
+    names = {s["station"] for s in out["stations"]}
+    assert names == {"BKS", "CAD", "ATH"}
+    assert "NOA" in out["services"] and "EarthScope" in out["services"]
+
+
+def test_a_station_two_indexes_both_know_about_is_one_dot(monkeypatch):
+    """Overlap between indexes is the normal case, not the exception."""
+    _by_url(monkeypatch, lambda url, params: FakeResponse(text=CHANNELS))
+    out = seismic.stations(BOX)
+    assert out["count"] == 2
+
+
+def test_one_index_failing_does_not_lose_the_others(monkeypatch):
+    def answer(url, params):
+        if url == _url_of("EarthScope"):
+            raise requests.ConnectionError("down")
+        return FakeResponse(text=GREEK_ONLY)
+
+    _by_url(monkeypatch, answer)
+    out = seismic.stations(BOX)
+    assert out["count"] == 1
+    assert "EarthScope" in out["missing"]
+
+
+def test_every_index_failing_is_reported_rather_than_shown_as_empty_ground(monkeypatch):
+    """An empty map because nothing answered looks exactly like an empty map
+    because there is nothing there, and they mean opposite things."""
+    def answer(url, params):
+        raise requests.ConnectionError("down")
+
+    _by_url(monkeypatch, answer)
+    with pytest.raises(seismic.SeismicLookupError, match="No station index answered"):
+        seismic.stations(BOX)
+
+
+def test_the_legacy_host_is_only_asked_when_nothing_else_answered(monkeypatch):
+    """It is the same index under an old name, so asking it alongside the one
+    that replaced it is one request for nothing every time."""
+    asked = []
+    _by_url(monkeypatch, lambda url, params: FakeResponse(text=CHANNELS), captured=asked)
+    seismic.stations(BOX)
+    assert _url_of("EarthScope (legacy)") not in [u for u, _ in asked]
+
+
+def test_the_legacy_host_is_asked_when_everything_else_is_silent(monkeypatch):
+    def answer(url, params):
+        if url == _url_of("EarthScope (legacy)"):
+            return FakeResponse(text=CHANNELS)
+        return FakeResponse(status=204)
+
+    _by_url(monkeypatch, answer)
+    assert seismic.stations(BOX)["count"] == 2
+
+
+def test_accelerometers_are_asked_for_too(monkeypatch):
+    """Most of the dense urban networks are strong-motion instruments. Asking
+    only for seismometer channels drops every one of them."""
+    seen = []
+    _by_url(monkeypatch, lambda url, params: FakeResponse(status=204), captured=seen)
+    # Every index answering 204 is "asked fine, nothing there", not a failure.
+    assert seismic.stations(BOX)["count"] == 0
+    channels = seen[0][1]["channel"].split(",")
+    assert "HNZ" in channels and "ENZ" in channels
+    assert "HHZ" in channels
+
+
+def test_a_station_with_only_an_accelerometer_is_still_plotted(monkeypatch):
+    _by_url(monkeypatch, lambda url, params: FakeResponse(text=ACCELEROMETER))
+    out = seismic.stations(BOX)
+    assert out["count"] == 1
+    assert out["stations"][0]["channel"] == "HNZ"
+
+
+def test_a_seismometer_beats_an_accelerometer_for_the_trace(monkeypatch):
+    """An accelerometer is deaf to small distant events by design, which is
+    what makes it useful in a city and useless as a first look."""
+    _by_url(monkeypatch, lambda url, params: FakeResponse(
+        text=CHANNELS + ACCELEROMETER.replace("IV|MILN", "BK|BKS")))
+    bks = next(s for s in seismic.stations(BOX)["stations"] if s["station"] == "BKS")
+    assert bks["channel"] == "HHZ"
+
+
 def test_a_station_listed_many_times_is_still_one_dot(monkeypatch):
     """Four rows, two stations.
 

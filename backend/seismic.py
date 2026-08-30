@@ -42,14 +42,36 @@ class SeismicLookupError(RuntimeError):
 # the station service below takes -- one of the nicer things about the format.
 EVENTS_URL = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 
-# The station index. EarthScope's copy answers for the whole federation, which
-# is what puts instruments from every continent on the map. Two hosts because
-# the organisation is midway through renaming itself and the old one is being
-# retired service by service.
+# The station index, asked of everyone who keeps one.
+#
+# EarthScope's copy answers for much of the federation, but not all of it: a
+# European node knows about instruments that never reach an American index, and
+# the same is true in the other direction. Asking one and calling it the world
+# is how a map of twenty thousand open seismographs shows you four hundred.
+#
+# These are queried together and the answers merged on network and station, so
+# an instrument listed by three of them is still one dot. A node that is slow
+# or down costs nothing but its own share of the answer.
 STATION_SERVICES = [
-    "https://service.earthscope.org/fdsnws/station/1/query",
-    "https://service.iris.edu/fdsnws/station/1/query",
+    ("EarthScope", "https://service.earthscope.org/fdsnws/station/1/query"),
+    ("EarthScope (legacy)", "https://service.iris.edu/fdsnws/station/1/query"),
+    ("ORFEUS", "https://www.orfeus-eu.org/fdsnws/station/1/query"),
+    ("GEOFON", "https://geofon.gfz-potsdam.de/fdsnws/station/1/query"),
+    ("INGV", "https://webservices.ingv.it/fdsnws/station/1/query"),
+    ("RESIF", "https://ws.resif.fr/fdsnws/station/1/query"),
+    ("Koeri", "https://eida.koeri.boun.edu.tr/fdsnws/station/1/query"),
+    ("NOA", "https://eida.gein.noa.gr/fdsnws/station/1/query"),
+    ("BGR", "https://eida.bgr.de/fdsnws/station/1/query"),
+    ("ETH", "https://eida.ethz.ch/fdsnws/station/1/query"),
 ]
+
+# The legacy host duplicates the first entry exactly, so it is only worth
+# asking when the one that replaced it did not answer.
+STATION_FALLBACKS = {"EarthScope (legacy)"}
+
+# How long the whole round of station services gets. They run together, so this
+# is the slowest one that will still be waited for rather than the sum.
+STATIONS_TIMEOUT = 25
 
 # Where the recordings come from.
 #
@@ -86,15 +108,31 @@ WINDOWS = {24: "24 h", 168: "7 days", 720: "30 days"}
 # that turned up in it.
 TRACE_MINUTES = {10: "10 min", 60: "1 hour", 360: "6 hours"}
 
-# Vertical broadband and short-period channels, which is what you want for a
-# first look. Horizontal components mostly duplicate the picture.
-CHANNELS = "BHZ,HHZ,SHZ,EHZ,LHZ"
+# Vertical channels of every band and instrument code worth having.
+#
+# The middle letter is the instrument: H is a seismometer, N and L are
+# accelerometers, which is what most of the dense urban networks are made of.
+# Restricting to H alone -- as this used to -- silently drops every strong
+# motion station in Japan, Italy, Turkey and California, which is a great many
+# of the instruments anyone would want to look at.
+#
+# The first letter is the sample rate band, from V at a sample every ten
+# seconds up to H and E at a hundred a second. All of them can be plotted.
+#
+# Horizontal components are still left out: they mostly duplicate the picture
+# and would treble the size of every answer.
+CHANNELS = ",".join([
+    "BHZ", "HHZ", "SHZ", "EHZ", "LHZ", "MHZ", "VHZ", "CHZ", "DHZ", "GHZ",
+    "HNZ", "BNZ", "ENZ", "SNZ", "LNZ",
+    "HLZ", "BLZ", "ELZ",
+])
 
 MAX_EVENTS = 1200
-# Raised from 600, which was cutting a wide view down to a fraction of what
-# was there. Markers are drawn on a canvas rather than as elements, so several
-# thousand costs the browser little.
-MAX_STATIONS = 4000
+# Raised twice: from 600, which cut a wide view down to a fraction of what was
+# there, and again once the markers moved onto a canvas, where twenty thousand
+# cost about as much as one. This is roughly every open station on Earth, so
+# the cap is now a guard against a runaway rather than a working limit.
+MAX_STATIONS = 25000
 
 # The station index changes when someone installs an instrument, so it is
 # barely worth re-asking. Events move constantly.
@@ -224,7 +262,7 @@ def _moment(millis) -> str | None:
 
 
 def stations(bbox: tuple[float, float, float, float]) -> dict:
-    """Open seismograph stations in a rectangle, currently recording."""
+    """Every open seismograph in a rectangle, from everyone who indexes one."""
     west, south, east, north = bbox
     key = f"s:{west:.1f},{south:.1f},{east:.1f},{north:.1f}"
     if (hit := _cached(key, STATIONS_SECONDS)) is not None:
@@ -244,17 +282,63 @@ def stations(bbox: tuple[float, float, float, float]) -> dict:
         "includerestricted": "false",
         "nodata": "204",
     }
-    last = None
-    for url in STATION_SERVICES:
+
+    primary = [s for s in STATION_SERVICES if s[0] not in STATION_FALLBACKS]
+    answers, trouble = _ask_all(primary, params)
+
+    # The legacy host is the same index under an old name, so it is only worth
+    # asking when the one that replaced it said nothing at all.
+    if not any(answers.values()):
+        spare = [s for s in STATION_SERVICES if s[0] in STATION_FALLBACKS]
+        more, more_trouble = _ask_all(spare, params)
+        answers.update(more)
+        trouble.extend(more_trouble)
+
+    if not any(answers.values()) and trouble:
+        raise SeismicLookupError(
+            "No station index answered. " + _short("; ".join(trouble), 240))
+
+    found = _parse_channels(
+        "\n".join(text for text in answers.values() if text),
+        centre=((west + east) / 2, (south + north) / 2))
+    found["services"] = sorted(name for name, text in answers.items() if text)
+    # Named rather than counted, so a thin answer over Europe can be traced to
+    # the node that did not reply rather than looking like empty ground.
+    found["missing"] = sorted(name for name, text in answers.items() if not text)
+    return _keep(key, found)
+
+
+def _ask_all(services, params) -> tuple[dict[str, str], list[str]]:
+    """Ask every index at once and collect whatever comes back.
+
+    Together rather than one after another: ten services in series would take
+    ten times the slowest of them, and the whole point of asking all of them is
+    that no single one knows about every instrument.
+    """
+    answers: dict[str, str] = {}
+    trouble: list[str] = []
+    lock = threading.Lock()
+
+    def ask(name: str, url: str) -> None:
         try:
-            resp = _get(url, params)
+            resp = _get(url, params, timeout=STATIONS_TIMEOUT)
+            text = resp.text if resp.content else ""
         except SeismicLookupError as exc:
-            last = exc
-            continue
-        return _keep(key, _parse_channels(
-            resp.text if resp.content else "",
-            centre=((west + east) / 2, (south + north) / 2)))
-    raise last or SeismicLookupError("no station service answered")
+            with lock:
+                answers[name] = ""
+                trouble.append(f"{name}: {exc}")
+            return
+        with lock:
+            answers[name] = text
+
+    threads = [threading.Thread(target=ask, args=(n, u), daemon=True)
+               for n, u in services]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        # A node that has stopped answering must not hold up the nine that did.
+        thread.join(timeout=STATIONS_TIMEOUT + 5)
+    return answers, trouble
 
 
 def _parse_channels(text: str, centre: tuple[float, float] | None = None) -> dict:
@@ -312,7 +396,18 @@ def _parse_channels(text: str, centre: tuple[float, float] | None = None) -> dic
     }
 
 
-_CHANNEL_ORDER = ["HHZ", "BHZ", "SHZ", "EHZ", "LHZ"]
+# Which channel a station's trace is asked for when it offers several.
+#
+# Seismometers first, because they are what a seismogram normally means, and
+# within those the faster bands, because they show an arrival rather than a
+# smear. Accelerometers come last: they are deaf to small distant events by
+# design, which is exactly what makes them useful in a city and useless as a
+# first look. A station that has nothing else still gets plotted with one.
+_CHANNEL_ORDER = [
+    "HHZ", "BHZ", "SHZ", "EHZ", "MHZ", "LHZ", "CHZ", "DHZ", "GHZ", "VHZ",
+    "HNZ", "BNZ", "ENZ", "SNZ", "LNZ",
+    "HLZ", "BLZ", "ELZ",
+]
 
 
 def _rank(channel: str) -> int:
@@ -506,6 +601,7 @@ def demo_stations(bbox: tuple[float, float, float, float]) -> dict:
         })
     return {
         "stations": out, "count": len(out), "capped": False, "demo": True,
+        "services": ["Synthetic"], "missing": [],
         "source": "Synthetic", "attribution": "Synthetic demo data",
     }
 

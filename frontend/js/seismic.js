@@ -284,8 +284,14 @@ function drawStations(data) {
       .addTo(stationLayer);
   }
   if (!data.count) return 'No open seismographs in view';
+  // Which indexes answered, because a thin answer over a well-instrumented
+  // country is usually a node that did not reply rather than empty ground.
+  const asked = data.services?.length ?? 0;
+  const quiet = data.missing?.length ?? 0;
   return `<b>${data.count.toLocaleString()}</b> seismograph${data.count === 1 ? '' : 's'}`
-    + (data.capped ? ' <span class="dim">(nearest shown)</span>' : '');
+    + (data.capped ? ' <span class="dim">(nearest shown)</span>' : '')
+    + (asked ? `<br><span class="dim">${asked} index${asked === 1 ? '' : 'es'} answered`
+      + `${quiet ? `, ${quiet} did not` : ''}</span>` : '');
 }
 
 // ── The trace ──────────────────────────────────────────────────
@@ -344,8 +350,13 @@ function plotStation(station, { redraw = false } = {}) {
 }
 
 function footnote(station, span) {
+  // What else this instrument records. A station offering only an
+  // accelerometer channel is deaf to small distant events by design, and that
+  // is worth knowing before reading a flat trace as a quiet afternoon.
+  const also = (station.channels ?? []).filter((c) => c !== station.channel);
   return `Last ${span} of vertical ground motion at `
     + `${fmt.coord(station.lon, station.lat)}, ${station.elevation_m} m elevation. `
+    + (also.length ? `Also records ${also.join(', ')}. ` : '')
     + `${store.config.seismic?.stations ?? 'EarthScope / FDSN'}.`;
 }
 
