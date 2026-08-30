@@ -17,35 +17,21 @@ import { $, el, toast, debounce } from './ui.js';
 // Free, no key, no account -- in keeping with everything else here.
 const INDEX = 'https://api.rainviewer.com/public/weather-maps.json';
 
-// Two ways of watching the weather, and they answer different questions.
+// Ground radar, and only ground radar. It measures the drops themselves,
+// updates every ten minutes and can say how hard it is raining. What it cannot
+// do is see anywhere without a radar network, which is most of the planet --
+// oceans, and much of Africa, Asia and South America are simply blank, and the
+// panel says so rather than leaving it looking broken.
 //
-// Ground radar is the sharp one: it measures the drops themselves, updates
-// every ten minutes and can say how hard it is raining. What it cannot do is
-// see anywhere without a radar network, which is most of the planet -- oceans,
-// and much of Africa, Asia and South America are simply blank.
-//
-// The satellite view has the opposite shape. It is infrared from
-// geostationary orbit, so it covers everything, everywhere, all the time --
-// but it sees cloud tops rather than rain, and cold cloud is not the same
-// thing as falling water.
-//
-// Offering only the first is what made this feel broken over half the world.
-const MODES = {
-  radar: {
-    label: 'Rain radar', part: 'radar',
-    note: 'Ground radar: it measures the drops. Coverage follows national '
-      + 'networks, so oceans and much of Africa and Asia are blank.',
-    legend: [['#8cf58c', 'drizzle'], ['#33b333', 'light'], ['#f2e33d', 'moderate'],
-      ['#f08c28', 'heavy'], ['#e5332e', 'violent'], ['#a94ce0', 'hail or snow']],
-  },
-  satellite: {
-    label: 'Cloud tops', part: 'satellite',
-    note: 'Infrared from geostationary orbit: everywhere at once, but it shows '
-      + 'cloud top temperature, not rain. Cold and bright is tall storm cloud.',
-    legend: [['#1b2a3a', 'thin'], ['#5b7590', 'low cloud'], ['#b9c6d4', 'thick'],
-      ['#ffffff', 'cold tops']],
-  },
-};
+// There used to be an infrared cloud-top view alongside it, covering the
+// blanks from geostationary orbit. It went because it answered a different
+// question while sitting in the same control: cold cloud is not falling water,
+// and the cloud layer already says where the cloud is, from imagery that
+// actually looks like cloud.
+const NOTE = 'Ground radar: it measures the drops. Coverage follows national '
+  + 'networks, so oceans and much of Africa and Asia are blank.';
+const LEGEND = [['#8cf58c', 'drizzle'], ['#33b333', 'light'], ['#f2e33d', 'moderate'],
+  ['#f08c28', 'heavy'], ['#e5332e', 'violent'], ['#a94ce0', 'hail or snow']];
 
 // Colour scheme 4 is the familiar green-to-red rainfall ramp. The trailing
 // pair is "smooth" and "show snow in its own colour", both of which help at
@@ -70,9 +56,9 @@ const FADE_MS = 160;
 // than this is worth replacing even if the tab has been sitting open.
 const REFRESH_MS = 5 * 60 * 1000;
 
-// Remembered between visits. Someone who prefers the satellite view at half
+// Remembered between visits. Someone who prefers the loop slow and at half
 // opacity should not have to say so again every time they open the app. Read
-// before any of the state below, since three of those defaults come from it.
+// before any of the state below, since those defaults come from it.
 const SETTINGS_KEY = 'earthviewer.weather';
 const remembered = (() => {
   try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch { return {}; }
@@ -85,12 +71,11 @@ let at = 0;               // which frame is showing
 let enabled = false;
 let playing = true;
 let opacity = typeof remembered.opacity === 'number' ? remembered.opacity : 0.75;
-let mode = MODES[remembered.mode] ? remembered.mode : 'radar';
 let speed = SPEEDS[remembered.speed] ? remembered.speed : 'normal';
 let timer = null;
 let refresher = null;
 let failed = '';
-let index = null;         // the whole answer from the service, both modes
+let index = null;         // the whole answer from the service
 const ready = new Set();  // keys of frames whose tiles are in hand
 
 export function initRadar(leafletMap) {
@@ -111,11 +96,11 @@ async function loadIndex() {
   return resp.json();
 }
 
-/** The frames for whichever mode is showing, past first, forecast last. */
-function framesFor(data, which) {
-  const part = data?.[MODES[which].part];
+/** The radar frames, past first, forecast last. */
+function framesFor(data) {
+  const part = data?.radar;
   const host = data?.host;
-  const past = part?.past ?? part?.infrared ?? [];
+  const past = part?.past ?? [];
   const soon = part?.nowcast ?? [];
   return [
     ...past.map((f) => ({ ...f, host, forecast: false })),
@@ -131,21 +116,18 @@ function framesFor(data, which) {
  * opacity rather than removed: taking a layer off the map throws its tiles
  * away, and the loop would flicker its way through a re-download on each pass.
  */
-const keyOf = (frame) => `${mode}:${frame.time}`;
+const keyOf = (frame) => String(frame.time);
 
 function layerFor(frame) {
   const key = keyOf(frame);
   const existing = layers.get(key);
   if (existing) return existing;
 
-  // The satellite tiles use a different scheme: 0 is the plain infrared ramp,
-  // and asking for the rainfall colours there would paint cloud as downpour.
-  const scheme = mode === 'radar' ? SCHEME : 0;
-  const url = `${frame.host}${frame.path}/${TILE_SIZE}/{z}/{x}/{y}/${scheme}/${OPTIONS}.png`;
+  const url = `${frame.host}${frame.path}/${TILE_SIZE}/{z}/{x}/{y}/${SCHEME}/${OPTIONS}.png`;
   const layer = L.tileLayer(url, {
     opacity: 0,
     pane: 'radar',
-    maxNativeZoom: mode === 'radar' ? 12 : 8,
+    maxNativeZoom: 12,
     maxZoom: 19,
     // The fade between frames is a CSS transition on this class rather than a
     // timer stepping opacity here: it runs on the compositor, so it stays
@@ -162,7 +144,7 @@ function layerFor(frame) {
   // Knowing when a frame is ready is what lets the panel say so. Recorded
   // against the frame rather than counted, because a layer built for an
   // earlier visit is already loaded and will never fire the event again --
-  // counting would leave "loading" on screen for good after switching modes.
+  // counting would leave "loading" on screen for good after a refresh.
   layer.once('load', () => { ready.add(key); paintDock(); });
   layer.addTo(map);
   layers.set(key, layer);
@@ -231,15 +213,15 @@ async function refresh({ keepPosition = false, fetchIndex = true } = {}) {
   const wasAt = at;
   try {
     if (fetchIndex) index = await loadIndex();
-    const next = framesFor(index, mode);
-    if (!next.length) throw new Error(`no ${MODES[mode].label.toLowerCase()} frames are published`);
+    const next = framesFor(index);
+    if (!next.length) throw new Error('no rain radar frames are published');
     failed = '';
 
     // Rebuilding from scratch on every refresh would re-download two hours of
     // tiles. Only the frames that actually went away are dropped.
-    const keys = new Set(next.map((f) => `${mode}:${f.time}`));
+    const keys = new Set(next.map(keyOf));
     for (const [key, layer] of layers) {
-      if (key.startsWith(`${mode}:`) && !keys.has(key)) {
+      if (!keys.has(key)) {
         layer.remove();
         layers.delete(key);
         ready.delete(key);
@@ -254,25 +236,6 @@ async function refresh({ keepPosition = false, fetchIndex = true } = {}) {
     clearLayers();
     paintDock();
     throw err;
-  }
-}
-
-/** Switch between ground radar and the satellite view. */
-async function setMode(next) {
-  if (next === mode) return;
-  mode = next;
-  remember();
-  // The other mode's layers are kept: switching back should be instant, and
-  // they are already paid for.
-  for (const [key, layer] of layers) {
-    if (!key.startsWith(`${mode}:`)) layer.setOpacity(0);
-  }
-  if (!enabled) { paintDock(); return; }
-  try {
-    await refresh({ fetchIndex: !index });
-    step();
-  } catch {
-    /* refresh has already said what went wrong. */
   }
 }
 
@@ -311,16 +274,6 @@ function buildDock() {
     el('button', { class: 'radar-toggle', id: 'radarToggle', onclick: toggle },
       el('span', { class: 'radar-mark' }, '◈'), 'Weather'),
     el('div', { class: 'radar-body', id: 'radarBody', hidden: true },
-      // Which of the two views. Radar is sharp where it reaches; the satellite
-      // reaches everywhere.
-      el('div', { class: 'radar-modes' },
-        ...Object.entries(MODES).map(([key, spec]) =>
-          el('button', {
-            class: `radar-mode${key === mode ? ' is-on' : ''}`,
-            dataset: { mode: key },
-            onclick: () => setMode(key),
-          }, spec.label))),
-
       el('div', { class: 'radar-time', id: 'radarTime' }, '—'),
 
       el('div', { class: 'radar-controls' },
@@ -373,7 +326,7 @@ function buildDock() {
 }
 
 const remember = debounce(() => {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ mode, speed, opacity })); } catch {}
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ speed, opacity })); } catch {}
 }, 400);
 
 function togglePlay() {
@@ -427,9 +380,6 @@ function paintDock() {
   body.hidden = !enabled;
   if (!enabled) return;
 
-  for (const button of document.querySelectorAll('.radar-mode')) {
-    button.classList.toggle('is-on', button.dataset.mode === mode);
-  }
   for (const button of document.querySelectorAll('.radar-speed')) {
     button.classList.toggle('is-on', button.dataset.speed === speed);
   }
@@ -470,13 +420,13 @@ function paintDock() {
   scrub.max = String(frames.length - 1);
   scrub.value = String(at);
 
-  key.replaceChildren(...MODES[mode].legend.map(([colour, label]) =>
+  key.replaceChildren(...LEGEND.map(([colour, label]) =>
     el('span', { class: 'radar-swatch', title: label },
       el('i', { style: `background:${colour}` }), label)));
 
   const still = stillLoading();
   note.textContent = frame.forecast
     ? 'Extrapolated from the recent motion — not an observation.'
-    : still > 0 ? `${MODES[mode].note} Loading ${still} more frames…`
-      : MODES[mode].note;
+    : still > 0 ? `${NOTE} Loading ${still} more frames…`
+      : NOTE;
 }

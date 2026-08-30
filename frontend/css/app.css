@@ -620,18 +620,16 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   font-size: 10px; line-height: 1.45; color: var(--ink-faint);
 }
 
-/* Which of the two weather views, and how fast the loop runs. */
-.radar-modes, .radar-speeds { display: flex; gap: 4px; margin-bottom: 8px; }
-.radar-speeds { margin: 8px 0 0; }
-.radar-mode, .radar-speed {
+/* How fast the loop runs. */
+.radar-speeds { display: flex; gap: 4px; margin: 8px 0 0; }
+.radar-speed {
   flex: 1; padding: 4px 2px; cursor: pointer; font: inherit;
   background: transparent; color: var(--ink-faint);
   border: 1px solid var(--line); border-radius: 6px;
+  font-size: 9.5px; text-transform: lowercase;
 }
-.radar-mode { font-size: 10.5px; }
-.radar-speed { font-size: 9.5px; text-transform: lowercase; }
-.radar-mode:hover, .radar-speed:hover { color: var(--ink); }
-.radar-mode.is-on, .radar-speed.is-on {
+.radar-speed:hover { color: var(--ink); }
+.radar-speed.is-on {
   color: #d9ffe9; background: rgba(62,227,159,.14); border-color: rgba(62,227,159,.5);
 }
 .radar-now {

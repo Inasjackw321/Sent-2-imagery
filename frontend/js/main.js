@@ -6,6 +6,7 @@ import { $, toast } from './ui.js';
 import { initMap, initPlaceSearch } from './map.js';
 import { initImagery } from './imagery.js';
 import { initInstall } from './install.js';
+import { shareCanvasClicks } from './canvasreach.js';
 
 async function main() {
   // Do this first, so the install button and offline shell work even if the
@@ -33,6 +34,8 @@ async function main() {
     toast('Demo mode: imagery is synthetic, not real Sentinel-2 data.');
   }
 
+  // Before any layer is built, so no renderer is created unpatched.
+  shareCanvasClicks();
   initMap();
   initPlaceSearch();
   initImagery();

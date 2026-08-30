@@ -159,6 +159,21 @@ export const CAMS = [
     src: 'https://pildid.teeilm.ee/2026/08_20/cam/ee/cam_112_1787178307.jpg',
     host: 'pildid.teeilm.ee',
   },
+  // Both of these sit on Baengnyeong island, the South Korean island closest
+  // to the North Korean coast -- a few miles south of the Northern Limit Line
+  // and about a dozen from the mainland opposite.
+  {
+    id: 'baengnyeong-east', name: 'Baengnyeong east', place: 'Ongjin, South Korea',
+    lat: 37.9553, lon: 124.7354, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793910208/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'baengnyeong-west', name: 'Baengnyeong west', place: 'Ongjin, South Korea',
+    lat: 37.9747, lon: 124.6189, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1762140071/original.jpg',
+    host: 'windy.com',
+  },
   {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
