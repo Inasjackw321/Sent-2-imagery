@@ -241,6 +241,62 @@ export const CAMS = [
     host: 'starvisor.net',
   },
   {
+    id: 'tuapse', name: 'Tuapse', place: 'Krasnodar Krai, Russia',
+    lat: 44.0978, lon: 39.0534, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1457258031/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'krasnodar', name: 'Krasnodar', place: 'Krasnodar Krai, Russia',
+    lat: 45.0464, lon: 39.0281, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1746027972/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'pyatigorsk', name: 'Pyatigorsk', place: 'Stavropol Krai, Russia',
+    lat: 44.0332, lon: 43.0506, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793899677/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'saratov', name: 'Saratov', place: 'Saratov Oblast, Russia',
+    lat: 51.5276, lon: 46.0597, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793901790/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'moscow-southeast', name: 'Moscow south-east', place: 'Russia',
+    lat: 55.7074, lon: 37.7669, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1662277766/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'moscow-centre', name: 'Moscow centre', place: 'Russia',
+    lat: 55.7262, lon: 37.5636, precision: 'given position',
+    // EarthCam's own video host rather than the page that frames it, so this
+    // is a playlist for the player here instead of somebody else's embed.
+    kind: 'hls',
+    src: 'https://videos-3.earthcam.com/fecnetwork/moscowHD1.flv/playlist.m3u8',
+    host: 'earthcam.com',
+  },
+  {
+    id: 'east-sussex', name: 'East Sussex', place: 'England',
+    lat: 50.9725, lon: 0.9677, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1474904378/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'ida-viru-road', name: 'Ida-Viru road camera', place: 'Ida-Viru, Estonia',
+    lat: 59.2370, lon: 27.3506, precision: 'given position',
+    // Same shape as the Narva camera: the address ends in the exact second the
+    // frame was taken, which cannot be guessed, so it is one picture rather
+    // than a camera and is labelled that way instead of refreshing an address
+    // that will stop answering.
+    kind: 'still', frozen: true,
+    src: 'https://pildid.teeilm.ee/2026/08_20/cam/ee/cam_21_1787178392.jpg',
+    host: 'pildid.teeilm.ee',
+  },
+  {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
     // VK's video_ext player is built to be framed, so this one is an embed
@@ -605,7 +661,10 @@ function stream(cam) {
     video.src = cam.src;
     video.addEventListener('loadeddata', () => waiting.remove(), { once: true });
     video.addEventListener('error', () => failed('The stream is offline or unreachable.'), { once: true });
-    playing.set(cam.id, {});
+    // Safari plays this itself, so there is no hls.js instance to destroy on
+    // close -- the element is the thing holding the stream open, and it has to
+    // be handed over or closing the window leaves it pulling video.
+    playing.set(cam.id, { video });
     return [video, waiting];
   }
 
@@ -665,6 +724,13 @@ function stopPlaying(id) {
   // Without this the player keeps pulling video segments off the host for a
   // window that is no longer on screen.
   held.player?.destroy();
+  // The native path has no player to destroy, so the element is stopped
+  // directly: paused, emptied, and told to let go of what it had buffered.
+  if (held.video) {
+    held.video.pause();
+    held.video.removeAttribute('src');
+    held.video.load();
+  }
 }
 
 // ── The panel ──────────────────────────────────────────────────

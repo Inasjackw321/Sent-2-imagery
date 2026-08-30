@@ -58,9 +58,15 @@ CSP = "; ".join([
     "https://pics.starvisor.net",
     # Everything the browser fetches by script: this backend, the radar index,
     # and the HLS playlists and segments.
+    # EarthCam serves its playlists from numbered video hosts that rotate, and
+    # a playlist names its own segment host, so this one is a wildcard where
+    # the others are exact. It widens the policy only across a domain already
+    # trusted enough to be framed below.
     "connect-src 'self' https://api.rainviewer.com "
-    "https://*.streamlock.net https://*.vdotcameras.com https://cdn.jsdelivr.net",
-    "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com",
+    "https://*.streamlock.net https://*.vdotcameras.com "
+    "https://*.earthcam.com https://cdn.jsdelivr.net",
+    "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
+    "https://*.earthcam.com",
     # The camera embeds, named one host at a time.
     "frame-src https://ipcamlive.com https://rtsp.me https://vkvideo.ru "
     "https://www.earthcam.com",
