@@ -271,6 +271,14 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 #map { flex: 1; background: #10141b; }
 /* A drawing tool is armed: the pointer says so, and the map will not pan. */
 #map.is-drawing, #map.is-drawing .leaflet-grab { cursor: crosshair; }
+/* While a tool is armed the pointer belongs to it. Without this a drag that
+   happens to start on a ship, a fire or a camera pin is swallowed by that
+   marker: no sketch begins, the tool stays armed, and the map is left unable
+   to pan with nothing on screen to explain why. */
+#map.is-drawing .leaflet-marker-pane,
+#map.is-drawing .leaflet-overlay-pane,
+#map.is-drawing .leaflet-tooltip-pane,
+#map.is-drawing .leaflet-popup-pane { pointer-events: none; }
 .leaflet-container { background: #10141b; font: inherit; }
 
 /* Backdrop grading. These are basemaps, not the subject: the app's own
@@ -749,9 +757,11 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .seis-mag input { width: 100%; margin-top: 3px; accent-color: #7ed6ff; }
 .seis-key { display: grid; gap: 2px; font-size: 9.5px; }
 .seis-key-row { display: flex; align-items: center; gap: 5px; }
+/* A ring, to match the marker. The legend has to show the shape as well as
+   the colour, or it teaches the wrong thing about what is on the map. */
 .seis-dot {
-  width: 9px; height: 9px; border-radius: 50%; display: inline-block;
-  border: 1px solid rgba(255,255,255,.2);
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+  border: 2px solid currentColor; background: none !important;
 }
 .seis-hint { font-size: 9.5px; line-height: 1.45; color: var(--ink-faint); }
 .seis-count { margin-top: 4px; color: var(--ink); font-size: 11px; line-height: 1.5; }
@@ -1091,4 +1101,48 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .layer-pin:hover { color: var(--accent); }
 .layer-tip {
   margin-top: 6px; font-size: 9.5px; line-height: 1.45; color: var(--ink-faint);
+}
+
+/* ── Coordinates beside the imagery ─────────────────────────── */
+
+/* Down the left edge, clear of the zoom control it was sitting on top of. */
+.coord-panel {
+  position: absolute; top: 132px; left: 12px; z-index: 500;
+  min-width: 214px; max-width: 260px;
+  padding: 9px 11px; border-radius: 10px; font-size: 11px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+.coord-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.coord-head b { flex: 1; color: var(--ink); font-size: 11px; font-weight: 600; }
+.coord-x {
+  cursor: pointer; font: inherit; font-size: 15px; line-height: 1;
+  background: none; border: 0; color: var(--ink-faint); padding: 0 2px;
+}
+.coord-x:hover { color: var(--ink); }
+.coord-list {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; margin: 0;
+  font-size: 10.5px;
+}
+.coord-list dt { color: var(--ink-faint); }
+.coord-list dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* The live reading, which is the one that moves, so it gets its own line
+   rather than jostling the fixed ones. */
+.coord-pointer {
+  margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line);
+  font-size: 10.5px; color: var(--accent); font-variant-numeric: tabular-nums;
+  min-height: 15px;
+}
+.coord-pointer .dim { color: var(--ink-faint); }
+.coord-span { margin-top: 5px; font-size: 9.5px; color: var(--ink-faint); }
+
+.coord-btn {
+  width: 100%; margin-top: 6px; padding: 5px 8px; cursor: pointer; font: inherit;
+  font-size: 10.5px; border-radius: 7px; color: var(--ink-dim);
+  background: rgba(0,0,0,.3); border: 1px solid var(--line);
+}
+.coord-btn:hover { color: var(--ink); border-color: #3a4a66; }
+.coord-btn.is-on {
+  color: var(--accent); border-color: rgba(76,194,255,.5);
+  background: rgba(14,45,64,.7);
 }

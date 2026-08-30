@@ -136,13 +136,21 @@ def denoise(bands: dict[str, MaskedArray], strength: float = 0.0) -> dict:
 # ── Post-stretch corrections (operate on 0-1 images) ───────────
 
 
-def clahe(image: np.ndarray, clip_limit: float = 2.0, tiles: int = 8) -> np.ndarray:
+def clahe(image: np.ndarray, clip_limit: float = 2.0, tiles: int = 8,
+          valid: np.ndarray | None = None) -> np.ndarray:
     """Contrast-limited adaptive histogram equalisation.
 
     A global stretch has to compromise between a bright desert and a dark
     forest in the same frame. This equalises within tiles instead, clipping the
     histogram first so flat areas do not turn into noise, then blends the tile
     mappings so no seams show.
+
+    `valid` keeps masked cloud and off-swath ground out of the histograms.
+    The effect is smaller than it first appears -- contrast limiting already
+    clips the spike that black puts at the bottom of a tile's histogram, which
+    is half of what the clip limit is for -- but it is not nothing: measured at
+    up to a 3% tone shift where a hole covers most of one tile, and a tile that
+    is entirely hole has no histogram to build from at all.
     """
     if clip_limit <= 0:
         return image
@@ -158,6 +166,11 @@ def clahe(image: np.ndarray, clip_limit: float = 2.0, tiles: int = 8) -> np.ndar
     for i in range(tiles):
         for j in range(tiles):
             tile = quantised[ty[i]:ty[i + 1], tx[j]:tx[j + 1]]
+            if valid is not None:
+                tile = tile[valid[ty[i]:ty[i + 1], tx[j]:tx[j + 1]]]
+            # A tile that is entirely cloud or entirely off the swath has no
+            # histogram to build from, so it is left alone rather than
+            # equalised against nothing.
             if tile.size == 0:
                 mappings[i, j] = np.linspace(0, 1, bins)
                 continue
@@ -193,12 +206,12 @@ def clahe(image: np.ndarray, clip_limit: float = 2.0, tiles: int = 8) -> np.ndar
 
 
 def apply_clahe_rgb(rgb: np.ndarray, clip_limit: float = 2.0, tiles: int = 8,
-                    strength: float = 1.0) -> np.ndarray:
+                    strength: float = 1.0, valid: np.ndarray | None = None) -> np.ndarray:
     """Equalise brightness only, so colours are not pulled about."""
     if clip_limit <= 0 or strength <= 0:
         return rgb
     luma = rgb @ np.array([0.2126, 0.7152, 0.0722], dtype="float32")
-    equalised = clahe(luma, clip_limit, tiles)
+    equalised = clahe(luma, clip_limit, tiles, valid=valid)
     equalised = luma * (1 - strength) + equalised * strength
     with np.errstate(divide="ignore", invalid="ignore"):
         gain = np.where(luma > 1e-4, equalised / luma, 1.0)
@@ -206,7 +219,16 @@ def apply_clahe_rgb(rgb: np.ndarray, clip_limit: float = 2.0, tiles: int = 8,
 
 
 def white_balance(rgb: np.ndarray, strength: float = 1.0) -> np.ndarray:
-    """Grey-world balance: assume the average of the scene should be neutral."""
+    """Grey-world balance: assume the average of the scene should be neutral.
+
+    This one needs no mask, which is worth writing down because it looks as
+    though it should. Ground the satellite never saw arrives as black, and a
+    black hole scales all three channel means by the same factor -- the ratio
+    the correction is built from cancels it exactly. Once the hole is filled
+    with the scene average it cancels again, because adding copies of a mean to
+    a set does not move its mean. Either way the answer is the same, and the
+    test beside this says so.
+    """
     if strength <= 0:
         return rgb
     means = rgb.reshape(-1, 3).mean(axis=0)
@@ -215,6 +237,24 @@ def white_balance(rgb: np.ndarray, strength: float = 1.0) -> np.ndarray:
         gains = np.where(means > 1e-5, target / means, 1.0)
     gains = 1.0 + (np.nan_to_num(gains, nan=1.0) - 1.0) * strength
     return np.clip(rgb * gains, 0, 1).astype("float32")
+
+
+def fill_invalid(rgb: np.ndarray, valid: np.ndarray | None) -> np.ndarray:
+    """Replace pixels the satellite did not measure with the scene's average.
+
+    Sharpening adds the difference between a pixel and the blur around it, and
+    next to a black hole that difference is large and positive -- so the ground
+    beside a masked cloud is brightened. Measured on a flat 0.600 field with
+    the default sharpening, the four pixels nearest the hole come out at 0.690:
+    a bright fringe tracing the outline of the cloud that was supposedly
+    removed. Filling the hole with the scene average makes the difference
+    nothing, and the alpha mask hides the fill itself at the end.
+    """
+    if valid is None or valid.all() or not valid.any():
+        return rgb
+    out = rgb.copy()
+    out[~valid] = rgb[valid].reshape(-1, 3).mean(axis=0)
+    return out
 
 
 def unsharp(rgb: np.ndarray, amount: float = 0.0, radius: float = 1.2,

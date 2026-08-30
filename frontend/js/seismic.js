@@ -46,11 +46,18 @@ const RADIUS_PER_MAG = 1.8;
 // Depth, not magnitude, decides the colour. A shallow quake does far more at
 // the surface than a deep one of the same size, and it is the fact a magnitude
 // alone hides.
+//
+// The ramp used to run red-orange-yellow, which is the fire palette almost
+// exactly -- and fires are drawn as graded circles too, so on a map with both
+// layers on there was no telling an earthquake from a burning field. It is a
+// cool ramp now, and the marker below is a ring with a dot in the middle
+// rather than a disc: colour separates them at a glance, shape separates them
+// for anyone who cannot rely on colour.
 const DEPTHS = [
-  { under: 30, colour: '#ff4d6d', edge: '#ff8fa3', label: 'shallow, under 30 km' },
-  { under: 100, colour: '#ffa62b', edge: '#ffd166', label: '30 – 100 km' },
-  { under: 300, colour: '#ffe66d', edge: '#fff3b0', label: '100 – 300 km' },
-  { under: Infinity, colour: '#8ecae6', edge: '#bde0fe', label: 'deep, over 300 km' },
+  { under: 30, colour: '#7ef0ff', edge: '#d6faff', label: 'shallow, under 30 km' },
+  { under: 100, colour: '#4cc2ff', edge: '#9adcff', label: '30 – 100 km' },
+  { under: 300, colour: '#7d8cff', edge: '#b6bfff', label: '100 – 300 km' },
+  { under: Infinity, colour: '#c77dff', edge: '#e3c2ff', label: 'deep, over 300 km' },
 ];
 
 export function initSeismic(leafletMap) {
@@ -101,7 +108,7 @@ function buildDock() {
           })),
         el('div', { class: 'seis-key' },
           ...DEPTHS.map((d) => el('div', { class: 'seis-key-row' },
-            el('span', { class: 'seis-dot', style: `background:${d.colour}` }), d.label)))),
+            el('span', { class: 'seis-dot', style: `color:${d.colour}` }), d.label)))),
 
       el('label', { class: 'seis-check' },
         el('input', {
@@ -224,11 +231,24 @@ function drawQuakes(data) {
   quakeLayer.clearLayers();
   for (const q of data.quakes) {
     const { colour, edge } = depthBand(q.depth_km);
+    const radius = RADIUS_MIN + RADIUS_PER_MAG * Math.max(q.magnitude ?? 0, 0.5);
+
+    // A ring, not a disc: an epicentre is a point with an extent around it,
+    // and a hollow ring reads that way while a filled circle reads as an area
+    // that is on fire. The ring also stays legible where several overlap,
+    // which a stack of translucent discs does not.
     L.circleMarker([q.lat, q.lon], {
-      renderer: quakeCanvas,
-      radius: RADIUS_MIN + RADIUS_PER_MAG * Math.max(q.magnitude ?? 0, 0.5),
-      color: edge, weight: 1, fillColor: colour, fillOpacity: 0.45, opacity: 0.9,
+      renderer: quakeCanvas, radius,
+      color: colour, weight: 2, opacity: 0.95, fill: false,
     }).bindPopup(() => quakePopup(q), POPUP).addTo(quakeLayer);
+
+    // The centre dot marks the epicentre itself, and keeps a small distant
+    // event visible when its ring is only a few pixels across.
+    L.circleMarker([q.lat, q.lon], {
+      renderer: quakeCanvas, radius: 1.6,
+      color: edge, weight: 0, fillColor: edge, fillOpacity: 0.95,
+      interactive: false,
+    }).addTo(quakeLayer);
   }
   const window = hours === 24 ? '24 h' : hours === 168 ? '7 days' : '30 days';
   return data.count

@@ -252,3 +252,157 @@ def test_nothing_ever_needs_clipping():
     for a, b in zip(wild.reshape(-1, 3)[:40], out.reshape(-1, 3)[:40]):
         if a.max() > 1e-3:
             assert _hsv(a)[0] == pytest.approx(_hsv(b)[0], abs=1e-3)
+
+
+# ── Enhancement on ground the satellite never saw ──────────────
+#
+# Masked cloud and everything outside the swath arrive here as exactly black.
+# Two of these operations then go wrong on it.
+#
+# Sharpening is the big one. It adds the difference between a pixel and the
+# blur around it, and beside a black hole that difference is large and
+# positive -- so a bright fringe traces the outline of every cloud that was
+# supposedly removed. Measured: 0.690 where the ground is 0.600.
+#
+# CLAHE is the small one. Black puts a spike at the bottom of the histogram of
+# every tile a cloud touches, but contrast limiting already clips most of that
+# away, so the residue is a few percent of tone at worst. Worth fixing, not
+# worth a story.
+#
+# Grey-world white balance, measured rather than assumed, turns out to need no
+# mask at all -- twice over. A black hole scales all three channel means by the
+# same factor and the ratio the correction is built from cancels it; and once
+# the hole is filled with the scene average it cancels again, because adding
+# copies of a mean to a set does not move its mean. The tests below record
+# that, because it is the obvious-looking bug that is not there.
+
+
+def _scene(fraction_masked: float, shade: float = 0.45):
+    """A flat scene with a rectangular hole punched in it."""
+    rgb = np.full((64, 64, 3), shade, dtype="float32")
+    valid = np.ones((64, 64), dtype=bool)
+    cut = int(64 * fraction_masked)
+    if cut:
+        valid[:cut, :] = False
+        rgb[:cut, :] = 0.0
+    return rgb, valid
+
+
+def _patchy():
+    """Half masked, and the visible half is not one flat colour."""
+    rgb = np.zeros((64, 64, 3), dtype="float32")
+    rgb[32:48] = [0.55, 0.40, 0.30]
+    rgb[48:] = [0.28, 0.34, 0.22]
+    valid = np.zeros((64, 64), dtype=bool)
+    valid[32:] = True
+    return rgb, valid
+
+
+def test_white_balance_is_unmoved_by_how_much_was_masked():
+    """The correction depends on the light, not on the weather.
+
+    Two pictures of the same ground, one with twice the cloud cut out of it,
+    get the same correction -- with no mask needed to arrange that.
+    """
+    rgb, valid = _patchy()
+    more_cloud = rgb.copy()
+    more_cloud[32:40] = 0.0
+
+    a = enhance.white_balance(enhance.fill_invalid(rgb, valid), 1.0)
+    b_valid = valid.copy()
+    b_valid[32:40] = False
+    b = enhance.white_balance(enhance.fill_invalid(more_cloud, b_valid), 1.0)
+    assert np.allclose(a[60], b[60], atol=0.02)
+
+
+def test_filling_the_hole_does_not_move_the_white_balance_either():
+    """Adding copies of a mean to a set does not move its mean, so the fill is
+    invisible to this too. Recorded so nobody re-adds a mask it cannot use."""
+    rgb, valid = _patchy()
+    filled = enhance.fill_invalid(rgb, valid)
+    # The same ground with nothing masked at all, as its own picture.
+    only = rgb[32:].copy()
+    assert np.allclose(
+        enhance.white_balance(filled, 1.0)[60],
+        enhance.white_balance(only, 1.0)[28], atol=1e-4)
+
+
+def _textured(masked_rows: int):
+    """Ground with a real range of brightness in it, and a hole above it.
+
+    The texture is the point. A flat patch has a one-spike histogram whichever
+    way you count it, so it cannot tell a masked CLAHE from an unmasked one --
+    which is exactly the mistake the first version of this test made.
+    """
+    ramp = np.linspace(0.15, 0.85, 64, dtype="float32")
+    rgb = np.repeat(ramp[None, :, None], 64, axis=0).repeat(3, axis=2).copy()
+    valid = np.ones((64, 64), dtype=bool)
+    if masked_rows:
+        valid[:masked_rows] = False
+        rgb[:masked_rows] = 0.0
+    return rgb, valid
+
+
+def test_clahe_does_not_equalise_against_a_hole():
+    """A tile half full of masked cloud must map its real pixels the way a tile
+    with no cloud in it does.
+
+    Black counted as data puts a spike at the bottom of the histogram, and the
+    whole mapping above it shifts -- which is the pale blotch that appears
+    exactly where a cloud was taken out.
+    """
+    clear, clear_valid = _textured(0)
+    cloudy, cloudy_valid = _textured(32)
+
+    a = enhance.apply_clahe_rgb(clear, clip_limit=2.0, tiles=4, valid=clear_valid)
+    b = enhance.apply_clahe_rgb(cloudy, clip_limit=2.0, tiles=4, valid=cloudy_valid)
+    # Row 60 is well inside the valid half of both.
+    assert np.allclose(a[60], b[60], atol=0.03)
+
+
+def test_counting_the_hole_shifts_the_tone_a_little():
+    """Small, and measured rather than assumed.
+
+    The hole has to cover most of a tile before it shows at all -- 44 of the
+    64 rows here, against tiles 16 rows deep -- because contrast limiting
+    clips the spike that black would otherwise put in the histogram.
+    """
+    cloudy, cloudy_valid = _textured(44)
+    with_mask = enhance.apply_clahe_rgb(cloudy, clip_limit=2.0, tiles=4, valid=cloudy_valid)
+    without = enhance.apply_clahe_rgb(cloudy, clip_limit=2.0, tiles=4)
+    assert np.abs(with_mask[48:] - without[48:]).max() > 0.02
+
+
+def test_a_tile_that_is_entirely_cloud_is_left_alone():
+    """There is no histogram to build from, and equalising against nothing
+    would produce a mapping out of thin air."""
+    rgb = np.full((32, 32, 3), 0.4, dtype="float32")
+    valid = np.zeros((32, 32), dtype=bool)
+    out = enhance.apply_clahe_rgb(rgb, clip_limit=2.0, tiles=4, valid=valid)
+    assert np.isfinite(out).all()
+
+
+def test_masked_ground_is_filled_before_anything_blurs_it():
+    """Sharpening spreads a pixel into its neighbours, so a black hole draws a
+    dark outline of the removed cloud onto the real ground beside it."""
+    rgb, valid = _scene(0.5, shade=0.6)
+    filled = enhance.fill_invalid(rgb, valid)
+    assert filled[10, 10, 0] == pytest.approx(0.6, abs=1e-4)
+    # And the ground itself is untouched.
+    assert filled[60, 10, 0] == pytest.approx(0.6, abs=1e-4)
+
+
+def test_the_bright_fringe_is_what_the_fill_removes():
+    """The measurement, not the impression: on a flat 0.600 field the ground
+    next to a masked cloud is sharpened up to 0.690, and filled it stays put."""
+    rgb, valid = _scene(0.5, shade=0.6)
+    unfilled = enhance.unsharp(rgb, amount=0.9, radius=2.0)
+    filled = enhance.unsharp(enhance.fill_invalid(rgb, valid), amount=0.9, radius=2.0)
+    near = slice(32, 40)           # the first rows of real ground
+    assert np.abs(unfilled[near, :, 0] - 0.6).max() > 0.08
+    assert np.abs(filled[near, :, 0] - 0.6).max() < 0.005
+
+
+def test_a_picture_with_nothing_masked_is_unchanged_by_the_fill():
+    rgb, valid = _scene(0.0)
+    assert enhance.fill_invalid(rgb, valid) is rgb

@@ -26,10 +26,18 @@ const overlays = new Map();
 let mode = 'none';
 let drawing = null;
 
-const AOI_STYLE = { color: '#4cc2ff', weight: 2, fillColor: '#4cc2ff', fillOpacity: 0.10, dashArray: null };
-const SKETCH_STYLE = { color: '#ffd166', weight: 2, dashArray: '5,5', fill: false };
+// interactive: false on all three. A Leaflet path catches the pointer by
+// default, and these are annotations rather than controls -- there is nothing
+// to click on them. Left interactive, the area you have just drawn swallows
+// every drag and click inside it: the map stops panning over its own selection
+// and clicking the imagery stops answering, which reads as the mouse being
+// stuck in drag mode over a large part of the screen.
+const AOI_STYLE = { color: '#4cc2ff', weight: 2, fillColor: '#4cc2ff', fillOpacity: 0.10,
+  dashArray: null, interactive: false };
+const SKETCH_STYLE = { color: '#ffd166', weight: 2, dashArray: '5,5', fill: false,
+  interactive: false };
 const CAPTURE_STYLE = { color: '#37e0a0', weight: 2, dashArray: '4,4', fill: true,
-  fillColor: '#37e0a0', fillOpacity: 0.10 };
+  fillColor: '#37e0a0', fillOpacity: 0.10, interactive: false };
 
 const HINTS = {
   none: 'Drag to pan, scroll to zoom. Right-click anywhere for the next satellite pass.',
@@ -199,6 +207,12 @@ export function initMap() {
     }
   });
 
+  map.on('mousemove', (e) => {
+    lastPointer = e.latlng;
+    if (showCoords) paintCoords();
+  });
+  map.on('mouseout', () => { lastPointer = null; if (showCoords) paintCoords(); });
+
   on('image', showOverlay);
   return map;
 }
@@ -244,6 +258,23 @@ function bindDrawTools() {
   document.addEventListener('pointercancel', looseEnd);
   // Alt-tabbing away mid-drag comes back with the button already released.
   window.addEventListener('blur', looseEnd);
+
+  // Reaching for anything outside the map puts the tool away.
+  //
+  // An armed tool takes the drag away from the map, so a tool left armed is a
+  // map that will not pan and will not answer a click -- and there was nothing
+  // to end it but the Escape key. Arming a box and then opening a panel, or
+  // clicking one corner of a polygon and wandering off, both left it that way.
+  // Going somewhere else is as clear a statement that you have finished
+  // drawing as putting the tool back would be.
+  document.addEventListener('pointerdown', (e) => {
+    if (mode === 'none' || drawing) return;
+    if (e.target.closest('#map')) return;
+    // Except the tool buttons themselves, which have their own meaning: they
+    // swap tools, and disarming underneath them would fight that.
+    if (e.target.closest('[data-draw]')) return;
+    setMode('none');
+  }, true);
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') setMode('none');
@@ -405,7 +436,7 @@ export async function setAoi(spec, { fit = false } = {}) {
 
 function drawAoi(geometry) {
   aoiLayer?.remove();
-  aoiLayer = L.geoJSON(geometry, { style: AOI_STYLE }).addTo(map);
+  aoiLayer = L.geoJSON(geometry, { style: AOI_STYLE, interactive: false }).addTo(map);
 }
 
 export function clearAoi() {
@@ -470,6 +501,59 @@ function pinOverlay(key) {
   toast('Pinned. Render another date and the two can be compared.');
 }
 
+// ── Where you are looking ──────────────────────────────────────
+//
+// A little readout beside the imagery: the corners of the picture, its centre,
+// and wherever the pointer happens to be. Off by default, because most of the
+// time the map is the answer and a coordinate is noise -- but the moment you
+// want to write down where something is, nothing else in the interface will
+// tell you.
+
+let showCoords = false;
+let lastPointer = null;
+
+function toggleCoords() {
+  showCoords = !showCoords;
+  paintCoords();
+  renderLayerDock();
+}
+
+function paintCoords() {
+  const box = $('#coordPanel');
+  if (!box) return;
+  const entry = [...overlays.values()].at(-1);
+  if (!showCoords || !entry) {
+    box.hidden = true;
+    return;
+  }
+
+  const [w, s, e, n] = entry.meta.grid.bounds;
+  const rows = [
+    ['Centre', fmt.coord((w + e) / 2, (s + n) / 2)],
+    ['North-west', fmt.coord(w, n)],
+    ['South-east', fmt.coord(e, s)],
+  ];
+  box.replaceChildren(
+    el('div', { class: 'coord-head' },
+      el('b', {}, 'Coordinates'),
+      el('button', {
+        class: 'coord-x', title: 'Hide', onclick: toggleCoords,
+      }, '×')),
+    el('dl', { class: 'coord-list' },
+      ...rows.flatMap(([label, value]) => [el('dt', {}, label), el('dd', {}, value)])),
+    el('div', { class: 'coord-pointer' },
+      lastPointer
+        ? el('span', {}, fmt.coord(lastPointer.lng, lastPointer.lat))
+        : el('span', { class: 'dim' }, 'Move over the map for a reading')),
+    // The extent is the honest size of what is on screen, and it is the thing
+    // people most often want alongside a position.
+    el('div', { class: 'coord-span' },
+      `${Math.abs(e - w).toFixed(4)}° × ${Math.abs(n - s).toFixed(4)}°`
+      + (entry.meta.grid.width ? ` · ${entry.meta.grid.width}×${entry.meta.grid.height} px` : '')),
+  );
+  box.hidden = false;
+}
+
 function showOverlay(image) {
   if (!image?.meta?.grid) return;
   const key = image.meta.satellite ?? 'sentinel-2';
@@ -489,6 +573,7 @@ function showOverlay(image) {
   store.images.set(key, image);
   renderLayerDock();
   if (compare) applyCompare();
+  paintCoords();
   drawMapLegend(image.meta);
   // Looking at the imagery is the whole point, so go and look at it.
   map.fitBounds([[s, w], [n, e]], { padding: [28, 28] });
@@ -551,6 +636,9 @@ function renderLayerDock() {
     dock.append(el('div', { class: 'layer-tip' },
       'Press ⊕ to keep this picture, then render another date to compare them.'));
   }
+  dock.append(el('button', {
+    class: `coord-btn${showCoords ? ' is-on' : ''}`, onclick: toggleCoords,
+  }, showCoords ? '✕ Hide coordinates' : '⌖ Show coordinates'));
   dock.hidden = false;
 }
 

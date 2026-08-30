@@ -246,7 +246,7 @@ def _enhance_bands(bands: dict, req: dict, applied: list[str],
 
 
 def _enhance_rgb(rgb: np.ndarray, req: dict, applied: list[str],
-                 scale: int = 1) -> np.ndarray:
+                 scale: int = 1, valid: np.ndarray | None = None) -> np.ndarray:
     """Corrections on the normalised 0-1 image, after the stretch.
 
     `scale` is how much finer than the satellite the image was sampled, and it
@@ -257,12 +257,16 @@ def _enhance_rgb(rgb: np.ndarray, req: dict, applied: list[str],
     fine detail than the fixed radius, at the same fidelity.
     """
     image = rgb.astype("float32") / 255.0
+    # Everything below either measures the whole picture or spreads one pixel
+    # into the next, and both go wrong on ground the satellite never saw.
+    image = enhance.fill_invalid(image, valid)
 
     clip_limit = float(req.get("adaptive_contrast") or 0)
     if clip_limit > 0:
         image = enhance.apply_clahe_rgb(image, clip_limit=clip_limit,
                                         tiles=int(req.get("adaptive_tiles", 8)),
-                                        strength=float(req.get("adaptive_strength", 1.0)))
+                                        strength=float(req.get("adaptive_strength", 1.0)),
+                                        valid=valid)
         applied.append("adaptive contrast")
 
     if req.get("white_balance"):
@@ -328,7 +332,8 @@ def render(req: dict) -> dict:
         hist = composite.histogram(index_arr, span=config.INDICES[index_name]["range"])
     else:
         rgb, valid, stretch_bounds = composite.render_composite(bands, preset, req)
-        rgb = _enhance_rgb(rgb, req, applied, scale=sr_report["scale"] if sr_report else 1)
+        rgb = _enhance_rgb(rgb, req, applied,
+                           scale=sr_report["scale"] if sr_report else 1, valid=valid)
 
     # A radar swath is a slanted strip, so the catalogue can offer a pass whose
     # bounding box covers the area while the strip itself misses it. Saying so
