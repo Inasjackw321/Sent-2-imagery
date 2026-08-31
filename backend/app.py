@@ -54,7 +54,7 @@ CSP = "; ".join([
     "https://server.arcgisonline.com https://*.rainviewer.com "
     "https://gibs.earthdata.nasa.gov "
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
-    "https://airtw.moenv.gov.tw https://pildid.teeilm.ee "
+    "https://airtw.moenv.gov.tw https://ristmikud.tallinn.ee "
     "https://pics.starvisor.net",
     # Everything the browser fetches by script: this backend, the radar index,
     # and the HLS playlists and segments.
@@ -69,7 +69,7 @@ CSP = "; ".join([
     "https://*.earthcam.com",
     # The camera embeds, named one host at a time.
     "frame-src https://ipcamlive.com https://rtsp.me https://vkvideo.ru "
-    "https://www.earthcam.com",
+    "https://www.earthcam.com https://balticlivecam.com",
     # Nothing here submits a form, embeds a plugin, or should ever be framed
     # by anybody else.
     "form-action 'none'",

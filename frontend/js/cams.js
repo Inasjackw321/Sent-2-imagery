@@ -149,16 +149,6 @@ export const CAMS = [
     stepMinutes: 10, backSteps: 12,
     host: 'airtw.moenv.gov.tw',
   },
-  {
-    id: 'narva-road', name: 'Narva road camera', place: 'Ida-Viru, Estonia',
-    lat: 59.4064, lon: 28.0356, precision: 'given position',
-    // The address ends in the exact second the frame was taken, which cannot
-    // be guessed, so this one is a single frame rather than a live camera and
-    // says so instead of refreshing an address that will stop answering.
-    kind: 'still', frozen: true,
-    src: 'https://pildid.teeilm.ee/2026/08_20/cam/ee/cam_112_1787178307.jpg',
-    host: 'pildid.teeilm.ee',
-  },
   // Both of these sit on Baengnyeong island, the South Korean island closest
   // to the North Korean coast -- a few miles south of the Northern Limit Line
   // and about a dozen from the mainland opposite.
@@ -286,20 +276,42 @@ export const CAMS = [
     host: 'windy.com',
   },
   {
-    id: 'ida-viru-road', name: 'Ida-Viru road camera', place: 'Ida-Viru, Estonia',
-    lat: 59.2370, lon: 27.3506, precision: 'given position',
-    // Same shape as the Narva camera: the address ends in the exact second the
-    // frame was taken, which cannot be guessed, so it is one picture rather
-    // than a camera and is labelled that way instead of refreshing an address
-    // that will stop answering.
-    kind: 'still', frozen: true,
-    src: 'https://pildid.teeilm.ee/2026/08_20/cam/ee/cam_21_1787178392.jpg',
-    host: 'pildid.teeilm.ee',
-  },
-  {
     id: 'odesa-coast', name: 'Odesa Oblast coast', place: 'Ukraine',
     lat: 46.4129, lon: 30.1209, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1668778986/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'tallinn-cam024', name: 'Tallinn junction camera', place: 'Tallinn, Estonia',
+    lat: 59.4178, lon: 24.7648, precision: 'given position',
+    // The city's traffic cameras publish at a fixed "last" address that is
+    // overwritten in place, so unlike the Estonian road frames this replaced
+    // it stays current and is worth asking for again.
+    kind: 'still', src: 'https://ristmikud.tallinn.ee/last/cam024.jpg',
+    host: 'ristmikud.tallinn.ee',
+  },
+  // Two views of the same spot on the Narva river, at the same given position:
+  // the town, and the castle facing Ivangorod fortress across the water. Both
+  // are pages built to be framed, so they are embeds rather than stills.
+  {
+    id: 'narva-town', name: 'Narva', place: 'Ida-Viru, Estonia',
+    lat: 59.3934, lon: 28.1429, precision: 'given position',
+    kind: 'embed',
+    src: 'https://balticlivecam.com/cameras/estonia/narva/narva/?embed',
+    host: 'balticlivecam.com',
+  },
+  {
+    id: 'narva-castle', name: 'Narva castle and Ivangorod fortress',
+    place: 'Ida-Viru, Estonia',
+    lat: 59.3934, lon: 28.1429, precision: 'given position',
+    kind: 'embed',
+    src: 'https://balticlivecam.com/cameras/estonia/narva/narva-castle-ivangorod-fortress/?embed',
+    host: 'balticlivecam.com',
+  },
+  {
+    id: 'german-bight', name: 'German Bight', place: 'North Sea',
+    lat: 54.1532, lon: 6.8243, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1759328266/original.jpg',
     host: 'windy.com',
   },
   {
@@ -345,7 +357,30 @@ export function initCams(leafletMap) {
 
 // ── On the map ─────────────────────────────────────────────────
 
-function marker(cam) {
+/**
+ * How far apart to draw pins that share a position, in pixels.
+ *
+ * Two cameras can genuinely be at the same place -- two views from one spot,
+ * given the same coordinates. Drawn on top of each other the upper pin hides
+ * the lower one completely, and the one underneath can never be opened from
+ * the map at all: the same shape of bug as a canvas swallowing a click, one
+ * layer up.
+ *
+ * They are nudged apart on screen only. The position itself is untouched, so
+ * the panel and the window still report exactly what was given -- the drawing
+ * moves, the claim does not.
+ */
+const SPREAD_PX = 15;
+
+/** Where in a group of pins sharing a position this one is drawn. */
+function spread(index, total) {
+  if (total < 2) return [0, 0];
+  const angle = (2 * Math.PI * index) / total - Math.PI / 2;
+  return [Math.round(Math.cos(angle) * SPREAD_PX), Math.round(Math.sin(angle) * SPREAD_PX)];
+}
+
+function marker(cam, index = 0, total = 1) {
+  const [dx, dy] = spread(index, total);
   const pin = L.marker([cam.lat, cam.lon], {
     pane: 'cams',
     riseOnHover: true,
@@ -356,7 +391,9 @@ function marker(cam) {
                <circle cx="12" cy="12" r="10" fill="#0d1015" stroke="#ff5f8d" stroke-width="2"/>
                <path d="M7 9.5h6.5v5H7z M14.5 11l3-1.8v5.6l-3-1.8z" fill="#ff5f8d"/>
              </svg>`,
-      iconSize: [26, 26], iconAnchor: [13, 13],
+      // The anchor is what moves the drawing: Leaflet places the icon by it,
+      // so shifting it slides the pin without touching the point it marks.
+      iconSize: [26, 26], iconAnchor: [13 - dx, 13 - dy],
     }),
   });
   pin.on('click', () => watch(cam.id));
@@ -371,7 +408,20 @@ function marker(cam) {
 
 function drawPins() {
   layer?.remove();
-  layer = L.layerGroup(CAMS.map(marker), { pane: 'cams' });
+  // Grouped by position first, so cameras sharing one can be fanned out and
+  // each still reached. Note this cannot be a plain CAMS.map(marker): that
+  // hands map's index and the whole array to the second and third arguments,
+  // which are the position within a group and the size of it.
+  const groups = new Map();
+  for (const cam of CAMS) {
+    const key = `${cam.lat},${cam.lon}`;
+    groups.set(key, [...(groups.get(key) ?? []), cam]);
+  }
+  const pins = [];
+  for (const group of groups.values()) {
+    group.forEach((cam, i) => pins.push(marker(cam, i, group.length)));
+  }
+  layer = L.layerGroup(pins, { pane: 'cams' });
   layer.addTo(map);
 }
 
