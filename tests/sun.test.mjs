@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 
 import {
   subsolar, elevation, isDaylight, sunTimes, terminator, nightRing, TWILIGHT,
+  MERCATOR_LIMIT,
 } from '../frontend/js/sun.js';
 
 const JUNE = new Date('2026-06-21T12:00:00Z');     // near the June solstice
@@ -152,10 +153,21 @@ test('the night ring closes around the pole that is actually dark', () => {
   // In June the south is dark, so the shape must close at the south pole. Get
   // this backwards and the layer shades the daylight instead -- which looks
   // completely convincing until you check it against a clock.
-  const june = nightRing(JUNE, 0, 30);
-  assert.equal(june.at(-1)[0], -90, 'June night closes at the south pole');
-  assert.equal(nightRing(DECEMBER, 0, 30).at(-1)[0], 90,
-    'December night closes at the north pole');
+  assert.ok(nightRing(JUNE, 0, 30).at(-1)[0] < -80,
+    'June night closes towards the south pole');
+  assert.ok(nightRing(DECEMBER, 0, 30).at(-1)[0] > 80,
+    'December night closes towards the north pole');
+
+  // Not at the pole itself. Web Mercator sends ninety degrees to infinity, so
+  // a polygon with a vertex there is handed to the clipper as a coordinate it
+  // cannot hold; what comes back is folded, and it draws as vertical seams
+  // ruled across the whole shaded half of the map.
+  for (const day of [JUNE, DECEMBER, MARCH]) {
+    for (const [lat] of nightRing(day, TWILIGHT.astronomical, 10)) {
+      assert.ok(Math.abs(lat) <= MERCATOR_LIMIT,
+        `ring point at ${lat} is outside what the projection can draw`);
+    }
+  }
 
   // And a point just inside the closing edge really is in darkness.
   assert.ok(!isDaylight(-89, 0, JUNE), 'the south pole is dark in June');

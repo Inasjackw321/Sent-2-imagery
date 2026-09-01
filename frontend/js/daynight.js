@@ -16,27 +16,55 @@
 import { $, el } from './ui.js';
 import { subsolar, nightRing, sunTimes, elevation, TWILIGHT } from './sun.js';
 
-// The bands, darkest last. Each is drawn over the one before, so the alpha
+// The bands, lightest first. Each is drawn over the one before, so the alpha
 // accumulates and the night deepens towards the antisolar point without any
 // of them having to know about the others.
-const BANDS = [
-  { altitude: 0, fill: 0.13, label: 'sunset' },
-  { altitude: TWILIGHT.civil, fill: 0.13, label: 'civil twilight' },
-  { altitude: TWILIGHT.nautical, fill: 0.13, label: 'nautical twilight' },
-  { altitude: TWILIGHT.astronomical, fill: 0.13, label: 'night' },
-];
+//
+// Four steps -- one per named twilight -- drew four visible edges, and the sky
+// has no edges in it. Stepping through the same eighteen degrees in twice as
+// many stops, at less than half the opacity each, is the same total darkness
+// arriving as a gradient rather than as stairs.
+// The count follows the zoom as well. Zoomed right out the whole eighteen
+// degrees of twilight is only a few dozen pixels wide, so ten steps buys no
+// visible smoothness and costs ten sets of antialiased edges stacked on top of
+// each other -- which is what the remaining stripes were. Zoomed in the ramp
+// is most of the screen and every step earns its place.
+function bandsFor(zoom) {
+  const count = Math.max(4, Math.min(10, Math.round(zoom * 1.6)));
+  // The same total darkness however many steps it arrives in: each one is
+  // thinned so that stacking them all comes to the same place.
+  const fill = 1 - (1 - TOTAL_DARK) ** (1 / count);
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    out.push({ altitude: (TWILIGHT.astronomical * i) / (count - 1), fill });
+  }
+  return out;
+}
 
-// One point per degree of longitude. Finer is invisible at any zoom the whole
-// terminator is on screen at, and this is redrawn every minute.
-const STEP = 1;
+// How dark the deepest night gets, all bands together.
+const TOTAL_DARK = 0.42;
+
+/**
+ * How far apart to sample the terminator, in degrees of longitude.
+ *
+ * Chosen from the zoom so the points land roughly ten pixels apart whatever
+ * the scale, and not from taste. Too coarse and the curve shows its corners
+ * when you zoom in on it. Too fine is worse and less obvious: with vertices
+ * closer together than a pixel, each band's antialiased edge leaves a
+ * sub-pixel seam, and ten of them stacked turn those seams into vertical
+ * stripes ruled down the whole night side. Measured at zoom 2: sampling every
+ * half degree gave 202 reversals along one scanline, every five degrees gave
+ * ten.
+ */
+function stepFor(zoom) {
+  const pixelsPerDegree = (256 * 2 ** zoom) / 360;
+  return Math.min(6, Math.max(0.25, 10 / pixelsPerDegree));
+}
 
 // How often the layer catches up with the sky. The terminator moves a quarter
 // of a degree a minute, which is under a pixel at the zoom you would watch it
 // at, so this is as often as there is anything to see.
 const TICK_MS = 60000;
-
-// How far the time control can be pushed either way.
-const SCRUB_HOURS = 24;
 
 let map = null;
 let pane = null;
@@ -44,10 +72,13 @@ let shapes = [];
 let sunPin = null;
 let enabled = false;
 let timer = null;
-// Minutes away from now. Zero means live, and the clock is followed.
-let offset = 0;
 
-const when = () => new Date(Date.now() + offset * 60000);
+// Always now. This used to be draggable a day either way, which sounds useful
+// and is not: the whole worth of the layer is that it is a fact about the
+// present, and a shading that might be showing any time at all cannot be read
+// at a glance. Anything that can be set wrong will be, and then quietly
+// misread as the truth.
+const when = () => new Date();
 
 export function initDayNight(leafletMap) {
   map = leafletMap;
@@ -58,6 +89,10 @@ export function initDayNight(leafletMap) {
   pane.style.zIndex = 250;
   pane.style.pointerEvents = 'none';
   buildDock();
+  // The sampling depends on the scale, so a zoom needs the curve rebuilt --
+  // otherwise zooming in shows the corners it was drawn with, and zooming out
+  // brings back the stripes it was drawn to avoid.
+  map.on('zoomend', () => { if (enabled) draw(); });
 }
 
 // ── Drawing ────────────────────────────────────────────────────
@@ -67,15 +102,28 @@ function draw() {
   if (!enabled) return;
   const at = when();
 
-  for (const band of BANDS) {
-    shapes.push(L.polygon(nightRing(at, band.altitude, STEP), {
+  const zoom = map.getZoom();
+  const step = stepFor(zoom);
+  // How many copies of the world are on screen at this zoom, so the shading
+  // covers all of them rather than stopping at the date line on each.
+  const worlds = Math.ceil(map.getSize().x / (256 * 2 ** zoom));
+  const wraps = Math.min(5, Math.max(1, worlds + 1));
+  for (const band of bandsFor(zoom)) {
+    shapes.push(L.polygon(nightRing(at, band.altitude, step, wraps), {
       pane: 'daynight',
       interactive: false,
+      // Only the outermost band is outlined, and faintly: the terminator is a
+      // real line worth seeing, and the eight behind it are a gradient that
+      // stops being one the moment any of them is given an edge.
+      // The terminator itself is worth a line; the bands behind it are a
+      // gradient and stop being one the moment any of them is given an edge.
+      // Kept faint -- at a low zoom the curve runs nearly north-south for
+      // thousands of miles, and a firm line there reads as a border.
       stroke: band.altitude === 0,
-      color: '#4a5a7a',
+      color: '#9fb6e0',
       weight: 1,
-      opacity: 0.5,
-      fillColor: '#0a0f1c',
+      opacity: 0.16,
+      fillColor: '#050a16',
       fillOpacity: band.fill,
     }).addTo(map));
   }
@@ -119,21 +167,19 @@ function buildDock() {
       el('span', { class: 'sun-mark' }, '☀'), 'Day & night'),
     el('div', { class: 'sun-body', id: 'sunBody', hidden: true },
       el('div', { class: 'sun-time', id: 'sunTime' }, '—'),
-      el('input', {
-        type: 'range', class: 'sun-scrub', id: 'sunScrub',
-        min: String(-SCRUB_HOURS * 60), max: String(SCRUB_HOURS * 60), value: '0',
-        step: '10',
-        oninput: (e) => { offset = e.target.valueAsNumber; draw(); },
-      }),
-      el('div', { class: 'sun-row' },
-        el('button', {
-          class: 'sun-now', id: 'sunNow',
-          onclick: () => { offset = 0; $('#sunScrub').value = '0'; draw(); },
-        }, 'now'),
-        el('span', { class: 'sun-sub', id: 'sunSub' }, '')),
+      el('div', { class: 'sun-sub', id: 'sunSub' }, ''),
+      // A reading of the bands rather than a control: the shading means
+      // something specific, and four words of key save guessing at it.
+      el('div', { class: 'sun-key' },
+        el('span', { class: 'sun-key-row' },
+          el('i', { style: 'background:rgba(5,10,22,.10)' }), 'dusk'),
+        el('span', { class: 'sun-key-row' },
+          el('i', { style: 'background:rgba(5,10,22,.28)' }), 'twilight'),
+        el('span', { class: 'sun-key-row' },
+          el('i', { style: 'background:rgba(5,10,22,.46)' }), 'night')),
       el('div', { class: 'sun-note' },
-        'The night side is the half no optical satellite can photograph. '
-        + 'Drag to see where the line falls at another time.')));
+        'The dark half is the part no optical satellite can photograph. '
+        + 'Right-click anywhere for its sunrise, sunset and day length.')));
 }
 
 function toggle() {
@@ -142,7 +188,7 @@ function toggle() {
     draw();
     // Only while it is showing: a timer redrawing an invisible layer every
     // minute is work nobody asked for.
-    timer = setInterval(() => { if (!offset) draw(); }, TICK_MS);
+    timer = setInterval(draw, TICK_MS);
   } else {
     clearInterval(timer);
     timer = null;
@@ -160,14 +206,13 @@ function paintDock() {
   if (!enabled) return;
 
   const at = when();
-  const label = $('#sunTime');
-  label.textContent = offset === 0
-    ? `now — ${at.toLocaleTimeString()}`
-    : `${at.toLocaleString()} (${offset > 0 ? '+' : ''}${(offset / 60).toFixed(1)}h)`;
-  label.classList.toggle('is-live', offset === 0);
+  $('#sunTime').textContent = at.toLocaleTimeString();
 
   const sun = subsolar(at);
-  $('#sunSub').textContent = `sun overhead at ${sun.lat.toFixed(1)}°, ${sun.lon.toFixed(1)}°`;
+  const ns = sun.lat >= 0 ? 'N' : 'S';
+  const ew = sun.lon >= 0 ? 'E' : 'W';
+  $('#sunSub').textContent = `sun overhead at ${Math.abs(sun.lat).toFixed(1)}°${ns} `
+    + `${Math.abs(sun.lon).toFixed(1)}°${ew}`;
 }
 
 /**

@@ -25,6 +25,12 @@ const DEG = 180 / Math.PI;
 // minutes earlier than a flat geometric calculation says.
 const HORIZON = -0.833;
 
+// How far Web Mercator can actually go. The projection stretches latitude
+// without limit towards the poles, so every map that uses it stops short of
+// them; this is the usual cut, and anything drawn on such a map has to respect
+// it whether or not the arithmetic behind it does.
+export const MERCATOR_LIMIT = 85.0511;
+
 // Twilight, by the usual definitions: how far below the horizon the sun is
 // while there is still usable light of each kind.
 export const TWILIGHT = { civil: -6, nautical: -12, astronomical: -18 };
@@ -179,13 +185,19 @@ function settle(lat, lon, guess, horizon) {
  * and the curve straightens into the two meridians through the poles; the
  * clamp keeps that from becoming a division that runs away.
  */
-export function terminator(at = new Date(), altitude = 0, step = 1) {
+export function terminator(at = new Date(), altitude = 0, step = 1, wraps = 1) {
   const sun = subsolar(at);
   const declination = sun.declination * RAD;
   const wanted = Math.sin(altitude * RAD);
 
+  // `wraps` says how many copies of the world to span. Zoomed out, Leaflet
+  // repeats the map sideways, and a shape that stops at the date line stops
+  // there on every copy -- leaving hard vertical edges down the map wherever
+  // one copy ends and the next begins. The curve is periodic in longitude, so
+  // running it out past the ends costs nothing but points.
+  const reach = 180 * wraps;
   const ring = [];
-  for (let lon = -180; lon <= 180; lon += step) {
+  for (let lon = -reach; lon <= reach; lon += step) {
     const hourAngle = (lon - sun.lon) * RAD;
     // Solving sin(alt) = sin(lat)sin(dec) + cos(lat)cos(dec)cos(H) for lat.
     // Written as one sine of a shifted angle rather than as a tangent: the
@@ -251,13 +263,29 @@ export function terminator(at = new Date(), altitude = 0, step = 1) {
  * side of the equator from the sun. Getting that backwards shades the daylight
  * instead, and looks entirely plausible until you check it against a clock.
  */
-export function nightRing(at = new Date(), altitude = 0, step = 1) {
+export function nightRing(at = new Date(), altitude = 0, step = 1, wraps = 1) {
   const sun = subsolar(at);
-  const ring = terminator(at, altitude, step);
-  const darkPole = sun.declination > 0 ? -90 : 90;
+  const darkPole = sun.declination > 0 ? -MERCATOR_LIMIT : MERCATOR_LIMIT;
+  // Held inside the projection's own range. Web Mercator sends the poles to
+  // infinity, so a polygon with a vertex at ninety degrees is asking the
+  // clipper to work with a coordinate it cannot hold: it comes back folded,
+  // and the fill draws as a run of vertical seams across the whole shaded
+  // half -- which looks like a rendering artefact of the map rather than a
+  // mistake in the shape handed to it.
+  // The curve is held a little short of the closing edge, not level with it.
+  // Where a band runs off the globe its points are already pinned at the pole,
+  // and closing the shape along that same latitude makes the outline double
+  // back down the line it just came along. A polygon with a repeated edge has
+  // no inside at that point, and the canvas fills it as a run of vertical
+  // seams ruled across the whole shaded half -- which reads as a fault in the
+  // map rather than in the shape handed to it.
+  const edge = MERCATOR_LIMIT - 0.6;
+  const reach = 180 * wraps;
+  const ring = terminator(at, altitude, step, wraps)
+    .map(([lat, lon]) => [Math.max(-edge, Math.min(edge, lat)), lon]);
   return [
     ...ring,
-    [darkPole, 180],
-    [darkPole, -180],
+    [darkPole, reach],
+    [darkPole, -reach],
   ];
 }

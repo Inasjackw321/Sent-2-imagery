@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, fires, passes, seismic, service, stac, version,
-    vessels, weather,
+    aisstream, composite, config, fires, lightning, passes, seismic, service,
+    stac, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -289,6 +289,29 @@ def earthquakes(
     try:
         return seismic.quakes(box, hours=hours, min_magnitude=min_magnitude)
     except seismic.SeismicLookupError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/lightning")
+def strikes(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    minutes: float = Query(30.0, ge=1.0, le=120.0),
+) -> dict:
+    """Lightning strokes located inside a rectangle in the last few minutes.
+
+    The listener behind this starts on the first call and then runs for the
+    life of the process, so the first answer is usually empty and the ones
+    after it are not. The panel says as much rather than leaving a quiet first
+    minute looking like a clear sky.
+    """
+    if config.DEMO_MODE:
+        return lightning.demo(west, south, east, north, minutes=minutes)
+    try:
+        return lightning.strokes(west, south, east, north, minutes=minutes)
+    except lightning.LightningError as exc:
         raise _fail(exc)
 
 
