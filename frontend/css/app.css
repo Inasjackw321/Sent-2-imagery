@@ -1168,3 +1168,53 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
    claim and both are easy to mistake for live video. */
 .win-badge.is-frozen { background: #7a5a2a; }
 .cam-still-wrap { position: absolute; inset: 0; }
+
+/* ── Day and night ───────────────────────────────────────────── */
+
+.daynight-dock { display: grid; gap: 8px; }
+.sun-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.sun-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.sun-toggle.is-on {
+  color: #ffeec2; border-color: rgba(255,214,107,.6); background: rgba(58,44,12,.85);
+  font-weight: 600;
+}
+.sun-mark { font-size: 14px; opacity: .65; }
+.sun-toggle.is-on .sun-mark { opacity: 1; }
+
+.sun-body {
+  display: grid; gap: 7px; padding: 9px 11px;
+  border-radius: 9px; background: rgba(13,16,21,.9);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.sun-time { font-size: 11.5px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+/* Following the clock, rather than parked at a time somebody chose. */
+.sun-time.is-live { color: #ffd66b; }
+.sun-scrub { width: 100%; accent-color: #ffd66b; }
+.sun-row { display: flex; align-items: center; gap: 8px; }
+.sun-now {
+  padding: 0 8px; height: 22px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.sun-now:hover { color: var(--ink); }
+.sun-sub { font-size: 10px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.sun-note { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
+
+/* The subsolar marker is a label on the map, not something to click. */
+.sun-pin { pointer-events: none; }
+.sun-pin svg { width: 28px; height: 28px; filter: drop-shadow(0 0 6px rgba(255,214,107,.6)); }
+
+/* The sun lines inside the right-click panel. */
+.sun-block {
+  display: grid; gap: 3px; padding: 7px 0; margin: 2px 0;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.sun-state { font-size: 11.5px; color: #ffeec2; }
+.sun-line { display: flex; gap: 10px; font-size: 11px; color: var(--ink-dim);
+  font-variant-numeric: tabular-nums; }
+.sun-foot { font-size: 9.5px; color: var(--ink-faint); }

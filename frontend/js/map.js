@@ -16,6 +16,7 @@ import { initRadar } from './radar.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
+import { initDayNight, sunBlock } from './daynight.js';
 
 let map;
 let aoiLayer = null;
@@ -191,6 +192,7 @@ export function initMap() {
 
   bindDrawTools();
   bindPassLookup();
+  initDayNight(map);
   initFires(map);
   initClouds(map);
   initRadar(map);
@@ -848,6 +850,10 @@ async function showPasses(latlng) {
   const sky = el('div', { class: 'wx' }, el('div', { class: 'passes-wait' }, 'Asking Open-Meteo…'));
   const box = el('div', { class: 'passes' },
     el('div', { class: 'passes-head' }, fmt.coord(latlng.lng, latlng.lat)),
+    // Worked out on the spot rather than asked for: the sun's position is
+    // arithmetic, so this is on screen before either request has answered,
+    // and it still works with nothing on the other end of the network.
+    sunBlock(latlng.lat, latlng.lng),
     sky,
     el('div', { class: 'passes-wait', id: 'passWait' }, 'Asking the catalogue…'));
   const popup = L.popup({ className: 'pass-popup', maxWidth: 340, ...POPUP })

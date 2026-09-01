@@ -315,6 +315,26 @@ export const CAMS = [
     host: 'windy.com',
   },
   {
+    id: 'brest-customs', name: 'Brest customs post', place: 'Brest Region, Belarus',
+    lat: 51.7530, lon: 23.5870, precision: 'given position',
+    // The customs service's own border camera, on a fixed address it
+    // overwrites, so it is asked for again like any other snapshot.
+    kind: 'still', src: 'https://www.customs.gov.by/webcam/brst140_2.jpg',
+    host: 'customs.gov.by',
+  },
+  {
+    id: 'brest', name: 'Brest', place: 'Brest Region, Belarus',
+    lat: 52.0727, lon: 23.6549, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1662035053/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'himachal-pradesh', name: 'Kangra valley', place: 'Himachal Pradesh, India',
+    lat: 32.0370, lon: 76.7076, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1707102692/original.jpg',
+    host: 'windy.com',
+  },
+  {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
     // VK's video_ext player is built to be framed, so this one is an embed
