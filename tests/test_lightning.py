@@ -56,7 +56,7 @@ class TestParse:
             layer("VIIRS_SNPP_Thermal_Anomalies"),
             layer("GOES-West_GLM_Flash_Extent_Density"),
         )
-        got = lightning.parse_layers(xml)
+        got = lightning.parse_layers(xml)["lightning"]
         assert [entry["id"] for entry in got] == [
             "GOES-East_GLM_Flash_Extent_Density",
             "GOES-West_GLM_Flash_Extent_Density",
@@ -68,7 +68,7 @@ class TestParse:
             title="Flash Extent Density (5 min)",
             matrix="GoogleMapsCompatible_Level6", fmt="image/png",
             default="2026-09-01T12:05:00Z",
-            values=("2026-09-01T00:00:00Z/2026-09-01T23:55:00Z/PT5M",))))
+            values=("2026-09-01T00:00:00Z/2026-09-01T23:55:00Z/PT5M",))))["lightning"]
         assert len(got) == 1
         entry = got[0]
         assert entry["title"] == "Flash Extent Density (5 min)"
@@ -83,7 +83,7 @@ class TestParse:
             layer("GOES-East_GLM_Flash_Extent_Density"),
             layer("GOES-West_GLM_Flash_Extent_Density"),
             layer("Some_Other_GLM_Flash_Product"),
-        ))
+        ))["lightning"]
         assert {e["id"]: e["satellite"] for e in got} == {
             "GOES-East_GLM_Flash_Extent_Density": "east",
             "GOES-West_GLM_Flash_Extent_Density": "west",
@@ -92,12 +92,12 @@ class TestParse:
 
     def test_a_jpeg_layer_comes_back_with_the_extension_leaflet_wants(self):
         got = lightning.parse_layers(capabilities(
-            layer("GOES-East_GLM_Flash_Density", fmt="image/jpeg")))
+            layer("GOES-East_GLM_Flash_Density", fmt="image/jpeg")))["lightning"]
         assert got[0]["format"] == "jpg"
 
     def test_a_layer_with_no_time_dimension_is_still_usable(self):
         got = lightning.parse_layers(capabilities(
-            layer("GOES-East_GLM_Flash_Extent_Density", default=None)))
+            layer("GOES-East_GLM_Flash_Extent_Density", default=None)))["lightning"]
         assert got[0]["time_default"] is None
         assert got[0]["time_values"] == []
 
@@ -106,20 +106,20 @@ class TestParse:
         # throw -- an empty picker with an explanation beats a stack trace.
         got = lightning.parse_layers(capabilities(
             layer("MODIS_Terra_CorrectedReflectance_TrueColor")))
-        assert got == []
+        assert got["lightning"] == []
 
     def test_rubbish_is_refused_clearly(self):
         with pytest.raises(lightning.LightningError, match="would not parse"):
             lightning.parse_layers("<not xml")
 
     def test_an_empty_document_finds_nothing(self):
-        assert lightning.parse_layers(capabilities()) == []
+        assert lightning.parse_layers(capabilities())["lightning"] == []
 
     def test_a_flood_product_is_not_lightning(self):
         # "flash" on its own is a flood product. Matching it would put flood
         # extent on the map under a lightning heading.
         assert lightning.parse_layers(capabilities(
-            layer("MODIS_Flood_Flash_Extent"))) == []
+            layer("MODIS_Flood_Flash_Extent")))["lightning"] == []
 
     def test_it_finds_the_layer_however_it_is_spelled(self):
         # The first version wanted "glm" AND "flash" in the identifier and so
@@ -130,14 +130,49 @@ class TestParse:
                       "GOES-East_GLM_Lightning_Detection",
                       "GOES-R_GLM_Group_Energy_Density",
                       "GOES-East_Lightning_Flash_Density"):
-            got = lightning.parse_layers(capabilities(layer(ident)))
+            got = lightning.parse_layers(capabilities(layer(ident)))['lightning']
             assert len(got) == 1, f"missed {ident}"
 
     def test_the_name_may_be_in_the_title_rather_than_the_identifier(self):
         got = lightning.parse_layers(capabilities(
-            layer("GOES-East_ABI_Product_17", title="GLM Flash Extent Density")))
+            layer("GOES-East_ABI_Product_17",
+                  title="GLM Flash Extent Density")))["lightning"]
         assert len(got) == 1
         assert got[0]["id"] == "GOES-East_ABI_Product_17"
+
+
+class TestBackdrop:
+    def test_the_infrared_is_kept_separately_from_the_flashes(self):
+        # Two layers make the picture: the flashes, and the cloud tops they sit
+        # in. Sorted apart here so the page can stack one on the other.
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Extent_Density"),
+            layer("GOES-East_ABI_Band13_Clean_Infrared"),
+            layer("GOES-West_ABI_GeoColor"),
+            layer("MODIS_Terra_CorrectedReflectance_TrueColor"),
+        ))
+        assert [e["id"] for e in got["lightning"]] == [
+            "GOES-East_GLM_Flash_Extent_Density"]
+        assert [e["id"] for e in got["imagery"]] == [
+            "GOES-East_ABI_Band13_Clean_Infrared", "GOES-West_ABI_GeoColor"]
+
+    def test_a_layer_is_never_both(self):
+        # "GOES-East_GLM_..." contains "goes"; it must not also be offered as a
+        # backdrop, or the flashes would be drawn underneath themselves.
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Extent_Density_Infrared")))
+        assert len(got["lightning"]) == 1
+        assert got["imagery"] == []
+
+    def test_infrared_from_another_satellite_is_not_a_goes_backdrop(self):
+        got = lightning.parse_layers(capabilities(
+            layer("MODIS_Terra_Brightness_Temp_Infrared")))
+        assert got["imagery"] == []
+
+    def test_the_backdrop_carries_its_satellite(self):
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-West_ABI_Band13_Clean_Infrared")))["imagery"]
+        assert got[0]["satellite"] == "west"
 
 
 class TestNearMisses:
@@ -167,9 +202,9 @@ class TestNearMisses:
 class TestDemo:
     def test_it_answers_in_the_same_shape_as_the_real_thing(self):
         got = lightning.demo()
-        assert set(got) == {"layers", "template", "attribution", "coverage",
-                            "nearby", "catalogue_size"}
-        for entry in got["layers"]:
+        assert set(got) == {"layers", "imagery", "template", "attribution",
+                            "coverage", "nearby", "catalogue_size"}
+        for entry in got["layers"] + got["imagery"]:
             assert set(entry) >= {"id", "title", "matrix", "format", "satellite"}
 
     def test_the_template_has_every_placeholder_the_page_fills_in(self):

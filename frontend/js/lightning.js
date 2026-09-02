@@ -35,6 +35,11 @@ const REFRESH_MS = 120000;
 
 let map = null;
 let layer = null;
+// The greyscale cloud-top picture underneath. Flashes on their own are dots in
+// a void; over the infrared they sit inside the storm that made them, which is
+// the whole reason to look at the two together.
+let backdrop = null;
+let showCloud = true;
 let enabled = false;
 let catalogue = null;
 let chosen = null;
@@ -81,10 +86,36 @@ function urlFor(entry) {
     .replace('{fmt}', entry.format ?? 'png');
 }
 
+/** The infrared layer for whichever satellite the flashes come from. */
+function cloudFor(entry) {
+  const all = catalogue?.imagery ?? [];
+  return all.find((c) => c.satellite === entry?.satellite) ?? all[0] ?? null;
+}
+
 function show() {
   layer?.remove();
-  layer = null;
-  if (!enabled || !chosen) return;
+  backdrop?.remove();
+  layer = backdrop = null;
+  if (!enabled) return;
+
+  // The cloud tops are worth drawing even when the flashes are not to be had:
+  // half the picture is better than a blank map, and it is the half that says
+  // where the storms are.
+  const cloud = showCloud ? cloudFor(chosen) : null;
+  if (cloud) {
+    backdrop = L.tileLayer(urlFor(cloud), {
+      pane: 'lightning',
+      // Under the flashes and under full strength: it is the context, and a
+      // solid grey sheet over the map would bury everything else on it.
+      opacity: 0.55,
+      zIndex: 1,
+      maxNativeZoom: 7,
+      maxZoom: 19,
+      className: 'bolt-cloud',
+    }).addTo(map);
+  }
+
+  if (!chosen) return;
 
   let missing = 0;
   layer = L.tileLayer(urlFor(chosen), {
@@ -96,6 +127,7 @@ function show() {
     maxNativeZoom: 7,
     maxZoom: 19,
     className: 'bolt-tiles',
+    zIndex: 2,
     attribution: catalogue.attribution,
   });
   // A missing tile over the ocean is ordinary; every tile missing means the
@@ -180,6 +212,14 @@ function buildDock() {
             onclick: () => { chosen = entry; manual = true; buildDock(); show(); },
           }, SEEN_FROM[entry.satellite]?.label ?? entry.id.slice(0, 12))))
         : null,
+      catalogue?.imagery?.length
+        ? el('label', { class: 'bolt-check' },
+          el('input', {
+            type: 'checkbox', checked: showCloud,
+            onchange: (e) => { showCloud = e.target.checked; show(); paintDock(); },
+          }),
+          'Cloud tops underneath')
+        : null,
       el('div', { class: 'bolt-count', id: 'boltCount' }, 'Loading…'),
       el('div', { class: 'bolt-key' },
         el('span', { class: 'bolt-key-row' },
@@ -207,7 +247,8 @@ function toggle() {
     clearInterval(timer);
     timer = null;
     layer?.remove();
-    layer = null;
+    backdrop?.remove();
+    layer = backdrop = null;
   }
   paintDock();
 }
@@ -218,6 +259,12 @@ function paintDock() {
   if (!count || !text || !enabled) return;
 
   const view = reach();
+  if (!chosen && catalogue?.imagery?.length && showCloud) {
+    count.textContent = 'GOES cloud tops — no lightning layer';
+    text.textContent = `${problem} The infrared is still shown: it is where the `
+      + 'storms are, without the flashes inside them.';
+    return;
+  }
   count.textContent = chosen
     ? (view && !view.inside
       ? `Nothing to see here — ${view.label} cannot look this far`

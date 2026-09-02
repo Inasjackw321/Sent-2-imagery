@@ -66,6 +66,12 @@ WANTED = ("glm", "lightning")
 # left off.
 NEARBY = ("glm", "lightning", "flash", "goes")
 
+# The greyscale cloud-top picture the flashes are usually drawn over. Band 13
+# is the clean infrared window -- what the satellite sees of cloud temperature,
+# day or night, which is why a storm looks like a storm in it. GeoColor is the
+# prettier composite and goes dark at night, so the infrared is preferred.
+BACKDROP = ("band13", "clean_infrared", "cleanir", "geocolor", "infrared")
+
 # The catalogue is a couple of megabytes and changes about never. Fetched once
 # and held for the day.
 CACHE_SECONDS = 6 * 3600
@@ -84,54 +90,62 @@ class LightningError(RuntimeError):
     pass
 
 
-def parse_layers(xml: str) -> list[dict[str, Any]]:
-    """Pull the GLM layers out of a WMTS capabilities document.
+def _entry(layer: ET.Element, ident: str, title: str, low: str) -> dict[str, Any]:
+    """One layer, in the shape the front end needs to build a tile URL."""
+    matrix = layer.findtext(
+        f"{{{_NS['wmts']}}}TileMatrixSetLink/{{{_NS['wmts']}}}TileMatrixSet")
+    fmt = layer.findtext(f"{{{_NS['wmts']}}}Format") or "image/png"
 
-    Everything the front end needs to build a tile URL: the identifier, the
-    tile matrix set, the image format, and the time dimension -- which for a
-    layer that updates every few minutes is the difference between the live
-    picture and whatever was there when the catalogue was written.
+    default = None
+    values: list[str] = []
+    for dim in layer.findall(f"{{{_NS['wmts']}}}Dimension"):
+        if (dim.findtext(f"{{{_NS['ows']}}}Identifier") or "").lower() != "time":
+            continue
+        default = dim.findtext(f"{{{_NS['wmts']}}}Default")
+        values = [v.text for v in dim.findall(f"{{{_NS['wmts']}}}Value") if v.text]
+
+    return {
+        "id": ident,
+        "title": title,
+        "matrix": matrix,
+        "format": (fmt.rsplit("/", 1)[-1] or "png").replace("jpeg", "jpg"),
+        "time_default": default,
+        "time_values": values,
+        # East and West see different halves of the Americas, and which one a
+        # viewer wants depends on where they are looking.
+        "satellite": "west" if "west" in low else "east" if "east" in low else None,
+    }
+
+
+def parse_layers(xml: str) -> dict[str, list[dict[str, Any]]]:
+    """Pull the GOES layers out of a WMTS capabilities document.
+
+    Two sorts, because the picture people mean by "lightning from GOES" is two
+    layers: the flashes themselves, and the greyscale infrared cloud tops they
+    are drawn over. On their own the flashes are dots in a void.
     """
     try:
         root = ET.fromstring(xml)
     except ET.ParseError as exc:
         raise LightningError(f"GIBS sent a catalogue that would not parse: {exc}") from exc
 
-    out: list[dict[str, Any]] = []
+    flashes: list[dict[str, Any]] = []
+    cloud: list[dict[str, Any]] = []
     for layer in root.iter(f"{{{_NS['wmts']}}}Layer"):
         ident = layer.findtext(f"{{{_NS['ows']}}}Identifier") or ""
         title = layer.findtext(f"{{{_NS['ows']}}}Title") or ident
         # Both, because GIBS is not consistent about which one carries the
         # instrument name.
         low = f"{ident} {title}".lower()
-        if not any(word in low for word in WANTED):
-            continue
 
-        matrix = layer.findtext(
-            f"{{{_NS['wmts']}}}TileMatrixSetLink/{{{_NS['wmts']}}}TileMatrixSet")
-        fmt = layer.findtext(f"{{{_NS['wmts']}}}Format") or "image/png"
+        if any(word in low for word in WANTED):
+            flashes.append(_entry(layer, ident, title, low))
+        elif "goes" in low and any(word in low for word in BACKDROP):
+            cloud.append(_entry(layer, ident, title, low))
 
-        default = None
-        values: list[str] = []
-        for dim in layer.findall(f"{{{_NS['wmts']}}}Dimension"):
-            if (dim.findtext(f"{{{_NS['ows']}}}Identifier") or "").lower() != "time":
-                continue
-            default = dim.findtext(f"{{{_NS['wmts']}}}Default")
-            values = [v.text for v in dim.findall(f"{{{_NS['wmts']}}}Value") if v.text]
-
-        out.append({
-            "id": ident,
-            "title": title,
-            "matrix": matrix,
-            "format": (fmt.rsplit("/", 1)[-1] or "png").replace("jpeg", "jpg"),
-            "time_default": default,
-            "time_values": values,
-            # East and West see different halves of the Americas, and which one
-            # a viewer wants depends on where they are looking.
-            "satellite": "west" if "west" in low else "east" if "east" in low else None,
-        })
-    out.sort(key=lambda entry: entry["id"])
-    return out
+    flashes.sort(key=lambda entry: entry["id"])
+    cloud.sort(key=lambda entry: entry["id"])
+    return {"lightning": flashes, "imagery": cloud}
 
 
 def near_misses(xml: str, limit: int = 12) -> list[str]:
@@ -166,7 +180,8 @@ def _fetch() -> tuple[list[dict[str, Any]], list[str], int]:
         raise LightningError(f"NASA GIBS answered {resp.status_code}")
     found = parse_layers(resp.text)
     total = resp.text.count("</Layer>")
-    return found, ([] if found else near_misses(resp.text)), total
+    misses = [] if found["lightning"] else near_misses(resp.text)
+    return found, misses, total
 
 
 def layers(refresh: bool = False) -> dict[str, Any]:
@@ -179,7 +194,8 @@ def layers(refresh: bool = False) -> dict[str, Any]:
 
     found, nearby, total = _fetch()
     answer = {
-        "layers": found,
+        "layers": found["lightning"],
+        "imagery": found["imagery"],
         "template": TILES,
         "attribution": ATTRIBUTION,
         "coverage": COVERAGE,
@@ -217,9 +233,19 @@ def demo() -> dict[str, Any]:
              "matrix": "GoogleMapsCompatible_Level7", "format": "png",
              "time_default": "default", "time_values": [], "satellite": "west"},
         ],
+        "imagery": [
+            {"id": "GOES-East_ABI_Band13_Clean_Infrared",
+             "title": "GOES-East infrared cloud tops (demo)",
+             "matrix": "GoogleMapsCompatible_Level7", "format": "png",
+             "time_default": "default", "time_values": [], "satellite": "east"},
+            {"id": "GOES-West_ABI_Band13_Clean_Infrared",
+             "title": "GOES-West infrared cloud tops (demo)",
+             "matrix": "GoogleMapsCompatible_Level7", "format": "png",
+             "time_default": "default", "time_values": [], "satellite": "west"},
+        ],
         "template": TILES,
         "attribution": "synthetic",
         "coverage": COVERAGE,
         "nearby": [],
-        "catalogue_size": 2,
+        "catalogue_size": 4,
     }
