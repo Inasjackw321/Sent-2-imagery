@@ -116,7 +116,11 @@ function show() {
 async function load() {
   try {
     catalogue = await api.lightning();
-    problem = catalogue.layers.length ? '' : 'NASA is not serving a GLM layer just now.';
+    // A miss that says only "none" leaves nowhere to go. If GIBS answered with
+    // a catalogue but nothing in it looked like lightning, say how big the
+    // catalogue was and name what came closest -- that is the difference
+    // between a dead end and a next step.
+    problem = catalogue.layers.length ? '' : noneFound(catalogue);
     chosen = pick();
     buildDock();
     show();
@@ -124,6 +128,16 @@ async function load() {
     problem = err.message;
     paintDock();
   }
+}
+
+/** What to say when GIBS answered but had no lightning layer in it. */
+function noneFound(got) {
+  const size = got.catalogue_size ? ` of ${got.catalogue_size}` : '';
+  if (got.nearby?.length) {
+    return `No lightning layer${size} at NASA GIBS. Closest names there: `
+      + `${got.nearby.slice(0, 5).join(', ')}.`;
+  }
+  return `NASA GIBS is serving no lightning layer${size} in this projection.`;
 }
 
 /** Whichever satellite is looking at the middle of the map. */

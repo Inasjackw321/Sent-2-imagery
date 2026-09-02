@@ -335,6 +335,28 @@ export const CAMS = [
     host: 'windy.com',
   },
   {
+    id: 'riga', name: 'Riga', place: 'Latvia',
+    lat: 56.9351, lon: 24.1160, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1716213770/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'klaipeda-road', name: 'Klaipėda region road', place: 'Lithuania',
+    lat: 55.3016, lon: 21.3931, precision: 'given position',
+    // The national road authority's camera service, which answers "last" with
+    // whatever it most recently captured -- so a fixed address that stays
+    // current, like the Tallinn one.
+    kind: 'still',
+    src: 'https://eismoinfo.lt/eismoinfo-backend/image-provider/camera/last?id=421',
+    host: 'eismoinfo.lt',
+  },
+  {
+    id: 'vistytis', name: 'Vištytis lake area', place: 'Kaliningrad Oblast, Russia',
+    lat: 54.3625, lon: 22.7960, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1610097666/original.jpg',
+    host: 'windy.com',
+  },
+  {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
     // VK's video_ext player is built to be framed, so this one is an embed

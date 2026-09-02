@@ -55,7 +55,8 @@ CSP = "; ".join([
     "https://gibs.earthdata.nasa.gov "
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
     "https://airtw.moenv.gov.tw https://ristmikud.tallinn.ee "
-    "https://pics.starvisor.net https://www.customs.gov.by",
+    "https://pics.starvisor.net https://www.customs.gov.by "
+    "https://eismoinfo.lt",
     # Everything the browser fetches by script: this backend, the radar index,
     # and the HLS playlists and segments.
     # EarthCam serves its playlists from numbered video hosts that rotate, and

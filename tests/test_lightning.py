@@ -115,19 +115,60 @@ class TestParse:
     def test_an_empty_document_finds_nothing(self):
         assert lightning.parse_layers(capabilities()) == []
 
-    def test_the_matching_is_not_fooled_by_a_near_miss(self):
-        # "flash" alone is a flood product; "glm" alone could be anything.
+    def test_a_flood_product_is_not_lightning(self):
+        # "flash" on its own is a flood product. Matching it would put flood
+        # extent on the map under a lightning heading.
+        assert lightning.parse_layers(capabilities(
+            layer("MODIS_Flood_Flash_Extent"))) == []
+
+    def test_it_finds_the_layer_however_it_is_spelled(self):
+        # The first version wanted "glm" AND "flash" in the identifier and so
+        # found nothing at all. Any of these should be enough on its own --
+        # a filter that has to be right about two words is twice as likely to
+        # be wrong about one.
+        for ident in ("GOES-East_GLM_Flash_Extent_Density",
+                      "GOES-East_GLM_Lightning_Detection",
+                      "GOES-R_GLM_Group_Energy_Density",
+                      "GOES-East_Lightning_Flash_Density"):
+            got = lightning.parse_layers(capabilities(layer(ident)))
+            assert len(got) == 1, f"missed {ident}"
+
+    def test_the_name_may_be_in_the_title_rather_than_the_identifier(self):
         got = lightning.parse_layers(capabilities(
+            layer("GOES-East_ABI_Product_17", title="GLM Flash Extent Density")))
+        assert len(got) == 1
+        assert got[0]["id"] == "GOES-East_ABI_Product_17"
+
+
+class TestNearMisses:
+    def test_it_names_what_is_there_when_nothing_matched(self):
+        # The whole value of this: a miss that says only "none" cannot tell you
+        # whether the product moved, was renamed, or the filter is wrong.
+        xml = capabilities(
+            layer("GOES-East_ABI_GeoColor"),
+            layer("MODIS_Terra_CorrectedReflectance_TrueColor"),
             layer("MODIS_Flood_Flash_Extent"),
-            layer("GLM_Something_Else"),
-        ))
-        assert got == []
+        )
+        got = lightning.near_misses(xml)
+        assert "GOES-East_ABI_GeoColor" in got
+        assert "MODIS_Flood_Flash_Extent" in got
+        assert "MODIS_Terra_CorrectedReflectance_TrueColor" not in got
+
+    def test_it_does_not_run_away_with_a_huge_catalogue(self):
+        xml = capabilities(*[layer(f"GOES-East_Thing_{i}") for i in range(50)])
+        assert len(lightning.near_misses(xml, limit=6)) == 6
+
+    def test_rubbish_gives_an_empty_list_rather_than_raising(self):
+        # It runs on the failure path; it must not turn a bad answer into a
+        # worse one.
+        assert lightning.near_misses("<not xml") == []
 
 
 class TestDemo:
     def test_it_answers_in_the_same_shape_as_the_real_thing(self):
         got = lightning.demo()
-        assert set(got) == {"layers", "template", "attribution", "coverage"}
+        assert set(got) == {"layers", "template", "attribution", "coverage",
+                            "nearby", "catalogue_size"}
         for entry in got["layers"]:
             assert set(entry) >= {"id", "title", "matrix", "format", "satellite"}
 

@@ -51,10 +51,20 @@ CAPABILITIES = ("https://gibs.earthdata.nasa.gov/wmts/epsg3857/best"
 TILES = ("https://gibs.earthdata.nasa.gov/wmts/epsg3857/best"
          "/{layer}/default/{time}/{matrix}/{z}/{y}/{x}.{fmt}")
 
-# What a GLM layer is called, loosely enough to survive renaming. Flash extent
-# density is the one worth showing: how many flashes touched each grid cell,
-# which is what makes a storm visible rather than a scatter of dots.
-WANTED = ("glm", "flash")
+# What a GLM layer is called, loosely enough to survive renaming.
+#
+# The first version wanted "glm" *and* "flash" in the identifier, which found
+# nothing at all: too clever by half, and a filter that has to be right about
+# two words is twice as likely to be wrong about one. Either word will do now,
+# in the identifier or the human-readable title, and "lightning" as well --
+# whatever NASA calls it, one of these three is in the name.
+WANTED = ("glm", "lightning")
+
+# A wider net, used only to explain a miss. If nothing matches above, these are
+# the layers worth showing to whoever has to work out why -- otherwise the
+# answer is "no layers" with nothing to go on, which is where the last attempt
+# left off.
+NEARBY = ("glm", "lightning", "flash", "goes")
 
 # The catalogue is a couple of megabytes and changes about never. Fetched once
 # and held for the day.
@@ -90,8 +100,11 @@ def parse_layers(xml: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for layer in root.iter(f"{{{_NS['wmts']}}}Layer"):
         ident = layer.findtext(f"{{{_NS['ows']}}}Identifier") or ""
-        low = ident.lower()
-        if not all(word in low for word in WANTED):
+        title = layer.findtext(f"{{{_NS['ows']}}}Title") or ident
+        # Both, because GIBS is not consistent about which one carries the
+        # instrument name.
+        low = f"{ident} {title}".lower()
+        if not any(word in low for word in WANTED):
             continue
 
         matrix = layer.findtext(
@@ -108,7 +121,7 @@ def parse_layers(xml: str) -> list[dict[str, Any]]:
 
         out.append({
             "id": ident,
-            "title": layer.findtext(f"{{{_NS['ows']}}}Title") or ident,
+            "title": title,
             "matrix": matrix,
             "format": (fmt.rsplit("/", 1)[-1] or "png").replace("jpeg", "jpg"),
             "time_default": default,
@@ -121,7 +134,29 @@ def parse_layers(xml: str) -> list[dict[str, Any]]:
     return out
 
 
-def _fetch() -> list[dict[str, Any]]:
+def near_misses(xml: str, limit: int = 12) -> list[str]:
+    """Layer names worth looking at when nothing matched.
+
+    A miss that says only "no layers" is a dead end -- it cannot tell you
+    whether NASA has stopped publishing, renamed the product, or whether the
+    filter is simply wrong. This lists what is actually there under any related
+    word, so the next step is reading a list rather than guessing again.
+    """
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return []
+    seen: list[str] = []
+    for layer in root.iter(f"{{{_NS['wmts']}}}Layer"):
+        ident = layer.findtext(f"{{{_NS['ows']}}}Identifier") or ""
+        if any(word in ident.lower() for word in NEARBY) and ident not in seen:
+            seen.append(ident)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def _fetch() -> tuple[list[dict[str, Any]], list[str], int]:
     try:
         resp = requests.get(CAPABILITIES, timeout=30,
                             headers={"User-Agent": config.USER_AGENT})
@@ -129,7 +164,9 @@ def _fetch() -> list[dict[str, Any]]:
         raise LightningError(f"NASA GIBS could not be reached: {exc}") from exc
     if not resp.ok:
         raise LightningError(f"NASA GIBS answered {resp.status_code}")
-    return parse_layers(resp.text)
+    found = parse_layers(resp.text)
+    total = resp.text.count("</Layer>")
+    return found, ([] if found else near_misses(resp.text)), total
 
 
 def layers(refresh: bool = False) -> dict[str, Any]:
@@ -140,12 +177,16 @@ def layers(refresh: bool = False) -> dict[str, Any]:
         if fresh and not refresh:
             return dict(_cached)
 
-    found = _fetch()
+    found, nearby, total = _fetch()
     answer = {
         "layers": found,
         "template": TILES,
         "attribution": ATTRIBUTION,
         "coverage": COVERAGE,
+        # Only populated when nothing matched, and then it is the whole point
+        # of the response.
+        "nearby": nearby,
+        "catalogue_size": total,
     }
     with _lock:
         _cached = answer
@@ -179,4 +220,6 @@ def demo() -> dict[str, Any]:
         "template": TILES,
         "attribution": "synthetic",
         "coverage": COVERAGE,
+        "nearby": [],
+        "catalogue_size": 2,
     }
