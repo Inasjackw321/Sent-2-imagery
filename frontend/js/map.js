@@ -13,7 +13,6 @@ import { copyRegion, saveRegion, WATERMARK } from './capture.js';
 import { initFires, POPUP } from './fires.js';
 import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
-import { initLightning } from './lightning.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
@@ -197,7 +196,6 @@ export function initMap() {
   initFires(map);
   initClouds(map);
   initRadar(map);
-  initLightning(map);
   initVessels(map);
   initSeismic(map);
   initCams(map);

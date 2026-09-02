@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, fires, lightning, passes, seismic, service,
-    stac, version, vessels, weather,
+    aisstream, composite, config, fires, passes, seismic, service, stac,
+    version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -290,22 +290,6 @@ def earthquakes(
     try:
         return seismic.quakes(box, hours=hours, min_magnitude=min_magnitude)
     except seismic.SeismicLookupError as exc:
-        raise _fail(exc)
-
-
-@app.get("/api/lightning")
-def lightning_layers(refresh: bool = Query(False)) -> dict:
-    """Which GOES lightning layers NASA is currently serving.
-
-    The tiles themselves go straight from the browser to GIBS; this only asks
-    what they are called today, because the names are NASA's to change and a
-    hard-coded one fails silently.
-    """
-    if config.DEMO_MODE:
-        return lightning.demo()
-    try:
-        return lightning.layers(refresh=refresh)
-    except lightning.LightningError as exc:
         raise _fail(exc)
 
 
