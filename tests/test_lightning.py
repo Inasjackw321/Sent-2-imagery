@@ -82,12 +82,14 @@ class TestParse:
         got = lightning.parse_layers(capabilities(
             layer("GOES-East_GLM_Flash_Extent_Density"),
             layer("GOES-West_GLM_Flash_Extent_Density"),
-            layer("Some_Other_GLM_Flash_Product"),
+            layer("GOES-17_GLM_Flash_Extent_Density"),
         ))["lightning"]
+        # A GOES layer that names neither side is still live lightning; it just
+        # cannot be placed, and the panel says nothing about reach for it.
         assert {e["id"]: e["satellite"] for e in got} == {
             "GOES-East_GLM_Flash_Extent_Density": "east",
             "GOES-West_GLM_Flash_Extent_Density": "west",
-            "Some_Other_GLM_Flash_Product": None,
+            "GOES-17_GLM_Flash_Extent_Density": None,
         }
 
     def test_a_jpeg_layer_comes_back_with_the_extension_leaflet_wants(self):
@@ -121,24 +123,78 @@ class TestParse:
         assert lightning.parse_layers(capabilities(
             layer("MODIS_Flood_Flash_Extent")))["lightning"] == []
 
-    def test_it_finds_the_layer_however_it_is_spelled(self):
-        # The first version wanted "glm" AND "flash" in the identifier and so
-        # found nothing at all. Any of these should be enough on its own --
-        # a filter that has to be right about two words is twice as likely to
-        # be wrong about one.
+    def test_it_finds_the_mapper_whatever_the_product_is_called(self):
+        # The instrument and the satellite, in any arrangement. Everything the
+        # GLM produces is live lightning -- flashes, groups, events.
         for ident in ("GOES-East_GLM_Flash_Extent_Density",
                       "GOES-East_GLM_Lightning_Detection",
                       "GOES-R_GLM_Group_Energy_Density",
-                      "GOES-East_Lightning_Flash_Density"):
-            got = lightning.parse_layers(capabilities(layer(ident)))['lightning']
+                      "GOES-West_GLM_Minimum_Flash_Area"):
+            got = lightning.parse_layers(capabilities(layer(ident)))["lightning"]
             assert len(got) == 1, f"missed {ident}"
 
+    def test_it_will_not_take_lightning_that_is_not_the_mapper(self):
+        # This is the loosening that let the climatologies in. "Lightning" in
+        # a GOES layer's name is not enough on its own; it has to be the GLM.
+        for ident in ("GOES-East_Lightning_Flash_Density",
+                      "Some_Other_GLM_Flash_Product"):
+            got = lightning.parse_layers(capabilities(layer(ident)))["lightning"]
+            assert got == [], f"took {ident}"
+
     def test_the_name_may_be_in_the_title_rather_than_the_identifier(self):
+        # GIBS is not consistent about which of the two carries the instrument,
+        # so both are read -- here the identifier says GOES and the title GLM.
         got = lightning.parse_layers(capabilities(
-            layer("GOES-East_ABI_Product_17",
+            layer("GOES-East_Product_17",
                   title="GLM Flash Extent Density")))["lightning"]
         assert len(got) == 1
-        assert got[0]["id"] == "GOES-East_ABI_Product_17"
+        assert got[0]["id"] == "GOES-East_Product_17"
+
+
+class TestClimatologyIsNotLive:
+    """The failure that matters most: history drawn as if it were now.
+
+    NASA does publish lightning through GIBS -- OTD and DMSP-OLS averages over
+    years, from instruments switched off long ago. A filter loose enough to
+    take them puts a convincing map of storms on screen that are not there,
+    which is worse than an empty map, and worse than an error.
+    """
+
+    def test_the_otd_and_dmsp_climatologies_are_not_live_lightning(self):
+        # These are the identifiers GIBS actually offered when a looser filter
+        # was tried, taken from what appeared in the picker.
+        got = lightning.parse_layers(capabilities(
+            layer("OTD_HRMC_COM_FR",
+                  title="Lightning Flash Rate (OTD High Res Monthly Climatology)"),
+            layer("OLS_DMSP_F10_Lightning", title="DMSP-OLS F10 Lightning"),
+            layer("LIS_OTD_Lightning_Climatology",
+                  title="Lightning Climatology (LIS/OTD)"),
+        ))
+        assert got["lightning"] == [], "a climatology was offered as live"
+        assert len(got["climatology"]) == 3, "and it should still be listed"
+
+    def test_the_live_mapper_still_gets_through(self):
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Extent_Density"),
+            layer("OTD_HRMC_COM_FR", title="Lightning Climatology"),
+        ))
+        assert [e["id"] for e in got["lightning"]] == [
+            "GOES-East_GLM_Flash_Extent_Density"]
+        assert [e["id"] for e in got["climatology"]] == ["OTD_HRMC_COM_FR"]
+
+    def test_it_takes_both_words_now(self):
+        # "lightning" alone was what let the climatologies in; "glm" alone
+        # could be any product of the instrument. Live means GOES and GLM.
+        for ident in ("Some_GLM_Product", "GOES-East_Lightning_Anything"):
+            assert lightning.parse_layers(
+                capabilities(layer(ident)))["lightning"] == [], ident
+
+    def test_a_goes_glm_climatology_would_still_be_refused(self):
+        # If NASA ever publishes an average of GLM itself, the word in the name
+        # has to win over the instrument.
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Climatology_Annual")))
+        assert got["lightning"] == []
 
 
 class TestBackdrop:
@@ -202,8 +258,9 @@ class TestNearMisses:
 class TestDemo:
     def test_it_answers_in_the_same_shape_as_the_real_thing(self):
         got = lightning.demo()
-        assert set(got) == {"layers", "imagery", "template", "attribution",
-                            "coverage", "nearby", "catalogue_size"}
+        assert set(got) == {"layers", "imagery", "climatology", "template",
+                            "attribution", "coverage", "nearby",
+                            "catalogue_size"}
         for entry in got["layers"] + got["imagery"]:
             assert set(entry) >= {"id", "title", "matrix", "format", "satellite"}
 

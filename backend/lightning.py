@@ -51,14 +51,24 @@ CAPABILITIES = ("https://gibs.earthdata.nasa.gov/wmts/epsg3857/best"
 TILES = ("https://gibs.earthdata.nasa.gov/wmts/epsg3857/best"
          "/{layer}/default/{time}/{matrix}/{z}/{y}/{x}.{fmt}")
 
-# What a GLM layer is called, loosely enough to survive renaming.
+# What counts as live lightning: the GOES mapper, and nothing else.
 #
-# The first version wanted "glm" *and* "flash" in the identifier, which found
-# nothing at all: too clever by half, and a filter that has to be right about
-# two words is twice as likely to be wrong about one. Either word will do now,
-# in the identifier or the human-readable title, and "lightning" as well --
-# whatever NASA calls it, one of these three is in the name.
-WANTED = ("glm", "lightning")
+# This has been wrong twice in opposite directions. First it wanted "glm" and
+# "flash" together in the identifier and found nothing. Then it took anything
+# saying "lightning", and found plenty -- OTD and DMSP-OLS, which are real NASA
+# lightning data and are climatologies: multi-year averages from instruments
+# that stopped collecting years ago. Drawn on a live map with a live legend
+# they look exactly like tonight's storms, which is the worst of the three
+# outcomes. Finding nothing is honest; finding the wrong thing is not.
+#
+# So both words, and both of them meaning what they say: it is GOES, and it is
+# the Geostationary Lightning Mapper.
+LIVE = ("goes", "glm")
+
+# The giveaways that a lightning layer is an average rather than an
+# observation. Any of these and it is history, whatever else the name says.
+CLIMATOLOGY = ("climatology", "hrmc", "hrac", "hryc", "otd", "lis_",
+               "_lis", "dmsp", "ols", "annual", "monthly", "mean")
 
 # A wider net, used only to explain a miss. If nothing matches above, these are
 # the layers worth showing to whoever has to work out why -- otherwise the
@@ -120,9 +130,11 @@ def _entry(layer: ET.Element, ident: str, title: str, low: str) -> dict[str, Any
 def parse_layers(xml: str) -> dict[str, list[dict[str, Any]]]:
     """Pull the GOES layers out of a WMTS capabilities document.
 
-    Two sorts, because the picture people mean by "lightning from GOES" is two
-    layers: the flashes themselves, and the greyscale infrared cloud tops they
-    are drawn over. On their own the flashes are dots in a void.
+    Three sorts. The picture people mean by "lightning from GOES" is two
+    layers -- the flashes, and the greyscale infrared cloud tops they are drawn
+    over, because on their own the flashes are dots in a void. The third is the
+    climatologies, which are separated out precisely so they cannot be served
+    as live.
     """
     try:
         root = ET.fromstring(xml)
@@ -131,6 +143,7 @@ def parse_layers(xml: str) -> dict[str, list[dict[str, Any]]]:
 
     flashes: list[dict[str, Any]] = []
     cloud: list[dict[str, Any]] = []
+    old: list[dict[str, Any]] = []
     for layer in root.iter(f"{{{_NS['wmts']}}}Layer"):
         ident = layer.findtext(f"{{{_NS['ows']}}}Identifier") or ""
         title = layer.findtext(f"{{{_NS['ows']}}}Title") or ident
@@ -138,14 +151,19 @@ def parse_layers(xml: str) -> dict[str, list[dict[str, Any]]]:
         # instrument name.
         low = f"{ident} {title}".lower()
 
-        if any(word in low for word in WANTED):
+        stale = any(word in low for word in CLIMATOLOGY)
+        if all(word in low for word in LIVE) and not stale:
             flashes.append(_entry(layer, ident, title, low))
+        elif "lightning" in low and stale:
+            # Kept, but kept apart. It is worth being able to look at, and it
+            # must never be mistaken for what is happening now.
+            old.append(_entry(layer, ident, title, low))
         elif "goes" in low and any(word in low for word in BACKDROP):
             cloud.append(_entry(layer, ident, title, low))
 
-    flashes.sort(key=lambda entry: entry["id"])
-    cloud.sort(key=lambda entry: entry["id"])
-    return {"lightning": flashes, "imagery": cloud}
+    for group in (flashes, cloud, old):
+        group.sort(key=lambda entry: entry["id"])
+    return {"lightning": flashes, "imagery": cloud, "climatology": old}
 
 
 def near_misses(xml: str, limit: int = 12) -> list[str]:
@@ -196,6 +214,7 @@ def layers(refresh: bool = False) -> dict[str, Any]:
     answer = {
         "layers": found["lightning"],
         "imagery": found["imagery"],
+        "climatology": found["climatology"],
         "template": TILES,
         "attribution": ATTRIBUTION,
         "coverage": COVERAGE,
@@ -246,6 +265,7 @@ def demo() -> dict[str, Any]:
         "template": TILES,
         "attribution": "synthetic",
         "coverage": COVERAGE,
+        "climatology": [],
         "nearby": [],
         "catalogue_size": 4,
     }

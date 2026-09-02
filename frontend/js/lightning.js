@@ -86,6 +86,24 @@ function urlFor(entry) {
     .replace('{fmt}', entry.format ?? 'png');
 }
 
+/**
+ * A button label short enough to fit, from an identifier that is not.
+ *
+ * The picker was showing raw identifiers cut to twelve characters --
+ * "OLS_DMSP_F10", "OTD_H" -- which is neither a name nor a clue, and enough of
+ * them side by side to push a scrollbar under the whole panel.
+ */
+function shortName(entry) {
+  const known = SEEN_FROM[entry.satellite]?.label;
+  if (known) return known;
+  return entry.title
+    .replace(/\s*\(.*\)\s*$/, '')
+    .replace(/lightning|flash extent density|climatology/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 18) || entry.id.slice(0, 18);
+}
+
 /** The infrared layer for whichever satellite the flashes come from. */
 function cloudFor(entry) {
   const all = catalogue?.imagery ?? [];
@@ -162,8 +180,23 @@ async function load() {
   }
 }
 
-/** What to say when GIBS answered but had no lightning layer in it. */
+/**
+ * What to say when GIBS answered but had no live lightning in it.
+ *
+ * The distinction this draws is the whole point. NASA does publish lightning
+ * here -- OTD and DMSP-OLS climatologies, averages over years from instruments
+ * long since switched off. Offering those under a live heading is worse than
+ * offering nothing, because they draw a convincing map of storms that are not
+ * there. So they are named as what they are, and never selected for you.
+ */
 function noneFound(got) {
+  const stale = got.climatology?.length ?? 0;
+  if (stale) {
+    return 'NASA GIBS has no live GOES lightning — what it publishes here is '
+      + `climatology: ${got.climatology.slice(0, 3).map((c) => c.title).join(', ')}`
+      + `${stale > 3 ? ` and ${stale - 3} more` : ''}. Those are averages over `
+      + 'years, not tonight, so they are not drawn on a live map.';
+  }
   const size = got.catalogue_size ? ` of ${got.catalogue_size}` : '';
   if (got.nearby?.length) {
     return `No lightning layer${size} at NASA GIBS. Closest names there: `
@@ -205,12 +238,15 @@ function buildDock() {
     el('div', { class: 'bolt-body', id: 'boltBody', hidden: !enabled },
       catalogue?.layers?.length > 1
         ? el('div', { class: 'bolt-windows' },
-          ...catalogue.layers.map((entry) => el('button', {
+          // Capped as well as wrapped. A picker is a few choices; a list of
+          // everything a catalogue happens to hold is not a choice, it is a
+          // scrollbar.
+          ...catalogue.layers.slice(0, 4).map((entry) => el('button', {
             class: `bolt-window${entry === chosen ? ' is-on' : ''}`,
             dataset: { layer: entry.id },
             title: entry.title,
             onclick: () => { chosen = entry; manual = true; buildDock(); show(); },
-          }, SEEN_FROM[entry.satellite]?.label ?? entry.id.slice(0, 12))))
+          }, shortName(entry))))
         : null,
       catalogue?.imagery?.length
         ? el('label', { class: 'bolt-check' },
