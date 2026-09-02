@@ -34,11 +34,7 @@ export const api = {
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4), source,
     })}`, { method: 'GET' }),
-  lightning: ({ west, south, east, north, minutes }) => request(
-    `/api/lightning?${new URLSearchParams({
-      west: west.toFixed(4), south: south.toFixed(4),
-      east: east.toFixed(4), north: north.toFixed(4), minutes,
-    })}`, { method: 'GET' }),
+  lightning: () => request('/api/lightning', { method: 'GET' }),
 
   quakes: ({ west, south, east, north, hours, minMagnitude }) => request(
     `/api/quakes?${new URLSearchParams({

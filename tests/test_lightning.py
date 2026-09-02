@@ -1,214 +1,142 @@
-"""Tests for the lightning feed.
+"""Tests for the lightning layer's catalogue reading.
 
-The decompressor is the part worth testing hard. Everything else in the module
-is a socket and a list; `inflate` is pure text-in text-out, it runs on every
-single message before anything else looks at it, and when it is wrong the
-symptom is corrupt JSON rather than a wrong position -- so it fails loudly, but
-only if it is exercised.
+The layer identifiers are not written into the app: it asks GIBS what it is
+serving and uses what comes back. That makes this parser the whole of the
+join, and the one place a mistake stops the layer working -- so it is what is
+tested, against documents shaped like the real one rather than against the
+service, which cannot be reached from here.
 
-The cases below are worked out from the algorithm rather than recorded from the
-module, so they can disagree with it.
+The previous version of this file tested a websocket protocol that could not
+be exercised either, and the layer shipped broken. The lesson taken is not
+"test harder" but "depend on less": a WMTS catalogue is a document, and a
+document can be checked.
 """
 
 from __future__ import annotations
-
-import json
-import math
-import time
 
 import pytest
 
 from backend import lightning
 
-
-def compress(text: str) -> str:
-    """The encoder matching `inflate`, for round-tripping.
-
-    Written here rather than shipped: nothing in the app ever compresses
-    anything, and an encoder in the module would be untested code that exists
-    only to make a test pass. Kept deliberately simple -- the standard LZW
-    encode, emitting one code unit per code.
-    """
-    if not text:
-        return ""
-    table = {chr(i): i for i in range(256)}
-    next_code = 256
-    current = ""
-    out: list[int] = []
-    for char in text:
-        nxt = current + char
-        if nxt in table:
-            current = nxt
-        else:
-            out.append(table[current])
-            table[nxt] = next_code
-            next_code += 1
-            current = char
-    if current:
-        out.append(table[current])
-    return "".join(chr(c) for c in out)
+WMTS = "http://www.opengis.net/wmts/1.0"
+OWS = "http://www.opengis.net/ows/1.1"
 
 
-class TestInflate:
-    def test_empty(self):
-        assert lightning.inflate("") == ""
-
-    def test_text_with_no_repeats_is_its_own_encoding(self):
-        # With nothing to learn, every code is a literal character and the
-        # message passes through untouched.
-        plain = "abcdefg"
-        assert lightning.inflate(plain) == plain
-
-    def test_a_hand_worked_expansion(self):
-        # Codes: 'a', 'b', 256, 258.
-        # After 'a','b' the table holds 256="ab", so the third code expands to
-        # "ab" and the table learns 257="ba". The fourth code, 258, has not
-        # been defined yet -- so it is the self-referential case, and can only
-        # be the previous string "ab" plus its own first character: "aba".
-        packed = "ab" + chr(256) + chr(258)
-        assert lightning.inflate(packed) == "a" + "b" + "ab" + "aba"
-
-    def test_the_self_referential_code(self):
-        # The awkward case reached the way it is actually reached: this is
-        # exactly what the encoder emits for "aaaaaa". The second code names
-        # the entry being defined by that very step, and there is no way to
-        # resolve it except from the string before it.
-        #
-        # Worth spelling out, because a plausible-looking sequence that the
-        # encoder would never emit is easy to write and proves nothing.
-        packed = "a" + chr(256) + chr(257)
-        assert packed == compress("aaaaaa")
-        assert lightning.inflate(packed) == "aaaaaa"
-
-    @pytest.mark.parametrize("text", [
-        "a",
-        "aaaaaaaaaa",
-        "abababababab",
-        '{"time":1712345678901234567,"lat":51.5,"lon":-0.12,"sig":[]}',
-        '{"lat":1,"lat":1,"lat":1,"lat":1,"lat":1,"lat":1}',
-        "banana bandana bandanna",
-        "".join(chr(32 + (i * 7) % 90) for i in range(500)),
-    ])
-    def test_round_trip(self, text):
-        assert lightning.inflate(compress(text)) == text
-
-    def test_a_real_shaped_message_survives(self):
-        message = {
-            "time": 1712345678901234567, "lat": 52.1234, "lon": 4.5678,
-            "alt": 0, "pol": 0, "mds": 1234, "mcg": 180, "status": 0,
-            "region": 1, "sig": [{"sta": 1, "time": 1}, {"sta": 2, "time": 2}],
-        }
-        text = json.dumps(message)
-        assert json.loads(lightning.inflate(compress(text))) == message
+def capabilities(*layers: str) -> str:
+    return (
+        f'<Capabilities xmlns="{WMTS}" xmlns:ows="{OWS}">'
+        f"<Contents>{''.join(layers)}</Contents></Capabilities>"
+    )
 
 
-class TestStroke:
-    def test_a_normal_message(self):
-        now = time.time()
-        got = lightning._stroke(
-            {"time": 1_712_345_678_901_234_567, "lat": 51.5, "lon": -0.12,
-             "sig": [1, 2, 3]}, now)
-        assert got["lat"] == 51.5
-        assert got["lon"] == -0.12
-        assert got["stations"] == 3
-        # Nanoseconds, not seconds or milliseconds: getting this wrong puts
-        # every stroke in 1970 or in the year 56000, and either way the map
-        # shows nothing while the feed looks healthy.
-        assert 1_712_345_678 < got["time"] < 1_712_345_680
-
-    def test_a_message_with_no_position_is_not_a_stroke(self):
-        now = time.time()
-        assert lightning._stroke({"time": 1}, now) is None
-        assert lightning._stroke({"lat": 51.5}, now) is None
-        assert lightning._stroke({"lat": "51.5", "lon": 0}, now) is None
-
-    def test_positions_off_the_globe_are_refused(self):
-        now = time.time()
-        assert lightning._stroke({"lat": 91, "lon": 0}, now) is None
-        assert lightning._stroke({"lat": 0, "lon": 181}, now) is None
-
-    def test_a_message_with_no_time_is_stamped_on_arrival(self):
-        now = time.time()
-        got = lightning._stroke({"lat": 0, "lon": 0}, now)
-        assert got["time"] == now
+def layer(ident: str, *, title: str | None = None, matrix: str = "GoogleMapsCompatible_Level7",
+          fmt: str = "image/png", default: str | None = "2026-09-01T12:00:00Z",
+          values: tuple[str, ...] = ()) -> str:
+    time_dim = ""
+    if default is not None:
+        vals = "".join(f"<Value>{v}</Value>" for v in values)
+        time_dim = (f"<Dimension><ows:Identifier>Time</ows:Identifier>"
+                    f"<Default>{default}</Default>{vals}</Dimension>")
+    return (
+        f"<Layer>"
+        f"<ows:Title>{title or ident}</ows:Title>"
+        f"<ows:Identifier>{ident}</ows:Identifier>"
+        f"{time_dim}"
+        f"<TileMatrixSetLink><TileMatrixSet>{matrix}</TileMatrixSet></TileMatrixSetLink>"
+        f"<Format>{fmt}</Format>"
+        f"</Layer>"
+    )
 
 
-class TestBuffer:
-    def test_only_strokes_inside_the_box_and_the_window_come_back(self):
-        listener = lightning.Listener()
-        now = time.time()
-        listener._strokes = [
-            {"lat": 51.5, "lon": -0.1, "time": now - 60, "stations": 5},    # in
-            {"lat": 51.5, "lon": -0.1, "time": now - 4000, "stations": 5},  # too old
-            {"lat": 10.0, "lon": -0.1, "time": now - 60, "stations": 5},    # outside
+class TestParse:
+    def test_it_finds_the_glm_layers_and_ignores_the_rest(self):
+        xml = capabilities(
+            layer("MODIS_Terra_CorrectedReflectance_TrueColor"),
+            layer("GOES-East_GLM_Flash_Extent_Density"),
+            layer("VIIRS_SNPP_Thermal_Anomalies"),
+            layer("GOES-West_GLM_Flash_Extent_Density"),
+        )
+        got = lightning.parse_layers(xml)
+        assert [entry["id"] for entry in got] == [
+            "GOES-East_GLM_Flash_Extent_Density",
+            "GOES-West_GLM_Flash_Extent_Density",
         ]
-        got = listener.recent(-1, 51, 1, 52, minutes=30)
+
+    def test_it_reads_what_the_tile_url_needs(self):
+        got = lightning.parse_layers(capabilities(layer(
+            "GOES-East_GLM_Flash_Extent_Density_5min",
+            title="Flash Extent Density (5 min)",
+            matrix="GoogleMapsCompatible_Level6", fmt="image/png",
+            default="2026-09-01T12:05:00Z",
+            values=("2026-09-01T00:00:00Z/2026-09-01T23:55:00Z/PT5M",))))
         assert len(got) == 1
-        assert got[0]["time"] == pytest.approx(now - 60)
+        entry = got[0]
+        assert entry["title"] == "Flash Extent Density (5 min)"
+        assert entry["matrix"] == "GoogleMapsCompatible_Level6"
+        assert entry["format"] == "png"
+        assert entry["time_default"] == "2026-09-01T12:05:00Z"
+        assert entry["time_values"] == [
+            "2026-09-01T00:00:00Z/2026-09-01T23:55:00Z/PT5M"]
 
-    def test_old_strokes_are_dropped(self):
-        listener = lightning.Listener()
-        now = time.time()
-        listener._strokes = [
-            {"lat": 0, "lon": 0, "time": now - lightning.KEEP_SECONDS - 10},
-            {"lat": 0, "lon": 0, "time": now - 5},
-        ]
-        listener._prune(now)
-        assert len(listener._strokes) == 1
+    def test_it_tells_the_two_satellites_apart(self):
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Extent_Density"),
+            layer("GOES-West_GLM_Flash_Extent_Density"),
+            layer("Some_Other_GLM_Flash_Product"),
+        ))
+        assert {e["id"]: e["satellite"] for e in got} == {
+            "GOES-East_GLM_Flash_Extent_Density": "east",
+            "GOES-West_GLM_Flash_Extent_Density": "west",
+            "Some_Other_GLM_Flash_Product": None,
+        }
 
-    def test_the_buffer_has_a_ceiling(self):
-        listener = lightning.Listener()
-        now = time.time()
-        listener._strokes = [
-            {"lat": 0, "lon": 0, "time": now} for _ in range(lightning.MAX_STROKES + 500)
-        ]
-        listener._prune(now)
-        assert len(listener._strokes) == lightning.MAX_STROKES
+    def test_a_jpeg_layer_comes_back_with_the_extension_leaflet_wants(self):
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Density", fmt="image/jpeg")))
+        assert got[0]["format"] == "jpg"
 
-    def test_a_junk_message_is_ignored_rather_than_raising(self):
-        listener = lightning.Listener()
-        for junk in ["", "not json", chr(300) + chr(301), "{}", "[1,2,3]"]:
-            listener._take(junk)
-        assert listener._strokes == []
+    def test_a_layer_with_no_time_dimension_is_still_usable(self):
+        got = lightning.parse_layers(capabilities(
+            layer("GOES-East_GLM_Flash_Extent_Density", default=None)))
+        assert got[0]["time_default"] is None
+        assert got[0]["time_values"] == []
+
+    def test_no_glm_layers_is_an_empty_list_not_an_error(self):
+        # If NASA stops publishing these, the layer must say so rather than
+        # throw -- an empty picker with an explanation beats a stack trace.
+        got = lightning.parse_layers(capabilities(
+            layer("MODIS_Terra_CorrectedReflectance_TrueColor")))
+        assert got == []
+
+    def test_rubbish_is_refused_clearly(self):
+        with pytest.raises(lightning.LightningError, match="would not parse"):
+            lightning.parse_layers("<not xml")
+
+    def test_an_empty_document_finds_nothing(self):
+        assert lightning.parse_layers(capabilities()) == []
+
+    def test_the_matching_is_not_fooled_by_a_near_miss(self):
+        # "flash" alone is a flood product; "glm" alone could be anything.
+        got = lightning.parse_layers(capabilities(
+            layer("MODIS_Flood_Flash_Extent"),
+            layer("GLM_Something_Else"),
+        ))
+        assert got == []
 
 
 class TestDemo:
-    def test_everything_lands_inside_the_box(self):
-        box = (-5.0, 50.0, 5.0, 55.0)
-        got = lightning.demo(*box, minutes=30)
-        assert got["count"] > 0
-        for stroke in got["strokes"]:
-            assert box[0] <= stroke["lon"] <= box[2]
-            assert box[1] <= stroke["lat"] <= box[3]
+    def test_it_answers_in_the_same_shape_as_the_real_thing(self):
+        got = lightning.demo()
+        assert set(got) == {"layers", "template", "attribution", "coverage"}
+        for entry in got["layers"]:
+            assert set(entry) >= {"id", "title", "matrix", "format", "satellite"}
 
-    def test_nothing_is_older_than_the_window(self):
-        now = time.time()
-        got = lightning.demo(-5, 50, 5, 55, minutes=10)
-        for stroke in got["strokes"]:
-            assert now - 10 * 60 - 1 <= stroke["time"] <= now + 1
+    def test_the_template_has_every_placeholder_the_page_fills_in(self):
+        for token in ("{layer}", "{time}", "{matrix}", "{z}", "{y}", "{x}", "{fmt}"):
+            assert token in lightning.demo()["template"], token
 
-    def test_strokes_arrive_in_time_order(self):
-        got = lightning.demo(-5, 50, 5, 55)
-        times = [s["time"] for s in got["strokes"]]
-        assert times == sorted(times)
-
-    def test_they_cluster_rather_than_scatter(self):
-        # Real lightning comes in storms. A uniform sprinkle is the easy thing
-        # to generate and looks wrong on a map in a way that is hard to name,
-        # so the demo is checked for being lumpy: the average distance between
-        # neighbours should be well under what an even spread would give.
-        got = lightning.demo(-5.0, 50.0, 5.0, 55.0, minutes=30)
-        points = [(s["lon"], s["lat"]) for s in got["strokes"]]
-        assert len(points) > 20
-
-        def nearest(i):
-            x, y = points[i]
-            return min(math.hypot(x - a, y - b)
-                       for j, (a, b) in enumerate(points) if j != i)
-
-        mean_gap = sum(nearest(i) for i in range(len(points))) / len(points)
-        # For n points spread evenly over a w by h box the typical nearest
-        # neighbour sits around 0.5*sqrt(area/n); clustered points come in far
-        # under that.
-        even = 0.5 * math.sqrt((10.0 * 5.0) / len(points))
-        assert mean_gap < even * 0.6, f"gap {mean_gap:.4f} vs even {even:.4f}"
+    def test_the_coverage_note_names_what_is_missing(self):
+        # The whole point of it: a blank map over Europe has to explain itself.
+        note = lightning.demo()["coverage"].lower()
+        assert "europe" in note
+        assert "goes" in note

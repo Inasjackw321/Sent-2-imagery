@@ -293,24 +293,17 @@ def earthquakes(
 
 
 @app.get("/api/lightning")
-def strikes(
-    west: float = Query(..., ge=-180, le=180),
-    south: float = Query(..., ge=-90, le=90),
-    east: float = Query(..., ge=-180, le=180),
-    north: float = Query(..., ge=-90, le=90),
-    minutes: float = Query(30.0, ge=1.0, le=120.0),
-) -> dict:
-    """Lightning strokes located inside a rectangle in the last few minutes.
+def lightning_layers(refresh: bool = Query(False)) -> dict:
+    """Which GOES lightning layers NASA is currently serving.
 
-    The listener behind this starts on the first call and then runs for the
-    life of the process, so the first answer is usually empty and the ones
-    after it are not. The panel says as much rather than leaving a quiet first
-    minute looking like a clear sky.
+    The tiles themselves go straight from the browser to GIBS; this only asks
+    what they are called today, because the names are NASA's to change and a
+    hard-coded one fails silently.
     """
     if config.DEMO_MODE:
-        return lightning.demo(west, south, east, north, minutes=minutes)
+        return lightning.demo()
     try:
-        return lightning.strokes(west, south, east, north, minutes=minutes)
+        return lightning.layers(refresh=refresh)
     except lightning.LightningError as exc:
         raise _fail(exc)
 

@@ -1,107 +1,150 @@
-// Lightning, as it happens.
+// Lightning, from NASA's GOES Lightning Mappers.
 //
-// Blitzortung's volunteer receivers hear the radio crack a stroke makes and a
-// server triangulates it from the arrival times, usually within a second or
-// two. That makes this the fastest-moving thing on the map by a wide margin:
-// the radar is ten minutes old at best, the cloud mosaic a few hours, and the
-// imagery days. A stroke is on screen while the thunder is still travelling.
+// Every GOES satellite carries a camera watching the whole disc of the earth
+// five hundred times a second for the flash of a stroke through the cloud
+// tops. NASA republishes it through GIBS as map tiles -- the same service the
+// daily cloud mosaic already comes from -- so this is a tile layer and nothing
+// more: no account, no key, no stream to hold open.
 //
-// Each stroke is a moment, not a state, so they are drawn fading: bright white
-// when they have just arrived, dimming to a faint blue over the window, and
-// gone at the end of it. A dot that never faded would say a storm is where it
-// was half an hour ago.
+// The layer names are asked for rather than written down. GIBS publishes its
+// own catalogue and the backend reads the GLM entries out of it, so a rename
+// changes what appears in the picker instead of quietly serving nothing.
 //
-// The coverage caveat matters more here than for any other layer. The network
-// is dense over Europe, good over North America and Australia, and thin to
-// absent over the oceans, Africa and much of Asia -- so a blank map is as
-// likely to mean nobody is listening as it is to mean nothing is happening,
-// and the panel says which rather than leaving a quiet map to be read as calm.
+// The thing to be clear about is where it can see. GOES sits over the
+// Americas, and a geostationary camera sees less than a hemisphere: Europe,
+// Africa and Asia are over its horizon and stay blank whatever the weather is
+// doing there. An empty map that means "quiet" and one that means "not
+// watched from here" look identical, so the panel always says which.
 
 import { api } from './api.js';
-import { $, el, debounce, askableBounds } from './ui.js';
+import { $, el } from './ui.js';
 
-// How far back the map looks. Long enough to see the shape of a storm, short
-// enough that everything on screen happened while you were watching.
-const WINDOWS = [5, 15, 30];
+// Roughly where each satellite can see anything at all: a geostationary
+// camera at this height is useful to about 65 degrees from the point beneath
+// it, and hopeless past that. Used only to tell someone why their map is
+// empty, never to hide the layer.
+const SEEN_FROM = {
+  east: { lon: -75.2, label: 'GOES-East' },
+  west: { lon: -137.2, label: 'GOES-West' },
+};
+const REACH_DEGREES = 65;
 
-// How often to ask again. The feed is continuous, so this is really "how often
-// is the picture worth redrawing" -- often enough to feel live, rarely enough
-// to be a decent way to treat a volunteer network's server.
-const REFRESH_MS = 20000;
-
-// The freshest strokes are drawn biggest and brightest; a stroke at the end of
-// the window is a small dim dot.
-const NEW_RADIUS = 7;
-const OLD_RADIUS = 2.5;
+// How often to ask GIBS for a newer frame. The product is published every few
+// minutes; this is the cheapest cadence that keeps up with it.
+const REFRESH_MS = 120000;
 
 let map = null;
-let pane = null;
-let canvas = null;
 let layer = null;
 let enabled = false;
-let minutes = 15;
-let strokes = [];
+let catalogue = null;
+let chosen = null;
+let opacity = 0.85;
 let timer = null;
-let fader = null;
-let note = '';
+let problem = '';
+// Until somebody picks a satellite themselves, the map picks the one looking
+// at whatever is on screen. After that it stays put: an automatic choice that
+// overrides a deliberate one is worse than no automatic choice at all.
+let manual = false;
 
 export function initLightning(leafletMap) {
   map = leafletMap;
-  // Above the radar: rain is the context and the strike is the event, and the
+  // Above the radar: rain is the context, the strike is the event, and the
   // point of having both is to see one inside the other.
-  pane = map.createPane('lightning');
-  pane.style.zIndex = 465;
-  canvas = L.canvas({ pane: 'lightning', padding: 0.3 });
+  map.createPane('lightning').style.zIndex = 465;
+  map.getPane('lightning').style.pointerEvents = 'none';
   buildDock();
-  map.on('moveend', debounce(() => { if (enabled) refresh(); }, 600));
+  map.on('moveend', () => {
+    if (!enabled) return;
+    // Panning from Florida to California is a change of satellite, not just of
+    // view -- so the choice is remade, and only redrawn if it actually moved.
+    if (!manual) {
+      const next = pick();
+      if (next && next !== chosen) { chosen = next; buildDock(); show(); return; }
+    }
+    paintDock();
+  });
 }
 
-// ── The map ────────────────────────────────────────────────────
+// ── The layer ──────────────────────────────────────────────────
 
-/** How old a stroke is, from 0 (just now) to 1 (about to drop off). */
-const age = (stroke, now) => Math.min(1, Math.max(0,
-  (now - stroke.time * 1000) / (minutes * 60000)));
+/** The tile URL for one catalogue entry, with the placeholders filled in. */
+function urlFor(entry) {
+  return catalogue.template
+    .replace('{layer}', entry.id)
+    // GIBS wants a time or the word default; a layer with no time dimension
+    // has nothing to substitute and takes the latter.
+    .replace('{time}', entry.time_default ?? 'default')
+    .replace('{matrix}', entry.matrix ?? 'GoogleMapsCompatible_Level7')
+    // Leaflet fills in {z}, {y} and {x} itself and throws on anything else it
+    // is handed, so the extension has to be substituted here rather than left
+    // in the template for it to trip over.
+    .replace('{fmt}', entry.format ?? 'png');
+}
 
-function paint() {
+function show() {
   layer?.remove();
-  if (!enabled || !strokes.length) { layer = null; return; }
+  layer = null;
+  if (!enabled || !chosen) return;
 
-  const now = Date.now();
-  layer = L.layerGroup(strokes.map((stroke) => {
-    const old = age(stroke, now);
-    const fade = 1 - old;
-    return L.circleMarker([stroke.lat, stroke.lon], {
-      renderer: canvas,
-      pane: 'lightning',
-      // Not clickable. A stroke is a point in time with nothing to say about
-      // itself beyond where and when, both of which the drawing already
-      // carries -- and thousands of hit targets over the radar would take
-      // every click on the map with them.
-      interactive: false,
-      radius: OLD_RADIUS + (NEW_RADIUS - OLD_RADIUS) * fade * fade,
-      // White-hot when new, cooling to the blue of the older ones.
-      color: '#ffffff',
-      weight: fade > 0.75 ? 1.5 : 0,
-      opacity: fade * 0.9,
-      fillColor: fade > 0.5 ? '#eaf4ff' : '#7cc4ff',
-      fillOpacity: 0.15 + 0.75 * fade,
-    });
-  })).addTo(map);
+  let missing = 0;
+  layer = L.tileLayer(urlFor(chosen), {
+    pane: 'lightning',
+    opacity,
+    // GIBS stops at the zoom the product is gridded to; past that the tiles
+    // are stretched rather than withheld, so the layer stays on screen when
+    // you zoom into a storm instead of vanishing.
+    maxNativeZoom: 7,
+    maxZoom: 19,
+    className: 'bolt-tiles',
+    attribution: catalogue.attribution,
+  });
+  // A missing tile over the ocean is ordinary; every tile missing means the
+  // layer name is wrong or the product has moved, and that is worth saying
+  // rather than showing an empty map and letting it read as calm weather.
+  layer.on('tileerror', () => {
+    missing += 1;
+    if (missing === 8) { problem = `${chosen.id} is not answering.`; paintDock(); }
+  });
+  layer.on('tileload', () => {
+    if (!problem) return;
+    problem = '';
+    paintDock();
+  });
+  layer.addTo(map);
 }
 
-async function refresh() {
-  if (!enabled) return;
-  const box = askableBounds(map);
+async function load() {
   try {
-    const got = await api.lightning({ ...box, minutes });
-    strokes = got.strokes ?? [];
-    note = got.state ?? '';
-    paint();
-    paintDock(got);
+    catalogue = await api.lightning();
+    problem = catalogue.layers.length ? '' : 'NASA is not serving a GLM layer just now.';
+    chosen = pick();
+    buildDock();
+    show();
   } catch (err) {
-    note = err.message;
+    problem = err.message;
     paintDock();
   }
+}
+
+/** Whichever satellite is looking at the middle of the map. */
+function pick() {
+  if (!catalogue?.layers?.length) return null;
+  const centre = map.getCenter().lng;
+  const distance = (entry) => {
+    const seen = SEEN_FROM[entry.satellite];
+    if (!seen) return 999;
+    return Math.abs(((centre - seen.lon + 540) % 360) - 180);
+  };
+  return [...catalogue.layers].sort((a, b) => distance(a) - distance(b))[0];
+}
+
+/** How far the map's centre is from the nearest satellite's view. */
+function reach() {
+  const seen = SEEN_FROM[chosen?.satellite];
+  if (!seen) return null;
+  const centre = map.getCenter().lng;
+  const away = Math.abs(((centre - seen.lon + 540) % 360) - 180);
+  return { away, label: seen.label, inside: away <= REACH_DEGREES };
 }
 
 // ── The panel ──────────────────────────────────────────────────
@@ -113,28 +156,24 @@ function buildDock() {
   dock.append(
     el('button', { class: 'bolt-toggle', id: 'boltToggle', onclick: toggle },
       el('span', { class: 'bolt-mark' }, '⚡'), 'Lightning'),
-    el('div', { class: 'bolt-body', id: 'boltBody', hidden: true },
-      el('div', { class: 'bolt-windows' },
-        ...WINDOWS.map((m) => el('button', {
-          class: `bolt-window${m === minutes ? ' is-on' : ''}`,
-          dataset: { minutes: m },
-          onclick: () => setWindow(m),
-        }, `${m} min`))),
-      el('div', { class: 'bolt-count', id: 'boltCount' }, 'Nothing loaded yet'),
+    el('div', { class: 'bolt-body', id: 'boltBody', hidden: !enabled },
+      catalogue?.layers?.length > 1
+        ? el('div', { class: 'bolt-windows' },
+          ...catalogue.layers.map((entry) => el('button', {
+            class: `bolt-window${entry === chosen ? ' is-on' : ''}`,
+            dataset: { layer: entry.id },
+            title: entry.title,
+            onclick: () => { chosen = entry; manual = true; buildDock(); show(); },
+          }, SEEN_FROM[entry.satellite]?.label ?? entry.id.slice(0, 12))))
+        : null,
+      el('div', { class: 'bolt-count', id: 'boltCount' }, 'Loading…'),
       el('div', { class: 'bolt-key' },
         el('span', { class: 'bolt-key-row' },
-          el('i', { style: 'background:#ffffff' }), 'seconds ago'),
+          el('i', { style: 'background:#2b1d5e' }), 'few'),
         el('span', { class: 'bolt-key-row' },
-          el('i', { style: 'background:#7cc4ff;opacity:.5' }), 'minutes ago')),
+          el('i', { style: 'background:#c86bff' }), 'many flashes')),
       el('div', { class: 'bolt-note', id: 'boltNote' }, '')));
-}
-
-function setWindow(next) {
-  minutes = next;
-  for (const button of document.querySelectorAll('.bolt-window')) {
-    button.classList.toggle('is-on', Number(button.dataset.minutes) === minutes);
-  }
-  refresh();
+  paintDock();
 }
 
 function toggle() {
@@ -142,45 +181,44 @@ function toggle() {
   $('#boltToggle').classList.toggle('is-on', enabled);
   $('#boltBody').hidden = !enabled;
   if (enabled) {
-    refresh();
-    timer = setInterval(refresh, REFRESH_MS);
-    // Redrawn between fetches as well, so the fade is continuous rather than
-    // stepping every twenty seconds.
-    fader = setInterval(() => { if (strokes.length) paint(); }, 2000);
+    if (catalogue) { chosen ??= pick(); show(); } else load();
+    // Re-made rather than refreshed: the time is baked into the URL, so a
+    // newer frame is a different layer.
+    timer = setInterval(() => {
+      if (!enabled) return;
+      if (!manual) chosen = pick();
+      load();
+    }, REFRESH_MS);
   } else {
     clearInterval(timer);
-    clearInterval(fader);
-    timer = fader = null;
-    strokes = [];
+    timer = null;
     layer?.remove();
     layer = null;
   }
+  paintDock();
 }
 
-function paintDock(got) {
+function paintDock() {
   const count = $('#boltCount');
   const text = $('#boltNote');
-  if (!count || !text) return;
+  if (!count || !text || !enabled) return;
 
-  count.textContent = strokes.length
-    ? `${strokes.length.toLocaleString()} strokes in the last ${minutes} min`
-    : 'No strokes here in this window';
+  const view = reach();
+  count.textContent = chosen
+    ? (view && !view.inside
+      ? `Nothing to see here — ${view.label} cannot look this far`
+      : `${chosen.title.replace(/ \(demo\)$/, '')}`)
+    : 'No lightning layer available';
 
   const lines = [];
-  if (got?.attribution && got.attribution !== 'synthetic') {
-    lines.push(`${got.attribution} — volunteer receivers, free to use.`);
-  } else if (got?.attribution === 'synthetic') {
-    lines.push('Demo mode: these strokes are invented.');
+  if (view && !view.inside) {
+    lines.push(catalogue?.coverage ?? '');
+  } else if (catalogue?.attribution === 'synthetic') {
+    lines.push('Demo mode: the tiles are stand-ins.');
+  } else if (chosen) {
+    lines.push(`${catalogue.attribution}. Flash extent density — how many `
+      + 'flashes touched each cell, not single strokes.');
   }
-  // The honest reading of an empty map, which is not "no lightning".
-  if (!strokes.length) {
-    lines.push('Coverage follows where the receivers are: dense over Europe, '
-      + 'good over North America and Australia, thin elsewhere. An empty map '
-      + 'here may mean nobody is listening rather than nothing is happening.');
-  }
-  if (note && !/listening|demo/.test(note)) lines.push(note);
-  text.textContent = lines.join(' ');
+  if (problem) lines.push(problem);
+  text.textContent = lines.filter(Boolean).join(' ');
 }
-
-/** Used by the tests and by anything that wants the current count. */
-export const held = () => strokes.length;
