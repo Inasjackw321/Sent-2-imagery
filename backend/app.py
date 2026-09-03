@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, fires, passes, seismic, service, stac,
+    aisstream, composite, config, fires, mtg, passes, seismic, service, stac,
     version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
@@ -56,7 +56,7 @@ CSP = "; ".join([
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
     "https://airtw.moenv.gov.tw https://ristmikud.tallinn.ee "
     "https://pics.starvisor.net https://www.customs.gov.by "
-    "https://eismoinfo.lt",
+    "https://eismoinfo.lt https://view.eumetsat.int",
     # Everything the browser fetches by script: this backend, the radar index,
     # and the HLS playlists and segments.
     # EarthCam serves its playlists from numbered video hosts that rotate, and
@@ -290,6 +290,22 @@ def earthquakes(
     try:
         return seismic.quakes(box, hours=hours, min_magnitude=min_magnitude)
     except seismic.SeismicLookupError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/mtg")
+def mtg_layers(refresh: bool = Query(False)) -> dict:
+    """Which MTG lightning layers EUMETSAT is serving, and how fresh they are.
+
+    The tiles go straight from the browser to EUMETSAT; this only asks what
+    exists and when it is from. A layer reaches the live list by declaring a
+    recent frame -- never by being named the right thing.
+    """
+    if config.DEMO_MODE:
+        return mtg.demo()
+    try:
+        return mtg.layers(refresh=refresh)
+    except mtg.MTGError as exc:
         raise _fail(exc)
 
 

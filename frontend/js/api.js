@@ -34,6 +34,8 @@ export const api = {
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4), source,
     })}`, { method: 'GET' }),
+  mtg: () => request('/api/mtg', { method: 'GET' }),
+
   quakes: ({ west, south, east, north, hours, minMagnitude }) => request(
     `/api/quakes?${new URLSearchParams({
       west: west.toFixed(4), south: south.toFixed(4),

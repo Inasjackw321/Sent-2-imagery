@@ -1230,3 +1230,51 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   width: 12px; height: 9px; border-radius: 2px; display: inline-block;
   border: 1px solid rgba(143,168,216,.35);
 }
+
+/* ── Lightning, from MTG ─────────────────────────────────────── */
+
+.mtg-dock { display: grid; gap: 8px; }
+.bolt-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.bolt-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.bolt-toggle.is-on {
+  color: #eaf4ff; border-color: rgba(124,196,255,.65); background: rgba(16,38,64,.88);
+  font-weight: 600;
+}
+.bolt-mark { font-size: 14px; opacity: .65; }
+.bolt-toggle.is-on .bolt-mark { opacity: 1; }
+
+.bolt-body {
+  display: grid; gap: 7px; padding: 9px 11px;
+  border-radius: 9px; background: rgba(13,16,21,.9);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+/* Wrapping, not scrolling: unwrapped, a few product names pushed the panel
+   wider than its dock and put a scrollbar under the whole column. */
+.bolt-windows { display: flex; gap: 4px; flex-wrap: wrap; }
+.bolt-window {
+  flex: 1 1 auto; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 4px 6px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.bolt-window:hover { color: var(--ink); }
+.bolt-window.is-on {
+  color: #eaf4ff; background: rgba(124,196,255,.16); border-color: rgba(124,196,255,.55);
+}
+.bolt-check {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 10.5px; color: var(--ink-dim); cursor: pointer;
+}
+.bolt-check input { accent-color: #7cc4ff; width: 13px; height: 13px; }
+.bolt-count { font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.bolt-note { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
+
+/* The infrared is context, not the subject: greyed and held back so the map
+   under it and the flashes over it both stay readable. */
+.mtg-cloud { filter: grayscale(1) contrast(1.1); }
