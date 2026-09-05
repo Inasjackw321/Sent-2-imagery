@@ -574,13 +574,31 @@ class TestRegionWideAlerts:
         assert got["shape"] is None
         assert got["area_km"] > 0
 
-    def test_a_drone_crossing_a_region_does_not_shade_it(self):
-        # It is at a point on its way through. Shading the province would say
-        # the whole of it is under something it is not.
+    def test_a_drone_located_only_to_a_region_shows_that_region(self):
+        # Not because the region is under anything -- it is not -- but because
+        # that is all anyone knows about where the drone is. Drawn as a marker
+        # on the oblast's centroid, it claimed a position good to a few
+        # kilometres from a report that gave one good to a couple of hundred.
         got = osint.place_event(one(kind="drone", place="Kyiv oblast"),
                                 "ua", lookup=self.looks_up())
+        assert got["region_scope"] == "located"
+        assert got["shape"] is not None
+        # But it is emphatically not a claim that the region is under attack.
         assert got["region_wide"] is False
-        assert got["shape"] is None
+
+    def test_the_two_reasons_for_an_outline_are_kept_apart(self):
+        covers = osint.place_event(one(kind="alert", place="Kyiv oblast"),
+                                   "ua", lookup=self.looks_up())
+        located = osint.place_event(one(kind="drone", place="Kyiv oblast"),
+                                    "ua", lookup=self.looks_up())
+        assert covers["region_scope"] == "covers"
+        assert located["region_scope"] == "located"
+        assert covers["region_wide"] and not located["region_wide"]
+
+    def test_a_town_gets_no_region_scope_at_all(self):
+        got = osint.place_event(one(kind="drone", place="Beirut"), "ua",
+                                lookup=self.looks_up(kind="city", category="place"))
+        assert got["region_scope"] is None
 
     def test_a_strike_reported_across_a_region_does_shade_it(self):
         # "вибухи на Київщині" says explosions somewhere in the oblast and
@@ -605,6 +623,10 @@ class TestRegionWideAlerts:
 
     def test_a_boundary_match_is_a_region_whatever_it_is_called(self):
         assert osint.is_region({"category": "boundary", "kind": "something new"})
+
+    def test_the_demo_shows_both_reasons_for_an_outline(self):
+        scopes = {e.get("region_scope") for e in osint.demo()["events"]}
+        assert {"covers", "located"} <= scopes
 
     def test_the_demo_shows_a_region_alert_beside_a_town_one(self):
         # Otherwise the build with no network only draws circles, and whether

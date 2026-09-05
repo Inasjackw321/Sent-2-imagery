@@ -125,6 +125,79 @@ class TestWhere:
         assert read("Розвідувальний БпЛА над Чорним морем") is None
 
 
+class TestEnglish:
+    """Several of these channels post in English, natively or translated.
+
+    The first version read only Cyrillic, so a night of English posts gave an
+    empty map with nothing to explain it -- which is the failure this whole
+    module exists to stop making, arrived at from a different direction.
+
+    The strings here are real ones, taken off the channels.
+    """
+
+    def test_the_posts_from_the_screenshot(self):
+        cases = [
+            ("Belgorod district, danger for UAVs/FPVs again", "alert", "Belgorod district"),
+            ("UAV detection in Novy Olshanets, Belgorod District", "drone", "Novy Olshanets"),
+            ("Air alert in Kharkiv Oblast", "alert", "Kharkiv oblast"),
+            ("Explosions reported in Odesa", "explosion", "Odesa"),
+        ]
+        for text, kind, place in cases:
+            got = read(text)
+            assert got is not None, text
+            assert got["kind"] == kind, text
+            assert got["place"] == place, text
+
+    def test_oblast_is_not_read_as_a_blast(self):
+        # "blast" is inside "O-blast". Without a word boundary every report
+        # naming a Ukrainian region was filed as an explosion -- which is a
+        # marker of the wrong shape, the wrong colour and the wrong lifetime.
+        for text in ("Drone over Poltava Oblast", "Recon UAV over Sumy Oblast",
+                     "Air alert in Kyiv Oblast"):
+            assert reports.find_kind(text) != "explosion", text
+
+    def test_the_english_kinds(self):
+        assert reports.find_kind("UAV detection") == "drone"
+        assert reports.find_kind("FPV activity") == "drone"
+        assert reports.find_kind("Jet UAV inbound") == "jet_drone"
+        assert reports.find_kind("Reconnaissance drone") == "recon"
+        assert reports.find_kind("Cruise missiles launched") == "cruise"
+        # "Ballistic threat" is deliberately NOT here: it is a warning, and
+        # the warning reading wins. This is the launch itself.
+        assert reports.find_kind("Ballistic missile launch detected") == "ballistic"
+        assert reports.find_kind("Shot down over the city") == "explosion"
+
+    def test_a_warning_outranks_the_thing_it_warns_about(self):
+        # "danger for UAVs" is a warning, not a drone sighting.
+        assert reports.find_kind("danger for UAVs/FPVs again") == "alert"
+
+    def test_the_english_region_forms(self):
+        assert reports.find_region("Air alert in Kharkiv Oblast") == "Kharkiv oblast"
+        assert reports.find_region("Belgorod district again") == "Belgorod district"
+        assert reports.find_region("threat for the Emirate of Dubai") == "Dubai emirate"
+        assert reports.find_region(
+            "alarm in the Governorate of Baghdad") == "Baghdad governorate"
+
+    def test_a_preposition_is_not_a_place_name(self):
+        # The pattern was case-insensitive, which made [A-Z] match lowercase,
+        # so "in Kharkiv Oblast" captured "in Kharkiv" as the region.
+        for text in ("Air alert in Kharkiv Oblast", "Drone over Poltava Oblast"):
+            region = reports.find_region(text)
+            assert not region.lower().startswith(("in ", "over ", "at ")), text
+
+    def test_english_directions(self):
+        assert reports.find_heading("UAV heading north")[0] == "N"
+        assert reports.find_heading("drone moving towards Poltava")[1] == "Poltava"
+
+    def test_english_counts(self):
+        assert reports.find_count("3 UAVs over the region") == 3
+
+    def test_english_chatter_is_still_refused(self):
+        for junk in ("Subscribe to our channel", "Good morning everyone",
+                     "Donate to support us", "Leave a comment"):
+            assert read(junk) is None, junk
+
+
 class TestHowMany:
     def test_a_counted_report(self):
         assert reports.find_count("3х БпЛА на Сумщині") == 3

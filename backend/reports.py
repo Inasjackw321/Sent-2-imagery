@@ -50,17 +50,43 @@ from typing import Any
 # "реактивний БпЛА" has to be seen before the plain "БпЛА" inside it, and a
 # report of something being shot down is about the shooting down whatever kind
 # of thing it was.
+# Several of these channels post in English, either natively or translated,
+# and the first version of this read only Cyrillic -- so a night of English
+# posts produced an empty map with nothing to say why. Each kind now carries
+# both, in one pattern, so the ordering that matters stays in one place.
 KIND_WORDS: tuple[tuple[str, str], ...] = (
-    ("explosion", r"вибух|прильот|приліт|уражен|збит|сбит|взрыв|падіння уламк"),
-    ("alert", r"повітряна тривога|тривога|відбій|отбой|воздушная тревога"),
-    ("ballistic", r"баліст|баллист|іскандер|искандер|кинжал|кинджал"),
-    ("cruise", r"крилат|крылат|калібр|калибр|х-101|x-101|х-555|онікс|оникс"),
-    ("recon", r"розвідувальн|разведыват|орлан|zala|supercam|суперкам|"
-              r"борт-розвідник|розвідник"),
-    ("jet_drone", r"реактивн\w*\s+(?:бпла|шахед|дрон)|шахед-?238|герань-?3"),
-    ("drone", r"бпла|шахед|шахид|герань|geran|дрон|безпілотн|беспилотн"),
-    ("helicopter", r"гелікоптер|вертол"),
-    ("aircraft", r"літак|самол[её]т|міг-|миг-|ту-95|ту-22|су-34|су-35"),
+    ("explosion",
+     r"вибух|прильот|приліт|уражен|збит|сбит|взрыв|падіння уламк"
+     # Word boundaries on every English term, and they are not decoration:
+     # "blast" without one is inside "Oblast", so before this every report
+     # naming a Ukrainian region was filed as an explosion.
+     r"|\bexplosions?\b|\bblast\b|\bimpacts?\b|\bshot down\b|\bshootdown\b"
+     r"|\bintercepted\b|\bstruck\b|\bdebris fell\b|\bhit recorded\b"),
+    ("alert",
+     r"повітряна тривога|тривога|відбій|отбой|воздушная тревога"
+     r"|\bair (?:raid|alert|alarm)\b|\ball[- ]clear\b|\bthreats?\b"
+     r"|\bdangers?\b|\bwarnings?\b"),
+    ("ballistic",
+     r"баліст|баллист|іскандер|искандер|кинжал|кинджал"
+     r"|\bballistic\b|\biskander\b|\bkinzhal\b"),
+    ("cruise",
+     r"крилат|крылат|калібр|калибр|х-101|x-101|х-555|онікс|оникс"
+     r"|\bcruise missiles?\b|\bkalibr\b|\bonyx\b"),
+    ("recon",
+     r"розвідувальн|разведыват|орлан|zala|supercam|суперкам|"
+     r"борт-розвідник|розвідник"
+     r"|\brecon\b|\breconnaissance\b|\borlan\b|\bobservation (?:uav|drone)\b"),
+    ("jet_drone",
+     r"реактивн\w*\s+(?:бпла|шахед|дрон)|шахед-?238|герань-?3"
+     r"|\bjet[- ](?:powered\s+)?(?:uav|drone)\b|\bshahed-?238\b|\bgeran-?3\b"),
+    ("drone",
+     r"бпла|шахед|шахид|герань|geran|дрон|безпілотн|беспилотн"
+     r"|\buavs?\b|\bfpvs?\b|\bdrones?\b|\bshahed\b|\bgeran\b|\bunmanned\b"),
+    ("helicopter", r"гелікоптер|вертол|\bhelicopters?\b"),
+    ("aircraft",
+     r"літак|самол[её]т|міг-|миг-|ту-95|ту-22|су-34|су-35"
+     r"|\baircraft\b|\bwarplanes?\b|\bmig-|\btu-95\b|\btu-22\b"
+     r"|\bsu-34\b|\bsu-35\b"),
 )
 
 # ---------------------------------------------------------------------------
@@ -73,10 +99,17 @@ COURSE_WORDS: tuple[tuple[str, str], ...] = (
     (r"північно[- ]зах[іі]дн\w*|північний захід|northwest|северо[- ]запад", "NW"),
     (r"південно[- ]сх[іо]дн\w*|південний схід|юго[- ]восток", "SE"),
     (r"південно[- ]зах[іі]дн\w*|південний захід|юго[- ]запад", "SW"),
+    (r"\bnorth[- ]?east(?:ern)?\b", "NE"), (r"\bnorth[- ]?west(?:ern)?\b", "NW"),
+    (r"\bsouth[- ]?east(?:ern)?\b", "SE"), (r"\bsouth[- ]?west(?:ern)?\b", "SW"),
     (r"північ\w*|север\w*", "N"),
     (r"південь|південн\w*|юг|южн\w*", "S"),
     (r"сх[іо]д\w*|восток|восточн\w*", "E"),
     (r"зах[іі]д\w*|запад|западн\w*", "W"),
+    # English, after the Cyrillic and after the diagonals above, for the same
+    # reason the diagonals come first: "north-east" must not be read as
+    # "north" and end up forty-five degrees out.
+    (r"\bnorth(?:ern|wards?)?\b", "N"), (r"\bsouth(?:ern|wards?)?\b", "S"),
+    (r"\beast(?:ern|wards?)?\b", "E"), (r"\bwest(?:ern|wards?)?\b", "W"),
     (r"\bпн[-\s]?сх\b", "NE"), (r"\bпн[-\s]?зх\b", "NW"),
     (r"\bпд[-\s]?сх\b", "SE"), (r"\bпд[-\s]?зх\b", "SW"),
     (r"\bпн\b", "N"), (r"\bпд\b", "S"), (r"\bсх\b", "E"), (r"\bзх\b", "W"),
@@ -86,7 +119,9 @@ COURSE_WORDS: tuple[tuple[str, str], ...] = (
 # whether what follows is a compass point or a town.
 HEADED = re.compile(
     r"(?:курс(?:ом|у)?\s+на|у\s+напрямку|в\s+напрямку|прямує\s+(?:на|до)|"
-    r"рух\w*\s+на|лет\w*\s+на|прямую\w*\s+на|в\s+сторону|курсом)\s+"
+    r"рух\w*\s+на|лет\w*\s+на|прямую\w*\s+на|в\s+сторону|курсом"
+    r"|heading(?:\s+(?:for|to|towards?))?|course\s+(?:for|to|towards?)?"
+    r"|moving\s+(?:to|towards?)?|towards?|bound\s+for|en\s+route\s+to)\s+"
     r"(?P<what>[^,.;!)]+)", re.I)
 
 # ---------------------------------------------------------------------------
@@ -132,12 +167,47 @@ AT = re.compile(
 # A leading "Київщина:" or "Одещина —" naming the region the post is about.
 LEAD = re.compile(r"^\s*(?P<what>[А-ЯІЇЄҐ][А-Яа-яІЇЄҐіїєґ'’\-]+)\s*[:—–-]")
 
+# ── The same, in English ──────────────────────────────────────
+#
+# A capitalised word after a preposition, and a region named by its type word.
+# Latin script needs its own patterns: the Cyrillic ones above key off letter
+# ranges that no English report contains.
+
+# "Belgorod District", "Kharkiv Oblast", "Sumy region". The type word is what
+# makes it a region rather than a town, and it is kept in the name because
+# that is what a gazetteer is asked for.
+# NOT re.I on the whole pattern. With it, [A-Z] matches lowercase too, so
+# "Air alert in Kharkiv Oblast" captured "in Kharkiv" as the region's name --
+# and the place then came out as "in Kharkiv oblast". Only the type word is
+# allowed to be written either way.
+REGION_EN = re.compile(
+    r"\b([A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?)\s+"
+    r"((?i:oblast|region|district|governorate|province|emirate|krai|republic))\b")
+
+# The other word order: "Emirate of Dubai", "Governorate of Baghdad". Common
+# outside the post-Soviet channels and it reads backwards to the pattern above.
+REGION_OF_EN = re.compile(
+    r"\b((?i:emirate|governorate|province|region|district|republic))\s+of\s+"
+    r"([A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?)")
+
+# "over Nikopol", "in Novy Olshanets", "near Kupiansk".
+NEAR_EN = re.compile(
+    r"\b(?:over|above|near|past|in|at|around)\s+"
+    r"(?P<what>[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?)")
+
 # Words that look like place names and are not.
 NOT_PLACES = {
     "увага", "терміново", "тривога", "відбій", "загроза", "ракетна",
     "повітряна", "балістика", "шахед", "бпла", "вибух", "вибухи", "новини",
     "підписатися", "джерело", "переслати", "україна", "росія", "рф",
     "чорним", "азовським", "морем", "море", "моря", "чорного", "азовського",
+    # The English ones. Every one of these has turned up capitalised, after a
+    # preposition, in a real post.
+    "danger", "again", "alert", "alarm", "threat", "detection", "warning",
+    "russian", "federation", "ukraine", "air", "uav", "uavs", "fpv", "fpvs",
+    "drone", "drones", "attention", "the", "direction", "north", "south",
+    "east", "west", "lpr", "dpr", "missile", "aircraft", "bomb", "waiver",
+    "update", "report", "subscribe", "channel", "source",
 }
 
 # A report about the sea is not a report about a place a marker goes. The
@@ -146,7 +216,15 @@ NOT_PLACES = {
 WATER = re.compile(r"мор[еяію]м?|затоц[іи]|лиман", re.I)
 
 # How many of a thing, when the report counts them.
-COUNT = re.compile(r"\b(\d{1,3})\s*(?:х\s*)?(?:бпла|шахед|дрон|ракет|ціл)", re.I)
+# The leading boundary stops "2024 ракет" being read as 24. The trailing one
+# is on the English words ONLY: the Cyrillic entries are stems, and "шахедів"
+# is "шахед" with three more letters on it, so a boundary there matches
+# nothing at all.
+COUNT = re.compile(
+    r"\b(\d{1,3})\s*(?:[хx]\s*)?"
+    r"(?:бпла|шахед|дрон|ракет|ціл"
+    r"|uavs?\b|fpvs?\b|drones?\b|missiles?\b|targets?\b)",
+    re.I)
 
 # The endings Ukrainian puts on a place name in the locative and genitive.
 # Nominatim copes with a lot, but not all, and undoing the commonest few is a
@@ -180,7 +258,7 @@ def _nominative(name: str) -> str:
 
 
 def find_region(text: str) -> str | None:
-    """The oblast a report is about, from its nickname or its full name."""
+    """The region a report is about, in whichever way it named one."""
     low = text.lower()
     for stem, oblast in OBLASTS.items():
         if stem in low:
@@ -188,6 +266,16 @@ def find_region(text: str) -> str | None:
     full = OBLAST_FULL.search(text)
     if full:
         return f"{full.group(1)}ська область"
+    english = REGION_EN.search(text)
+    if english:
+        name = _tidy(english.group(1))
+        if name:
+            return f"{name} {english.group(2).lower()}"
+    backwards = REGION_OF_EN.search(text)
+    if backwards:
+        name = _tidy(backwards.group(2))
+        if name:
+            return f"{name} {backwards.group(1).lower()}"
     return None
 
 
@@ -260,6 +348,17 @@ def find_place(text: str, region: str | None) -> str | None:
         if WATER.search(text[match.end():match.end() + 12]):
             continue
         return _nominative(found)
+
+    # The same two, for a report written in English.
+    near = NEAR_EN.search(text)
+    if near:
+        found = _tidy(near.group("what"))
+        # Skip the region's own name -- "in Kharkiv Oblast" is the region,
+        # which is handled as the region and not as a town called Kharkiv.
+        if (found and not WATER.search(near.group(0))
+                and not REGION_EN.match(f"{found} x")
+                and not (region and found.lower() in region.lower())):
+            return found
 
     if region:
         return region

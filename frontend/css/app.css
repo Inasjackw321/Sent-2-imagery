@@ -1508,3 +1508,12 @@ body.is-walled { overflow: hidden; }
 .ao-row-more {
   padding: 3px 5px 1px 18px; font-size: 9.5px; color: var(--ink-faint);
 }
+
+/* A region drawn because that is all the report located something to, rather
+   than because the region is under anything. Barely there: a thin dotted edge
+   and almost no fill, so it reads as "somewhere in here" and cannot be
+   mistaken for the filled wash of an actual warning. */
+.ao-area.is-located {
+  stroke-dasharray: 2 6;
+  animation: none;
+}

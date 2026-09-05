@@ -288,6 +288,12 @@ function popup(event, km) {
   if (event.region_wide) {
     rows.push('<b>Region-wide</b> — the report names the whole area, and the '
       + 'outline is that area\u2019s own boundary.');
+  } else if (event.region_scope === 'located') {
+    // The distinction that matters: the outline is not what it is over, it is
+    // how well anyone knows where it is.
+    rows.push('<b>Located to this region only</b> — the report named the '
+      + 'region and no place within it, so the outline is the area it could '
+      + 'be anywhere in, not an area under attack.');
   } else if (hasArea(event)) {
     rows.push(`Shaded about ${Math.round(event.area_km ?? 8)} km around — the `
       + 'size of the place named, not a measured extent.');
@@ -349,12 +355,17 @@ function areaFor(event) {
     pane: 'osintArea',
     renderer: areaInk,
     interactive: false,
-    className: `ao-area ao-area-${event.kind}${event.region_wide ? ' is-region' : ''}`,
+    className: `ao-area ao-area-${event.kind}`
+      + (event.region_scope ? ` is-region is-${event.region_scope}` : ''),
     color: colour,
     weight: event.region_wide ? 2 : 1.5,
-    opacity: 0.55,
+    opacity: event.region_scope === 'located' ? 0.4 : 0.55,
     fillColor: colour,
-    fillOpacity: event.region_wide ? 0.1 : 0.12,
+    // A region that merely says how precisely something was located is barely
+    // filled. Filling it like a warning would say the whole province is under
+    // attack, when all the report said was which province it was over.
+    fillOpacity: event.region_scope === 'located' ? 0.04
+      : event.region_wide ? 0.1 : 0.12,
   };
 
   // A warning covering a whole region gets that region's actual outline. A
@@ -378,8 +389,10 @@ function areaFor(event) {
 
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
-  && motionOf(event) === 'still'
-  && Number.isFinite(event.origin_lat);
+  && Number.isFinite(event.origin_lat)
+  // Either it covers ground, or the report only located it to a region --
+  // both are worth drawing, and they are drawn differently.
+  && (motionOf(event) === 'still' || Boolean(event.shape));
 
 /** Bring the drawn markers into line with the events just fetched. */
 function reconcile(events) {

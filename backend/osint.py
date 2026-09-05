@@ -759,12 +759,27 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     # A warning over an oblast is genuinely about that oblast, and there the
     # boundary is the honest shape -- a circle over the middle both misses
     # ground the warning covers and covers ground it does not.
-    # ...and only for the kinds that cover ground at all. A drone reported
-    # over an oblast is at a point on its way through it; shading the region
-    # for one would say a whole province is under something it is not.
-    covers = MOTION.get(item["kind"], "track") == "still"
-    out["shape"] = here.get("shape") if covers and is_region(here) else None
-    out["region_wide"] = bool(out["shape"])
+    # The outline of the region, where the report named one -- and the reason
+    # it is drawn depends on what was reported, because there are two quite
+    # different things to say and one shape to say them with:
+    #
+    #   "covers"   a warning or a strike ACROSS a region. The whole area is
+    #              under it, and that is a claim about the ground.
+    #
+    #   "located"  something in flight, reported only to oblast precision.
+    #              The region is not under anything; it is how precisely
+    #              anybody knows where the thing is.
+    #
+    # The second is the one this was missing. A drone reported over an oblast
+    # was drawn as a marker on the oblast's centroid, which says its position
+    # is known to a few kilometres when the report located it to a couple of
+    # hundred. Showing the region says what was actually known.
+    out["shape"] = here.get("shape") if is_region(here) else None
+    out["region_scope"] = (
+        "covers" if MOTION.get(item["kind"], "track") == "still" else "located"
+    ) if out["shape"] else None
+    # Kept meaning what it always meant: the whole region is under this.
+    out["region_wide"] = out["region_scope"] == "covers"
     out["placed"] = True
     out["motion"] = MOTION.get(item["kind"], "track")
     out.pop("why_unplaced", None)
@@ -1161,6 +1176,9 @@ DEMO_SEED = [
     # On station: it circles rather than setting off across the country.
     ("recon", "Zaporizhzhia", None, None, 1,
      "Reconnaissance drone loitering over Zaporizhzhia"),
+    # Located to an oblast and nowhere finer, which is most of what these
+    # channels actually post. The demo needs one so the "somewhere in this
+    # region" band is drawn at all in the build with no network.
     ("drone", "Kharkiv oblast", None, None, 3,
      "Three drones over Kharkiv oblast"),
     # A hundred kilometres at cruise speed: in flight when the page loads and
