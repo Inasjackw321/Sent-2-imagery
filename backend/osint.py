@@ -137,17 +137,20 @@ MIN_POLL_SECONDS = 55
 #           and fast; a ballistic one is quicker than anything else here by an
 #           order of magnitude and is over in minutes.
 #
-#   motion  how the marker behaves.
-#             "track"  carried along its course, and stops when it arrives
-#             "orbit"  circles the place it was reported over
-#             "still"  stays exactly where the report put it
+#   motion  what sort of thing this is, which decides how it is drawn and
+#           whether it covers ground:
+#             "track"  something in flight, on its way somewhere. Drawn as
+#                      itself, pointed along its reported course.
+#             "orbit"  something on station, loitering over one place. Drawn
+#                      as a ring, because it is not going anywhere.
+#             "still"  something that IS a place: a strike, a warning.
 #
-#           Orbit is the one that is about honesty rather than realism. A
-#           reconnaissance drone is on station: it is over somewhere, going
-#           round, and it is not going anywhere else. Carrying it off in a
-#           straight line for twenty minutes would put it in the next country
-#           and claim something the report never said. Circling says "it is
-#           here, and it is still flying", which is exactly what was reported.
+#           It no longer moves anything. Markers used to be carried along
+#           their course between reports, which was honest about being an
+#           estimate and was still not worth it -- a map where everything
+#           drifts is hard to read, the marks wander off the places the
+#           reports named, and a mark sliding across a province looks tracked
+#           however carefully the panel says otherwise.
 #
 #   keep    how many minutes the marker stays, when it differs from the
 #           twenty-minute default.
@@ -200,12 +203,6 @@ KEEP = {name: look.get("keep", KEEP_MINUTES) for name, look in KINDS.items()}
 # Kinds that are announcements or places rather than things in flight.
 NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "still")
 
-# The orbit a reconnaissance drone is drawn flying. Not a measurement of
-# anything -- a real racetrack is longer and not a circle -- but the size and
-# the pace are chosen to read as "on station over here" at the zoom these are
-# looked at, which is all the marker is claiming.
-ORBIT_KM = 9.0
-ORBIT_MINUTES = 7.0
 
 MAX_EVENTS = 400
 MAX_ALERTS = 200
@@ -218,6 +215,15 @@ _alerts: list[dict[str, Any]] = []
 _counter = 0
 _state = "not started"
 _last_poll = 0.0
+# What each channel gave on the last read: how many posts it had, how many of
+# them were read as events, and how many of those could be placed.
+#
+# Kept because "I cannot see reports from the other accounts" is otherwise
+# unanswerable from either end. A channel can be unreachable, reachable but
+# posting nothing, posting things this cannot read, or posting places the
+# gazetteer does not know -- four quite different problems that all look like
+# an empty map.
+_sources: dict[str, dict[str, Any]] = {}
 # When OpenRouter may be asked again, and how long the last rest was.
 _resting_until = 0.0
 _resting_for = 0.0
@@ -830,59 +836,24 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
 
 
 def project(event: dict[str, Any], now: float) -> dict[str, Any]:
-    """An event with its marker carried forward to now.
+    """An event as it stands now. The marker does not move.
 
-    The reported position is kept alongside the projected one, because they are
-    different claims: one is a place a channel named, the other is arithmetic.
+    It used to. A marker was carried along its reported course at a typical
+    speed for its kind, and a loitering drone was flown in circles. Both were
+    honest about being estimates and both were removed, because the estimate
+    was not worth what it cost: a map where everything drifts is hard to read,
+    the marks wander away from the places the reports actually named, and a
+    thing that slides across a province looks tracked whatever the popup says.
+
+    What was reported is where the mark goes. The course is still known and
+    still drawn -- the icon points along it -- but nothing is carried anywhere
+    on the strength of it.
     """
-    minutes = max(0.0, (now - event["seen"]) / 60)
-    speed = SPEEDS.get(event["kind"], SPEEDS["unknown"])
-    motion = event.get("motion") or MOTION.get(event["kind"], "track")
     out = dict(event)
-    out["age_minutes"] = round(minutes, 1)
-    out["arrived"] = False
-
-    if motion == "orbit" and speed > 0:
-        # Round and round the place it was reported over. The marker points
-        # along the circle, which is the tangent -- a quarter turn ahead of
-        # where it is on the ring.
-        angle = (360.0 * minutes / ORBIT_MINUTES) % 360.0
-        out["lat"], out["lon"] = advance(
-            event["origin_lat"], event["origin_lon"], angle, ORBIT_KM)
-        out["heading"] = (angle + 90) % 360
-        out["projected"] = True
-        out["orbiting"] = True
-        return out
-
-    if event.get("heading") is None or speed <= 0 or motion != "track":
-        out["lat"], out["lon"] = event["origin_lat"], event["origin_lon"]
-        out["projected"] = False
-        return out
-
-    km = speed * (minutes / 60)
-    # A report that named where it was going has also said where the marker
-    # stops. Past that point the extrapolation is not merely stale, it is
-    # describing a journey the report said was over.
-    limit = event.get("dest_km")
-    if limit and km >= limit:
-        km = limit
-        out["arrived"] = True
-    out["lat"], out["lon"] = advance(
-        event["origin_lat"], event["origin_lon"], event["heading"], km)
-    out["projected"] = True
-    out["projected_km"] = round(km, 1)
+    out["age_minutes"] = round(max(0.0, (now - event["seen"]) / 60), 1)
+    out["lat"], out["lon"] = event["origin_lat"], event["origin_lon"]
+    out["projected"] = False
     return out
-
-
-def _arrived(event: dict[str, Any], now: float) -> bool:
-    """Whether a track has got where the report said it was going."""
-    limit, speed = event.get("dest_km"), SPEEDS.get(event["kind"], 0.0)
-    motion = event.get("motion") or MOTION.get(event["kind"], "track")
-    # Something circling has nowhere to arrive at; it leaves on age like
-    # anything else, but it never finishes a journey it was not on.
-    if motion != "track" or not limit or event.get("heading") is None or speed <= 0:
-        return False
-    return speed * (max(0.0, now - event["seen"]) / 3600) >= limit
 
 
 # ---------------------------------------------------------------------------
@@ -898,7 +869,8 @@ def _when(message: dict[str, Any]) -> float:
         return time.time()
 
 
-def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> None:
+def _record(item: dict[str, Any], message: dict[str, Any],
+            countries: str) -> bool:
     """One classified report: an alert always, a track only if it placed."""
     global _counter
     seen = _when(message)
@@ -922,7 +894,7 @@ def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> No
     })
 
     if not placed["placed"]:
-        return
+        return False
     _events.append({
         **placed,
         "id": ident,
@@ -935,6 +907,7 @@ def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> No
         "source": message.get("id"),
         "text": message.get("text", "")[:300],
     })
+    return True
 
 
 def keep_minutes(kind: str) -> int:
@@ -949,7 +922,7 @@ def _alive(event: dict[str, Any], now: float) -> bool:
 def _expire(now: float) -> None:
     """Drop what is too old to extrapolate, and what has arrived."""
     _events[:] = [e for e in _events
-                  if _alive(e, now) and not _arrived(e, now)][-MAX_EVENTS:]
+                  if _alive(e, now)][-MAX_EVENTS:]
     # A report must not leave the list while its marker is still on the map:
     # a burst over a town with nothing in the panel to explain it is worse
     # than either on its own. So the stream holds each kind at least as long
@@ -969,6 +942,26 @@ def reset() -> None:
         _counter = 0
         _state = "not started"
         _last_poll = _resting_until = _resting_for = 0.0
+
+
+def _remember_sources(seen_now: dict[str, dict[str, Any]]) -> None:
+    """Keep what each channel gave, for the panel to show.
+
+    Recorded before anything else can go wrong with the read, because this is
+    most needed exactly when nothing is coming through -- and the first
+    version updated it only on the path where there WAS something new, so a
+    quiet night left the panel with nothing to say about why.
+
+    A channel with nothing new keeps its last counts, so one quiet minute does
+    not read as a channel that has gone away.
+    """
+    with _lock:
+        for name, tally in seen_now.items():
+            if tally["fresh"] == 0 and name in _sources and not tally["problem"]:
+                tally["read"] = _sources[name]["read"]
+                tally["placed"] = _sources[name]["placed"]
+        _sources.clear()
+        _sources.update(seen_now)
 
 
 def _rest(now: float, asked: float) -> None:
@@ -998,12 +991,19 @@ def poll() -> dict[str, Any]:
     fresh: list[dict[str, Any]] = []
     trouble: list[str] = []
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=LOOKBACK_MINUTES)
+    seen_now: dict[str, dict[str, Any]] = {}
     for channel in CHANNELS:
+        tally = seen_now[channel["name"]] = {
+            "region": channel["region"], "posts": 0, "fresh": 0,
+            "read": 0, "placed": 0, "problem": None,
+        }
         try:
             posts = _fetch_channel(channel["name"])
         except OsintError as exc:
             trouble.append(str(exc))
+            tally["problem"] = str(exc)[:120]
             continue
+        tally["posts"] = len(posts)
         for post in posts:
             post["countries"] = channel["countries"]
             post["region"] = channel["region"]
@@ -1018,9 +1018,11 @@ def poll() -> dict[str, Any]:
                 # but not turned into a marker.
                 _seen.add(post["id"])
                 continue
+            tally["fresh"] += 1
             fresh.append(post)
 
     now = time.time()
+    _remember_sources(seen_now)
     if not fresh:
         _state = "; ".join(trouble[:2]) if trouble else "nothing new"
         _last_poll = now
@@ -1083,8 +1085,13 @@ def poll() -> dict[str, Any]:
             read_by_rules += 1
         else:
             item["by"] = "model"
+        tally = _sources.get(post.get("channel"))
+        if tally is not None:
+            tally["read"] += 1
         with _lock:
-            _record(item, post, post["countries"])
+            placed = _record(item, post, post["countries"])
+        if tally is not None and placed:
+            tally["placed"] += 1
 
     with _lock:
         _expire(now)
@@ -1142,7 +1149,6 @@ def current() -> dict[str, Any]:
         "kinds": KINDS,
         # The browser recomputes the same motion between polls, so it needs
         # the same numbers. Sent rather than duplicated there.
-        "orbit": {"km": ORBIT_KM, "minutes": ORBIT_MINUTES},
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
         "model": _model_in_use,
@@ -1158,6 +1164,9 @@ def current() -> dict[str, Any]:
         # the failure the previous version hid.
         "reports": {"placed": placed, "unplaced": unplaced},
         "gazetteer": gazetteer.stats(),
+        # Per channel, so an empty map can be traced to which of the four
+        # possible reasons it is.
+        "sources": [{"channel": name, **tally} for name, tally in _sources.items()],
     }
 
 
@@ -1319,7 +1328,7 @@ def demo() -> dict[str, Any]:
                  "origin_lat": placed["lat"], "origin_lon": placed["lon"],
                  "seen": seen, "channel": "demo", "region": "Ukraine",
                  "source": f"demo/{i}", "text": f"Demo report — {summary}."}
-        if _arrived(event, now) or not _alive(event, now):
+        if not _alive(event, now):
             continue
         events.append(project(event, now))
 
@@ -1332,7 +1341,6 @@ def demo() -> dict[str, Any]:
         "keep_minutes": KEEP_MINUTES, "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
         "speeds": SPEEDS, "kinds": KINDS,
-        "orbit": {"km": ORBIT_KM, "minutes": ORBIT_MINUTES},
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
         "model": MODEL, "keyed": True, "last_poll": now,
@@ -1342,5 +1350,24 @@ def demo() -> dict[str, Any]:
         # worse than it is, which is precisely the number people will read.
         "reports": {"placed": sum(1 for a in alerts if a["placed"]),
                     "unplaced": sum(1 for a in alerts if not a["placed"])},
+        # One of each of the four things a channel can be doing, so the panel
+        # that explains a thin map is itself visible in the build with no
+        # network -- otherwise the section that exists to answer "why can I
+        # not see anything" is the one part nobody can look at.
+        "sources": [
+            {"channel": "eRadarrua", "region": "Ukraine", "posts": 14,
+             "fresh": 6, "read": 6, "placed": 5, "problem": None},
+            {"channel": "kpszsu", "region": "Ukraine", "posts": 3,
+             "fresh": 1, "read": 1, "placed": 1, "problem": None},
+            {"channel": "mon1tor_ua", "region": "Ukraine", "posts": 0,
+             "fresh": 0, "read": 0, "placed": 0, "problem": None},
+            {"channel": "war_monitor", "region": "Ukraine", "posts": 9,
+             "fresh": 4, "read": 4, "placed": 3, "problem": None},
+            {"channel": "redlinkleb", "region": "Lebanon", "posts": 5,
+             "fresh": 2, "read": 2, "placed": 0, "problem": None},
+            {"channel": "shin_persian", "region": "Middle East", "posts": 0,
+             "fresh": 0, "read": 0, "placed": 0,
+             "problem": "shin_persian answered 404"},
+        ],
         "gazetteer": {"remembered": len(DEMO_PLACES), "lookups": 0},
     }

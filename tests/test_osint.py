@@ -247,64 +247,6 @@ class TestKindsAndHowTheyMove:
         assert osint.MOTION["recon"] == "orbit"
 
 
-class TestOrbiting:
-    def event(self, minutes_ago, kind="recon"):
-        now = time.time()
-        return now, {"kind": kind, "motion": osint.MOTION[kind], "heading": None,
-                     "seen": now - minutes_ago * 60,
-                     "origin_lat": 47.8388, "origin_lon": 35.1396}
-
-    def test_it_goes_round_rather_than_staying_put(self):
-        now, event = self.event(2)
-        got = osint.project(event, now)
-        assert got["orbiting"] is True
-        assert osint.separation(got["lat"], got["lon"],
-                                event["origin_lat"], event["origin_lon"]) \
-            == pytest.approx(osint.ORBIT_KM, abs=0.1)
-
-    def test_it_comes_back_round_to_where_it_started(self):
-        # A full period must close the circle, or the marker drifts a little
-        # further from the place it was reported over on every lap -- which
-        # after an hour is a claim nobody made.
-        now, event = self.event(0)
-        start = osint.project(event, now)
-        event["seen"] = now - osint.ORBIT_MINUTES * 60
-        after = osint.project(event, now)
-        assert after["lat"] == pytest.approx(start["lat"], abs=1e-6)
-        assert after["lon"] == pytest.approx(start["lon"], abs=1e-6)
-
-    def test_it_is_somewhere_else_half_a_lap_later(self):
-        now, event = self.event(0)
-        start = osint.project(event, now)
-        event["seen"] = now - osint.ORBIT_MINUTES * 30
-        half = osint.project(event, now)
-        assert osint.separation(start["lat"], start["lon"],
-                                half["lat"], half["lon"]) \
-            == pytest.approx(2 * osint.ORBIT_KM, abs=0.2)
-
-    def test_it_points_along_the_circle_not_at_the_middle(self):
-        # The tangent, a quarter turn ahead of where it is on the ring.
-        now, event = self.event(0)
-        got = osint.project(event, now)
-        outward = osint.bearing(event["origin_lat"], event["origin_lon"],
-                                got["lat"], got["lon"])
-        assert (got["heading"] - outward) % 360 == pytest.approx(90, abs=1)
-
-    def test_it_never_arrives_anywhere(self):
-        # It was not on a journey, so there is nothing for it to finish. It
-        # leaves on age like everything else.
-        now, event = self.event(600)
-        event["dest_km"] = 5.0
-        assert osint._arrived(event, now) is False
-        assert osint.project(event, now)["arrived"] is False
-
-    def test_a_tracking_kind_does_not_orbit(self):
-        now, event = self.event(2, kind="drone")
-        event["heading"] = 90.0
-        got = osint.project(event, now)
-        assert got.get("orbiting") is not True
-
-
 class TestTellingSimilarPlacesApart:
     """The rest of the Kaharlyk failure: the wrong Kaharlyk."""
 
@@ -676,6 +618,88 @@ class TestEveryKindIsDrawable:
             assert name not in self.silhouettes(), name
 
 
+class TestSayingWhichChannelGaveWhat:
+    """Because "I cannot see reports from the other accounts" is otherwise
+    unanswerable from either end.
+
+    A channel can be unreachable, reachable but quiet, posting things this
+    cannot read, or naming places the gazetteer does not know. Four quite
+    different problems that all look like an empty map, and the panel could
+    not tell them apart.
+    """
+
+    def read_one(self, monkeypatch, posts):
+        osint.reset()
+        osint.set_key(None)
+        monkeypatch.setattr(osint, "_fetch_channel", lambda name: [
+            {"id": f"{name}/1", "channel": name, "text": posts[name],
+             "when": dt.datetime.now(dt.timezone.utc).isoformat()}
+        ] if name in posts else [])
+        monkeypatch.setattr(osint.gazetteer, "find", lambda name, countries="": {
+            "lat": 50.0, "lon": 30.0, "name": name, "kind": "town",
+            "category": "place"} if "Кагарлик" in name else None)
+        return {row["channel"]: row for row in osint.poll()["sources"]}
+
+    def test_the_demo_shows_the_breakdown_too(self):
+        # The section that exists to answer "why can I not see anything" was
+        # the one part of the panel the build with no network never drew.
+        rows = osint.demo()["sources"]
+        assert {r["channel"] for r in rows} == {c["name"] for c in osint.CHANNELS}
+        # All four states a channel can be in, so each renders at least once.
+        assert any(r["problem"] for r in rows)
+        assert any(r["posts"] == 0 and not r["problem"] for r in rows)
+        assert any(r["read"] and not r["placed"] for r in rows)
+        assert any(r["placed"] for r in rows)
+
+    def test_every_channel_is_accounted_for(self, monkeypatch):
+        try:
+            rows = self.read_one(monkeypatch, {})
+            assert set(rows) == {c["name"] for c in osint.CHANNELS}
+        finally:
+            osint.reset()
+
+    def test_a_channel_that_posted_nothing_says_so(self, monkeypatch):
+        try:
+            rows = self.read_one(monkeypatch, {})
+            assert rows["kpszsu"]["posts"] == 0
+            assert rows["kpszsu"]["problem"] is None
+        finally:
+            osint.reset()
+
+    def test_a_channel_that_could_not_be_reached_says_why(self, monkeypatch):
+        osint.reset()
+        osint.set_key(None)
+
+        def refusing(name):
+            if name == "redlinkleb":
+                raise osint.OsintError("redlinkleb answered 404")
+            return []
+
+        monkeypatch.setattr(osint, "_fetch_channel", refusing)
+        try:
+            rows = {r["channel"]: r for r in osint.poll()["sources"]}
+            assert "404" in rows["redlinkleb"]["problem"]
+        finally:
+            osint.reset()
+
+    def test_read_and_placed_are_counted_apart(self, monkeypatch):
+        # The difference between "this channel is unreadable" and "this
+        # channel names places the gazetteer does not know" -- which need
+        # completely different fixes.
+        try:
+            rows = self.read_one(monkeypatch, {
+                "eRadarrua": "БпЛА повз Кагарлик курсом на північ",
+                "redlinkleb": "تحذير من طائرات مسيرة",
+            })
+            assert rows["eRadarrua"]["read"] == 1
+            assert rows["eRadarrua"]["placed"] == 1
+            # Read, but with no place a gazetteer could be asked for.
+            assert rows["redlinkleb"]["read"] == 1
+            assert rows["redlinkleb"]["placed"] == 0
+        finally:
+            osint.reset()
+
+
 class TestBothSidesOfTheBorder:
     def test_the_monitoring_channels_may_place_in_russia(self):
         # They report Belgorod and Bryansk as much as Sumy. Without the
@@ -707,7 +731,61 @@ class TestBothSidesOfTheBorder:
         assert any("Белгород" in str(p) for p in places)
 
 
-class TestCarryingAMarkerForward:
+class TestNothingMoves:
+    """Markers stay where the report put them.
+
+    They used to be carried along their reported course at a typical speed
+    for their kind, and loitering drones flown in circles. Both were labelled
+    as estimates and both are gone: a map where everything drifts is hard to
+    read, the marks wander off the places the reports actually named, and a
+    mark sliding across a province looks tracked whatever the panel says.
+    """
+
+    def event(self, kind, minutes_ago, **over):
+        now = time.time()
+        return now, {"kind": kind, "heading": 90.0, "motion": osint.MOTION[kind],
+                     "seen": now - minutes_ago * 60,
+                     "origin_lat": 50.0, "origin_lon": 30.0, **over}
+
+    def test_a_fast_thing_an_hour_old_is_still_where_it_was_reported(self):
+        now, event = self.event("ballistic", 60)
+        got = osint.project(event, now)
+        assert (got["lat"], got["lon"]) == (50.0, 30.0)
+        assert got["projected"] is False
+
+    def test_nothing_of_any_kind_moves(self):
+        for kind in osint.KINDS:
+            now, event = self.event(kind, 45)
+            got = osint.project(event, now)
+            assert (got["lat"], got["lon"]) == (50.0, 30.0), kind
+
+    def test_a_loitering_drone_does_not_circle(self):
+        now, event = self.event("recon", 3)
+        first = osint.project(event, now)
+        event["seen"] = now - 9 * 60
+        later = osint.project(event, now)
+        assert (first["lat"], first["lon"]) == (later["lat"], later["lon"])
+
+    def test_the_course_is_still_known_because_the_icon_points_along_it(self):
+        now, event = self.event("drone", 5)
+        assert osint.project(event, now)["heading"] == 90.0
+
+    def test_the_age_is_still_counted_because_the_fade_needs_it(self):
+        now, event = self.event("drone", 7)
+        assert osint.project(event, now)["age_minutes"] == pytest.approx(7, abs=0.1)
+
+    def test_things_still_expire_on_age(self):
+        # The only reason a mark leaves now. It used to also leave by
+        # arriving somewhere, which was a journey nobody watched.
+        now = time.time()
+        assert osint._alive({"kind": "drone", "seen": now - 60}, now) is True
+        assert osint._alive({"kind": "drone", "seen": now - 3600}, now) is False
+
+
+class TestTheGeometry:
+    """Still used: a destination's bearing and distance, and the spacing of
+    objects reported together."""
+
     def test_due_north_changes_only_the_latitude(self):
         lat, lon = osint.advance(50.0, 30.0, 0, 111.195)
         assert lat == pytest.approx(51.0, abs=0.01)
@@ -730,68 +808,6 @@ class TestCarryingAMarkerForward:
                                  osint.separation(*start, *dest))
         assert lat == pytest.approx(dest[0], abs=0.01)
         assert lon == pytest.approx(dest[1], abs=0.01)
-
-    def test_a_projected_event_keeps_the_position_that_was_reported(self):
-        now = time.time()
-        event = {"kind": "cruise", "heading": 90.0, "seen": now - 600,
-                 "origin_lat": 50.0, "origin_lon": 30.0}
-        got = osint.project(event, now)
-        assert got["projected"] is True
-        assert (got["origin_lat"], got["origin_lon"]) == (50.0, 30.0)
-        assert got["projected_km"] == pytest.approx(
-            osint.SPEEDS["cruise"] / 6, abs=1)
-
-    def test_a_report_with_no_course_does_not_move(self):
-        now = time.time()
-        event = {"kind": "drone", "heading": None, "seen": now - 900,
-                 "origin_lat": 50.0, "origin_lon": 30.0}
-        got = osint.project(event, now)
-        assert (got["lat"], got["lon"]) == (50.0, 30.0)
-        assert got["projected"] is False
-
-    def test_a_ballistic_track_outruns_everything(self):
-        # It used to be frozen in place, on the grounds that no single speed
-        # describes a ballistic flight. True, but a stationary marker said
-        # something worse -- that it had landed -- so it now moves at a figure
-        # that is at least the right order of magnitude, and expires quickly.
-        now = time.time()
-        event = {"kind": "ballistic", "heading": 90.0, "seen": now - 300,
-                 "origin_lat": 50.0, "origin_lon": 30.0}
-        ballistic = osint.project(event, now)
-        assert ballistic["projected"] is True
-        cruise = osint.project({**event, "kind": "cruise"}, now)
-        assert ballistic["projected_km"] > cruise["projected_km"] * 3
-
-
-class TestArrival:
-    def make(self, minutes_ago, dest_km=100.0, kind="cruise"):
-        now = time.time()
-        return now, {"kind": kind, "heading": 90.0, "seen": now - minutes_ago * 60,
-                     "origin_lat": 50.0, "origin_lon": 30.0, "dest_km": dest_km}
-
-    def test_it_stops_at_the_place_it_was_going_to(self):
-        # 800 km/h for half an hour is 400 km; the destination is 100.
-        now, event = self.make(30)
-        got = osint.project(event, now)
-        assert got["projected_km"] == pytest.approx(100, abs=0.5)
-        assert got["arrived"] is True
-
-    def test_it_is_still_travelling_before_it_gets_there(self):
-        now, event = self.make(3)
-        got = osint.project(event, now)
-        assert got["arrived"] is False and 30 < got["projected_km"] < 50
-
-    def test_an_arrived_track_is_taken_off_the_map(self):
-        now, event = self.make(30)
-        assert osint._arrived(event, now) is True
-
-    def test_a_track_with_no_destination_never_arrives(self):
-        now, event = self.make(600, dest_km=None)
-        assert osint._arrived(event, now) is False
-
-    def test_a_strike_never_arrives_because_it_never_left(self):
-        now, event = self.make(600, kind="explosion")
-        assert osint._arrived(event, now) is False
 
 
 class TestNothingIsSilentlyDropped:

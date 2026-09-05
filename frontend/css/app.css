@@ -1517,3 +1517,62 @@ body.is-walled { overflow: hidden; }
   stroke-dasharray: 2 6;
   animation: none;
 }
+
+/* ── Warnings and strikes, made findable ─────────────────────── */
+
+/* The two things anyone scanning this map is looking for. At the zoom it
+   actually gets used at, a 24-pixel glyph in a colour vanished into the
+   basemap -- which is the whole complaint. A halo behind the mark gives it
+   something to sit on, and it pulses so the eye is drawn to it across a
+   screen full of terrain. */
+.ao-pin.is-loud { z-index: 700 !important; }
+.ao-halo {
+  position: absolute; left: 50%; top: 50%;
+  width: 40px; height: 40px; margin: -20px 0 0 -20px;
+  border-radius: 50%; opacity: .22; pointer-events: none;
+  animation: ao-ping 2.2s cubic-bezier(0, .55, .45, 1) infinite;
+}
+@keyframes ao-ping {
+  0%   { transform: scale(.45); opacity: .45; }
+  70%  { transform: scale(1.6);  opacity: 0; }
+  100% { transform: scale(1.6);  opacity: 0; }
+}
+/* A strike has happened and is not still arriving, so it gets the ring
+   without the urgency: slower, and it does not race. */
+.ao-pin.is-explosion .ao-halo { animation-duration: 3.6s; opacity: .16; }
+
+/* The glyph itself, over the halo and with an outline so it reads on light
+   terrain as well as dark water. */
+.ao-pin.is-loud .ao-glyph {
+  position: relative;
+  filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 6px rgba(0, 0, 0, .9));
+}
+/* The label was 10px of coloured text on a busy basemap. Given a plate to sit
+   on it survives being drawn over a town name. */
+.ao-pin.is-loud .ao-tag {
+  padding: 1px 5px; border-radius: 4px;
+  background: rgba(6, 8, 11, .82);
+  border: 1px solid currentColor;
+  text-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ao-halo { animation: none; opacity: .3; }
+}
+
+/* A region-wide warning, made to read at the zoom a whole country fits in. */
+.ao-area.is-covers.ao-area-alert {
+  stroke-width: 3;
+}
+
+.ao-sources { font-size: 10px; }
+.ao-sources summary { color: var(--ink-faint); cursor: pointer; padding: 2px 0; }
+.ao-src-row {
+  display: flex; gap: 8px; justify-content: space-between;
+  padding: 1px 0 1px 8px; color: var(--ink-dim);
+}
+.ao-src-row b { font-weight: 600; }
+.ao-src-row span { color: var(--ink-faint); }
+/* A channel that gave nothing usable. Dimmed rather than hidden: the whole
+   point of the list is that a silent channel is visible. */
+.ao-src-row.is-quiet { opacity: .55; }

@@ -246,6 +246,45 @@ class TestRussia:
         assert reports.variants("") == [""]
 
 
+class TestTheOtherScripts:
+    """Arabic, Hebrew and Farsi, for the Lebanon and Middle East channels.
+
+    Their posts were going entirely unread, which is why nothing from those
+    countries ever reached the map. Only the kind is read: place names in a
+    script with no capital letters are a different problem from the one these
+    patterns solve, and guessing at them would be exactly the invention this
+    module refuses to make everywhere else.
+    """
+
+    def test_the_kinds_in_arabic(self):
+        assert reports.find_kind("تحذير من طائرات مسيرة") == "alert"
+        assert reports.find_kind("انفجار في بيروت") == "explosion"
+        assert reports.find_kind("صاروخ") == "cruise"
+
+    def test_the_kinds_in_hebrew(self):
+        assert reports.find_kind("אזעקה בצפון") == "alert"
+        assert reports.find_kind("פיצוץ") == "explosion"
+
+    def test_the_kinds_in_farsi(self):
+        assert reports.find_kind("هشدار حمله پهپادی") == "alert"
+
+    def test_they_are_listed_even_though_they_cannot_be_placed(self):
+        # Listing beats the silence those channels used to get. The place is
+        # left null rather than guessed at.
+        for text in ("تحذير من طائرات مسيرة في الجنوب", "אזעקה בצפון",
+                     "هشدار حمله پهپادی"):
+            got = read(text)
+            assert got is not None, text
+            assert got["place"] is None, text
+            assert got["summary"], text
+
+    def test_latin_chatter_with_no_place_is_still_refused(self):
+        # The listing-without-a-place rule is for the scripts this cannot
+        # read, and must not become a way for every passing mention to get in.
+        assert read("Subscribe to our channel") is None
+        assert read("Donate for drones") is None
+
+
 class TestHowMany:
     def test_a_counted_report(self):
         assert reports.find_count("3х БпЛА на Сумщині") == 3

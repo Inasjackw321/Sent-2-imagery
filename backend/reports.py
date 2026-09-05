@@ -54,6 +54,15 @@ from typing import Any
 # and the first version of this read only Cyrillic -- so a night of English
 # posts produced an empty map with nothing to say why. Each kind now carries
 # both, in one pattern, so the ordering that matters stays in one place.
+# Arabic, Hebrew and Farsi, for the Lebanon and Middle East channels. Their
+# posts were going entirely unread, which is why nothing from those countries
+# ever reached the map.
+#
+# Only the kind is read from these. Place names in a script with no capital
+# letters are a different problem from the one the patterns above solve, and
+# guessing at them would be exactly the invention this module refuses to make
+# elsewhere. So these reports are identified and listed, and placed only if
+# the model is available to read them properly.
 KIND_WORDS: tuple[tuple[str, str], ...] = (
     ("explosion",
      r"вибух|прильот|приліт|уражен|збит|сбит|взрыв|падіння уламк"
@@ -61,18 +70,26 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      # "blast" without one is inside "Oblast", so before this every report
      # naming a Ukrainian region was filed as an explosion.
      r"|\bexplosions?\b|\bblast\b|\bimpacts?\b|\bshot down\b|\bshootdown\b"
-     r"|\bintercepted\b|\bstruck\b|\bdebris fell\b|\bhit recorded\b"),
+     r"|\bintercepted\b|\bstruck\b|\bdebris fell\b|\bhit recorded\b"
+     r"|انفجار|انفجارات|قصف|استهداف|اعتراض"
+     r"|פיצוץ|נפילה|יירוט"
+     r"|انفجار|اصابت"),
     ("alert",
      r"повітряна тривога|тривога|відбій|отбой|воздушная тревога"
      r"|угроза|опасность|ракетная опасность|внимание"
      r"|\bair (?:raid|alert|alarm)\b|\ball[- ]clear\b|\bthreats?\b"
-     r"|\bdangers?\b|\bwarnings?\b"),
+     r"|\bdangers?\b|\bwarnings?\b"
+     r"|إنذار|انذار|صفارات|تحذير|غارة|غارات"
+     r"|אזעקה|התרעה|צבע אדום"
+     r"|آژیر|هشدار"),
     ("ballistic",
      r"баліст|баллист|іскандер|искандер|кинжал|кинджал"
-     r"|\bballistic\b|\biskander\b|\bkinzhal\b"),
+     r"|\bballistic\b|\biskander\b|\bkinzhal\b"
+     r"|بالستي|בליסטי|بالستیک"),
     ("cruise",
      r"крилат|крылат|калібр|калибр|х-101|x-101|х-555|онікс|оникс"
-     r"|\bcruise missiles?\b|\bkalibr\b|\bonyx\b"),
+     r"|\bcruise missiles?\b|\bkalibr\b|\bonyx\b"
+     r"|صاروخ|صواريخ|טיל|טילים|موشک"),
     ("recon",
      r"розвідувальн|разведыват|орлан|zala|supercam|суперкам|"
      r"борт-розвідник|розвідник"
@@ -82,7 +99,10 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      r"|\bjet[- ](?:powered\s+)?(?:uav|drone)\b|\bshahed-?238\b|\bgeran-?3\b"),
     ("drone",
      r"бпла|шахед|шахид|герань|geran|дрон|безпілотн|беспилотн"
-     r"|\buavs?\b|\bfpvs?\b|\bdrones?\b|\bshahed\b|\bgeran\b|\bunmanned\b"),
+     r"|\buavs?\b|\bfpvs?\b|\bdrones?\b|\bshahed\b|\bgeran\b|\bunmanned\b"
+     r"|مسيرة|مسيّرة|مسيرات|طائرة مسيرة|درون"
+     r"|כטב\"ם|כטבם|רחפן|רחפנים"
+     r"|پهپاد|پهپادها"),
     ("helicopter", r"гелікоптер|вертол|\bhelicopters?\b"),
     ("aircraft",
      r"літак|самол[её]т|міг-|миг-|ту-95|ту-22|су-34|су-35"
@@ -484,6 +504,14 @@ def summarise(kind: str, place: str | None, toward: str | None,
     return f"{what}{where}{going}"[:160]
 
 
+# Arabic, Hebrew and Farsi letters. A report written in one of these is
+# identified and listed but not placed here: without capital letters there is
+# no equivalent of the "capitalised word after a preposition" rule the Latin
+# and Cyrillic patterns lean on, and guessing would be the invention this
+# module exists to refuse.
+OTHER_SCRIPT = re.compile(r"[\u0590-\u05FF\u0600-\u06FF]")
+
+
 def read(text: str) -> dict[str, Any] | None:
     """One report, read without a model. None if there is nothing in it.
 
@@ -504,9 +532,13 @@ def read(text: str) -> dict[str, Any] | None:
     place = find_place(text, region)
     course, toward = (None, None) if kind in ("explosion", "alert") else find_heading(text)
     if not place and not toward and not course:
-        # A kind and nothing else: a fundraising post that mentions Shaheds,
-        # a statistic, a headline. Not a report of anything happening.
-        return None
+        # A report in a script whose place names this cannot read is still a
+        # report, and listing it beats the silence those channels used to get.
+        # Anything else with a kind and nothing else -- a fundraising post
+        # that mentions Shaheds, a statistic, a headline -- is not a report of
+        # anything happening.
+        if not OTHER_SCRIPT.search(text):
+            return None
     if toward and place and toward.lower() == place.lower():
         toward = None
     count = find_count(text)

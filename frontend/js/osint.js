@@ -36,9 +36,6 @@ const POLL_MS = 60000;
 // Generous because strikes are held for hours and the list scrolls.
 const LIST_ROWS = 20;
 
-// How often to redraw the drift. A second is under the eye's threshold for
-// "moving" at these speeds and is a hundredth of the work of a frame loop.
-const STEP_MS = 1000;
 
 // How big a marker is drawn, in pixels. The glyphs are authored on an 18-unit
 // grid and scaled to this, so one number changes all of them together.
@@ -55,7 +52,6 @@ let keySaved = false;
 let feed = null;
 let problem = '';
 let poller = null;
-let stepper = null;
 
 // id -> { event, marker }. Kept across polls so a marker that is still being
 // reported is moved rather than destroyed and rebuilt, which would flicker and
@@ -108,12 +104,10 @@ function advance(lat, lon, heading, km) {
 
 /** What kind of thing this is, from the table the backend sent.
  *
- * Read from the feed rather than kept here, so the speeds and the way each
- * kind moves are defined once, on the server, and the two ends cannot drift
- * into disagreeing about how fast a jet drone flies.
+ * Read from the feed rather than kept here, so the kinds are defined once, on
+ * the server, and the two ends cannot drift apart about what a jet drone is.
  */
 const look = (event) => feed?.kinds?.[event.kind] ?? {};
-const speedOf = (event) => look(event).speed ?? feed?.speeds?.[event.kind] ?? 0;
 const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
 
 /** How long this kind of marker stays, in minutes. */
@@ -121,60 +115,41 @@ const keepOf = (event) => feed?.keep?.[event.kind] ?? look(event).keep
   ?? feed?.keep_minutes ?? 20;
 
 /**
+ * Where a report goes: where it was reported, and nowhere else.
+ *
+ * Markers used to be carried along their reported course between polls, at a
+ * typical speed for their kind, and loitering drones flown in circles. Both
+ * were labelled as estimates and both are gone. A map where everything drifts
+ * is hard to read, the marks wander off the places the reports actually
+ * named, and a mark sliding across a province looks tracked whatever the
+ * panel says. The course is still known and still drawn -- the icon points
+ * along it -- but nothing is carried anywhere on the strength of it.
+ */
+const positionOf = (event) => ({
+  lat: event.origin_lat,
+  lon: event.origin_lon,
+  facing: event.heading,
+});
+
+/**
  * How new a report is, as a fraction of its own lifetime. 1 is now, 0 is due
  * to go.
  *
- * It is measured against the marker's OWN lifetime rather than a fixed
- * window, because they differ by a factor of eighteen: a drone is gone in
- * twenty minutes and a strike stays six hours. Against a fixed window every
- * strike would sit at full strength for its whole life and then vanish, so a
- * map at the end of a long night would show a wall of bursts all looking as
- * though they had just happened.
+ * Measured against the marker's OWN lifetime, because they differ by a factor
+ * of eighteen: a drone is gone in twenty minutes and a strike stays six
+ * hours. Against a fixed window every strike would sit at full strength for
+ * its whole life and then vanish.
  */
 function freshness(event) {
   const minutes = event.age_minutes ?? 0;
-  const life = Math.max(1, keepOf(event));
-  return Math.max(0, Math.min(1, 1 - minutes / life));
+  return Math.max(0, Math.min(1, 1 - minutes / Math.max(1, keepOf(event))));
 }
 
 // How faint a marker gets by the end of its life. Not to nothing: it is still
 // a thing that happened, and it should be findable right up until it goes.
-const FADE_TO = 0.4;
+const FADE_TO = 0.45;
 
 const paleness = (event) => FADE_TO + (1 - FADE_TO) * freshness(event);
-
-// Matches the backend's orbit. Both ends compute it, so both ends need the
-// same numbers; they arrive with the feed for exactly that reason.
-const orbitKm = () => feed?.orbit?.km ?? 9;
-const orbitMinutes = () => feed?.orbit?.minutes ?? 7;
-
-/** Where a reported object is now, if it carried on as reported. */
-function positionOf(event, atSeconds) {
-  const still = { lat: event.origin_lat, lon: event.origin_lon, km: 0, arrived: false };
-  const speed = speedOf(event);
-  const motion = motionOf(event);
-  const minutes = Math.max(0, (atSeconds - event.seen) / 60);
-
-  if (motion === 'orbit' && speed > 0) {
-    // On station: round and round the place it was reported over, pointing
-    // along the circle. Carrying a loitering drone off in a straight line for
-    // twenty minutes would put it in the next country and claim something the
-    // report never said.
-    const angle = (360 * minutes / orbitMinutes()) % 360;
-    const [lat, lon] = advance(event.origin_lat, event.origin_lon, angle, orbitKm());
-    return { lat, lon, km: 0, arrived: false, facing: (angle + 90) % 360 };
-  }
-
-  if (event.heading == null || !(speed > 0) || motion !== 'track') return still;
-
-  let km = speed * (minutes / 60);
-  // A report that named where it was going also said where this stops. The
-  // marker goes no further than the place it was flying to, and then goes.
-  const arrived = event.dest_km > 0 && km >= event.dest_km;
-  if (arrived) km = event.dest_km;
-  const [lat, lon] = advance(event.origin_lat, event.origin_lon, event.heading, km);
-  return { lat, lon, km, arrived, facing: event.heading };
-}
 
 // ── The markers ────────────────────────────────────────────────
 
@@ -297,15 +272,22 @@ function glyph(event, colour, facing) {
 /** One marker: its glyph, and its label underneath. */
 function icon(event, facing) {
   const colour = look(event).colour ?? '#ff8a3b';
+  const loud = event.kind === 'alert' || event.kind === 'explosion';
   return L.divIcon({
-    className: 'ao-pin',
+    // Warnings and strikes are the two things somebody scanning this map is
+    // looking for, and at the zoom it gets used at a 24-pixel glyph in a
+    // colour was disappearing into the basemap. They get a pulsing halo
+    // behind them and a label with a background, which is the difference
+    // between something you can find and something you have to hunt for.
+    className: `ao-pin${loud ? ` is-loud is-${event.kind}` : ''}`,
     // The label says what is being reported. An opaque identifier told the
     // reader nothing they could not see, and made them open a popup to find
     // out whether a triangle was a drone or a missile.
     //
     // No speed: the speed is a table lookup for the type, not a measurement
     // of the object, and printing it would dress an assumption up as telemetry.
-    html: `${glyph(event, colour, facing)}`
+    html: (loud ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
+      + `${glyph(event, colour, facing)}`
       + `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`,
     // The anchor is the middle of the glyph, which is the reported position.
     // Derived from the size rather than written out, so the two cannot drift
@@ -315,7 +297,7 @@ function icon(event, facing) {
   });
 }
 
-function popup(event, km) {
+function popup(event) {
   const rows = [];
   if (event.place) {
     // What the report said, and what the gazetteer matched it to. They are
@@ -338,6 +320,8 @@ function popup(event, km) {
       + `${shown} of them.`);
   }
   rows.push(`${since(event.age_minutes ?? 0)} since the report`);
+  if (event.toward) rows.push('Course shown, not followed — the mark stays '
+    + 'where the report put it.');
   if (event.region_wide) {
     rows.push('<b>Region-wide</b> — the report names the whole area, and the '
       + 'outline is that area\u2019s own boundary.');
@@ -347,20 +331,8 @@ function popup(event, km) {
     rows.push('<b>Located to this region only</b> — the report named the '
       + 'region and no place within it, so the outline is the area it could '
       + 'be anywhere in, not an area under attack.');
-  } else if (hasArea(event)) {
-    rows.push(`Shaded about ${Math.round(event.area_km ?? 8)} km around — the `
-      + 'size of the place named, not a measured extent.');
   }
-  if (motionOf(event) === 'orbit') {
-    // Said plainly, because a marker going round in circles is the one thing
-    // here most likely to be read as a measurement of a flight path.
-    rows.push('<b>Shown circling</b> — reported on station here. The circle is '
-      + 'a way of saying "over this place and still flying", not a track.');
-  } else if (km > 0.5) {
-    rows.push('<b>Position estimated</b> — carried '
-      + `${Math.round(km)} km along the reported course at a typical speed `
-      + `(${Math.round(speedOf(event))} km/h) for the type. Not a track.`);
-  }
+
   return `<div class="ao-pop">
     <h4>${label(event)}</h4>
     ${rows.map((r) => `<p>${r}</p>`).join('')}
@@ -411,14 +383,18 @@ function areaFor(event) {
     className: `ao-area ao-area-${event.kind}`
       + (event.region_scope ? ` is-region is-${event.region_scope}` : ''),
     color: colour,
-    weight: event.region_wide ? 2 : 1.5,
-    opacity: event.region_scope === 'located' ? 0.4 : 0.55,
+    // A warning covering a region is the loudest thing this layer draws, so
+    // it gets the heaviest line. At the zoom a whole country fits in, a
+    // one-pixel stroke was simply not visible.
+    weight: event.region_wide ? 3 : 1.5,
+    opacity: event.region_scope === 'located' ? 0.4
+      : event.region_wide ? 0.85 : 0.6,
     fillColor: colour,
     // A region that merely says how precisely something was located is barely
     // filled. Filling it like a warning would say the whole province is under
     // attack, when all the report said was which province it was over.
     fillOpacity: event.region_scope === 'located' ? 0.04
-      : event.region_wide ? 0.1 : 0.12,
+      : event.region_wide ? 0.16 : 0.18,
   };
 
   // A warning covering a whole region gets that region's actual outline. A
@@ -449,14 +425,9 @@ const hasArea = (event) => event.placed !== false
 
 /** Bring the drawn markers into line with the events just fetched. */
 function reconcile(events) {
-  const now = Date.now() / 1000;
   const alive = new Set();
   for (const event of events) {
-    const at = positionOf(event, now);
-    // Already where it was going by the time it got here. The backend expires
-    // these too, but the two clocks are a minute apart and a marker sitting
-    // on its destination for that minute is the thing being fixed.
-    if (at.arrived) continue;
+    const at = positionOf(event);
 
     // One marker per object. A report of three drones is three things in the
     // air, and drawing it as a single marker with a count beside it meant the
@@ -481,7 +452,7 @@ function reconcile(events) {
       const marker = L.marker(where, {
         icon: icon(event, at.facing), pane: 'osint', keyboard: false,
       });
-      marker.bindPopup(() => popup(event, positionOf(event, Date.now() / 1000).km));
+      marker.bindPopup(() => popup(event));
       marker.addTo(layer);
       // One area per report, not per object: the ground a strike covers does
       // not multiply with how many things caused it.
@@ -554,43 +525,6 @@ function age(held) {
   if (own) own.style.opacity = String(pale);
 }
 
-/** Move every marker along. Called once a second. */
-function step() {
-  // Nothing to see and nothing to spend: a hidden tab gets no arithmetic.
-  if (!enabled || document.hidden || !drawn.size) return;
-  const now = Date.now() / 1000;
-  let gone = false;
-  for (const [id, held] of drawn) {
-    const motion = motionOf(held.event);
-    if (motion === 'still') continue;
-    if (motion === 'track' && held.event.heading == null) continue;
-
-    const at = positionOf(held.event, now);
-    if (at.arrived) {
-      // It has reached the place the report said it was going to. Carrying it
-      // past there would be inventing a second journey nobody described.
-      layer.removeLayer(held.marker);
-      if (held.area) areas.removeLayer(held.area);
-      drawn.delete(id);
-      gone = true;
-      continue;
-    }
-    // Through the same nudge the marker was placed with, or every object in a
-    // group would collapse onto the group's centre on the first tick.
-    held.marker.setLatLng(nudge(at, held.event, held.index ?? 0));
-
-    // Something circling changes the way it is facing every second, so its
-    // glyph has to turn with it. The SVG is spun in place rather than the
-    // icon rebuilt: setIcon replaces the element, which would drop an open
-    // popup and re-run the marker's layout sixty times a minute.
-    if (motion === 'orbit' && at.facing != null) {
-      const mark = held.marker.getElement()?.querySelector('.ao-glyph');
-      if (mark) mark.style.transform = `rotate(${at.facing.toFixed(1)}deg)`;
-    }
-  }
-  if (gone) paintDock();
-}
-
 // ── The feed ───────────────────────────────────────────────────
 
 async function load() {
@@ -658,6 +592,14 @@ function buildDock() {
       // the gazetteer cannot place the names still shows six reports here,
       // which is a feed doing its job, and looks nothing like a broken one.
       el('div', { class: 'ao-list', id: 'osintList' }),
+      // What each channel actually gave. "I cannot see reports from the
+      // other accounts" is unanswerable without this: a channel can be
+      // unreachable, reachable but quiet, posting things this cannot read, or
+      // naming places the gazetteer does not know. Four different problems
+      // that all look like an empty map.
+      el('details', { class: 'ao-sources' },
+        el('summary', {}, 'Channels'),
+        el('div', { id: 'osintSources' })),
       el('div', { class: 'ao-note', id: 'osintNote' }, '')));
   paintDock();
 }
@@ -671,11 +613,10 @@ function toggle() {
     layer.addTo(map);
     load();
     poller = setInterval(load, POLL_MS);
-    stepper = setInterval(step, STEP_MS);
+
   } else {
     clearInterval(poller);
-    clearInterval(stepper);
-    poller = stepper = null;
+    poller = null;
     layer.remove();
     layer.clearLayers();
     areas.remove();
@@ -744,6 +685,8 @@ function paintDock() {
     ? [el('div', { class: 'ao-row-more' }, `+${hidden} older`)]
     : []));
 
+  paintSources();
+
   const lines = [];
   const demo = feed?.state?.startsWith('demo');
   const got = tally();
@@ -778,6 +721,32 @@ function paintDock() {
   if (problem) lines.push(problem);
   else if (!demo && feed?.state && feed.state !== 'nothing new') lines.push(feed.state);
   note.textContent = lines.filter(Boolean).join(' ');
+}
+
+/** One row per channel: what it gave, and where it stopped. */
+function paintSources() {
+  const host = $('#osintSources');
+  if (!host) return;
+  const rows = feed?.sources ?? [];
+  if (!rows.length) {
+    host.replaceChildren(el('div', { class: 'ao-src-row' }, 'Nothing read yet.'));
+    return;
+  }
+  host.replaceChildren(...rows.map((row) => {
+    // Said in the order the reading happens, so where it stops is where the
+    // problem is: reached, read, placed.
+    const why = row.problem ? 'unreachable'
+      : row.posts === 0 ? 'no posts'
+        : row.read === 0 ? `${row.posts} posts, none readable`
+          : row.placed === 0 ? `${row.read} read, none placeable`
+            : `${row.placed} placed of ${row.read} read`;
+    return el('div', {
+      class: `ao-src-row${row.problem || !row.placed ? ' is-quiet' : ''}`,
+      title: row.problem ?? '',
+    },
+    el('b', {}, row.channel),
+    el('span', {}, why));
+  }));
 }
 
 /** Take the map to a report, if it is somewhere. */
