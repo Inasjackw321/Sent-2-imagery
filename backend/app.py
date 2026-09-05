@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, fires, mtg, passes, seismic, service, stac,
-    version, vessels, weather,
+    aisstream, composite, config, fires, mtg, osint, passes, seismic, service,
+    stac, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -307,6 +307,37 @@ def mtg_layers(refresh: bool = Query(False)) -> dict:
         return mtg.layers(refresh=refresh)
     except mtg.MTGError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/osint")
+def osint_events() -> dict:
+    """Air-threat reports from public Telegram channels, as map events.
+
+    Both halves of this stay on the server: Telegram is read here and the
+    model is called here, so the browser never holds the key and never talks
+    to either. What comes back is positions and headings, already checked.
+    """
+    if config.DEMO_MODE:
+        return osint.demo()
+    try:
+        return osint.refresh()
+    except osint.OsintError as exc:
+        # Not a failure of the endpoint: no key, a rate limit, a channel that
+        # would not answer. The map wants to keep drawing what it already has
+        # and say why nothing new arrived, rather than go blank on a 502.
+        answer = osint.current()
+        answer["state"] = str(exc)
+        return answer
+
+
+@app.post("/api/osint/key")
+def osint_key(body: dict = Body(...)) -> dict:
+    """Hand the app an OpenRouter key, or take it away again.
+
+    Memory only, for the life of the process, exactly as the AIS key is: it is
+    the operator's own key and it should not outlive the run.
+    """
+    return {"set": osint.set_key(body.get("key")), "model": osint.MODEL}
 
 
 @app.get("/api/seismographs")

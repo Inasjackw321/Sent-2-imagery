@@ -1278,3 +1278,56 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 /* The infrared is context, not the subject: greyed and held back so the map
    under it and the flashes over it both stay readable. */
 .mtg-cloud { filter: grayscale(1) contrast(1.1); }
+
+/* ── Air threats, from public Telegram channels ──────────────── */
+
+.ao-dock { display: grid; gap: 8px; }
+.ao-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.ao-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.ao-toggle.is-on {
+  color: #ffeceb; border-color: rgba(255,59,48,.6); background: rgba(58,16,18,.88);
+  font-weight: 600;
+}
+.ao-mark { font-size: 11px; opacity: .6; }
+.ao-toggle.is-on .ao-mark { opacity: 1; color: #ff5b52; }
+
+.ao-body {
+  display: grid; gap: 7px; padding: 9px 11px;
+  border-radius: 9px; background: rgba(13,16,21,.9);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.ao-count { font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ao-note, .ao-hint { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
+.ao-hint a { color: #7cc4ff; }
+
+/* The marker itself. The label hangs below the glyph and out of the icon's
+   own box, so it never enlarges the hit area or shifts the anchor -- the
+   triangle's centre is the reported position and has to stay that way. */
+.ao-pin { background: none; border: 0; overflow: visible; }
+.ao-glyph {
+  display: block;
+  /* Rotation is about the glyph's own centre, which is the anchor point;
+     the default origin would swing the marker off the position as it turns. */
+  transform-origin: 50% 50%;
+  filter: drop-shadow(0 0 3px rgba(0,0,0,.85));
+}
+.ao-tag {
+  position: absolute; top: 19px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
+  text-shadow: 0 0 3px #000, 0 0 5px #000;
+  pointer-events: none;
+}
+
+.ao-pop { max-width: 240px; }
+.ao-pop h4 { margin: 0 0 5px; font-size: 12px; color: var(--ink); }
+.ao-pop p { margin: 0 0 4px; font-size: 10.5px; color: var(--ink-dim); line-height: 1.45; }
+.ao-pop blockquote {
+  margin: 6px 0 4px; padding-left: 7px; font-size: 10px; color: var(--ink-faint);
+  border-left: 2px solid rgba(255,59,48,.45);
+}
+.ao-pop .ao-src { font-size: 9.5px; color: var(--ink-faint); }

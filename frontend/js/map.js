@@ -14,6 +14,7 @@ import { initFires, POPUP } from './fires.js';
 import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
 import { initMTG } from './mtg.js';
+import { initOsint } from './osint.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
@@ -198,6 +199,7 @@ export function initMap() {
   initClouds(map);
   initRadar(map);
   initMTG(map);
+  initOsint(map);
   initVessels(map);
   initSeismic(map);
   initCams(map);
