@@ -100,9 +100,15 @@ MODEL = MODELS[0]
 BACKOFF_START = 120.0
 BACKOFF_MAX = 900.0
 
-# How long a track stays on the map after the report that made it. Dead
-# reckoning decays: after twenty minutes an extrapolated position is a work of
-# fiction, so it goes rather than sitting there looking authoritative.
+# How long a marker stays on the map, when its kind does not say otherwise.
+#
+# Twenty minutes, and the number is about dead reckoning rather than about
+# news: a position extrapolated from one report gets worse every second, and
+# after twenty minutes it is a work of fiction. It goes rather than sitting
+# there looking authoritative.
+#
+# Which is why it is only the default. That reasoning applies to something in
+# flight and to nothing else -- see `keep` in KINDS below.
 KEEP_MINUTES = 20
 
 # How long a report stays in the alert stream. Longer than a track, because
@@ -138,6 +144,17 @@ MIN_POLL_SECONDS = 55
 #           and claim something the report never said. Circling says "it is
 #           here, and it is still flying", which is exactly what was reported.
 #
+#   keep    how many minutes the marker stays, when it differs from the
+#           twenty-minute default.
+#
+#           The default expires things because their POSITION rots, not
+#           because the news does. A marker carried along a course for twenty
+#           minutes is describing a journey nobody watched, so it goes. But a
+#           strike does not move: where it happened is where it happened, and
+#           that is as true six hours later as it was at the time. The only
+#           reason to take one off the map is that it has stopped being what
+#           is going on, which is a much longer clock.
+#
 #   rank    orders the alert stream. A strike outranks a drone crossing an
 #           oblast, which outranks a warning.
 KINDS = {
@@ -156,7 +173,12 @@ KINDS = {
     "helicopter": {"colour": "#ffd23b", "label": "Helicopter",
                    "speed": 220.0, "motion": "track", "rank": 2},
     "explosion": {"colour": "#b06bff", "label": "Explosion",
-                  "speed": 0.0, "motion": "still", "rank": 7},
+                  "speed": 0.0, "motion": "still", "rank": 7,
+                  # Six hours. A strike is a fact about a place rather than a
+                  # guess about one, so nothing about it decays -- and the
+                  # night's damage read together is most of why anyone opens
+                  # this layer. Long enough to hold an evening's worth.
+                  "keep": 360},
     "alert":     {"colour": "#ffb020", "label": "Air alert",
                   "speed": 0.0, "motion": "still", "rank": 1},
     "unknown":   {"colour": "#ff8a3b", "label": "Unidentified",
@@ -168,6 +190,7 @@ KINDS = {
 # step. Everything here is derived, never edited on its own.
 SPEEDS = {name: look["speed"] for name, look in KINDS.items()}
 MOTION = {name: look["motion"] for name, look in KINDS.items()}
+KEEP = {name: look.get("keep", KEEP_MINUTES) for name, look in KINDS.items()}
 
 # Kinds that are announcements or places rather than things in flight.
 NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "still")
@@ -860,13 +883,26 @@ def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> No
     })
 
 
+def keep_minutes(kind: str) -> int:
+    """How long a marker of this kind stays on the map."""
+    return KEEP.get(kind, KEEP_MINUTES)
+
+
+def _alive(event: dict[str, Any], now: float) -> bool:
+    return event["seen"] >= now - keep_minutes(event["kind"]) * 60
+
+
 def _expire(now: float) -> None:
     """Drop what is too old to extrapolate, and what has arrived."""
     _events[:] = [e for e in _events
-                  if e["seen"] >= now - KEEP_MINUTES * 60
-                  and not _arrived(e, now)][-MAX_EVENTS:]
+                  if _alive(e, now) and not _arrived(e, now)][-MAX_EVENTS:]
+    # A report must not leave the list while its marker is still on the map:
+    # a burst over a town with nothing in the panel to explain it is worse
+    # than either on its own. So the stream holds each kind at least as long
+    # as the map does.
     _alerts[:] = [a for a in _alerts
-                  if a["seen"] >= now - ALERT_MINUTES * 60][-MAX_ALERTS:]
+                  if a["seen"] >= now - max(ALERT_MINUTES,
+                                            keep_minutes(a["kind"])) * 60][-MAX_ALERTS:]
 
 
 def reset() -> None:
@@ -1046,6 +1082,7 @@ def current() -> dict[str, Any]:
         "alerts": [dict(a) for a in alerts],
         "state": _state,
         "keep_minutes": KEEP_MINUTES,
+        "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
         "speeds": SPEEDS,
         "kinds": KINDS,
@@ -1104,6 +1141,12 @@ DEMO_SEED = [
     ("cruise", "Ochakiv", "Odesa", None, 1,
      "Cruise missile past Ochakiv towards Odesa"),
     ("explosion", "Kherson", None, None, 1, "Explosions reported in Kherson"),
+    # Four hours old: two thirds of the way through a strike's six, so the
+    # demo shows a faded one beside a fresh one. Without it the build with no
+    # network only ever draws markers at full strength, and whether an old
+    # strike reads as old could not be checked at all.
+    ("explosion", "Zaporizhzhia", None, None, 1,
+     "Earlier strike reported in Zaporizhzhia", 240),
     ("alert", "Beirut", None, None, 1, "Air raid warning for Beirut"),
     # The case the previous version hid: a real report that cannot be placed.
     # It belongs in the alert stream and nowhere else.
@@ -1112,8 +1155,13 @@ DEMO_SEED = [
 ]
 
 
-# How long the demo runs before starting over. Long enough for the slowest
-# track to expire on age, so a full cycle shows every ending there is.
+# How long the demo runs before starting over.
+#
+# Long enough for everything in flight to expire on age, so a cycle shows
+# every ending a track has: arriving, and timing out. Deliberately NOT long
+# enough to outlive a strike -- that would mean six hours of demo with nothing
+# moving on it after the first twenty minutes. The strikes simply carry over
+# from one cycle to the next, which is what they do in the real thing too.
 DEMO_CYCLE = (KEEP_MINUTES + 4) * 60
 
 _demo_epoch = 0.0
@@ -1159,8 +1207,10 @@ def demo() -> dict[str, Any]:
         epoch = _demo_epoch
 
     events, alerts = [], []
-    for i, (kind, place, toward, course, count, summary) in enumerate(DEMO_SEED, start=1):
-        seen = epoch - i * 90
+    for i, row in enumerate(DEMO_SEED, start=1):
+        kind, place, toward, course, count, summary = row[:6]
+        # Staggered by position, unless the row says how old it should be.
+        seen = epoch - (row[6] * 60 if len(row) > 6 else i * 90)
         item = {"kind": kind, "place": place, "toward": toward,
                 "course": read_course(course), "region": None,
                 "count": count, "summary": summary}
@@ -1179,16 +1229,18 @@ def demo() -> dict[str, Any]:
                  "origin_lat": placed["lat"], "origin_lon": placed["lon"],
                  "seen": seen, "channel": "demo", "region": "Ukraine",
                  "source": f"demo/{i}", "text": f"Demo report — {summary}."}
-        if _arrived(event, now) or now - seen > KEEP_MINUTES * 60:
+        if _arrived(event, now) or not _alive(event, now):
             continue
         events.append(project(event, now))
 
-    alerts = [a for a in alerts if now - a["seen"] <= ALERT_MINUTES * 60]
+    alerts = [a for a in alerts
+              if now - a["seen"] <= max(ALERT_MINUTES, keep_minutes(a["kind"])) * 60]
     return {
         "events": events, "count": len(events),
         "alerts": sorted(alerts, key=lambda a: a["seen"], reverse=True),
         "state": "demo — synthetic reports",
-        "keep_minutes": KEEP_MINUTES, "alert_minutes": ALERT_MINUTES,
+        "keep_minutes": KEEP_MINUTES, "keep": KEEP,
+        "alert_minutes": ALERT_MINUTES,
         "speeds": SPEEDS, "kinds": KINDS,
         "orbit": {"km": ORBIT_KM, "minutes": ORBIT_MINUTES},
         "channels": [c["name"] for c in CHANNELS],

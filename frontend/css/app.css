@@ -1498,3 +1498,6 @@ body.is-walled { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .ao-area { animation: none; }
 }
+.ao-row-more {
+  padding: 3px 5px 1px 18px; font-size: 9.5px; color: var(--ink-faint);
+}

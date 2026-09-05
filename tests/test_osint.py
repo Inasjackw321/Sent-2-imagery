@@ -413,6 +413,83 @@ class TestPlacing:
         assert got["heading"] is None
 
 
+class TestHowLongThingsStay:
+    """A strike does not move, so nothing about it decays.
+
+    The twenty-minute default is about dead reckoning, not about news: a
+    position extrapolated from one report gets worse every second. That
+    reasoning applies to something in flight and to nothing else. Where a
+    strike happened is where it happened, and that is as true six hours later
+    as it was at the time.
+    """
+
+    def test_a_strike_is_held_for_hours(self):
+        assert osint.keep_minutes("explosion") >= 180
+
+    def test_things_in_flight_still_go_quickly(self):
+        for kind in ("drone", "jet_drone", "cruise", "ballistic", "recon",
+                     "aircraft", "helicopter"):
+            assert osint.keep_minutes(kind) == osint.KEEP_MINUTES, kind
+
+    def test_a_kind_that_says_nothing_gets_the_default(self):
+        assert osint.keep_minutes("nothing like this") == osint.KEEP_MINUTES
+
+    def test_an_old_strike_is_kept_and_an_old_drone_is_not(self):
+        now = time.time()
+        old = now - 3 * 3600
+        assert osint._alive({"kind": "explosion", "seen": old}, now) is True
+        assert osint._alive({"kind": "drone", "seen": old}, now) is False
+
+    def test_a_strike_does_go_eventually(self):
+        now = time.time()
+        gone = now - (osint.keep_minutes("explosion") + 1) * 60
+        assert osint._alive({"kind": "explosion", "seen": gone}, now) is False
+
+    def test_a_report_never_leaves_the_list_while_its_marker_is_on_the_map(self):
+        # A burst over a town with nothing in the panel to explain it is worse
+        # than either on its own, and the alert window is shorter than a
+        # strike's life, so the stream has to stretch to cover it.
+        for kind in osint.KINDS:
+            held = max(osint.ALERT_MINUTES, osint.keep_minutes(kind))
+            assert held >= osint.keep_minutes(kind), kind
+
+    def test_expiry_keeps_the_strike_and_drops_the_drone(self):
+        now = time.time()
+        osint.reset()
+        try:
+            with osint._lock:
+                osint._events.extend([
+                    {"kind": "explosion", "seen": now - 3 * 3600, "heading": None,
+                     "origin_lat": 50.0, "origin_lon": 30.0},
+                    {"kind": "drone", "seen": now - 3 * 3600, "heading": None,
+                     "origin_lat": 50.0, "origin_lon": 30.0},
+                ])
+                osint._alerts.extend([
+                    {"kind": "explosion", "seen": now - 3 * 3600, "placed": True},
+                    {"kind": "drone", "seen": now - 3 * 3600, "placed": True},
+                ])
+                osint._expire(now)
+                assert [e["kind"] for e in osint._events] == ["explosion"]
+                assert [a["kind"] for a in osint._alerts] == ["explosion"]
+        finally:
+            osint.reset()
+
+    def test_the_demo_shows_a_fresh_strike_and_an_old_one(self):
+        # Otherwise the build with no network only ever draws markers at full
+        # strength, and whether an old strike reads as old cannot be checked.
+        ages = sorted(e["age_minutes"] for e in osint.demo()["events"]
+                      if e["kind"] == "explosion")
+        assert len(ages) >= 2
+        assert ages[0] < 30 and ages[-1] > 120
+
+    def test_the_lifetimes_reach_the_browser(self):
+        # The browser fades a marker against its OWN lifetime, so it needs the
+        # table rather than the one default.
+        for feed in (osint.demo(), osint.current()):
+            assert feed["keep"]["explosion"] > feed["keep"]["drone"]
+            assert set(feed["keep"]) == set(osint.KINDS)
+
+
 class TestTheAreaAnAlertCovers:
     """An air-raid warning is about a region, not a point.
 
@@ -799,11 +876,15 @@ class TestDemo:
             osint._demo_epoch = 0.0
 
     def test_it_lets_things_arrive_and_expire_and_then_starts_again(self):
+        # One cycle outlives everything in flight. It does not outlive a
+        # strike, which is held for six hours by design -- so what must be
+        # empty at the end of a cycle is the flying things, not the map.
         osint._demo_epoch = 0.0
         try:
             osint.demo()
             osint._demo_epoch -= osint.DEMO_CYCLE - 1
-            assert osint.demo()["events"] == []
+            late = osint.demo()["events"]
+            assert [e for e in late if e["kind"] != "explosion"] == []
             osint._demo_epoch -= 10
             assert osint.demo()["events"]
         finally:

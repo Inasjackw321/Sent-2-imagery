@@ -32,6 +32,10 @@ import { $, el } from './ui.js';
 // this, so several open tabs cost one read of the channels between them.
 const POLL_MS = 60000;
 
+// How many reports the panel lists before saying how many more there are.
+// Generous because strikes are held for hours and the list scrolls.
+const LIST_ROWS = 20;
+
 // How often to redraw the drift. A second is under the eye's threshold for
 // "moving" at these speeds and is a hundredth of the work of a frame loop.
 const STEP_MS = 1000;
@@ -107,6 +111,33 @@ function advance(lat, lon, heading, km) {
 const look = (event) => feed?.kinds?.[event.kind] ?? {};
 const speedOf = (event) => look(event).speed ?? feed?.speeds?.[event.kind] ?? 0;
 const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
+
+/** How long this kind of marker stays, in minutes. */
+const keepOf = (event) => feed?.keep?.[event.kind] ?? look(event).keep
+  ?? feed?.keep_minutes ?? 20;
+
+/**
+ * How new a report is, as a fraction of its own lifetime. 1 is now, 0 is due
+ * to go.
+ *
+ * It is measured against the marker's OWN lifetime rather than a fixed
+ * window, because they differ by a factor of eighteen: a drone is gone in
+ * twenty minutes and a strike stays six hours. Against a fixed window every
+ * strike would sit at full strength for its whole life and then vanish, so a
+ * map at the end of a long night would show a wall of bursts all looking as
+ * though they had just happened.
+ */
+function freshness(event) {
+  const minutes = event.age_minutes ?? 0;
+  const life = Math.max(1, keepOf(event));
+  return Math.max(0, Math.min(1, 1 - minutes / life));
+}
+
+// How faint a marker gets by the end of its life. Not to nothing: it is still
+// a thing that happened, and it should be findable right up until it goes.
+const FADE_TO = 0.4;
+
+const paleness = (event) => FADE_TO + (1 - FADE_TO) * freshness(event);
 
 // Matches the backend's orbit. Both ends compute it, so both ends need the
 // same numbers; they arrive with the feed for exactly that reason.
@@ -243,7 +274,7 @@ function popup(event, km) {
       + (event.dest_km ? `, ${Math.round(event.dest_km)} km away` : ''));
   }
   if (event.count > 1) rows.push(`${Number(event.count) || 1} reported together`);
-  rows.push(`${Math.round(event.age_minutes ?? 0)} min since the report`);
+  rows.push(`${since(event.age_minutes ?? 0)} since the report`);
   if (hasArea(event)) {
     rows.push(`Shaded about ${Math.round(event.area_km ?? 8)} km around — the `
       + 'size of the place named, not a measured extent.');
@@ -265,6 +296,21 @@ function popup(event, km) {
     ${event.text ? `<blockquote>${escapeHtml(event.text)}</blockquote>` : ''}
     <p class="ao-src">${escapeHtml(event.channel ?? '')}</p>
   </div>`;
+}
+
+/** A compact age for the list: minutes, then hours. */
+const ago = (minutes) => (minutes < 60
+  ? `${Math.round(minutes)}m`
+  : `${Math.floor(minutes / 60)}h`);
+
+/** How long ago, in a unit that suits how long ago it was. */
+function since(minutes) {
+  const mins = Math.round(minutes);
+  if (mins < 1) return 'less than a minute';
+  if (mins < 90) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rest = mins % 60;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
@@ -327,6 +373,7 @@ function reconcile(events) {
       }
       held.event = event;
       held.marker.setLatLng([at.lat, at.lon]);
+      age(held);
     } else {
       const marker = L.marker([at.lat, at.lon], {
         icon: icon(event, at.facing), pane: 'osint', keyboard: false,
@@ -335,7 +382,9 @@ function reconcile(events) {
       marker.addTo(layer);
       const area = hasArea(event) ? areaFor(event) : null;
       area?.addTo(areas);
-      drawn.set(event.id, { event, marker, area });
+      const held = { event, marker, area };
+      drawn.set(event.id, held);
+      age(held);
     }
   }
   for (const [id, held] of drawn) {
@@ -344,6 +393,21 @@ function reconcile(events) {
     if (held.area) areas.removeLayer(held.area);
     drawn.delete(id);
   }
+}
+
+/**
+ * Fade a marker towards the end of its life.
+ *
+ * Applied as element opacity rather than as the circle's own fill, because
+ * the fill is what the pulse animation drives -- setting it here would be
+ * overwritten on the next keyframe. Element opacity multiplies with it
+ * instead, so an old alert still breathes, faintly.
+ */
+function age(held) {
+  const pale = paleness(held.event);
+  held.marker.setOpacity(pale);
+  const ink = held.area?.getElement?.();
+  if (ink) ink.style.opacity = String(pale);
 }
 
 /** Move every marker along. Called once a second. */
@@ -497,12 +561,21 @@ function paintDock() {
   }
 
   const n = drawn.size;
+  const strikes = [...drawn.values()].filter((h) => h.event.kind === 'explosion').length;
   count.textContent = n
-    ? `${n} on the map, last ${feed?.keep_minutes ?? 20} min`
+    ? `${n} on the map${strikes ? ` · ${strikes} struck` : ''}`
     : 'Nothing on the map';
 
   // The recent reports, newest first, the mapped ones clickable.
-  const alerts = (feed?.alerts ?? []).slice(0, 8);
+  //
+  // The cap used to be eight with nothing said about the rest, which quietly
+  // reintroduced the thing the backend is careful about: strikes are held for
+  // hours, so an older one sat on the map with no row in the panel to explain
+  // it. The list scrolls, so it can be longer -- and when it is still cut, it
+  // says so rather than just ending.
+  const everything = feed?.alerts ?? [];
+  const alerts = everything.slice(0, LIST_ROWS);
+  const hidden = everything.length - alerts.length;
   list?.replaceChildren(...alerts.map((item) => {
     const kind = feed?.kinds?.[item.kind] ?? {};
     const mins = Math.max(0, Math.round(Date.now() / 1000 - item.seen) / 60);
@@ -517,9 +590,11 @@ function paintDock() {
       class: `ao-row-what${item.by === 'rules' ? ' is-plain' : ''}`,
       title: item.by === 'rules' ? 'Read without the model' : '',
     }, item.summary || kind.label || item.kind),
-    el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : `${Math.round(mins)}m`));
+    el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : ago(mins)));
     return row;
-  }));
+  }), ...(hidden > 0
+    ? [el('div', { class: 'ao-row-more' }, `+${hidden} older`)]
+    : []));
 
   const lines = [];
   const demo = feed?.state?.startsWith('demo');
@@ -547,7 +622,10 @@ function paintDock() {
   }
   if (n) {
     lines.push('Arrows are carried along the reported course at a typical speed '
-      + 'for the type — estimated, not tracked.');
+      + 'for the type — estimated, not tracked. Strikes are held for '
+      + `${Math.round((feed?.keep?.explosion ?? 360) / 60)} hours and fade as `
+      + 'they age; things in flight go after '
+      + `${feed?.keep_minutes ?? 20} minutes, when the estimate stops meaning much.`);
   }
   if (problem) lines.push(problem);
   else if (!demo && feed?.state && feed.state !== 'nothing new') lines.push(feed.state);
