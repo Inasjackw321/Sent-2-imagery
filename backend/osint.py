@@ -659,6 +659,20 @@ AREA_DEFAULT_KM = 8.0
 AREA_MAX_KM = 120.0
 
 
+# What counts as a region rather than a place within one. These are
+# Nominatim's own words for an administrative area of some size; a town, a
+# village or a suburb is not one however large it happens to be.
+REGION_KINDS = ("administrative", "state", "region", "province", "county",
+                "district", "governorate", "emirate", "country")
+
+
+def is_region(place: dict[str, Any]) -> bool:
+    """Whether a match is an area in its own right rather than a spot in one."""
+    if place.get("category") == "boundary":
+        return True
+    return str(place.get("kind") or "").lower() in REGION_KINDS
+
+
 def area_km(place: dict[str, Any]) -> float:
     """How far around a place an alert reaches, in kilometres.
 
@@ -737,7 +751,20 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     out["lat"], out["lon"] = here["lat"], here["lon"]
     out["place_match"] = here.get("name")
     out["place_kind"] = here.get("kind")
+    out["place_category"] = here.get("category")
     out["area_km"] = area_km(here)
+    # The real outline, kept only where the report named a REGION. A strike in
+    # a town is a point in it, not the whole town, and drawing the municipal
+    # boundary round one would claim the damage followed the council's border.
+    # A warning over an oblast is genuinely about that oblast, and there the
+    # boundary is the honest shape -- a circle over the middle both misses
+    # ground the warning covers and covers ground it does not.
+    # ...and only for the kinds that cover ground at all. A drone reported
+    # over an oblast is at a point on its way through it; shading the region
+    # for one would say a whole province is under something it is not.
+    covers = MOTION.get(item["kind"], "track") == "still"
+    out["shape"] = here.get("shape") if covers and is_region(here) else None
+    out["region_wide"] = bool(out["shape"])
     out["placed"] = True
     out["motion"] = MOTION.get(item["kind"], "track")
     out.pop("why_unplaced", None)
@@ -1120,6 +1147,7 @@ DEMO_PLACES = {
     "Mykolaiv": (46.9750, 31.9946), "Kharkiv oblast": (49.7, 36.3),
     "Beirut": (33.8938, 35.5018), "Ochakiv": (46.6128, 31.5406),
     "Kaharlyk": (49.8556, 30.8125), "Zaporizhzhia": (47.8388, 35.1396),
+    "Kyiv oblast": (50.05, 30.75),
 }
 
 DEMO_SEED = [
@@ -1148,6 +1176,9 @@ DEMO_SEED = [
     ("explosion", "Zaporizhzhia", None, None, 1,
      "Earlier strike reported in Zaporizhzhia", 240),
     ("alert", "Beirut", None, None, 1, "Air raid warning for Beirut"),
+    # A warning covering a whole region rather than a town, so the demo shows
+    # the boundary being drawn instead of a circle over the middle of it.
+    ("alert", "Kyiv oblast", None, None, 1, "Air raid warning across Kyiv oblast"),
     # The case the previous version hid: a real report that cannot be placed.
     # It belongs in the alert stream and nowhere else.
     ("drone", "Somewhere unnamed", None, None, 1,
@@ -1170,7 +1201,23 @@ _demo_epoch = 0.0
 # Roughly how big each demo place is, so the alert areas differ the way real
 # ones do: a strike in a town is a few kilometres across and a warning over an
 # oblast is most of a region.
-DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Beirut": 0.09}
+DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Beirut": 0.09, "Kyiv oblast": 1.3}
+
+
+def _demo_ring(lat: float, lon: float, half: float) -> dict[str, Any]:
+    """A rough outline for a demo region: a lumpy ring, not a rectangle.
+
+    Lumpy on purpose. A neat box would look like a bounding box and would not
+    show whether the page is drawing a real boundary or falling back to one.
+    """
+    ring = []
+    for i in range(24):
+        angle = 2 * math.pi * i / 24
+        wobble = half * (0.72 + 0.28 * math.cos(3 * angle))
+        ring.append([round(lon + wobble * math.cos(angle) * 1.5, 4),
+                     round(lat + wobble * math.sin(angle), 4)])
+    ring.append(ring[0])
+    return {"type": "Polygon", "coordinates": [ring]}
 
 
 def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
@@ -1180,10 +1227,13 @@ def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
         return None
     lat, lon = found
     half = DEMO_EXTENT.get(name, 0.06)
+    region = half > 1
     return {
         "lat": lat, "lon": lon, "name": name,
-        "kind": "administrative" if half > 1 else "town",
+        "kind": "administrative" if region else "town",
+        "category": "boundary" if region else "place",
         "bbox": [lat - half, lat + half, lon - half, lon + half],
+        "shape": _demo_ring(lat, lon, half) if region else None,
     }
 
 

@@ -91,9 +91,27 @@ ACCEPTED = ("place", "boundary")
 CANDIDATES = 6
 
 
+# How much detail to keep in a boundary, in degrees. An oblast outline at full
+# resolution is tens of thousands of points -- a megabyte of coastline to draw
+# a warning with. At a hundredth of a degree, roughly a kilometre, the shape is
+# still unmistakably the region and the payload is a few hundred points.
+POLYGON_THRESHOLD = 0.01
+
+# Past this many points a shape is dropped and the caller falls back to a
+# circle. A guard against a country with a fractal coastline arriving whole.
+MAX_POINTS = 3000
+
+
 def _ask(name: str, countries: str) -> dict[str, Any] | None:
     global _calls
-    params = {"q": name, "format": "jsonv2", "limit": CANDIDATES}
+    params = {
+        "q": name, "format": "jsonv2", "limit": CANDIDATES,
+        # Asked for on every lookup rather than in a second call for the ones
+        # that turn out to be regions. It is one request either way thanks to
+        # the cache, and a town's outline is a handful of points.
+        "polygon_geojson": 1,
+        "polygon_threshold": POLYGON_THRESHOLD,
+    }
     if countries:
         # The single most valuable parameter here. Without it "Sumy" is as
         # likely to be a street in another hemisphere, and half the point of
@@ -137,6 +155,39 @@ def read_bbox(raw: Any) -> list[float] | None:
     return [south, north, west, east]
 
 
+def count_points(geometry: Any) -> int:
+    """How many coordinate pairs a GeoJSON geometry holds."""
+    if not isinstance(geometry, dict):
+        return 0
+    coords = geometry.get("coordinates")
+
+    def walk(node: Any) -> int:
+        if not isinstance(node, (list, tuple)) or not node:
+            return 0
+        if isinstance(node[0], (int, float)):
+            return 1
+        return sum(walk(part) for part in node)
+
+    return walk(coords)
+
+
+def read_shape(raw: Any) -> dict[str, Any] | None:
+    """A usable outline out of Nominatim's polygon, or None.
+
+    Only the shapes that are actually areas. A point or a line comes back for
+    plenty of places, and drawing a warning as a one-pixel dot or a squiggle
+    would be worse than the circle it replaces.
+    """
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("type") not in ("Polygon", "MultiPolygon"):
+        return None
+    points = count_points(raw)
+    if not 4 <= points <= MAX_POINTS:
+        return None
+    return {"type": raw["type"], "coordinates": raw["coordinates"]}
+
+
 def read_place(found: Any) -> dict[str, Any] | None:
     """The best usable result out of whatever Nominatim sent back.
 
@@ -169,6 +220,11 @@ def read_place(found: Any) -> dict[str, Any] | None:
             # about two things a hundred kilometres different in size, and
             # only the gazetteer knows which is which.
             "bbox": read_bbox(candidate.get("boundingbox")),
+            # The real outline, where the place has one. A warning covering an
+            # oblast is about that oblast, and a circle over the middle of it
+            # both misses ground the warning covers and covers ground it does
+            # not. The boundary is the thing the report actually named.
+            "shape": read_shape(candidate.get("geojson")),
             # An oblast and a street corner are both "a place" and should not
             # be drawn as though they were equally precise. The caller decides
             # what to do about it; this only reports what was matched.

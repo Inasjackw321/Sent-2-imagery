@@ -1316,9 +1316,11 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   transform-origin: 50% 50%;
   filter: drop-shadow(0 0 3px rgba(0,0,0,.85));
 }
+/* The label hangs below the glyph, clear of it. `top` tracks the icon size
+   set in osint.js -- 24 px plus a couple of pixels of air. */
 .ao-tag {
-  position: absolute; top: 19px; left: 50%; transform: translateX(-50%);
-  font-size: 9px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
+  position: absolute; top: 26px; left: 50%; transform: translateX(-50%);
+  font-size: 10px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
   text-shadow: 0 0 3px #000, 0 0 5px #000;
   pointer-events: none;
 }
@@ -1494,6 +1496,11 @@ body.is-walled { overflow: hidden; }
    a point you want to find. So the warning is drawn as an outline and the
    strike as a filled mark. */
 .ao-area-alert { stroke-dasharray: 7 5; }
+/* A whole region under a warning. Drawn as its own boundary rather than a
+   circle, so the edge is the thing worth seeing and gets a longer dash and a
+   fainter wash -- a province filled at the same strength as a town would
+   swamp everything inside it. */
+.ao-area.is-region { stroke-dasharray: 12 7; }
 
 @media (prefers-reduced-motion: reduce) {
   .ao-area { animation: none; }

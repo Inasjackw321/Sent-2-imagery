@@ -128,6 +128,81 @@ class TestRefusingThingsThatAreNotPlaces:
         assert seen["limit"] > 1
 
 
+class TestOutlines:
+    """A warning over an oblast is about the oblast, not a circle in it."""
+
+    RING = {"type": "Polygon",
+            "coordinates": [[[30, 50], [31, 50], [31, 51], [30, 51], [30, 50]]]}
+
+    def test_a_polygon_is_kept(self):
+        assert gazetteer.read_shape(self.RING) == self.RING
+
+    def test_a_multipolygon_is_kept(self):
+        # An oblast with an exclave, or a coastline with islands.
+        many = {"type": "MultiPolygon", "coordinates": [self.RING["coordinates"]]}
+        assert gazetteer.read_shape(many) is not None
+
+    def test_a_point_or_a_line_is_not_an_area(self):
+        # Nominatim returns these for plenty of places -- a river, a road, a
+        # single node. Drawing a warning as a one-pixel dot or a squiggle is
+        # worse than the circle it replaces.
+        assert gazetteer.read_shape({"type": "Point", "coordinates": [30, 50]}) is None
+        assert gazetteer.read_shape(
+            {"type": "LineString", "coordinates": [[30, 50], [31, 51]]}) is None
+        # A long one, which the size guard lets through: only the type check
+        # stops a hundred-kilometre river being drawn as an air-raid warning.
+        river = {"type": "LineString",
+                 "coordinates": [[30 + i * 0.01, 50] for i in range(200)]}
+        assert gazetteer.read_shape(river) is None
+        assert gazetteer.read_shape(
+            {"type": "GeometryCollection", "geometries": []}) is None
+
+    def test_rubbish_is_refused_rather_than_thrown(self):
+        for junk in (None, {}, [], "polygon", {"type": "Polygon"},
+                     {"type": "Polygon", "coordinates": None}):
+            assert gazetteer.read_shape(junk) is None
+
+    def test_something_enormous_is_dropped_so_a_circle_is_used_instead(self):
+        # A coastline at full resolution is a megabyte to draw one warning
+        # with. Better no shape, and the caller falls back.
+        huge = {"type": "Polygon",
+                "coordinates": [[[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS + 5)]]}
+        assert gazetteer.read_shape(huge) is None
+
+    def test_counting_points_reaches_into_nested_rings(self):
+        assert gazetteer.count_points(self.RING) == 5
+        assert gazetteer.count_points(
+            {"type": "MultiPolygon",
+             "coordinates": [self.RING["coordinates"], self.RING["coordinates"]]}) == 10
+        assert gazetteer.count_points({"coordinates": []}) == 0
+
+    def test_a_shape_is_carried_on_the_place(self):
+        got = gazetteer.read_place(answer(geojson=self.RING))
+        assert got["shape"] == self.RING
+
+    def test_a_place_with_no_shape_simply_has_none(self):
+        assert gazetteer.read_place(answer())["shape"] is None
+
+    def test_the_outline_is_asked_for_but_simplified(self, monkeypatch):
+        # At full resolution an oblast is tens of thousands of points. The
+        # threshold is what makes asking for it affordable at all.
+        seen = {}
+
+        class Reply:
+            status_code, ok = 200, True
+
+            @staticmethod
+            def json():
+                return answer()
+
+        monkeypatch.setattr(gazetteer.requests, "get",
+                            lambda url, params=None, **kw: (seen.update(params), Reply())[1])
+        gazetteer._last_call = time.time() - 99
+        gazetteer.find("Kyiv oblast", "ua")
+        assert seen.get("polygon_geojson") == 1
+        assert 0 < float(seen.get("polygon_threshold", 0)) < 1
+
+
 class TestNotKnowing:
     """The point of the module."""
 

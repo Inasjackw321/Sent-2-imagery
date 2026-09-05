@@ -539,6 +539,85 @@ class TestTheAreaAnAlertCovers:
         assert max(sizes) > min(sizes)
 
 
+class TestRegionWideAlerts:
+    """A warning naming a region is about the region.
+
+    A circle over the middle of an oblast both misses ground the warning
+    covers and covers ground it does not, and at the size of a province that
+    is not a rounding error. Where the gazetteer knows the boundary, that is
+    what gets drawn.
+    """
+
+    RING = {"type": "Polygon",
+            "coordinates": [[[30, 50], [31, 50], [31, 51], [30, 51], [30, 50]]]}
+
+    def looks_up(self, **over):
+        def found(name, countries=""):
+            return {"lat": 50.4, "lon": 30.5, "name": name,
+                    "kind": "administrative", "category": "boundary",
+                    "shape": self.RING, **over}
+        return found
+
+    def test_a_warning_over_a_region_gets_its_outline(self):
+        got = osint.place_event(one(kind="alert", place="Kyiv oblast"),
+                                "ua", lookup=self.looks_up())
+        assert got["region_wide"] is True
+        assert got["shape"] == self.RING
+
+    def test_a_warning_over_a_town_does_not(self):
+        # A town under a warning is a circle. Drawing the municipal boundary
+        # would say the warning stops at the council's border, which is not
+        # what an air-raid warning means.
+        got = osint.place_event(one(kind="alert", place="Beirut"), "ua",
+                                lookup=self.looks_up(kind="city", category="place"))
+        assert got["region_wide"] is False
+        assert got["shape"] is None
+        assert got["area_km"] > 0
+
+    def test_a_drone_crossing_a_region_does_not_shade_it(self):
+        # It is at a point on its way through. Shading the province would say
+        # the whole of it is under something it is not.
+        got = osint.place_event(one(kind="drone", place="Kyiv oblast"),
+                                "ua", lookup=self.looks_up())
+        assert got["region_wide"] is False
+        assert got["shape"] is None
+
+    def test_a_strike_reported_across_a_region_does_shade_it(self):
+        # "вибухи на Київщині" says explosions somewhere in the oblast and
+        # does not say where. The region is the honest extent of that.
+        got = osint.place_event(one(kind="explosion", place="Kyiv oblast"),
+                                "ua", lookup=self.looks_up())
+        assert got["region_wide"] is True
+
+    def test_a_region_with_no_outline_falls_back_to_a_circle(self):
+        got = osint.place_event(one(kind="alert", place="Kyiv oblast"), "ua",
+                                lookup=self.looks_up(shape=None))
+        assert got["region_wide"] is False
+        assert got["shape"] is None
+        assert got["area_km"] > 0
+
+    def test_what_counts_as_a_region(self):
+        for kind in ("administrative", "state", "province", "county",
+                     "governorate", "emirate", "country"):
+            assert osint.is_region({"kind": kind}), kind
+        for kind in ("town", "city", "village", "suburb", "hamlet"):
+            assert not osint.is_region({"kind": kind, "category": "place"}), kind
+
+    def test_a_boundary_match_is_a_region_whatever_it_is_called(self):
+        assert osint.is_region({"category": "boundary", "kind": "something new"})
+
+    def test_the_demo_shows_a_region_alert_beside_a_town_one(self):
+        # Otherwise the build with no network only draws circles, and whether
+        # a boundary renders at all cannot be checked.
+        alerts = [e for e in osint.demo()["events"] if e["kind"] == "alert"]
+        assert len(alerts) >= 2
+        assert any(e["region_wide"] for e in alerts)
+        assert any(not e["region_wide"] for e in alerts)
+        for event in alerts:
+            if event["region_wide"]:
+                assert event["shape"]["type"] in ("Polygon", "MultiPolygon")
+
+
 class TestCarryingAMarkerForward:
     def test_due_north_changes_only_the_latitude(self):
         lat, lon = osint.advance(50.0, 30.0, 0, 111.195)

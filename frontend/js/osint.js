@@ -40,6 +40,10 @@ const LIST_ROWS = 20;
 // "moving" at these speeds and is a hundredth of the work of a frame loop.
 const STEP_MS = 1000;
 
+// How big a marker is drawn, in pixels. The glyphs are authored on an 18-unit
+// grid and scaled to this, so one number changes all of them together.
+const GLYPH = 24;
+
 const EARTH_KM = 6371.0088;
 
 let map = null;
@@ -202,8 +206,11 @@ function label(event) {
  */
 function glyph(event, colour, facing) {
   const motion = motionOf(event);
+  // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
+  // one number here: the artwork scales rather than being redrawn, and the
+  // anchor below moves with it.
   const svg = (shape, body, turn) =>
-    `<svg class="ao-glyph" data-shape="${shape}" width="18" height="18"
+    `<svg class="ao-glyph" data-shape="${shape}" width="${GLYPH}" height="${GLYPH}"
           viewBox="0 0 18 18"${turn == null ? '' : ` style="transform: rotate(${turn.toFixed(1)}deg)"`}>`
     + `${body}</svg>`;
 
@@ -253,8 +260,11 @@ function icon(event, facing) {
     // of the object, and printing it would dress an assumption up as telemetry.
     html: `${glyph(event, colour, facing)}`
       + `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
+    // The anchor is the middle of the glyph, which is the reported position.
+    // Derived from the size rather than written out, so the two cannot drift
+    // apart and quietly offset every marker on the map.
+    iconSize: [GLYPH, GLYPH],
+    iconAnchor: [GLYPH / 2, GLYPH / 2],
   });
 }
 
@@ -275,7 +285,10 @@ function popup(event, km) {
   }
   if (event.count > 1) rows.push(`${Number(event.count) || 1} reported together`);
   rows.push(`${since(event.age_minutes ?? 0)} since the report`);
-  if (hasArea(event)) {
+  if (event.region_wide) {
+    rows.push('<b>Region-wide</b> — the report names the whole area, and the '
+      + 'outline is that area\u2019s own boundary.');
+  } else if (hasArea(event)) {
     rows.push(`Shaded about ${Math.round(event.area_km ?? 8)} km around — the `
       + 'size of the place named, not a measured extent.');
   }
@@ -332,17 +345,34 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
  */
 function areaFor(event) {
   const colour = look(event).colour ?? '#ff8a3b';
-  return L.circle([event.origin_lat, event.origin_lon], {
-    radius: Math.max(1500, (event.area_km ?? 8) * 1000),
+  const style = {
     pane: 'osintArea',
     renderer: areaInk,
     interactive: false,
-    className: `ao-area ao-area-${event.kind}`,
+    className: `ao-area ao-area-${event.kind}${event.region_wide ? ' is-region' : ''}`,
     color: colour,
-    weight: 1.5,
+    weight: event.region_wide ? 2 : 1.5,
     opacity: 0.55,
     fillColor: colour,
-    fillOpacity: 0.12,
+    fillOpacity: event.region_wide ? 0.1 : 0.12,
+  };
+
+  // A warning covering a whole region gets that region's actual outline. A
+  // circle over the middle of an oblast both misses ground the warning covers
+  // and covers ground it does not, and at the size of a province that is not
+  // a rounding error -- it is most of a country's worth of wrong.
+  if (event.shape) {
+    return L.geoJSON({ type: 'Feature', geometry: event.shape, properties: {} }, {
+      pane: 'osintArea',
+      renderer: areaInk,
+      interactive: false,
+      style,
+    });
+  }
+
+  return L.circle([event.origin_lat, event.origin_lon], {
+    ...style,
+    radius: Math.max(1500, (event.area_km ?? 8) * 1000),
   });
 }
 
@@ -406,8 +436,15 @@ function reconcile(events) {
 function age(held) {
   const pale = paleness(held.event);
   held.marker.setOpacity(pale);
-  const ink = held.area?.getElement?.();
-  if (ink) ink.style.opacity = String(pale);
+  // A circle is one element; a boundary drawn through GeoJSON is a group of
+  // them, one per ring. Both have to be faded, so this walks whatever the
+  // layer turned out to be.
+  held.area?.eachLayer?.((part) => {
+    const ink = part.getElement?.();
+    if (ink) ink.style.opacity = String(pale);
+  });
+  const own = held.area?.getElement?.();
+  if (own) own.style.opacity = String(pale);
 }
 
 /** Move every marker along. Called once a second. */
@@ -636,6 +673,11 @@ function paintDock() {
 function goTo(item) {
   const held = drawn.get(item.id);
   if (!held) return;
-  map.flyTo(held.marker.getLatLng(), Math.max(map.getZoom(), 8), { duration: 0.7 });
+  // A region-wide warning is framed rather than flown to. Keeping the current
+  // zoom puts you inside an oblast looking at a wash of colour with no edge
+  // in view, which tells you nothing that the panel had not already said.
+  const bounds = held.event.region_wide ? held.area?.getBounds?.() : null;
+  if (bounds?.isValid?.()) map.flyToBounds(bounds, { padding: [40, 40], duration: 0.7 });
+  else map.flyTo(held.marker.getLatLng(), Math.max(map.getZoom(), 8), { duration: 0.7 });
   held.marker.openPopup();
 }
