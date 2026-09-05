@@ -63,9 +63,14 @@ from . import config, gazetteer, reports
 # else; asked for "Sumy" in Ukraine it returns the oblast capital. Two-letter
 # ISO codes, as Nominatim wants them.
 CHANNELS = (
-    {"name": "eRadarrua", "region": "Ukraine", "countries": "ua"},
+    # The monitoring channels report on both sides of the border -- Belgorod
+    # and Bryansk as much as Sumy -- so their lookups have to be allowed to
+    # land there. Ukraine stays first, which is where the weight of their
+    # reporting is and which Nominatim's ranking follows.
+    {"name": "eRadarrua", "region": "Ukraine", "countries": "ua,ru,by"},
+    # The air force's own channel, and it reports on Ukraine.
     {"name": "kpszsu", "region": "Ukraine", "countries": "ua"},
-    {"name": "mon1tor_ua", "region": "Ukraine", "countries": "ua"},
+    {"name": "mon1tor_ua", "region": "Ukraine", "countries": "ua,ru,by"},
     {"name": "war_monitor", "region": "Ukraine", "countries": "ua,ru,by"},
     {"name": "redlinkleb", "region": "Lebanon", "countries": "lb,il,sy"},
     {"name": "shin_persian", "region": "Middle East", "countries": "ir,il,lb,sy,iq,ye"},
@@ -712,7 +717,14 @@ def _look(lookup, name: str, region: str | None, countries: str):
         found = lookup(f"{name}, {region}", countries)
         if found:
             return found
-    return lookup(name, countries)
+    # The name as written first, then the de-inflected forms. In that order on
+    # purpose: what the report actually said is the best thing to ask for, and
+    # a guess at its nominative is only worth trying once that has failed.
+    for attempt in reports.variants(name):
+        found = lookup(attempt, countries)
+        if found:
+            return found
+    return None
 
 
 def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, Any]:
@@ -1163,6 +1175,8 @@ DEMO_PLACES = {
     "Beirut": (33.8938, 35.5018), "Ochakiv": (46.6128, 31.5406),
     "Kaharlyk": (49.8556, 30.8125), "Zaporizhzhia": (47.8388, 35.1396),
     "Kyiv oblast": (50.05, 30.75),
+    # The Russian side, so the demo shows it being treated exactly the same.
+    "Белгородская область": (50.72, 37.5),
 }
 
 DEMO_SEED = [
@@ -1186,6 +1200,9 @@ DEMO_SEED = [
     # where it was going and leaving, not only things in transit.
     ("cruise", "Ochakiv", "Odesa", None, 1,
      "Cruise missile past Ochakiv towards Odesa"),
+    # A course and no destination, so it never arrives and stays for its full
+    # twenty minutes -- which is what makes its own drawing checkable at all.
+    ("cruise", "Nikopol", None, "W", 2, "Two cruise missiles past Nikopol, heading west"),
     ("explosion", "Kherson", None, None, 1, "Explosions reported in Kherson"),
     # Four hours old: two thirds of the way through a strike's six, so the
     # demo shows a faded one beside a fresh one. Without it the build with no
@@ -1197,6 +1214,10 @@ DEMO_SEED = [
     # A warning covering a whole region rather than a town, so the demo shows
     # the boundary being drawn instead of a circle over the middle of it.
     ("alert", "Kyiv oblast", None, None, 1, "Air raid warning across Kyiv oblast"),
+    # A Russian-side report, read and drawn by the same code as every other:
+    # same kinds, same region outline, same everything.
+    ("alert", "Белгородская область", None, None, 1,
+     "UAV danger across Belgorod oblast"),
     # The case the previous version hid: a real report that cannot be placed.
     # It belongs in the alert stream and nowhere else.
     ("drone", "Somewhere unnamed", None, None, 1,
@@ -1219,7 +1240,8 @@ _demo_epoch = 0.0
 # Roughly how big each demo place is, so the alert areas differ the way real
 # ones do: a strike in a town is a few kilometres across and a warning over an
 # oblast is most of a region.
-DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Beirut": 0.09, "Kyiv oblast": 1.3}
+DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Beirut": 0.09, "Kyiv oblast": 1.3,
+               "Белгородская область": 1.1}
 
 
 def _demo_ring(lat: float, lon: float, half: float) -> dict[str, Any]:

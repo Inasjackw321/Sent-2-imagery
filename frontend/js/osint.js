@@ -186,8 +186,9 @@ function positionOf(event, atSeconds) {
  * saying it adds nothing.
  */
 function label(event) {
-  const name = escapeHtml(feed?.kinds?.[event.kind]?.label ?? 'Unidentified');
-  return event.count > 1 ? `${name} ×${Number(event.count) || 1}` : name;
+  // No count on the mark. Each one IS one object now, so "Drone ×3" written
+  // under each of three drones would read as nine.
+  return escapeHtml(feed?.kinds?.[event.kind]?.label ?? 'Unidentified');
 }
 
 /** The drawing for one kind of thing, pointing where it is going.
@@ -204,6 +205,48 @@ function label(event) {
  *   burst    it is not flying: a strike, or something brought down.
  *   chevron  a warning about a place, which is not an object at all.
  */
+// The drawings, one per kind, on an 18-unit grid with north up.
+//
+// Colour alone was not enough. Every flying kind shared one arrow, so a
+// Shahed, a jet drone, a cruise missile and a ballistic missile were the same
+// triangle in slightly different reds -- which on a map at a glance is no
+// information at all. These are silhouettes: the thing itself, pointed the
+// way it is going.
+const SILHOUETTE = {
+  // A delta wing. What a Shahed looks like from above, and unmistakably a
+  // one-way attack drone rather than a missile.
+  drone: (c) => `<path d="M9 1.2 L14.8 15.2 L9 12.2 L3.2 15.2 Z" fill="${c}"/>`,
+
+  // The same wing, swept back harder, with an exhaust behind it.
+  jet_drone: (c) => `<path d="M9 0.8 L15.4 14 L9 11 L2.6 14 Z" fill="${c}"/>
+                     <path d="M7.6 14.4 h2.8 v2.6 h-2.8 Z" fill="${c}"/>`,
+
+  // A body with stub wings and a tail: long and thin, which is the thing that
+  // reads as "missile" and not "aircraft" at this size.
+  cruise: (c) => `<path d="M9 0.6 L10.5 4.4 v8.6 h-3 V4.4 Z" fill="${c}"/>
+                  <path d="M7.5 7.4 L3.4 11 v1.6 l4.1 -1.8 Z" fill="${c}"/>
+                  <path d="M10.5 7.4 L14.6 11 v1.6 l-4.1 -1.8 Z" fill="${c}"/>
+                  <path d="M7.2 13.4 h3.6 l-1.8 3.6 Z" fill="${c}"/>`,
+
+  // A dart: narrower still, with fins at the very back. Ballistic things are
+  // the fastest thing on this map and the shape says so.
+  ballistic: (c) => `<path d="M9 0.4 L10.4 5 v7.4 h-2.8 V5 Z" fill="${c}"/>
+                     <path d="M7.6 12 L5.4 16.6 h2.2 Z" fill="${c}"/>
+                     <path d="M10.4 12 L12.6 16.6 h-2.2 Z" fill="${c}"/>
+                     <path d="M8.2 12.4 h1.6 v4.4 h-1.6 Z" fill="${c}"/>`,
+
+  // Wings and a tailplane. A crewed aircraft, not a munition.
+  aircraft: (c) => `<path d="M9 0.8 c1 0 1.5 1.4 1.5 3.4 v3.2 l5.6 3.2 v2
+                             l-5.6 -1.8 v3.2 l2 1.6 v1.2 l-3.5 -1 l-3.5 1
+                             v-1.2 l2 -1.6 v-3.2 L1.9 12.6 v-2 l5.6 -3.2
+                             V4.2 c0 -2 0.5 -3.4 1.5 -3.4 Z" fill="${c}"/>`,
+
+  helicopter: (c) => `<path d="M1.5 3.2 h15 v1.4 h-15 Z" fill="${c}"/>
+                      <path d="M8.4 4.6 h1.2 v2.2 h-1.2 Z" fill="${c}"/>
+                      <ellipse cx="9" cy="10.2" rx="3.4" ry="3.4" fill="${c}"/>
+                      <path d="M11.8 12 L16 15.6 v1.2 l-4.8 -3.2 Z" fill="${c}"/>`,
+};
+
 function glyph(event, colour, facing) {
   const motion = motionOf(event);
   // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
@@ -233,16 +276,20 @@ function glyph(event, colour, facing) {
        <path d="M9 2.2 L6.2 0.4 L6.2 4 Z" fill="${colour}"/>
        <circle cx="9" cy="9" r="1.6" fill="${colour}"/>`, facing ?? 0);
   }
+
+  const drawn = SILHOUETTE[event.kind];
   if (facing == null) {
-    // In the air, but the report said nothing about which way. An arrow here
-    // would point north and mean it -- the same invention this whole layer
-    // exists to avoid, just with a nicer shape. A ringed dot says "reported
-    // over here" and claims nothing further.
+    // In the air, but the report said nothing about which way. A silhouette
+    // here would point north and mean it -- the same invention this whole
+    // layer exists to avoid, just with a nicer shape. So the thing is drawn
+    // inside a ring instead: what it is, with no claim about its course.
     return svg('dot',
-      `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
-               stroke-width="1.6" opacity="0.65"/>
-       <circle cx="9" cy="9" r="3.1" fill="${colour}"/>`);
+      `<circle cx="9" cy="9" r="7.6" fill="none" stroke="${colour}"
+               stroke-width="1.2" opacity="0.5"/>`
+      + `<g transform="translate(9 9) scale(0.62) translate(-9 -9)">`
+      + `${(drawn ?? SILHOUETTE.drone)(colour)}</g>`);
   }
+  if (drawn) return svg(event.kind, drawn(colour), facing);
   return svg('arrow',
     `<path d="M9 1 L15.5 16 L9 12.4 L2.5 16 Z" fill="${colour}"/>`, facing);
 }
@@ -283,7 +330,13 @@ function popup(event, km) {
     rows.push(`Reported travelling to ${escapeHtml(event.toward)}`
       + (event.dest_km ? `, ${Math.round(event.dest_km)} km away` : ''));
   }
-  if (event.count > 1) rows.push(`${Number(event.count) || 1} reported together`);
+  if (event.count > 1) {
+    const shown = Math.min(MOST_SHOWN, Number(event.count) || 1);
+    rows.push(`${Number(event.count)} reported together, drawn as `
+      + `${shown} mark${shown === 1 ? '' : 's'} spread a couple of kilometres `
+      + 'apart to be countable — the report gave one position, not '
+      + `${shown} of them.`);
+  }
   rows.push(`${since(event.age_minutes ?? 0)} since the report`);
   if (event.region_wide) {
     rows.push('<b>Region-wide</b> — the report names the whole area, and the '
@@ -404,30 +457,39 @@ function reconcile(events) {
     // these too, but the two clocks are a minute apart and a marker sitting
     // on its destination for that minute is the thing being fixed.
     if (at.arrived) continue;
-    alive.add(event.id);
-    const held = drawn.get(event.id);
-    if (held) {
-      // A fresh report for something already on the map: the course or the
-      // count may have changed, so the icon is rebuilt only when it differs.
-      if (held.event.heading !== event.heading
-          || held.event.kind !== event.kind
-          || held.event.count !== event.count) {
-        held.marker.setIcon(icon(event, at.facing));
+
+    // One marker per object. A report of three drones is three things in the
+    // air, and drawing it as a single marker with a count beside it meant the
+    // map never showed how much was up there -- which is the first thing
+    // anyone looks at it for.
+    for (let n = 0; n < drawnCount(event); n += 1) {
+      const id = `${event.id}#${n}`;
+      alive.add(id);
+      const held = drawn.get(id);
+      const where = nudge(at, event, n);
+      if (held) {
+        // A fresh report for something already on the map: the course or the
+        // kind may have changed, so the icon is rebuilt only when it differs.
+        if (held.event.heading !== event.heading || held.event.kind !== event.kind) {
+          held.marker.setIcon(icon(event, at.facing));
+        }
+        held.event = event;
+        held.marker.setLatLng(where);
+        age(held);
+        continue;
       }
-      held.event = event;
-      held.marker.setLatLng([at.lat, at.lon]);
-      age(held);
-    } else {
-      const marker = L.marker([at.lat, at.lon], {
+      const marker = L.marker(where, {
         icon: icon(event, at.facing), pane: 'osint', keyboard: false,
       });
       marker.bindPopup(() => popup(event, positionOf(event, Date.now() / 1000).km));
       marker.addTo(layer);
-      const area = hasArea(event) ? areaFor(event) : null;
+      // One area per report, not per object: the ground a strike covers does
+      // not multiply with how many things caused it.
+      const area = (n === 0 && hasArea(event)) ? areaFor(event) : null;
       area?.addTo(areas);
-      const held = { event, marker, area };
-      drawn.set(event.id, held);
-      age(held);
+      const made = { event, marker, area, index: n };
+      drawn.set(id, made);
+      age(made);
     }
   }
   for (const [id, held] of drawn) {
@@ -436,6 +498,38 @@ function reconcile(events) {
     if (held.area) areas.removeLayer(held.area);
     drawn.delete(id);
   }
+}
+
+// The most objects one report will be drawn as. A channel occasionally
+// reports a wave in the dozens, and past this many the marks stop being
+// countable and start being a smear -- at which point one per object has
+// stopped serving the purpose it exists for.
+const MOST_SHOWN = 24;
+
+const drawnCount = (event) =>
+  Math.max(1, Math.min(MOST_SHOWN, Number(event.count) || 1));
+
+// How far apart to draw objects reported together, in kilometres.
+//
+// Small, and deliberately smaller than the accuracy of the position they came
+// from: a report locates a group to a town or an oblast, so nudging them a
+// couple of kilometres apart adds nothing to the error that was already
+// there. It is a way of making them countable, not a claim that anybody knows
+// they are three kilometres apart.
+const APART_KM = 2.2;
+
+/** Where the nth object of a group is drawn. */
+function nudge(at, event, index) {
+  if (index === 0 || drawnCount(event) < 2) return [at.lat, at.lon];
+  // A ring, expanding by a row every eight, so a dozen do not end up on one
+  // circle at the spacing of a wedding cake.
+  const ring = Math.floor((index - 1) / 8) + 1;
+  const step = (2 * Math.PI * ((index - 1) % 8)) / 8;
+  // Rotated by the object's own course, where it has one, so a group reads as
+  // travelling together rather than as a fixed rosette pinned to north.
+  const turn = ((event.heading ?? 0) * Math.PI) / 180;
+  return advance(at.lat, at.lon,
+    ((step + turn) * 180) / Math.PI, APART_KM * ring);
 }
 
 /**
@@ -481,7 +575,9 @@ function step() {
       gone = true;
       continue;
     }
-    held.marker.setLatLng([at.lat, at.lon]);
+    // Through the same nudge the marker was placed with, or every object in a
+    // group would collapse onto the group's centre on the first tick.
+    held.marker.setLatLng(nudge(at, held.event, held.index ?? 0));
 
     // Something circling changes the way it is facing every second, so its
     // glyph has to turn with it. The SVG is spun in place rather than the
@@ -610,6 +706,8 @@ function paintDock() {
     return;
   }
 
+  // Objects, not reports: each mark is one drone or one missile now, so this
+  // is the number in the air, which is what the line is read for.
   const n = drawn.size;
   const strikes = [...drawn.values()].filter((h) => h.event.kind === 'explosion').length;
   count.textContent = n
@@ -684,7 +782,9 @@ function paintDock() {
 
 /** Take the map to a report, if it is somewhere. */
 function goTo(item) {
-  const held = drawn.get(item.id);
+  // Marks are keyed by report AND by which object of it they are, so a report
+  // is found by its first mark rather than by its id alone.
+  const held = drawn.get(`${item.id}#0`);
   if (!held) return;
   // A region-wide warning is framed rather than flown to. Keeping the current
   // zoom puts you inside an oblast looking at a wash of colour with no edge

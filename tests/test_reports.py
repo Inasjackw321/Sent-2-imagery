@@ -198,6 +198,54 @@ class TestEnglish:
             assert read(junk) is None, junk
 
 
+class TestRussia:
+    """The other side of the border, read exactly the same way.
+
+    These channels report Belgorod and Bryansk as much as Sumy, and the first
+    version handled almost none of it: the region pattern wanted the Ukrainian
+    stem, and "угроза"/"опасность" -- how the Russian-side posts say what the
+    Ukrainian ones call "тривога" -- were not alert words at all.
+    """
+
+    def test_the_shapes_these_posts_actually_take(self):
+        cases = [
+            ("Белгородская область: угроза БПЛА", "alert", "Белгородская область"),
+            ("Курская область, опасность атаки БПЛА", "alert", "Курская область"),
+            ("БПЛА над Брянской областью", "drone", "Брянская область"),
+            ("Ракетная опасность для Воронежской области", "alert",
+             "Воронежская область"),
+            ("Белгородчина: сбит БПЛА", "explosion", "Белгородская область"),
+        ]
+        for text, kind, place in cases:
+            got = read(text)
+            assert got is not None, text
+            assert got["kind"] == kind, text
+            assert got["place"] == place, text
+
+    def test_a_russian_region_does_not_get_a_ukrainian_ending(self):
+        # "Воронежской области" contains no Russian-only letter, so testing
+        # for one put a Ukrainian ending on a Russian region -- "Воронежська
+        # область", which no gazetteer knows. The discriminator is the letters
+        # Ukrainian has and Russian does not.
+        assert reports.find_region("для Воронежской области") == "Воронежская область"
+        assert reports.find_region("у Харківській області") == "Харківська область"
+
+    def test_both_alphabets_reach_the_same_kinds(self):
+        assert reports.find_kind("БПЛА") == reports.find_kind("БпЛА") == "drone"
+        assert reports.find_kind("Взрыв в городе") == "explosion"
+        assert reports.find_kind("воздушная тревога") == "alert"
+
+    def test_a_name_in_a_case_is_tried_as_written_first(self):
+        # What the report said is the best thing to ask a gazetteer for. The
+        # de-inflected guesses come after it, not instead of it.
+        assert reports.variants("Белгороде")[0] == "Белгороде"
+        assert "Белгород" in reports.variants("Белгороде")
+
+    def test_the_guesses_do_not_mangle_a_name_that_needs_nothing(self):
+        assert reports.variants("Київ") == ["Київ"]
+        assert reports.variants("") == [""]
+
+
 class TestHowMany:
     def test_a_counted_report(self):
         assert reports.find_count("3х БпЛА на Сумщині") == 3

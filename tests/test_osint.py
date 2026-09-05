@@ -640,6 +640,73 @@ class TestRegionWideAlerts:
                 assert event["shape"]["type"] in ("Polygon", "MultiPolygon")
 
 
+class TestEveryKindIsDrawable:
+    """The map has a drawing per kind, and it lives in the browser.
+
+    Two files that must agree and cannot import each other, so the agreement
+    is checked here rather than hoped for. A kind added to the table below
+    with no silhouette beside it falls back to a plain arrow and is silently
+    indistinguishable from a drone, which is the thing having per-kind icons
+    was meant to fix.
+    """
+
+    def silhouettes(self):
+        import pathlib
+        import re as regex
+        source = (pathlib.Path(__file__).resolve().parent.parent
+                  / "frontend" / "js" / "osint.js").read_text(encoding="utf-8")
+        block = source[source.index("const SILHOUETTE = {"):]
+        block = block[:block.index("\n};")]
+        return set(regex.findall(r"^  (\w+):", block, regex.M))
+
+    def test_everything_that_flies_in_a_line_has_its_own_drawing(self):
+        drawn = self.silhouettes()
+        for name, look in osint.KINDS.items():
+            if look["motion"] != "track" or name == "unknown":
+                continue
+            assert name in drawn, f"{name} would fall back to a generic arrow"
+
+    def test_nothing_is_drawn_that_the_backend_does_not_offer(self):
+        assert self.silhouettes() <= set(osint.KINDS)
+
+    def test_the_kinds_drawn_by_behaviour_are_not_also_given_silhouettes(self):
+        # Recon circles, strikes burst, warnings are a triangle. Those read by
+        # what they do, not by what they look like.
+        for name in ("recon", "explosion", "alert"):
+            assert name not in self.silhouettes(), name
+
+
+class TestBothSidesOfTheBorder:
+    def test_the_monitoring_channels_may_place_in_russia(self):
+        # They report Belgorod and Bryansk as much as Sumy. Without the
+        # country in the list those names cannot resolve at all.
+        by_name = {c["name"]: c for c in osint.CHANNELS}
+        assert "ru" in by_name["war_monitor"]["countries"].split(",")
+        assert "ru" in by_name["mon1tor_ua"]["countries"].split(",")
+
+    def test_ukraine_still_leads_for_every_ukrainian_channel(self):
+        for channel in osint.CHANNELS:
+            if channel["region"] != "Ukraine":
+                continue
+            assert channel["countries"].split(",")[0] == "ua", channel["name"]
+
+    def test_a_name_is_tried_as_written_before_any_guess_at_its_case(self):
+        asked = []
+
+        def only_nominative(name, countries=""):
+            asked.append(name)
+            return {"lat": 50.6, "lon": 36.6, "name": name, "kind": "city",
+                    "category": "place"} if name == "Белгород" else None
+
+        got = osint.place_event(one(place="Белгороде"), "ru", lookup=only_nominative)
+        assert asked[0] == "Белгороде"
+        assert got["placed"] is True
+
+    def test_the_demo_reports_from_russia_too(self):
+        places = [e["place"] for e in osint.demo()["events"]]
+        assert any("Белгород" in str(p) for p in places)
+
+
 class TestCarryingAMarkerForward:
     def test_due_north_changes_only_the_latitude(self):
         lat, lon = osint.advance(50.0, 30.0, 0, 111.195)

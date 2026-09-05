@@ -64,6 +64,7 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      r"|\bintercepted\b|\bstruck\b|\bdebris fell\b|\bhit recorded\b"),
     ("alert",
      r"повітряна тривога|тривога|відбій|отбой|воздушная тревога"
+     r"|угроза|опасность|ракетная опасность|внимание"
      r"|\bair (?:raid|alert|alarm)\b|\ball[- ]clear\b|\bthreats?\b"
      r"|\bdangers?\b|\bwarnings?\b"),
     ("ballistic",
@@ -150,22 +151,44 @@ OBLASTS: dict[str, str] = {
     "крим": "Автономна Республіка Крим",
 }
 
-# Written out in full: "на Харківській області", "Сумська обл."
+# The Russian regions these channels report on, by nickname. Kept apart from
+# the Ukrainian table only for readability -- they are looked up together, and
+# the country each belongs to is settled by the channel's own country list
+# rather than by which table the name came out of.
+RU_REGIONS: dict[str, str] = {
+    "белгородчин": "Белгородская область", "брянщин": "Брянская область",
+    "курщин": "Курская область", "воронежчин": "Воронежская область",
+    "ростовщин": "Ростовская область", "кубан": "Краснодарский край",
+    "ставрополь": "Ставропольский край", "крым": "Республика Крым",
+    "подмосковь": "Московская область",
+}
+
+# Written out in full, in either language: "Харківській області", "Сумська
+# обл.", "Белгородская область", "Брянской области". The stem differs by a
+# single letter between the two -- Ukrainian "ськ", Russian "ск" -- so one
+# pattern covers both and the soft sign is optional.
 OBLAST_FULL = re.compile(
-    r"([А-ЯІЇЄҐ][а-яіїєґ'’\-]+?)ськ\w*\s+обл", re.I)
+    r"([А-ЯІЇЄҐЁ][а-яіїєґёʼ'’\-]+?)с[ьк]?к\w*\s+"
+    r"(обл|кра|окру|республик)", re.I)
 
 # The prepositions that introduce the place a report is about. Anything after
 # one of these that looks like a proper noun is where this is happening.
 NEAR = re.compile(
-    r"(?:повз|в\s+районі|у\s+районі|поблизу|над|біля|коло)\s+"
-    r"(?P<what>[А-ЯІЇЄҐ][А-Яа-яІЇЄҐіїєґ'’\-]+(?:\s+[А-ЯІЇЄҐ][А-Яа-яІЇЄҐіїєґ'’\-]+)?)")
+    r"(?:повз|в\s+районі|у\s+районі|поблизу|над|біля|коло"
+    r"|в\s+районе|около|близ|возле|мимо|рядом\s+с)\s+"
+    r"(?P<what>[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]+"
+    r"(?:\s+[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]+)?)")
 
 # "Вибухи в Одесі", "тривога в Харкові" -- a bare locative after в/у.
 AT = re.compile(
-    r"(?:^|[\s,:;])[вуна]\s+(?P<what>[А-ЯІЇЄҐ][А-Яа-яІЇЄҐіїєґ'’\-]{2,})")
+    r"(?:^|[\s,:;])[вуна]\s+(?P<what>[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]{2,})")
 
 # A leading "Київщина:" or "Одещина —" naming the region the post is about.
-LEAD = re.compile(r"^\s*(?P<what>[А-ЯІЇЄҐ][А-Яа-яІЇЄҐіїєґ'’\-]+)\s*[:—–-]")
+# A leading "Київщина:" or "Белгородская область —" naming the region the
+# post is about. Up to three words, because the Russian form is two.
+LEAD = re.compile(
+    r"^\s*(?P<what>[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]+"
+    r"(?:\s+[а-яіїєґё'’\-]+){0,2})\s*[:—–-]")
 
 # ── The same, in English ──────────────────────────────────────
 #
@@ -201,6 +224,7 @@ NOT_PLACES = {
     "повітряна", "балістика", "шахед", "бпла", "вибух", "вибухи", "новини",
     "підписатися", "джерело", "переслати", "україна", "росія", "рф",
     "чорним", "азовським", "морем", "море", "моря", "чорного", "азовського",
+    "внимание", "угроза", "опасность", "срочно", "область", "области",
     # The English ones. Every one of these has turned up capitalised, after a
     # preposition, in a real post.
     "danger", "again", "alert", "alarm", "threat", "detection", "warning",
@@ -257,15 +281,58 @@ def _nominative(name: str) -> str:
     return name
 
 
+# What the shortened forms in OBLAST_FULL stand for.
+RU_TAIL = {"обл": "область", "кра": "край", "окру": "округ",
+           "республик": "республика"}
+
+
+def variants(name: str) -> list[str]:
+    """A place name, and the de-inflected forms worth trying if it misses.
+
+    Slavic place names arrive in whatever case the sentence put them in --
+    "в Белгороде", "у Харкові" -- and a gazetteer may or may not match that.
+    Rather than guess at one transformation and send it instead of what was
+    written, the name as written goes first and these follow only if it comes
+    back unknown. Guessing wrong then costs a cached miss rather than a marker
+    in the wrong place.
+    """
+    name = " ".join(str(name or "").split())
+    out = [name]
+    low = name.lower()
+    if len(low) > 4:
+        # Locative of a masculine name: "Белгороде" -> "Белгород",
+        # "Харкові" -> "Харків".
+        if low.endswith(("е", "і", "и")):
+            out.append(name[:-1])
+        # Locative of a feminine one: "Одессе" -> "Одесса".
+        if low.endswith("е"):
+            out.append(f"{name[:-1]}а")
+        # Genitive after "в районе X".
+        if low.endswith("а"):
+            out.append(name[:-1])
+    return list(dict.fromkeys(out))
+
+
 def find_region(text: str) -> str | None:
     """The region a report is about, in whichever way it named one."""
     low = text.lower()
-    for stem, oblast in OBLASTS.items():
-        if stem in low:
-            return oblast
+    for table in (OBLASTS, RU_REGIONS):
+        for stem, oblast in table.items():
+            if stem in low:
+                return oblast
     full = OBLAST_FULL.search(text)
     if full:
-        return f"{full.group(1)}ська область"
+        # Rebuilt in the nominative, in whichever language it was written, so
+        # the gazetteer gets a name it knows rather than an inflected one.
+        head, tail = full.group(1), full.group(2).lower()
+        # Which language, decided by the letters Ukrainian has and Russian
+        # does not. Looking for Russian-only letters instead was the wrong way
+        # round: "Воронежской области" contains none of them, so it came back
+        # as "Воронежська область" -- a Russian region with a Ukrainian ending,
+        # which no gazetteer knows.
+        ukrainian = re.search(r"[іїєґ]", text.lower())
+        stem = f"{head}ська" if ukrainian else f"{head}ская"
+        return f"{stem} {'область' if tail == 'обл' else RU_TAIL[tail]}"
     english = REGION_EN.search(text)
     if english:
         name = _tidy(english.group(1))
@@ -332,6 +399,12 @@ def find_place(text: str, region: str | None) -> str | None:
             # get nothing back.
             if any(stem in found.lower() for stem in OBLASTS):
                 return region or _nominative(found)
+            # "над Брянской областью" -- the preposition caught the adjective
+            # and the noun after it is the region this already understands.
+            # The region is the name a gazetteer knows; the adjective alone is
+            # not.
+            if region and found.lower()[:6] in region.lower():
+                return region
             return _nominative(found)
 
     # A bare locative, but only if it is not the oblast nickname this has
