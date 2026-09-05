@@ -88,15 +88,31 @@ function advance(lat, lon, heading, km) {
 function positionOf(event, atSeconds) {
   const speed = feed?.speeds?.[event.kind] ?? 0;
   if (event.heading == null || !(speed > 0)) {
-    return { lat: event.origin_lat, lon: event.origin_lon, km: 0 };
+    return { lat: event.origin_lat, lon: event.origin_lon, km: 0, arrived: false };
   }
   const minutes = Math.max(0, (atSeconds - event.seen) / 60);
-  const km = speed * (minutes / 60);
+  let km = speed * (minutes / 60);
+  // A report that named where it was going also said where this stops. The
+  // marker goes no further than the place it was flying to, and then goes.
+  const arrived = event.dest_km > 0 && km >= event.dest_km;
+  if (arrived) km = event.dest_km;
   const [lat, lon] = advance(event.origin_lat, event.origin_lon, event.heading, km);
-  return { lat, lon, km };
+  return { lat, lon, km, arrived };
 }
 
 // ── The markers ────────────────────────────────────────────────
+
+/** What to write under a marker: the thing itself, and how many of it.
+ *
+ * "×3" rather than a plural, because the labels come from a table that has
+ * "Ballistic" and "Cruise missile" in it and English plurals are not a
+ * suffix. A count of one is left off entirely -- it is the common case and
+ * saying it adds nothing.
+ */
+function label(event) {
+  const name = escapeHtml(feed?.kinds?.[event.kind]?.label ?? 'Unidentified');
+  return event.count > 1 ? `${name} ×${Number(event.count) || 1}` : name;
+}
 
 /** One marker: a triangle pointing where it is going, and its label.
  *
@@ -109,7 +125,7 @@ function icon(event) {
   const moving = event.heading != null && (feed?.speeds?.[event.kind] ?? 0) > 0;
   const shape = moving
     ? `<svg class="ao-glyph" width="18" height="18" viewBox="0 0 18 18"
-            style="transform: rotate(${event.heading}deg)">
+            style="transform: rotate(${event.heading.toFixed(1)}deg)">
          <path d="M9 1 L15.5 16 L9 12.4 L2.5 16 Z" fill="${colour}"/>
        </svg>`
     // Nothing with a heading, so nothing that points: a burst for a strike,
@@ -121,29 +137,34 @@ function icon(event) {
        </svg>`;
   return L.divIcon({
     className: 'ao-pin',
-    // The reference this was built to match puts the identifier under the
-    // glyph and nothing else. No speed: the speed is a table lookup for the
-    // type, not a measurement of the object, and printing it would dress an
-    // assumption up as telemetry.
-    html: `${shape}<span class="ao-tag" style="color:${colour}">${event.id}</span>`,
+    // The label says what is being reported. An opaque identifier told the
+    // reader nothing they could not see, and made them open a popup to find
+    // out whether a triangle was a drone or a missile.
+    //
+    // No speed: the speed is a table lookup for the type, not a measurement
+    // of the object, and printing it would dress an assumption up as telemetry.
+    html: `${shape}<span class="ao-tag" style="color:${colour}">${label(event)}</span>`,
     iconSize: [18, 18],
     iconAnchor: [9, 9],
   });
 }
 
 function popup(event, km) {
-  const kind = feed?.kinds?.[event.kind]?.label ?? 'Unidentified';
   const rows = [];
   if (event.place) rows.push(`Reported over ${escapeHtml(event.place)}`);
-  if (event.toward) rows.push(`Heading for ${escapeHtml(event.toward)}`);
-  if (event.count > 1) rows.push(`${event.count} reported together`);
+  if (event.toward) {
+    rows.push(`Reported travelling to ${escapeHtml(event.toward)}`
+      + (event.dest_km ? `, ${Math.round(event.dest_km)} km away` : ''));
+  }
+  if (event.count > 1) rows.push(`${Number(event.count) || 1} reported together`);
   rows.push(`${Math.round(event.age_minutes ?? 0)} min since the report`);
   if (km > 0.5) {
-    rows.push(`<b>Position estimated</b> — carried ${Math.round(km)} km along the `
-      + 'reported heading at a typical speed for the type. Not a track.');
+    rows.push('<b>Position estimated</b> — carried '
+      + `${Math.round(km)} km along the reported course at a typical speed for `
+      + 'the type. Not a track.');
   }
   return `<div class="ao-pop">
-    <h4>${event.id} · ${escapeHtml(kind)}</h4>
+    <h4>${label(event)}</h4>
     ${rows.map((r) => `<p>${r}</p>`).join('')}
     ${event.text ? `<blockquote>${escapeHtml(event.text)}</blockquote>` : ''}
     <p class="ao-src">${escapeHtml(event.channel ?? '')}</p>
@@ -158,13 +179,19 @@ function reconcile(events) {
   const now = Date.now() / 1000;
   const alive = new Set();
   for (const event of events) {
-    alive.add(event.id);
     const at = positionOf(event, now);
+    // Already where it was going by the time it got here. The backend expires
+    // these too, but the two clocks are a minute apart and a marker sitting
+    // on its destination for that minute is the thing being fixed.
+    if (at.arrived) continue;
+    alive.add(event.id);
     const held = drawn.get(event.id);
     if (held) {
-      // A fresh report for something already on the map: the heading may have
-      // changed, so the icon is rebuilt only when it actually differs.
-      if (held.event.heading !== event.heading || held.event.kind !== event.kind) {
+      // A fresh report for something already on the map: the course or the
+      // count may have changed, so the icon is rebuilt only when it differs.
+      if (held.event.heading !== event.heading
+          || held.event.kind !== event.kind
+          || held.event.count !== event.count) {
         held.marker.setIcon(icon(event));
       }
       held.event = event;
@@ -190,11 +217,21 @@ function step() {
   // Nothing to see and nothing to spend: a hidden tab gets no arithmetic.
   if (!enabled || document.hidden || !drawn.size) return;
   const now = Date.now() / 1000;
-  for (const held of drawn.values()) {
+  let gone = false;
+  for (const [id, held] of drawn) {
     if (held.event.heading == null) continue;
     const at = positionOf(held.event, now);
+    if (at.arrived) {
+      // It has reached the place the report said it was going to. Carrying it
+      // past there would be inventing a second journey nobody described.
+      layer.removeLayer(held.marker);
+      drawn.delete(id);
+      gone = true;
+      continue;
+    }
     held.marker.setLatLng([at.lat, at.lon]);
   }
+  if (gone) paintDock();
 }
 
 // ── The feed ───────────────────────────────────────────────────

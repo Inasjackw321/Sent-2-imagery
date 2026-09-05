@@ -44,7 +44,8 @@ import requests
 from . import config
 
 # The channels, by their public name. These are read as anyone reads them.
-CHANNELS = ("eRadarrua", "kpszsu", "mon1tor_ua", "war_monitor")
+CHANNELS = ("eRadarrua", "kpszsu", "mon1tor_ua", "war_monitor",
+            "redlinkleb", "shin_persian")
 
 # The public web preview. Not the API: this is the page Telegram serves to a
 # visitor with no account, and it carries the recent posts as plain HTML.
@@ -190,24 +191,44 @@ Return ONLY a JSON object: {"events": [...]}. One entry per distinct airborne
 object or strike that has a definite location. No prose, no code fences.
 
 Each event:
-  "kind"     one of: drone, cruise, ballistic, aircraft, explosion, unknown
-  "lat"      decimal degrees, the place the report names
-  "lon"      decimal degrees
-  "place"    the place name as written, transliterated to Latin script
-  "heading"  degrees clockwise from north the object is travelling, or null
-  "toward"   the place it is heading for, if the report names one, else null
-  "count"    how many objects, if stated, else 1
-  "text"     the sentence this came from, trimmed to 160 characters
+  "kind"      one of: drone, cruise, ballistic, aircraft, explosion, unknown
+  "lat"       decimal degrees, where the object is now
+  "lon"       decimal degrees
+  "place"     that place's name as written, transliterated to Latin script
+  "toward"    the place it is travelling TO, if the report names one, else null
+  "dest_lat"  decimal degrees of "toward", else null
+  "dest_lon"  decimal degrees of "toward", else null
+  "heading"   degrees clockwise from north, ONLY when the report gives a
+              compass direction of travel and names no destination, else null
+  "count"     how many objects, if stated, else 1
+  "text"      the sentence this came from, trimmed to 160 characters
 
 Rules, and they matter more than completeness:
   - Only emit an event if the report names a place you can place on a map.
     Never estimate a position from context. Omit rather than guess.
-  - "курс на X" / "у напрямку X" means it is heading toward X: set "toward"
-    and work "heading" out from the current place to X.
+
+  - A DIRECTION OF TRAVEL AND A LOCATION ARE DIFFERENT THINGS, and this is
+    the mistake to avoid above all others. Set "toward" or "heading" only
+    when the report says the object is MOVING somewhere:
+        "курс на Полтаву", "у напрямку Києва", "рухаються на південь",
+        "прямують до Дніпра"  -> travelling. Fill it in.
+    A phrase that says which PART of a region something is in is not a
+    direction and must leave both fields null:
+        "на північний схід Харківщини"  = in the north-east OF Kharkiv
+        oblast. That is where it is, not where it is going.
+        "над Сумщиною", "у Дніпропетровській області"  -> the same.
+    When in doubt, leave both null. A marker that sits where it was
+    reported is honest; one that sets off in an invented direction is not.
+
+  - Prefer "toward" with its coordinates over "heading". Naming the town it
+    is flying to is something the report actually said; a bearing in degrees
+    is something you would have to work out, and getting it wrong sends the
+    marker across the wrong oblast.
+
   - Reports of air-raid alerts, all-clears, statistics, appeals for donations
     and general commentary are not events. Skip them.
-  - If a report says something was shot down or has landed, that is
-    "explosion" with heading null.
+  - If a report says something was shot down, struck or has landed, that is
+    "explosion", with "toward", "dest_lat", "dest_lon" and "heading" all null.
 """
 
 
@@ -307,6 +328,25 @@ def _clean(item: Any) -> dict[str, Any] | None:
     else:
         heading = None
 
+    # A destination, if the report named one. When there is a destination the
+    # heading is derived from it and whatever the model said about degrees is
+    # discarded: one of the two is a place somebody wrote down and the other
+    # is arithmetic done in prose.
+    dest_lat, dest_lon, dest_km = item.get("dest_lat"), item.get("dest_lon"), None
+    usable = (isinstance(dest_lat, (int, float)) and isinstance(dest_lon, (int, float))
+              and -90 <= dest_lat <= 90 and -180 <= dest_lon <= 180
+              and not (abs(dest_lat) < 0.01 and abs(dest_lon) < 0.01))
+    if usable:
+        dest_lat, dest_lon = float(dest_lat), float(dest_lon)
+        dest_km = separation(lat, lon, dest_lat, dest_lon)
+        if dest_km < 1:
+            # It is already there. Nothing to travel, nothing to point at.
+            dest_lat = dest_lon = dest_km = None
+        else:
+            heading = bearing(lat, lon, dest_lat, dest_lon)
+    else:
+        dest_lat = dest_lon = None
+
     count = item.get("count")
     count = int(count) if isinstance(count, (int, float)) and 1 <= count <= 999 else 1
 
@@ -317,6 +357,9 @@ def _clean(item: Any) -> dict[str, Any] | None:
         "place": str(item.get("place") or "")[:80] or None,
         "heading": heading,
         "toward": str(item.get("toward") or "")[:80] or None,
+        "dest_lat": dest_lat,
+        "dest_lon": dest_lon,
+        "dest_km": round(dest_km, 1) if dest_km else None,
         "count": count,
         "text": str(item.get("text") or "")[:200],
     }
@@ -327,6 +370,32 @@ def _clean(item: Any) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 EARTH_KM = 6371.0088
+
+
+def bearing(lat: float, lon: float, to_lat: float, to_lon: float) -> float:
+    """The compass course from one point to another, in degrees.
+
+    Worked out here rather than asked for, because a report saying "курс на
+    Полтаву" has told us the destination and nothing else. Turning that into
+    a bearing is spherical trigonometry, which this is good at and a language
+    model is not: the version that asked the model for degrees put a marker
+    over the wrong oblast within ten minutes.
+    """
+    a, b = math.radians(lat), math.radians(to_lat)
+    d = math.radians(to_lon - lon)
+    y = math.sin(d) * math.cos(b)
+    x = math.cos(a) * math.sin(b) - math.sin(a) * math.cos(b) * math.cos(d)
+    return math.degrees(math.atan2(y, x)) % 360
+
+
+def separation(lat: float, lon: float, to_lat: float, to_lon: float) -> float:
+    """How far apart two points are, in kilometres. Haversine."""
+    a, b = math.radians(lat), math.radians(to_lat)
+    dlat = b - a
+    dlon = math.radians(to_lon - lon)
+    h = (math.sin(dlat / 2) ** 2
+         + math.cos(a) * math.cos(b) * math.sin(dlon / 2) ** 2)
+    return 2 * EARTH_KM * math.asin(min(1.0, math.sqrt(h)))
 
 
 def advance(lat: float, lon: float, heading: float, km: float) -> tuple[float, float]:
@@ -361,11 +430,21 @@ def project(event: dict[str, Any], now: float) -> dict[str, Any]:
     speed = SPEEDS.get(event["kind"], SPEEDS["unknown"])
     out = dict(event)
     out["age_minutes"] = round(minutes, 1)
+    out["arrived"] = False
     if event["heading"] is None or speed <= 0:
         out["lat"], out["lon"] = event["origin_lat"], event["origin_lon"]
         out["projected"] = False
         return out
+
     km = speed * (minutes / 60)
+    # A report that named where it was going has also said where the marker
+    # stops. Past that point the extrapolation is not merely stale, it is
+    # describing a journey the report said was over -- so it goes no further,
+    # and _expire takes it off the map.
+    limit = event.get("dest_km")
+    if limit and km >= limit:
+        km = limit
+        out["arrived"] = True
     out["lat"], out["lon"] = advance(
         event["origin_lat"], event["origin_lon"], event["heading"], km)
     out["projected"] = True
@@ -398,9 +477,19 @@ def _record(found: list[dict[str, Any]], message: dict[str, Any]) -> None:
         })
 
 
+def _arrived(event: dict[str, Any], now: float) -> bool:
+    """Whether a track has got where the report said it was going."""
+    limit, speed = event.get("dest_km"), SPEEDS.get(event["kind"], 0.0)
+    if not limit or event.get("heading") is None or speed <= 0:
+        return False
+    return speed * (max(0.0, now - event["seen"]) / 3600) >= limit
+
+
 def _expire(now: float) -> None:
+    """Drop what is too old to extrapolate, and what has arrived."""
     cutoff = now - KEEP_MINUTES * 60
-    _events[:] = [e for e in _events if e["seen"] >= cutoff][-MAX_EVENTS:]
+    _events[:] = [e for e in _events
+                  if e["seen"] >= cutoff and not _arrived(e, now)][-MAX_EVENTS:]
 
 
 def poll() -> dict[str, Any]:
@@ -497,29 +586,69 @@ def current() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# Position, where the report said it was going, and how many. The bearing is
+# worked out from the pair, exactly as it is for a real report, so the demo
+# exercises the arithmetic rather than a hard-coded number.
+DEMO_SEED = [
+    ("drone", 47.62, 34.42, (46.63, 32.62, "Kherson"), 2, "Nikopol district"),
+    ("drone", 47.43, 34.28, (46.97, 33.42, "Beryslav"), 1, "Kherson oblast north"),
+    ("drone", 47.35, 33.98, None, 3, "Beryslav"),
+    # A hundred kilometres at cruise speed: in flight when the page loads and
+    # arriving a couple of minutes later, so the demo shows a marker reaching
+    # where it was going and leaving, not only things in transit.
+    ("cruise", 46.42, 32.05, (46.48, 30.73, "Odesa"), 1, "Black Sea coast"),
+    ("explosion", 46.55, 32.28, None, 1, "Kherson"),
+    ("explosion", 46.38, 31.85, None, 1, "Ochakiv"),
+]
+
+# How long the demo runs before starting over. Long enough for the slowest
+# track to expire on age, so a full cycle shows every ending there is.
+DEMO_CYCLE = (KEEP_MINUTES + 4) * 60
+
+_demo_epoch = 0.0
+
+
 def demo() -> dict[str, Any]:
-    """Synthetic events over the Dnipro, for the build with no network."""
+    """Synthetic events over the Dnipro, for the build with no network.
+
+    Anchored to a fixed instant rather than rebuilt against the clock on every
+    call, which is what the first version did and which quietly made the demo
+    a lie: the events were always the same few minutes old, so nothing ever
+    aged, arrived or expired, and none of the endings could be seen. Here they
+    genuinely run -- markers travel, reach the place they were reported flying
+    to and go, or time out -- and the whole set starts again each cycle.
+    """
+    global _demo_epoch
     now = time.time()
-    seed = [
-        ("drone", 47.62, 34.42, 200, "Nikopol district"),
-        ("drone", 47.43, 34.28, 215, "Kherson oblast north"),
-        ("drone", 47.35, 33.98, 190, "Beryslav"),
-        ("cruise", 46.42, 32.05, 250, "Black Sea coast"),
-        ("explosion", 46.55, 32.28, None, "Kherson"),
-        ("explosion", 46.38, 31.85, None, "Ochakiv"),
-    ]
+    with _lock:
+        if not _demo_epoch or now - _demo_epoch > DEMO_CYCLE:
+            _demo_epoch = now
+        epoch = _demo_epoch
+
     events = []
-    for i, (kind, lat, lon, heading, place) in enumerate(seed, start=1):
-        events.append({
+    for i, (kind, lat, lon, dest, count, place) in enumerate(DEMO_SEED, start=1):
+        heading = bearing(lat, lon, dest[0], dest[1]) if dest else None
+        event = {
             "id": f"AO#{100 + i * 37:03d}",
             "kind": kind, "lat": lat, "lon": lon,
             "origin_lat": lat, "origin_lon": lon,
-            "heading": heading, "toward": None, "place": place, "count": 1,
+            "heading": heading,
+            "toward": dest[2] if dest else None,
+            "dest_lat": dest[0] if dest else None,
+            "dest_lon": dest[1] if dest else None,
+            "dest_km": round(separation(lat, lon, dest[0], dest[1]), 1) if dest else None,
+            "place": place, "count": count,
             "text": f"Demo event over {place}.",
-            "seen": now - i * 90, "age_minutes": round(i * 1.5, 1),
-            "projected": heading is not None,
+            # Staggered, so they do not all begin and end together.
+            "seen": epoch - i * 90,
             "channel": "demo", "source": f"demo/{i}",
-        })
+        }
+        # Carried forward and filtered by the same code the live path uses,
+        # rather than by a copy of it that could drift out of step.
+        if _arrived(event, now) or now - event["seen"] > KEEP_MINUTES * 60:
+            continue
+        events.append(project(event, now))
+
     return {
         "events": events, "count": len(events),
         "state": "demo — synthetic events", "keep_minutes": KEEP_MINUTES,

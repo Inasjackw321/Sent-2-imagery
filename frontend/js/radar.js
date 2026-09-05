@@ -135,7 +135,10 @@ function layerFor(frame) {
     className: 'radar-frame',
     // Two extra rings of tiles either side of the viewport, kept rather than
     // discarded. A small pan then reuses what is already fetched instead of
-    // blanking every frame in the loop at once.
+    // blanking every frame in the loop at once. (It costs nothing up front:
+    // keepBuffer governs what is retained on a pan, not what is fetched to
+    // begin with -- measured, because it was tempting to blame it for the
+    // volume of tiles and it is not responsible for any of them.)
     keepBuffer: 4,
     // Fetch while the map is still moving. Waiting for it to settle is what
     // makes radar appear a beat late after every pan.
@@ -213,31 +216,57 @@ function showFrame(which) {
 }
 
 /**
- * Build every frame at once, invisibly, before the loop starts.
+ * Build every frame invisibly, in the order the loop will want them.
  *
- * The first version built one frame ahead, which meant the first pass of the
- * loop was really a download and looked like it. Two hours of tiles over one
- * viewport is a small ask, and doing it up front is the difference between a
- * loop that runs and one that lurches.
+ * The order is the point. A browser opens a handful of connections to a host
+ * and queues everything else behind them, so asking for sixteen frames of
+ * tiles in catalogue order puts the frame that is about to be shown behind
+ * every tile of the frames that will not be needed for another ten seconds.
+ * Starting from the frame on screen and wrapping means the queue drains in
+ * the order the eye needs it, and the loop can start moving while the far end
+ * of it is still arriving.
  */
-function preload() {
-  for (const frame of frames) layerFor(frame);
+function preload(from = at) {
+  for (let i = 0; i < frames.length; i += 1) {
+    layerFor(frames[(from + i) % frames.length]);
+  }
 }
 
 /** How many of the frames on screen are still fetching their tiles. */
 const stillLoading = () => frames.filter((f) => !ready.has(keyOf(f))).length;
 
+// How long to wait for the next frame's tiles before going anyway. Long
+// enough that a frame arriving late is waited for rather than skipped; short
+// enough that a frame which is never going to arrive -- no radar coverage
+// here, a tile server refusing -- does not stop the loop for good.
+const PATIENCE_MS = 4000;
+let waitingSince = 0;
+
 function step() {
   clearTimeout(timer);
   if (!enabled || !playing || !frames.length) return;
 
-  // Nothing is smooth about a loop that runs while half its frames are still
-  // arriving: it plays blanks, then jumps. Wait until they are all in hand,
-  // checking often enough that the wait is not itself a stutter.
-  if (stillLoading()) {
-    timer = setTimeout(step, 200);
-    return;
+  // Wait for the frame about to be shown, and only that one.
+  //
+  // This used to wait for every frame to be in hand, which sounds like the
+  // careful choice and is the opposite. Sixteen frames over one viewport is
+  // several hundred tiles; until the last of them landed the loop would not
+  // move at all, so on any ordinary connection the panel sat on a single
+  // frame reporting how much was still loading. Measured before this was
+  // changed: at 400 ms a tile it reached one frame in twenty-five seconds.
+  //
+  // The frame after this one is already being fetched, and its tiles are near
+  // the front of the queue because of the order preload asks in. So waiting
+  // on it alone is enough to keep the loop from playing blanks.
+  const next = frames[(at + 1) % frames.length];
+  if (!ready.has(keyOf(next))) {
+    waitingSince = waitingSince || performance.now();
+    if (performance.now() - waitingSince < PATIENCE_MS) {
+      timer = setTimeout(step, 120);
+      return;
+    }
   }
+  waitingSince = 0;
 
   const last = at === frames.length - 1;
   timer = setTimeout(() => {
@@ -277,8 +306,14 @@ async function refresh({ keepPosition = false, fetchIndex = true } = {}) {
       }
     }
     frames = next;
-    preload();
-    showFrame(keepPosition ? Math.min(wasAt, frames.length - 1) : newestObserved());
+    // Which frame is about to be shown decides what order the tiles are
+    // asked for in, so it is settled before anything is fetched.
+    const start = keepPosition
+      ? Math.min(wasAt, frames.length - 1) : newestObserved();
+    at = start;
+    waitingSince = 0;
+    preload(start);
+    showFrame(start);
   } catch (err) {
     failed = err.message;
     frames = [];
@@ -476,6 +511,9 @@ function paintDock() {
   const still = stillLoading();
   note.textContent = frame.forecast
     ? 'Extrapolated from the recent motion — not an observation.'
-    : still > 0 ? `${NOTE} Loading ${still} more frames…`
+    // The count is progress, not a stall: the loop plays as soon as the frame
+    // in front of it has arrived, and the rest fill in behind. Saying "still
+    // loading" without that made a working animation look stuck.
+    : still > 0 ? `${NOTE} ${still} more frames filling in.`
       : NOTE;
 }
