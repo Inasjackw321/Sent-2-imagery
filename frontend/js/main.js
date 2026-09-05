@@ -6,12 +6,14 @@ import { $, toast } from './ui.js';
 import { initMap, initPlaceSearch } from './map.js';
 import { initImagery } from './imagery.js';
 import { initInstall } from './install.js';
+import { initPresent } from './present.js';
 import { shareCanvasClicks } from './canvasreach.js';
 
 async function main() {
   // Do this first, so the install button and offline shell work even if the
   // backend is slow or unreachable.
   initInstall();
+  initPresent();
 
   try {
     store.config = await api.config();

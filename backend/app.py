@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, fires, mtg, osint, passes, seismic, service,
-    stac, version, vessels, weather,
+    aisstream, composite, config, fires, gazetteer, mtg, osint, passes,
+    seismic, service, stac, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -429,6 +429,11 @@ def weather_at(
 
 @app.get("/api/geocode")
 def geocode(q: str = Query(..., min_length=2)) -> dict:
+    # The search box wants a list to choose from, so it asks Nominatim
+    # directly rather than through the gazetteer, which answers with the one
+    # best match. They share the rate limit, because Nominatim's policy is
+    # about this process and not about which of its functions is calling.
+    gazetteer.wait_turn()
     try:
         resp = requests.get(
             config.NOMINATIM_URL,

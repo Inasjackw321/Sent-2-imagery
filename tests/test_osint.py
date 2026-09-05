@@ -1,18 +1,22 @@
 """Tests for the air-threat layer.
 
-This feature has two ways of being wrong, and only one of them is loud.
+The feature has two ways of being wrong and only one of them is loud.
 
-The loud one is a crash: Telegram changes its markup, or the model returns
-prose where JSON was asked for, and nothing appears. That is a nuisance.
+The loud one is a crash: Telegram changes its markup, the model returns prose
+where JSON was asked for, nothing appears. That is a nuisance.
 
-The quiet one is a marker in a place nobody reported. A language model asked
-for coordinates will always produce coordinates -- 0,0 when it has no idea,
-a plausible-looking pair when it is guessing from context -- and drawn on a map
-next to real reports that is indistinguishable from evidence. So most of what
-is tested here is refusal: what `_clean` throws away, and why.
+The quiet one is a marker in a place nobody reported. The first version of
+this asked the model for coordinates, which is the wrong job to give a model:
+asked for a latitude it always produces one, right for a capital city and
+recalled, interpolated or invented for anywhere smaller, with nothing in the
+number to say which. Drawn on a map next to real reports it is
+indistinguishable from evidence.
 
-The third thing tested is the arithmetic that carries a marker forward, because
-it is the one part of this that claims to know something nobody said.
+So the tests here are mostly about refusal and about the seam. The model is
+asked for names and its numbers are ignored; a gazetteer decides where things
+are and is allowed to say it does not know; and a report that cannot be placed
+must still reach the reader as text, because the previous version dropped
+those silently and made a patchy night look like a broken feature.
 """
 
 from __future__ import annotations
@@ -41,6 +45,26 @@ PAGE = """
 </div>
 """
 
+PLACES = {
+    "Nikopol": (47.5665, 34.4053),
+    "Kherson": (46.6354, 32.6169),
+    "Kharkiv oblast": (49.7, 36.3),
+    "Kyiv": (50.4501, 30.5234),
+}
+
+
+def gazetteer(name, countries=""):
+    """A gazetteer that knows four places and admits the rest."""
+    found = PLACES.get(name)
+    if not found:
+        return None
+    return {"lat": found[0], "lon": found[1], "name": f"{name}, Ukraine", "kind": "city"}
+
+
+def one(**over):
+    return {"kind": "drone", "place": "Nikopol", "toward": None,
+            "count": 1, "summary": "Drone over Nikopol", **over}
+
 
 class TestReadingTheChannel:
     def test_each_post_keeps_its_own_id_and_time(self):
@@ -50,15 +74,11 @@ class TestReadingTheChannel:
         assert got[0]["channel"] == "eRadarrua"
 
     def test_the_text_comes_out_as_text(self):
-        # Entities decoded, tags gone, line breaks kept as breaks -- the model
-        # is being asked to read this, and markup is noise it pays for.
         body = osint.parse_preview(PAGE, "eRadarrua")[0]["text"]
         assert "Nikopol" in body and "Marhanets" in body
         assert "<" not in body and "&#" not in body
 
     def test_a_post_does_not_swallow_the_next_one(self):
-        # The failure this guards: one greedy match across the whole page,
-        # giving the first post's id the last post's text.
         got = osint.parse_preview(PAGE, "eRadarrua")
         assert "Second post" not in got[0]["text"]
 
@@ -75,191 +95,139 @@ class TestReadingTheChannel:
 class TestReadingTheModel:
     def test_the_shape_that_was_asked_for(self):
         got = osint.read_events(json.dumps({"events": [
-            {"kind": "drone", "lat": 47.6, "lon": 34.4, "heading": 200,
-             "place": "Nikopol", "count": 3, "text": "x"}]}))
+            {"id": "c/1", "kind": "drone", "place": "Nikopol",
+             "toward": "Kherson", "count": 3, "summary": "Three drones"}]}))
         assert len(got) == 1
-        assert got[0]["kind"] == "drone" and got[0]["count"] == 3
+        assert got[0]["place"] == "Nikopol" and got[0]["count"] == 3
+        assert got[0]["id"] == "c/1"
 
     def test_a_code_fence_is_survived(self):
-        got = osint.read_events(
-            '```json\n{"events": [{"kind": "drone", "lat": 47.6, "lon": 34.4}]}\n```')
+        got = osint.read_events('```json\n{"events": [{"kind": "drone", "place": "Nikopol"}]}\n```')
         assert len(got) == 1
 
     def test_a_sentence_before_the_json_is_survived(self):
-        got = osint.read_events(
-            'Here are the events:\n{"events": [{"kind": "cruise", "lat": 46.4, "lon": 32.0}]}')
+        got = osint.read_events('Here you go:\n{"events": [{"kind": "cruise", "place": "Kyiv"}]}')
         assert got[0]["kind"] == "cruise"
 
     def test_a_bare_list_is_survived(self):
-        got = osint.read_events('[{"kind": "drone", "lat": 47.6, "lon": 34.4}]')
-        assert len(got) == 1
+        assert len(osint.read_events('[{"kind": "drone", "place": "Nikopol"}]')) == 1
 
     def test_json_that_is_not_json_is_refused_clearly(self):
         with pytest.raises(osint.OsintError, match="did not return JSON"):
             osint.read_events("I could not find any events in these messages.")
 
-    def test_an_empty_answer_is_no_events_not_an_error(self):
-        assert osint.read_events('{"events": []}') == []
-
-
-class TestWhatIsRefused:
-    """The quiet failure. A marker is a claim; these are the ones not made."""
-
-    def test_no_position_means_no_marker(self):
-        assert osint.read_events(
-            '{"events": [{"kind": "drone", "place": "somewhere in the east"}]}') == []
-
-    def test_null_island_is_where_a_model_puts_a_shrug(self):
-        assert osint.read_events(
-            '{"events": [{"kind": "drone", "lat": 0, "lon": 0}]}') == []
-
-    def test_a_position_off_the_globe_is_refused(self):
-        assert osint.read_events(
-            '{"events": [{"kind": "drone", "lat": 91, "lon": 34}]}') == []
-        assert osint.read_events(
-            '{"events": [{"kind": "drone", "lat": 47, "lon": 200}]}') == []
-
-    def test_coordinates_as_words_are_refused(self):
-        # "lat": "47.6 north" is a thing models do, and float() on it would
-        # either throw at request time or, worse, half-work.
-        assert osint.read_events(
-            '{"events": [{"kind": "drone", "lat": "47.6", "lon": "34.4"}]}') == []
-
     def test_a_kind_nobody_offered_becomes_unknown_rather_than_a_gap(self):
-        got = osint.read_events(
-            '{"events": [{"kind": "hypersonic doom ray", "lat": 47.6, "lon": 34.4}]}')
+        got = osint.read_events('{"events": [{"kind": "doom ray", "place": "Kyiv"}]}')
         assert got[0]["kind"] == "unknown"
         assert got[0]["kind"] in osint.KINDS
 
-    def test_a_heading_is_a_compass_bearing_or_nothing(self):
-        wrapped = osint.read_events(
-            '{"events": [{"kind": "drone", "lat": 47.6, "lon": 34.4, "heading": 380}]}')
-        assert wrapped[0]["heading"] == 20
-        for junk in ('"north-east"', "null", "NaN"):
-            got = osint.read_events(
-                '{"events": [{"kind": "drone", "lat": 47.6, "lon": 34.4, '
-                f'"heading": {junk}}}]}}'.replace("NaN", "1e999"))
-            assert got[0]["heading"] is None or 0 <= got[0]["heading"] < 360
-
     def test_rubbish_among_good_events_does_not_take_them_with_it(self):
         got = osint.read_events(json.dumps({"events": [
-            "not a dict",
-            {"kind": "drone", "lat": 0, "lon": 0},
-            {"kind": "drone", "lat": 47.6, "lon": 34.4},
-        ]}))
+            "not a dict", {"kind": "drone", "place": "Nikopol"}]}))
         assert len(got) == 1
 
 
-class TestDirectionOfTravel:
-    """A heading is a claim about where something is going.
+class TestThePlaceNamesTheModelGives:
+    """What comes back as a place name and is not one."""
 
-    The bug this class exists for shipped and was caught on the map: a report
-    reading "КАБи на північний схід Харківщини" -- glide bombs IN the
-    north-east OF Kharkiv oblast -- became a bearing of 45 degrees, and the
-    marker set off across the region at cruise speed. The phrase says where
-    the thing is. It does not say where it is going.
+    def test_a_model_that_shrugs_is_not_given_a_place(self):
+        for shrug in ("unknown", "N/A", "not specified", "various", "-", "none"):
+            got = osint.read_events(json.dumps({"events": [
+                {"kind": "drone", "place": shrug}]}))
+            assert got[0]["place"] is None, shrug
 
-    The fix is not a better prompt on its own, which would be a hope. It is
-    that a named destination overrides whatever degrees came back, and the
-    bearing is computed here.
-    """
+    def test_coordinates_in_the_place_field_are_refused(self):
+        # It is told not to give coordinates. When it does anyway they arrive
+        # here, and a gazetteer asked for "47.5, 34.4" either misses or
+        # matches something absurd -- so the string is rejected as a name.
+        for smuggled in ("47.5665, 34.4053", "49.99 N 36.23 E", "50.45,30.52"):
+            got = osint.read_events(json.dumps({"events": [
+                {"kind": "drone", "place": smuggled}]}))
+            assert got[0]["place"] is None, smuggled
 
-    def test_a_named_destination_sets_the_course(self):
-        # Kyiv is roughly west-north-west of Kharkiv, so somewhere near 280.
-        got = osint.read_events(json.dumps({"events": [{
-            "kind": "cruise", "lat": 49.99, "lon": 36.23,
-            "toward": "Kyiv", "dest_lat": 50.45, "dest_lon": 30.52}]}))[0]
-        assert got["heading"] == pytest.approx(281, abs=3)
-        assert got["dest_km"] == pytest.approx(410, abs=15)
+    def test_a_real_place_name_survives_all_of_that(self):
+        got = osint.read_events(json.dumps({"events": [
+            {"kind": "drone", "place": "Kamianets-Podilskyi"}]}))
+        assert got[0]["place"] == "Kamianets-Podilskyi"
 
-    def test_the_destination_beats_whatever_degrees_the_model_offered(self):
-        # This is the guard. The model says north-east; the places it named
-        # say west. The places win, because one of those is something the
-        # report contained and the other is arithmetic done in prose.
-        got = osint.read_events(json.dumps({"events": [{
-            "kind": "cruise", "lat": 49.99, "lon": 36.23, "heading": 45,
-            "toward": "Kyiv", "dest_lat": 50.45, "dest_lon": 30.52}]}))[0]
-        assert 250 < got["heading"] < 310
+    def test_heading_for_where_it_already_is_is_not_a_journey(self):
+        got = osint.read_events(json.dumps({"events": [
+            {"kind": "drone", "place": "Nikopol", "toward": "nikopol"}]}))
+        assert got[0]["toward"] is None
 
-    def test_a_bearing_alone_is_still_accepted(self):
-        # "рухаються на південь" names a direction and no destination. There
-        # is nothing to compute from, so the model's figure is all there is.
-        got = osint.read_events(json.dumps({"events": [{
-            "kind": "drone", "lat": 49.99, "lon": 36.23, "heading": 180}]}))[0]
-        assert got["heading"] == 180
-        assert got["dest_km"] is None
+    def test_whatever_coordinates_the_model_sent_are_not_kept(self):
+        # The single most important assertion in this file. The model may
+        # return lat/lon; nothing downstream may ever see them.
+        got = osint.read_events(json.dumps({"events": [
+            {"kind": "drone", "place": "Nikopol", "lat": 12.3, "lon": 45.6,
+             "heading": 275}]}))[0]
+        assert "lat" not in got and "lon" not in got and "heading" not in got
 
-    def test_a_destination_at_the_reported_place_is_not_a_journey(self):
-        # "over Kharkiv, heading for Kharkiv" is not movement, and a bearing
-        # between two nearly identical points is numerical noise.
-        got = osint.read_events(json.dumps({"events": [{
-            "kind": "drone", "lat": 49.99, "lon": 36.23,
-            "toward": "Kharkiv", "dest_lat": 49.992, "dest_lon": 36.231}]}))[0]
-        assert got["dest_km"] is None
+
+class TestPlacing:
+    def test_a_known_place_gets_the_gazetteer_position(self):
+        got = osint.place_event(one(), "ua", lookup=gazetteer)
+        assert got["placed"] is True
+        assert (got["lat"], got["lon"]) == PLACES["Nikopol"]
+        assert got["place_match"] == "Nikopol, Ukraine"
+
+    def test_an_unknown_place_is_not_placed_and_says_why(self):
+        got = osint.place_event(one(place="Nowheresville"), "ua", lookup=gazetteer)
+        assert got["placed"] is False
+        assert got["lat"] is None
+        assert "Nowheresville" in got["why_unplaced"]
+
+    def test_no_place_at_all_is_not_placed_and_says_why(self):
+        got = osint.place_event(one(place=None), "ua", lookup=gazetteer)
+        assert got["placed"] is False
+        assert got["why_unplaced"] == "the report names no place"
+
+    def test_a_gazetteer_that_is_down_does_not_take_the_report_with_it(self):
+        def broken(name, countries):
+            raise osint.gazetteer.GazetteerError("the gazetteer is rate limiting")
+        got = osint.place_event(one(), "ua", lookup=broken)
+        assert got["placed"] is False
+        assert "rate limiting" in got["why_unplaced"]
+
+    def test_a_destination_gives_a_course_and_a_distance(self):
+        got = osint.place_event(one(toward="Kherson"), "ua", lookup=gazetteer)
+        # Kherson is south-west of Nikopol.
+        assert 220 < got["heading"] < 245
+        assert got["dest_km"] == pytest.approx(174, abs=10)
+
+    def test_the_course_is_computed_not_taken_on_trust(self):
+        # Whatever the model thought the bearing was never reaches here: the
+        # only source of a heading is the two gazetteer positions.
+        got = osint.place_event(one(toward="Kherson"), "ua", lookup=gazetteer)
+        assert got["heading"] == pytest.approx(
+            osint.bearing(*PLACES["Nikopol"], *PLACES["Kherson"]), abs=0.01)
+
+    def test_a_destination_the_gazetteer_does_not_know_leaves_it_still(self):
+        # Placed, because the report's own location is known -- but with no
+        # course, because there is nothing to compute one from.
+        got = osint.place_event(one(toward="Nowheresville"), "ua", lookup=gazetteer)
+        assert got["placed"] is True
+        assert got["heading"] is None and got["dest_km"] is None
+
+    def test_a_destination_that_resolves_to_the_same_point_is_not_a_journey(self):
+        def same(name, countries):
+            return {"lat": 50.0, "lon": 30.0, "name": name, "kind": "city"}
+        got = osint.place_event(one(toward="Kyiv"), "ua", lookup=same)
+        assert got["heading"] is None and got["dest_km"] is None
+
+    def test_a_strike_does_not_travel_however_the_report_reads(self):
+        # "Explosions in Kherson, drones heading for Mykolaiv" is one message.
+        # The strike is where it is; only the airborne thing has a course.
+        got = osint.place_event(
+            one(kind="explosion", place="Nikopol", toward="Kherson"),
+            "ua", lookup=gazetteer)
+        assert got["placed"] is True
         assert got["heading"] is None
 
-    def test_a_destination_off_the_globe_is_ignored_not_obeyed(self):
-        got = osint.read_events(json.dumps({"events": [{
-            "kind": "drone", "lat": 49.99, "lon": 36.23,
-            "dest_lat": 999, "dest_lon": 0}]}))[0]
-        assert got["dest_lat"] is None and got["heading"] is None
-
-    def test_null_island_as_a_destination_is_a_shrug_too(self):
-        got = osint.read_events(json.dumps({"events": [{
-            "kind": "drone", "lat": 49.99, "lon": 36.23,
-            "dest_lat": 0, "dest_lon": 0}]}))[0]
-        assert got["dest_km"] is None
-
-    def test_the_bearing_agrees_with_the_advance_that_uses_it(self):
-        # The two halves have to be the same spherical model, or a marker
-        # aimed at a town arrives somewhere else. Walk the computed bearing
-        # for the computed distance and check where it lands.
-        start, dest = (49.99, 36.23), (50.45, 30.52)
-        brg = osint.bearing(*start, *dest)
-        km = osint.separation(*start, *dest)
-        lat, lon = osint.advance(*start, brg, km)
-        assert lat == pytest.approx(dest[0], abs=0.01)
-        assert lon == pytest.approx(dest[1], abs=0.01)
-
-
-class TestArrival:
-    def make(self, minutes_ago, dest_km=100.0, kind="cruise"):
-        now = time.time()
-        return now, {"kind": kind, "heading": 90.0, "seen": now - minutes_ago * 60,
-                     "origin_lat": 50.0, "origin_lon": 30.0,
-                     "lat": 50.0, "lon": 30.0, "dest_km": dest_km}
-
-    def test_it_stops_at_the_place_it_was_going_to(self):
-        # 800 km/h for half an hour is 400 km, and the destination is 100.
-        now, event = self.make(30)
-        got = osint.project(event, now)
-        assert got["projected_km"] == pytest.approx(100, abs=0.5)
-        assert got["arrived"] is True
-
-    def test_it_is_still_travelling_before_it_gets_there(self):
-        now, event = self.make(3)
-        got = osint.project(event, now)
-        assert got["arrived"] is False
-        assert 30 < got["projected_km"] < 50
-
-    def test_an_arrived_track_is_taken_off_the_map(self):
-        now, event = self.make(30)
-        assert osint._arrived(event, now) is True
-
-    def test_one_still_in_the_air_is_kept(self):
-        now, event = self.make(3)
-        assert osint._arrived(event, now) is False
-
-    def test_a_track_with_no_destination_never_arrives(self):
-        # Nothing said where it was going, so there is no point at which it
-        # can be said to have got there. It expires on age instead.
-        now, event = self.make(600, dest_km=None)
-        assert osint._arrived(event, now) is False
-        assert osint.project(event, now)["arrived"] is False
-
-    def test_a_strike_never_arrives_because_it_never_left(self):
-        now, event = self.make(600, dest_km=100.0, kind="explosion")
-        assert osint._arrived(event, now) is False
+    def test_an_air_alert_does_not_travel_either(self):
+        got = osint.place_event(
+            one(kind="alert", place="Nikopol", toward="Kherson"), "ua", lookup=gazetteer)
+        assert got["heading"] is None
 
 
 class TestCarryingAMarkerForward:
@@ -270,54 +238,133 @@ class TestCarryingAMarkerForward:
 
     def test_due_east_at_latitude_is_not_the_flat_earth_answer(self):
         # 111 km east at 50 N is about 1.56 degrees of longitude, not 1.0.
-        # A flat-earth advance would give 1.0 and put a Shahed in the wrong
-        # oblast within the hour, which is the bug this test exists for.
         _, lon = osint.advance(50.0, 30.0, 90, 111.195)
         assert lon == pytest.approx(31.556, abs=0.01)
 
-    def test_going_nowhere_stays_put(self):
-        assert osint.advance(50.0, 30.0, 90, 0) == (50.0, 30.0)
-
     def test_crossing_the_date_line_comes_out_the_other_side(self):
         _, lon = osint.advance(0.0, 179.5, 90, 200)
-        assert -180 <= lon <= 180
-        assert lon < 0
+        assert -180 <= lon <= 180 and lon < 0
+
+    def test_the_bearing_agrees_with_the_advance_that_uses_it(self):
+        # The two halves must be the same spherical model, or a marker aimed
+        # at a town arrives somewhere else.
+        start, dest = (49.99, 36.23), (50.45, 30.52)
+        lat, lon = osint.advance(*start, osint.bearing(*start, *dest),
+                                 osint.separation(*start, *dest))
+        assert lat == pytest.approx(dest[0], abs=0.01)
+        assert lon == pytest.approx(dest[1], abs=0.01)
 
     def test_a_projected_event_keeps_the_position_that_was_reported(self):
         now = time.time()
         event = {"kind": "cruise", "heading": 90.0, "seen": now - 600,
-                 "origin_lat": 50.0, "origin_lon": 30.0, "lat": 50.0, "lon": 30.0}
+                 "origin_lat": 50.0, "origin_lon": 30.0}
         got = osint.project(event, now)
         assert got["projected"] is True
-        assert got["origin_lat"] == 50.0 and got["origin_lon"] == 30.0
-        # Ten minutes of a cruise missile is about 133 km, which is east of
-        # where it was reported and nowhere near it.
-        assert got["lon"] > 31.5
+        assert (got["origin_lat"], got["origin_lon"]) == (50.0, 30.0)
         assert got["projected_km"] == pytest.approx(133.3, abs=1)
 
-    def test_a_report_with_no_heading_does_not_move(self):
+    def test_a_report_with_no_course_does_not_move(self):
         now = time.time()
         event = {"kind": "drone", "heading": None, "seen": now - 900,
-                 "origin_lat": 50.0, "origin_lon": 30.0, "lat": 50.0, "lon": 30.0}
+                 "origin_lat": 50.0, "origin_lon": 30.0}
         got = osint.project(event, now)
         assert (got["lat"], got["lon"]) == (50.0, 30.0)
         assert got["projected"] is False
 
     def test_a_ballistic_track_is_not_extrapolated(self):
-        # It has a heading, but no useful constant speed: a marker sliding at
-        # a made-up figure would be worse than one that stays where it was
-        # reported, because it would look like it was being followed.
+        # It has a course but no useful constant speed: a marker sliding at a
+        # made-up figure would look like it was being followed.
         now = time.time()
         event = {"kind": "ballistic", "heading": 90.0, "seen": now - 300,
-                 "origin_lat": 50.0, "origin_lon": 30.0, "lat": 50.0, "lon": 30.0}
-        got = osint.project(event, now)
-        assert (got["lat"], got["lon"]) == (50.0, 30.0)
-        assert got["projected"] is False
+                 "origin_lat": 50.0, "origin_lon": 30.0}
+        assert osint.project(event, now)["projected"] is False
 
-    def test_every_kind_has_a_speed_and_a_look(self):
-        assert set(osint.SPEEDS) == set(osint.KINDS)
+    def test_every_kind_has_a_speed_or_is_deliberately_not_airborne(self):
+        for kind in osint.KINDS:
+            assert kind in osint.SPEEDS or kind in osint.NOT_AIRBORNE, kind
         for look in osint.KINDS.values():
-            assert look["colour"].startswith("#") and look["label"]
+            assert look["colour"].startswith("#") and look["label"] and look["rank"]
+
+
+class TestArrival:
+    def make(self, minutes_ago, dest_km=100.0, kind="cruise"):
+        now = time.time()
+        return now, {"kind": kind, "heading": 90.0, "seen": now - minutes_ago * 60,
+                     "origin_lat": 50.0, "origin_lon": 30.0, "dest_km": dest_km}
+
+    def test_it_stops_at_the_place_it_was_going_to(self):
+        # 800 km/h for half an hour is 400 km; the destination is 100.
+        now, event = self.make(30)
+        got = osint.project(event, now)
+        assert got["projected_km"] == pytest.approx(100, abs=0.5)
+        assert got["arrived"] is True
+
+    def test_it_is_still_travelling_before_it_gets_there(self):
+        now, event = self.make(3)
+        got = osint.project(event, now)
+        assert got["arrived"] is False and 30 < got["projected_km"] < 50
+
+    def test_an_arrived_track_is_taken_off_the_map(self):
+        now, event = self.make(30)
+        assert osint._arrived(event, now) is True
+
+    def test_a_track_with_no_destination_never_arrives(self):
+        now, event = self.make(600, dest_km=None)
+        assert osint._arrived(event, now) is False
+
+    def test_a_strike_never_arrives_because_it_never_left(self):
+        now, event = self.make(600, kind="explosion")
+        assert osint._arrived(event, now) is False
+
+
+class TestNothingIsSilentlyDropped:
+    """The complaint that prompted the rewrite.
+
+    A report the gazetteer cannot place used to vanish. Six reports arriving
+    and none of them placing looked exactly like a feed that had stopped, and
+    there was no way from the interface to tell the two apart.
+    """
+
+    def test_an_unplaceable_report_still_reaches_the_reader(self):
+        got = osint.demo()
+        unplaced = [a for a in got["alerts"] if not a["placed"]]
+        assert unplaced, "the demo must exercise the unplaceable path"
+        for alert in unplaced:
+            assert alert["summary"]
+            assert alert["why_unplaced"]
+
+    def test_an_unplaceable_report_is_not_on_the_map(self):
+        got = osint.demo()
+        mapped = {e["id"] for e in got["events"]}
+        for alert in got["alerts"]:
+            if not alert["placed"]:
+                assert alert["id"] not in mapped
+
+    def test_the_counts_say_how_many_of_each(self):
+        got = osint.demo()
+        assert got["reports"]["placed"] == sum(1 for a in got["alerts"] if a["placed"])
+        assert got["reports"]["unplaced"] >= 1
+        assert (got["reports"]["placed"] + got["reports"]["unplaced"]
+                == len(got["alerts"]))
+
+    def test_placed_counts_reports_not_surviving_markers(self):
+        # These are different numbers and conflating them was a real bug: a
+        # track that has arrived or aged off the map was placed perfectly
+        # well, and counting it as unplaced makes the gazetteer look broken
+        # in exactly the number a reader checks to see whether it is.
+        got = osint.demo()
+        assert got["reports"]["placed"] >= len(got["events"])
+        placed_ids = {a["id"] for a in got["alerts"] if a["placed"]}
+        assert {e["id"] for e in got["events"]} <= placed_ids
+
+    def test_alerts_outlive_tracks(self):
+        # A position extrapolated for an hour is fiction; "a strike was
+        # reported in Kharkiv an hour ago" is still true.
+        assert osint.ALERT_MINUTES > osint.KEEP_MINUTES
+
+    def test_alerts_come_newest_first(self):
+        seen = [a["seen"] for a in osint.demo()["alerts"]]
+        assert seen == sorted(seen, reverse=True)
 
 
 class TestTheKey:
@@ -348,67 +395,61 @@ class TestTheKey:
 class TestDemo:
     def test_it_answers_in_the_shape_the_page_expects(self):
         got = osint.demo()
-        assert set(got) >= {"events", "count", "state", "keep_minutes", "speeds",
-                            "kinds", "channels", "model", "keyed"}
+        assert set(got) >= {"events", "count", "alerts", "state", "keep_minutes",
+                            "alert_minutes", "speeds", "kinds", "channels",
+                            "regions", "model", "keyed", "reports"}
         for event in got["events"]:
             assert set(event) >= {"id", "kind", "lat", "lon", "origin_lat",
-                                  "origin_lon", "heading", "seen"}
+                                  "origin_lon", "heading", "seen", "placed"}
             assert event["kind"] in osint.KINDS
             assert math.isfinite(event["lat"]) and math.isfinite(event["lon"])
 
     def test_the_demo_shows_both_a_moving_and_a_still_marker(self):
-        # Otherwise the build with no network exercises one drawing path and
-        # hides whatever the other one does.
-        kinds = {e["heading"] is None for e in osint.demo()["events"]}
-        assert kinds == {True, False}
+        headings = {e["heading"] is None for e in osint.demo()["events"]}
+        assert headings == {True, False}
 
-    def test_the_demo_includes_a_track_with_a_named_destination(self):
-        # Otherwise the build with no network never exercises the bearing, the
-        # distance cap or the arrival, which are the three things most likely
-        # to be wrong.
-        with_dest = [e for e in osint.demo()["events"] if e.get("dest_km")]
-        assert with_dest
-        for event in with_dest:
-            assert event["toward"]
-            # From where it was REPORTED, not from where it has been carried
-            # to: the course is set once, at the report, and the marker then
-            # follows that great circle. Along a great circle the instantaneous
-            # bearing drifts, so measuring from the projected position would be
-            # comparing two different things and failing by a fraction.
+    def test_the_demo_courses_are_computed_from_its_own_gazetteer(self):
+        for event in osint.demo()["events"]:
+            if event["dest_km"] is None:
+                continue
             assert event["heading"] == pytest.approx(
                 osint.bearing(event["origin_lat"], event["origin_lon"],
                               event["dest_lat"], event["dest_lon"]), abs=0.01)
 
-    def test_the_demo_actually_runs_rather_than_resetting_every_call(self):
-        # The first version rebuilt the events against the clock on each call,
+    def test_it_actually_runs_rather_than_resetting_every_call(self):
+        # The first version rebuilt its events against the clock on each call,
         # so they were forever the same few minutes old: nothing aged, nothing
-        # arrived, nothing expired, and the endings could not be seen at all.
-        # Two calls a while apart must show the tracks having moved on.
+        # arrived, nothing expired, and the endings were unreachable.
         osint._demo_epoch = 0.0
-        first = osint.demo()
-        osint._demo_epoch -= 120           # as if two minutes had passed
-        second = osint.demo()
         try:
-            ages = {e["id"]: e["age_minutes"] for e in first["events"]}
-            for event in second["events"]:
-                assert event["age_minutes"] == pytest.approx(ages[event["id"]] + 2, abs=0.2)
+            first = {e["id"]: e["age_minutes"] for e in osint.demo()["events"]}
+            osint._demo_epoch -= 120           # as if two minutes had passed
+            for event in osint.demo()["events"]:
+                assert event["age_minutes"] == pytest.approx(first[event["id"]] + 2,
+                                                             abs=0.2)
         finally:
             osint._demo_epoch = 0.0
 
-    def test_the_demo_lets_things_arrive_and_expire(self):
-        # Wind the clock forward across a whole cycle and the set empties,
-        # which is the proof that the endings are reachable at all.
+    def test_it_lets_things_arrive_and_expire_and_then_starts_again(self):
         osint._demo_epoch = 0.0
         try:
             osint.demo()
             osint._demo_epoch -= osint.DEMO_CYCLE - 1
             assert osint.demo()["events"] == []
-            # And past the cycle it starts again rather than staying empty.
             osint._demo_epoch -= 10
             assert osint.demo()["events"]
         finally:
             osint._demo_epoch = 0.0
 
     def test_the_channels_the_app_offers_are_the_ones_it_reads(self):
-        assert osint.demo()["channels"] == list(osint.CHANNELS)
-        assert {"redlinkleb", "shin_persian"} <= set(osint.CHANNELS)
+        names = {c["name"] for c in osint.CHANNELS}
+        assert osint.demo()["channels"] == [c["name"] for c in osint.CHANNELS]
+        assert {"redlinkleb", "shin_persian"} <= names
+
+    def test_every_channel_says_which_countries_to_look_in(self):
+        # Without it "Sumy" is as likely to match a street in another
+        # hemisphere as the oblast capital.
+        for channel in osint.CHANNELS:
+            assert channel["countries"] and channel["region"]
+            for code in channel["countries"].split(","):
+                assert len(code) == 2 and code.islower(), channel

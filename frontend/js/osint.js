@@ -151,7 +151,15 @@ function icon(event) {
 
 function popup(event, km) {
   const rows = [];
-  if (event.place) rows.push(`Reported over ${escapeHtml(event.place)}`);
+  if (event.place) {
+    // What the report said, and what the gazetteer matched it to. They are
+    // different claims and the second is where the marker actually came from,
+    // so a bad match can be seen rather than having to be deduced.
+    rows.push(`Reported over ${escapeHtml(event.place)}`
+      + (event.place_match && !event.place_match.toLowerCase().startsWith(event.place.toLowerCase())
+        ? ` <span class="ao-match">→ ${escapeHtml(event.place_match.split(',').slice(0, 2).join(','))}</span>`
+        : ''));
+  }
   if (event.toward) {
     rows.push(`Reported travelling to ${escapeHtml(event.toward)}`
       + (event.dest_km ? `, ${Math.round(event.dest_km)} km away` : ''));
@@ -166,6 +174,7 @@ function popup(event, km) {
   return `<div class="ao-pop">
     <h4>${label(event)}</h4>
     ${rows.map((r) => `<p>${r}</p>`).join('')}
+    ${event.summary ? `<p class="ao-sum">${escapeHtml(event.summary)}</p>` : ''}
     ${event.text ? `<blockquote>${escapeHtml(event.text)}</blockquote>` : ''}
     <p class="ao-src">${escapeHtml(event.channel ?? '')}</p>
   </div>`;
@@ -266,6 +275,7 @@ async function saveKey(value) {
   }
 }
 
+
 // ── The panel ──────────────────────────────────────────────────
 
 function buildDock() {
@@ -295,6 +305,11 @@ function buildDock() {
           ' · kept in memory only'),
       ]),
       el('div', { class: 'ao-count', id: 'osintCount' }, 'Loading…'),
+      // The reports, whether or not they could be put on the map. This list is
+      // the fix for the complaint that the layer "does not work": a night when
+      // the gazetteer cannot place the names still shows six reports here,
+      // which is a feed doing its job, and looks nothing like a broken one.
+      el('div', { class: 'ao-list', id: 'osintList' }),
       el('div', { class: 'ao-note', id: 'osintNote' }, '')));
   paintDock();
 }
@@ -319,35 +334,76 @@ function toggle() {
   paintDock();
 }
 
+/** How many reports arrived, and how many of them could be placed. */
+function tally() {
+  const got = feed?.reports ?? { placed: 0, unplaced: 0 };
+  return { ...got, total: (got.placed ?? 0) + (got.unplaced ?? 0) };
+}
+
 function paintDock() {
   const count = $('#osintCount');
   const note = $('#osintNote');
+  const list = $('#osintList');
   if (!count || !note || !enabled) return;
 
   if (!keySaved) {
     count.textContent = 'Needs an OpenRouter key';
-    note.textContent = 'The reports are prose; a model turns them into positions. '
+    list?.replaceChildren();
+    note.textContent = 'The reports are prose, so a model reads them on the server. '
+      + 'Where they are comes from a gazetteer, not from the model. '
       + 'The key is used on the server and stored nowhere.';
     return;
   }
+
   const n = drawn.size;
   count.textContent = n
-    ? `${n} in the air or down, last ${feed?.keep_minutes ?? 20} min`
-    : 'Nothing being reported';
+    ? `${n} on the map, last ${feed?.keep_minutes ?? 20} min`
+    : 'Nothing on the map';
+
+  // The recent reports, newest first, the mapped ones clickable.
+  const alerts = (feed?.alerts ?? []).slice(0, 8);
+  list?.replaceChildren(...alerts.map((item) => {
+    const kind = feed?.kinds?.[item.kind] ?? {};
+    const mins = Math.max(0, Math.round(Date.now() / 1000 - item.seen) / 60);
+    const row = el('button', {
+      class: `ao-row${item.placed ? '' : ' is-unplaced'}`,
+      type: 'button',
+      title: item.text ?? '',
+      onclick: () => goTo(item),
+    },
+    el('i', { style: kind.colour ? `background:${kind.colour}` : '' }),
+    el('span', { class: 'ao-row-what' }, item.summary || kind.label || item.kind),
+    el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : `${Math.round(mins)}m`));
+    return row;
+  }));
 
   const lines = [];
   const demo = feed?.state?.startsWith('demo');
+  const got = tally();
   if (demo) {
-    lines.push('Demo mode: these events are invented.');
+    lines.push('Demo mode: these reports are invented.');
   } else {
-    lines.push('Public Telegram channels: '
-      + `${(feed?.channels ?? []).join(', ')}. Markers with an arrow are `
-      + 'carried along the reported heading at a typical speed — estimated, not tracked.');
+    lines.push(`${(feed?.channels ?? []).length} public Telegram channels. `
+      + 'A model reads the words; a gazetteer decides where they are.');
   }
-  // The state is the backend explaining itself -- a channel that would not
-  // answer, a rate limit. It is worth saying, but not when it is only
-  // repeating what the line above already said.
+  // Said plainly, because it is the number that explains an empty map.
+  if (got.total) {
+    lines.push(`${got.placed} of ${got.total} reports placed`
+      + (got.unplaced ? `; ${got.unplaced} named nowhere a map knows.` : '.'));
+  }
+  if (n) {
+    lines.push('Arrows are carried along the reported course at a typical speed '
+      + 'for the type — estimated, not tracked.');
+  }
   if (problem) lines.push(problem);
   else if (!demo && feed?.state && feed.state !== 'nothing new') lines.push(feed.state);
   note.textContent = lines.filter(Boolean).join(' ');
+}
+
+/** Take the map to a report, if it is somewhere. */
+function goTo(item) {
+  const held = drawn.get(item.id);
+  if (!held) return;
+  map.flyTo(held.marker.getLatLng(), Math.max(map.getZoom(), 8), { duration: 0.7 });
+  held.marker.openPopup();
 }

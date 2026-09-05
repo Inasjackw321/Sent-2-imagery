@@ -1,31 +1,44 @@
 """Air-threat reports from public Telegram channels, put on the map.
 
-Ukraine's air force command and a handful of monitoring channels post a running
-commentary of what is in the air: drones crossing an oblast, cruise missiles on
-a heading, strikes where they land. It is published to warn people, openly and
-deliberately, and this reads the same public pages anyone can open in a browser.
+Monitoring channels in Ukraine, Lebanon and the wider Middle East post a
+running commentary of what is in the air: drones crossing an oblast, missiles
+on a course, strikes where they land. It is published to warn people, openly
+and deliberately, and this reads the same public pages anyone can open in a
+browser.
 
-Three parts, and the seams between them matter:
+This is the second attempt, and the first one's mistake is worth writing down
+because it is not obvious and it looked fine.
+
+The first version asked the language model for coordinates. That is the wrong
+job to give a model. Asked to read a report and return a latitude, a model
+always returns a latitude: right for a capital city, recalled or interpolated
+for anywhere smaller, and occasionally invented outright. Nothing in the number
+says which of those happened. The result was markers in the wrong oblast, and
+no way to tell them from the correct ones.
+
+So the work is split along the seam it should always have had:
 
   reading    the channels' public web preview at t.me/s/<name>. No account, no
-             API key, no session -- the same HTML a logged-out visitor gets.
+             API key -- the same HTML a logged-out visitor gets.
 
-  reading    the messages are prose in Ukrainian and Russian, so a language
-  meaning    model turns them into structured events: what, where, which way.
-             It is asked for JSON and given a strict shape, and anything that
-             comes back malformed or without a position is dropped rather than
-             guessed at.
+  reading    a model turns the prose into structure: what kind of thing, the
+  meaning    NAME of the place, the NAME of where it is going. Language work,
+             which is what it is for. It is asked for no numbers at all.
 
-  moving     an event has a heading, so its marker is carried forward along it
-             between reports. This is dead reckoning from a typical speed for
-             the kind of thing it is -- an estimate, not an observation -- and
-             everything downstream is built to say so.
+  placing    a gazetteer turns those names into coordinates, biased to the
+             country the channel reports on. If it does not know the place,
+             the event is not placed. That is a real outcome and it is kept,
+             as text, rather than being quietly dropped.
 
-That last point is the one to be careful about. A marker sliding across a map
-looks like tracking, and it is not: it is a guess extrapolated from one report,
-and it gets worse every second until the next one. So tracks expire quickly, the
-panel says what is measured and what is inferred, and nothing is ever placed
-without a position that came from the message itself.
+  moving     an event with a destination has a course, computed from the two
+             positions, and its marker is carried along it and stops when it
+             arrives. Dead reckoning from a typical speed for the kind of
+             thing it is -- an estimate, and everything downstream says so.
+
+The other change is that nothing is thrown away for failing to be placeable.
+A report that cannot be put on a map is still a report; it goes into the alert
+stream with everything else. The old version silently discarded them, so a
+patchy night looked identical to a broken feature.
 """
 
 from __future__ import annotations
@@ -41,11 +54,22 @@ from typing import Any
 
 import requests
 
-from . import config
+from . import config, gazetteer
 
-# The channels, by their public name. These are read as anyone reads them.
-CHANNELS = ("eRadarrua", "kpszsu", "mon1tor_ua", "war_monitor",
-            "redlinkleb", "shin_persian")
+# The channels, and what each one is about.
+#
+# `countries` is the single most valuable thing in this table. A gazetteer
+# asked for "Sumy" with no country will happily return a street somewhere
+# else; asked for "Sumy" in Ukraine it returns the oblast capital. Two-letter
+# ISO codes, as Nominatim wants them.
+CHANNELS = (
+    {"name": "eRadarrua", "region": "Ukraine", "countries": "ua"},
+    {"name": "kpszsu", "region": "Ukraine", "countries": "ua"},
+    {"name": "mon1tor_ua", "region": "Ukraine", "countries": "ua"},
+    {"name": "war_monitor", "region": "Ukraine", "countries": "ua,ru,by"},
+    {"name": "redlinkleb", "region": "Lebanon", "countries": "lb,il,sy"},
+    {"name": "shin_persian", "region": "Middle East", "countries": "ir,il,lb,sy,iq,ye"},
+)
 
 # The public web preview. Not the API: this is the page Telegram serves to a
 # visitor with no account, and it carries the recent posts as plain HTML.
@@ -59,13 +83,17 @@ MODEL = "poolside/laguna-s-2.1:free"
 # fiction, so it goes rather than sitting there looking authoritative.
 KEEP_MINUTES = 20
 
+# How long a report stays in the alert stream. Longer than a track, because
+# text does not go stale the way an extrapolated position does -- "a strike was
+# reported in Kharkiv an hour ago" is still true an hour later.
+ALERT_MINUTES = 90
+
 # Nothing older than this is worth reading on start-up.
 LOOKBACK_MINUTES = 45
 
 # The floor between two reads of the channels. The map asks once a minute, but
 # it may be open in three tabs, and every read that finds something new costs a
-# model call against a free-tier ceiling. So the interval belongs here, on the
-# one thing that knows how long it has been, rather than in each browser.
+# model call against a free-tier ceiling.
 MIN_POLL_SECONDS = 55
 
 # How fast each kind of thing travels, in km/h, for carrying a marker forward
@@ -81,24 +109,30 @@ SPEEDS = {
     "unknown": 200.0,
 }
 
-# What each kind looks like on the map. The colours follow the reference the
-# map was asked to match: red for the things still in the air, violet for the
-# ones already reported down or struck.
+# What each kind looks like, and how loud it is. `rank` orders the alert
+# stream: a strike outranks a drone crossing an oblast.
 KINDS = {
-    "drone": {"colour": "#ff3b30", "label": "Drone"},
-    "cruise": {"colour": "#ff3b30", "label": "Cruise missile"},
-    "ballistic": {"colour": "#ff3b30", "label": "Ballistic"},
-    "aircraft": {"colour": "#ff3b30", "label": "Aircraft"},
-    "explosion": {"colour": "#b06bff", "label": "Explosion"},
-    "unknown": {"colour": "#ff8a3b", "label": "Unidentified"},
+    "drone": {"colour": "#ff3b30", "label": "Drone", "rank": 2},
+    "cruise": {"colour": "#ff3b30", "label": "Cruise missile", "rank": 3},
+    "ballistic": {"colour": "#ff3b30", "label": "Ballistic", "rank": 4},
+    "aircraft": {"colour": "#ff3b30", "label": "Aircraft", "rank": 2},
+    "explosion": {"colour": "#b06bff", "label": "Explosion", "rank": 5},
+    "alert": {"colour": "#ffb020", "label": "Air alert", "rank": 1},
+    "unknown": {"colour": "#ff8a3b", "label": "Unidentified", "rank": 1},
 }
 
+# Kinds that are announcements rather than objects: worth reading, never worth
+# drawing as a thing in the air with a course and a speed.
+NOT_AIRBORNE = ("explosion", "alert")
+
 MAX_EVENTS = 400
+MAX_ALERTS = 200
 
 _lock = threading.Lock()
 _key: str | None = None
 _seen: set[str] = set()
 _events: list[dict[str, Any]] = []
+_alerts: list[dict[str, Any]] = []
 _counter = 0
 _state = "not started"
 _last_poll = 0.0
@@ -185,50 +219,45 @@ def _fetch_channel(channel: str) -> list[dict[str, Any]]:
 # Reading the meaning
 # ---------------------------------------------------------------------------
 
-PROMPT = """You convert Ukrainian and Russian air-threat reports into JSON.
+# Note what this does NOT ask for: coordinates. That is the whole difference
+# between this version and the one before it.
+PROMPT = """You read air-threat reports in Ukrainian, Russian, Arabic, Farsi
+and Hebrew, and return JSON describing them.
 
-Return ONLY a JSON object: {"events": [...]}. One entry per distinct airborne
-object or strike that has a definite location. No prose, no code fences.
+Return ONLY a JSON object: {"events": [...]}. One entry per report you were
+given, in the same order, using the "id" you were given. No prose, no fences.
 
 Each event:
-  "kind"      one of: drone, cruise, ballistic, aircraft, explosion, unknown
-  "lat"       decimal degrees, where the object is now
-  "lon"       decimal degrees
-  "place"     that place's name as written, transliterated to Latin script
-  "toward"    the place it is travelling TO, if the report names one, else null
-  "dest_lat"  decimal degrees of "toward", else null
-  "dest_lon"  decimal degrees of "toward", else null
-  "heading"   degrees clockwise from north, ONLY when the report gives a
-              compass direction of travel and names no destination, else null
-  "count"     how many objects, if stated, else 1
-  "text"      the sentence this came from, trimmed to 160 characters
+  "id"      the id of the message this came from, copied exactly
+  "kind"    one of: drone, cruise, ballistic, aircraft, explosion, alert,
+            unknown. Use "alert" for an air-raid warning or all-clear, and
+            "explosion" for a strike, an interception, or something down.
+  "place"   the NAME of the place the report is about, as a plain place name
+            a map would recognise: "Nikopol", "Kharkiv oblast", "Beirut".
+            Transliterate to Latin script. Put the place in the nominative,
+            not the genitive: "Харківщини" -> "Kharkiv oblast". Null if the
+            report names no place.
+  "toward"  the NAME of the place it is travelling TO, or null.
+  "count"   how many objects, if stated, else 1
+  "summary" one short English sentence saying what is being reported, under
+            110 characters. This is read aloud on a wall display.
 
-Rules, and they matter more than completeness:
-  - Only emit an event if the report names a place you can place on a map.
-    Never estimate a position from context. Omit rather than guess.
+DO NOT return coordinates, latitudes, longitudes or bearings. You are not
+asked for them and they will be discarded. Somewhere else turns names into
+positions; your job is the words.
 
-  - A DIRECTION OF TRAVEL AND A LOCATION ARE DIFFERENT THINGS, and this is
-    the mistake to avoid above all others. Set "toward" or "heading" only
-    when the report says the object is MOVING somewhere:
-        "курс на Полтаву", "у напрямку Києва", "рухаються на південь",
-        "прямують до Дніпра"  -> travelling. Fill it in.
-    A phrase that says which PART of a region something is in is not a
-    direction and must leave both fields null:
-        "на північний схід Харківщини"  = in the north-east OF Kharkiv
-        oblast. That is where it is, not where it is going.
-        "над Сумщиною", "у Дніпропетровській області"  -> the same.
-    When in doubt, leave both null. A marker that sits where it was
-    reported is honest; one that sets off in an invented direction is not.
-
-  - Prefer "toward" with its coordinates over "heading". Naming the town it
-    is flying to is something the report actually said; a bearing in degrees
-    is something you would have to work out, and getting it wrong sends the
-    marker across the wrong oblast.
-
-  - Reports of air-raid alerts, all-clears, statistics, appeals for donations
-    and general commentary are not events. Skip them.
-  - If a report says something was shot down, struck or has landed, that is
-    "explosion", with "toward", "dest_lat", "dest_lon" and "heading" all null.
+Rules:
+  - A DIRECTION AND A LOCATION ARE DIFFERENT THINGS. Set "toward" only when
+    the report says the object is MOVING somewhere:
+        "курс на Полтаву", "у напрямку Києва", "прямують до Дніпра"
+    A phrase saying which PART of a region something is in is not a
+    destination and "toward" must be null:
+        "на північний схід Харківщини" = in the north-east OF Kharkiv oblast.
+        That is "place": "Kharkiv oblast", and "toward": null.
+  - If the report names no place at all, still return the event with "place"
+    null. It will be listed rather than mapped. Do not invent a place.
+  - Appeals for donations, channel promotion, and general commentary are not
+    events: leave them out entirely.
 """
 
 
@@ -301,72 +330,59 @@ def read_events(content: str) -> list[dict[str, Any]]:
     return [clean for clean in (_clean(item) for item in raw) if clean]
 
 
-def _clean(item: Any) -> dict[str, Any] | None:
-    """One event, checked, or None.
+# Things a model offers as a place name when it has not got one. Each of these
+# has been seen; none of them is somewhere.
+NON_PLACES = {
+    "unknown", "unspecified", "n/a", "na", "none", "null", "not specified",
+    "not stated", "somewhere", "various", "multiple", "several", "-", "?",
+}
 
-    A position that did not come from the report is the thing this exists to
-    refuse. Everything else can be defaulted; that cannot.
-    """
+
+def _name(value: Any) -> str | None:
+    """A place name, or None if what came back is not one."""
+    text = " ".join(str(value or "").split())
+    if len(text) < 2 or text.lower().strip(".") in NON_PLACES:
+        return None
+    # A model told not to give coordinates sometimes gives them anyway, in the
+    # place-name field. A gazetteer would then look up the literal string and
+    # either miss or match something absurd, so they are refused here.
+    if re.fullmatch(r"[-+0-9.,°'\"NSEW\s]+", text):
+        return None
+    return text[:80]
+
+
+def _clean(item: Any) -> dict[str, Any] | None:
+    """One report from the model, checked. Names only -- no positions yet."""
     if not isinstance(item, dict):
-        return None
-    lat, lon = item.get("lat"), item.get("lon")
-    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-        return None
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return None
-    # 0,0 is where a model puts a position it does not have.
-    if abs(lat) < 0.01 and abs(lon) < 0.01:
         return None
 
     kind = str(item.get("kind") or "unknown").lower().strip()
     if kind not in KINDS:
         kind = "unknown"
 
-    heading = item.get("heading")
-    if isinstance(heading, (int, float)) and math.isfinite(heading):
-        heading = float(heading) % 360
-    else:
-        heading = None
-
-    # A destination, if the report named one. When there is a destination the
-    # heading is derived from it and whatever the model said about degrees is
-    # discarded: one of the two is a place somebody wrote down and the other
-    # is arithmetic done in prose.
-    dest_lat, dest_lon, dest_km = item.get("dest_lat"), item.get("dest_lon"), None
-    usable = (isinstance(dest_lat, (int, float)) and isinstance(dest_lon, (int, float))
-              and -90 <= dest_lat <= 90 and -180 <= dest_lon <= 180
-              and not (abs(dest_lat) < 0.01 and abs(dest_lon) < 0.01))
-    if usable:
-        dest_lat, dest_lon = float(dest_lat), float(dest_lon)
-        dest_km = separation(lat, lon, dest_lat, dest_lon)
-        if dest_km < 1:
-            # It is already there. Nothing to travel, nothing to point at.
-            dest_lat = dest_lon = dest_km = None
-        else:
-            heading = bearing(lat, lon, dest_lat, dest_lon)
-    else:
-        dest_lat = dest_lon = None
-
     count = item.get("count")
     count = int(count) if isinstance(count, (int, float)) and 1 <= count <= 999 else 1
 
+    place = _name(item.get("place"))
+    toward = _name(item.get("toward"))
+    # "Heading for where it already is" is not a journey, and is usually the
+    # model filling a field for the sake of it.
+    if toward and place and toward.lower() == place.lower():
+        toward = None
+
+    summary = " ".join(str(item.get("summary") or "").split())[:160]
     return {
+        "id": str(item.get("id") or "")[:120] or None,
         "kind": kind,
-        "lat": float(lat),
-        "lon": float(lon),
-        "place": str(item.get("place") or "")[:80] or None,
-        "heading": heading,
-        "toward": str(item.get("toward") or "")[:80] or None,
-        "dest_lat": dest_lat,
-        "dest_lon": dest_lon,
-        "dest_km": round(dest_km, 1) if dest_km else None,
+        "place": place,
+        "toward": toward,
         "count": count,
-        "text": str(item.get("text") or "")[:200],
+        "summary": summary,
     }
 
 
 # ---------------------------------------------------------------------------
-# Moving
+# Placing
 # ---------------------------------------------------------------------------
 
 EARTH_KM = 6371.0088
@@ -376,10 +392,9 @@ def bearing(lat: float, lon: float, to_lat: float, to_lon: float) -> float:
     """The compass course from one point to another, in degrees.
 
     Worked out here rather than asked for, because a report saying "курс на
-    Полтаву" has told us the destination and nothing else. Turning that into
-    a bearing is spherical trigonometry, which this is good at and a language
-    model is not: the version that asked the model for degrees put a marker
-    over the wrong oblast within ten minutes.
+    Полтаву" has told us the destination and nothing else. Turning that into a
+    bearing is spherical trigonometry, which this is good at and a language
+    model is not.
     """
     a, b = math.radians(lat), math.radians(to_lat)
     d = math.radians(to_lon - lon)
@@ -420,18 +435,77 @@ def advance(lat: float, lon: float, heading: float, km: float) -> tuple[float, f
     return math.degrees(lat2), (math.degrees(lon2) + 540) % 360 - 180
 
 
+def place_event(item: dict[str, Any], countries: str,
+                lookup=gazetteer.find) -> dict[str, Any]:
+    """Turn a report's place names into positions, if they are known.
+
+    An unplaceable report is not a failure to be swallowed. It comes back with
+    `lat` None and a reason, goes into the alert stream, and is counted -- so
+    "the gazetteer does not know these names" is visible as itself rather than
+    as an empty map.
+    """
+    out = dict(item)
+    out["lat"] = out["lon"] = out["heading"] = None
+    out["dest_lat"] = out["dest_lon"] = out["dest_km"] = None
+    out["placed"] = False
+
+    if not item.get("place"):
+        out["why_unplaced"] = "the report names no place"
+        return out
+
+    try:
+        here = lookup(item["place"], countries)
+    except gazetteer.GazetteerError as exc:
+        out["why_unplaced"] = str(exc)
+        return out
+    if not here:
+        out["why_unplaced"] = f'"{item["place"]}" is not in the gazetteer'
+        return out
+
+    out["lat"], out["lon"] = here["lat"], here["lon"]
+    out["place_match"] = here.get("name")
+    out["place_kind"] = here.get("kind")
+    out["placed"] = True
+    out.pop("why_unplaced", None)
+
+    # Only airborne things travel. A strike or an alert has a place and stays
+    # there, whatever else the report happens to mention.
+    if not item.get("toward") or item["kind"] in NOT_AIRBORNE:
+        return out
+    try:
+        there = lookup(item["toward"], countries)
+    except gazetteer.GazetteerError:
+        return out
+    if not there:
+        return out
+    km = separation(here["lat"], here["lon"], there["lat"], there["lon"])
+    if km < 1:
+        # The gazetteer matched both names to the same point. Nothing to
+        # travel, and a bearing between two identical points is noise.
+        return out
+    out["dest_lat"], out["dest_lon"] = there["lat"], there["lon"]
+    out["dest_km"] = round(km, 1)
+    out["heading"] = bearing(here["lat"], here["lon"], there["lat"], there["lon"])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Moving
+# ---------------------------------------------------------------------------
+
+
 def project(event: dict[str, Any], now: float) -> dict[str, Any]:
     """An event with its marker carried forward to now.
 
     The reported position is kept alongside the projected one, because they are
-    different claims: one is what a channel said, the other is arithmetic.
+    different claims: one is a place a channel named, the other is arithmetic.
     """
     minutes = max(0.0, (now - event["seen"]) / 60)
     speed = SPEEDS.get(event["kind"], SPEEDS["unknown"])
     out = dict(event)
     out["age_minutes"] = round(minutes, 1)
     out["arrived"] = False
-    if event["heading"] is None or speed <= 0:
+    if event.get("heading") is None or speed <= 0:
         out["lat"], out["lon"] = event["origin_lat"], event["origin_lon"]
         out["projected"] = False
         return out
@@ -439,8 +513,7 @@ def project(event: dict[str, Any], now: float) -> dict[str, Any]:
     km = speed * (minutes / 60)
     # A report that named where it was going has also said where the marker
     # stops. Past that point the extrapolation is not merely stale, it is
-    # describing a journey the report said was over -- so it goes no further,
-    # and _expire takes it off the map.
+    # describing a journey the report said was over.
     limit = event.get("dest_km")
     if limit and km >= limit:
         km = limit
@@ -452,31 +525,6 @@ def project(event: dict[str, Any], now: float) -> dict[str, Any]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Putting it together
-# ---------------------------------------------------------------------------
-
-
-def _record(found: list[dict[str, Any]], message: dict[str, Any]) -> None:
-    global _counter
-    when = message.get("when")
-    try:
-        seen = dt.datetime.fromisoformat(str(when).replace("Z", "+00:00")).timestamp()
-    except (TypeError, ValueError):
-        seen = time.time()
-    for item in found:
-        _counter += 1
-        _events.append({
-            **item,
-            "id": f"AO#{_counter:03d}",
-            "origin_lat": item["lat"],
-            "origin_lon": item["lon"],
-            "seen": seen,
-            "channel": message.get("channel"),
-            "source": message.get("id"),
-        })
-
-
 def _arrived(event: dict[str, Any], now: float) -> bool:
     """Whether a track has got where the report said it was going."""
     limit, speed = event.get("dest_km"), SPEEDS.get(event["kind"], 0.0)
@@ -485,11 +533,63 @@ def _arrived(event: dict[str, Any], now: float) -> bool:
     return speed * (max(0.0, now - event["seen"]) / 3600) >= limit
 
 
+# ---------------------------------------------------------------------------
+# Putting it together
+# ---------------------------------------------------------------------------
+
+
+def _when(message: dict[str, Any]) -> float:
+    try:
+        return dt.datetime.fromisoformat(
+            str(message.get("when")).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return time.time()
+
+
+def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> None:
+    """One classified report: an alert always, a track only if it placed."""
+    global _counter
+    seen = _when(message)
+    placed = place_event(item, countries)
+
+    _counter += 1
+    ident = f"AO{_counter:04d}"
+    _alerts.append({
+        "id": ident,
+        "kind": placed["kind"],
+        "rank": KINDS[placed["kind"]]["rank"],
+        "summary": placed["summary"] or (placed.get("place") or "Report"),
+        "place": placed.get("place"),
+        "placed": placed["placed"],
+        "why_unplaced": placed.get("why_unplaced"),
+        "channel": message.get("channel"),
+        "region": message.get("region"),
+        "seen": seen,
+        "text": message.get("text", "")[:300],
+    })
+
+    if not placed["placed"]:
+        return
+    _events.append({
+        **placed,
+        "id": ident,
+        "origin_lat": placed["lat"],
+        "origin_lon": placed["lon"],
+        "seen": seen,
+        "channel": message.get("channel"),
+        "region": message.get("region"),
+        "source": message.get("id"),
+        "text": message.get("text", "")[:300],
+    })
+
+
 def _expire(now: float) -> None:
     """Drop what is too old to extrapolate, and what has arrived."""
-    cutoff = now - KEEP_MINUTES * 60
     _events[:] = [e for e in _events
-                  if e["seen"] >= cutoff and not _arrived(e, now)][-MAX_EVENTS:]
+                  if e["seen"] >= now - KEEP_MINUTES * 60
+                  and not _arrived(e, now)][-MAX_EVENTS:]
+    _alerts[:] = [a for a in _alerts
+                  if a["seen"] >= now - ALERT_MINUTES * 60][-MAX_ALERTS:]
 
 
 def poll() -> dict[str, Any]:
@@ -505,11 +605,13 @@ def poll() -> dict[str, Any]:
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=LOOKBACK_MINUTES)
     for channel in CHANNELS:
         try:
-            posts = _fetch_channel(channel)
+            posts = _fetch_channel(channel["name"])
         except OsintError as exc:
             trouble.append(str(exc))
             continue
         for post in posts:
+            post["countries"] = channel["countries"]
+            post["region"] = channel["region"]
             if post["id"] in _seen:
                 continue
             try:
@@ -526,15 +628,24 @@ def poll() -> dict[str, Any]:
     now = time.time()
     if fresh:
         # One call for everything new, not one per message: the free tier has a
-        # ceiling and four channels can post a dozen times a minute between them.
-        found = _call_model(fresh[:40], key)
+        # ceiling and six channels can post a dozen times a minute between them.
+        batch = fresh[:40]
+        found = _call_model(batch, key)
+        by_id = {item["id"]: item for item in found if item.get("id")}
+        # Geocoding is done outside the lock: it may go to the network, and
+        # holding the lock across that would stall every request for the map.
+        for post in batch:
+            _seen.add(post["id"])
+            item = by_id.get(post["id"])
+            if item is None and len(batch) == 1 and found:
+                # A model that ignored the ids, with only one message to
+                # confuse: the single answer can only belong to it.
+                item = found[0]
+            if item is None:
+                continue
+            with _lock:
+                _record(item, post, post["countries"])
         with _lock:
-            by_source: dict[str, list[dict[str, Any]]] = {}
-            for item in found:
-                by_source.setdefault(item.pop("id", ""), []).append(item)
-            for post in fresh:
-                _seen.add(post["id"])
-                _record(by_source.get(post["id"], found if len(fresh) == 1 else []), post)
             _expire(now)
         _state = f"reading {len(CHANNELS)} channels"
     else:
@@ -562,22 +673,35 @@ def refresh() -> dict[str, Any]:
 
 
 def current() -> dict[str, Any]:
-    """Every live event, carried forward to now."""
+    """Every live event and recent alert, carried forward to now."""
     now = time.time()
     with _lock:
         _expire(now)
         events = [project(e, now) for e in _events]
+        alerts = sorted(_alerts, key=lambda a: a["seen"], reverse=True)
+        # Over the alert window, not since the process started. A running
+        # total answers a question nobody asked -- what matters is whether
+        # the names coming in tonight are being found.
+        placed = sum(1 for a in alerts if a["placed"])
+        unplaced = len(alerts) - placed
     return {
         "events": events,
         "count": len(events),
+        "alerts": [dict(a) for a in alerts],
         "state": _state,
         "keep_minutes": KEEP_MINUTES,
+        "alert_minutes": ALERT_MINUTES,
         "speeds": SPEEDS,
         "kinds": KINDS,
-        "channels": list(CHANNELS),
+        "channels": [c["name"] for c in CHANNELS],
+        "regions": sorted({c["region"] for c in CHANNELS}),
         "model": MODEL,
         "keyed": has_key(),
         "last_poll": _last_poll or None,
+        # Said out loud, because an empty map with a healthy feed behind it is
+        # the failure the previous version hid.
+        "reports": {"placed": placed, "unplaced": unplaced},
+        "gazetteer": gazetteer.stats(),
     }
 
 
@@ -585,20 +709,29 @@ def current() -> dict[str, Any]:
 # Demo
 # ---------------------------------------------------------------------------
 
+# Name, destination, count, kind -- and the coordinates the gazetteer would
+# return for them, so the demo runs the real placing code rather than a
+# parallel copy of it that could drift out of step.
+DEMO_PLACES = {
+    "Nikopol": (47.5665, 34.4053), "Kherson": (46.6354, 32.6169),
+    "Beryslav": (46.8397, 33.4269), "Odesa": (46.4825, 30.7233),
+    "Mykolaiv": (46.9750, 31.9946), "Kharkiv oblast": (49.7, 36.3),
+    "Beirut": (33.8938, 35.5018), "Ochakiv": (46.6128, 31.5406),
+}
 
-# Position, where the report said it was going, and how many. The bearing is
-# worked out from the pair, exactly as it is for a real report, so the demo
-# exercises the arithmetic rather than a hard-coded number.
 DEMO_SEED = [
-    ("drone", 47.62, 34.42, (46.63, 32.62, "Kherson"), 2, "Nikopol district"),
-    ("drone", 47.43, 34.28, (46.97, 33.42, "Beryslav"), 1, "Kherson oblast north"),
-    ("drone", 47.35, 33.98, None, 3, "Beryslav"),
+    ("drone", "Nikopol", "Kherson", 2, "Two drones over Nikopol heading for Kherson"),
+    ("drone", "Beryslav", "Mykolaiv", 1, "Drone over Beryslav on a course for Mykolaiv"),
+    ("drone", "Kharkiv oblast", None, 3, "Three drones over Kharkiv oblast"),
     # A hundred kilometres at cruise speed: in flight when the page loads and
     # arriving a couple of minutes later, so the demo shows a marker reaching
     # where it was going and leaving, not only things in transit.
-    ("cruise", 46.42, 32.05, (46.48, 30.73, "Odesa"), 1, "Black Sea coast"),
-    ("explosion", 46.55, 32.28, None, 1, "Kherson"),
-    ("explosion", 46.38, 31.85, None, 1, "Ochakiv"),
+    ("cruise", "Ochakiv", "Odesa", 1, "Cruise missile past Ochakiv towards Odesa"),
+    ("explosion", "Kherson", None, 1, "Explosions reported in Kherson"),
+    ("alert", "Beirut", None, 1, "Air raid warning for Beirut"),
+    # The case the previous version hid: a real report that cannot be placed.
+    # It belongs in the alert stream and nowhere else.
+    ("drone", "Somewhere unnamed", None, 1, "Drone activity reported, no location given"),
 ]
 
 # How long the demo runs before starting over. Long enough for the slowest
@@ -608,15 +741,25 @@ DEMO_CYCLE = (KEEP_MINUTES + 4) * 60
 _demo_epoch = 0.0
 
 
+def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
+    """A gazetteer of eight places, for the build with no network."""
+    found = DEMO_PLACES.get(name)
+    if not found:
+        return None
+    return {"lat": found[0], "lon": found[1], "name": name, "kind": "demo"}
+
+
 def demo() -> dict[str, Any]:
-    """Synthetic events over the Dnipro, for the build with no network.
+    """Synthetic reports, for the build with no network.
 
     Anchored to a fixed instant rather than rebuilt against the clock on every
-    call, which is what the first version did and which quietly made the demo
-    a lie: the events were always the same few minutes old, so nothing ever
-    aged, arrived or expired, and none of the endings could be seen. Here they
-    genuinely run -- markers travel, reach the place they were reported flying
-    to and go, or time out -- and the whole set starts again each cycle.
+    call: the first version did that, and it quietly made the demo a lie -- the
+    events were always the same few minutes old, so nothing ever aged, arrived
+    or expired, and none of the endings could be seen.
+
+    Everything here goes through the same place_event, project and expire code
+    the live path uses. A demo that reimplements what it is demonstrating
+    proves nothing about it.
     """
     global _demo_epoch
     now = time.time()
@@ -625,33 +768,45 @@ def demo() -> dict[str, Any]:
             _demo_epoch = now
         epoch = _demo_epoch
 
-    events = []
-    for i, (kind, lat, lon, dest, count, place) in enumerate(DEMO_SEED, start=1):
-        heading = bearing(lat, lon, dest[0], dest[1]) if dest else None
-        event = {
-            "id": f"AO#{100 + i * 37:03d}",
-            "kind": kind, "lat": lat, "lon": lon,
-            "origin_lat": lat, "origin_lon": lon,
-            "heading": heading,
-            "toward": dest[2] if dest else None,
-            "dest_lat": dest[0] if dest else None,
-            "dest_lon": dest[1] if dest else None,
-            "dest_km": round(separation(lat, lon, dest[0], dest[1]), 1) if dest else None,
-            "place": place, "count": count,
-            "text": f"Demo event over {place}.",
-            # Staggered, so they do not all begin and end together.
-            "seen": epoch - i * 90,
-            "channel": "demo", "source": f"demo/{i}",
-        }
-        # Carried forward and filtered by the same code the live path uses,
-        # rather than by a copy of it that could drift out of step.
-        if _arrived(event, now) or now - event["seen"] > KEEP_MINUTES * 60:
+    events, alerts = [], []
+    for i, (kind, place, toward, count, summary) in enumerate(DEMO_SEED, start=1):
+        seen = epoch - i * 90
+        item = {"kind": kind, "place": place, "toward": toward,
+                "count": count, "summary": summary}
+        placed = place_event(item, "ua", lookup=_demo_lookup)
+        ident = f"AO{100 + i * 7:04d}"
+        alerts.append({
+            "id": ident, "kind": kind, "rank": KINDS[kind]["rank"],
+            "summary": summary, "place": place, "placed": placed["placed"],
+            "why_unplaced": placed.get("why_unplaced"),
+            "channel": "demo", "region": "Ukraine", "seen": seen,
+            "text": f"Demo report — {summary}.",
+        })
+        if not placed["placed"]:
+            continue
+        event = {**placed, "id": ident,
+                 "origin_lat": placed["lat"], "origin_lon": placed["lon"],
+                 "seen": seen, "channel": "demo", "region": "Ukraine",
+                 "source": f"demo/{i}", "text": f"Demo report — {summary}."}
+        if _arrived(event, now) or now - seen > KEEP_MINUTES * 60:
             continue
         events.append(project(event, now))
 
+    alerts = [a for a in alerts if now - a["seen"] <= ALERT_MINUTES * 60]
     return {
         "events": events, "count": len(events),
-        "state": "demo — synthetic events", "keep_minutes": KEEP_MINUTES,
-        "speeds": SPEEDS, "kinds": KINDS, "channels": list(CHANNELS),
+        "alerts": sorted(alerts, key=lambda a: a["seen"], reverse=True),
+        "state": "demo — synthetic reports",
+        "keep_minutes": KEEP_MINUTES, "alert_minutes": ALERT_MINUTES,
+        "speeds": SPEEDS, "kinds": KINDS,
+        "channels": [c["name"] for c in CHANNELS],
+        "regions": sorted({c["region"] for c in CHANNELS}),
         "model": MODEL, "keyed": True, "last_poll": now,
+        # Counted from the reports' own flags, not from how many markers
+        # survive. A track that has arrived or aged off the map was placed
+        # perfectly well; calling it unplaced would make the gazetteer look
+        # worse than it is, which is precisely the number people will read.
+        "reports": {"placed": sum(1 for a in alerts if a["placed"]),
+                    "unplaced": sum(1 for a in alerts if not a["placed"])},
+        "gazetteer": {"remembered": len(DEMO_PLACES), "lookups": 0},
     }
