@@ -1475,3 +1475,7 @@ body.is-walled { overflow: hidden; }
 .ao-row-when { color: var(--ink-faint); font-size: 9.5px; flex: none; }
 .ao-sum { font-weight: 600; }
 .ao-match { color: var(--ink-faint); }
+
+/* A report read without the model. Marked, not hidden: it is a weaker
+   reading than one the model made and the panel should not blur the two. */
+.ao-row-what.is-plain { border-bottom: 1px dotted rgba(143, 168, 216, .35); }

@@ -453,7 +453,10 @@ function paintDock() {
       onclick: () => goTo(item),
     },
     el('i', { style: kind.colour ? `background:${kind.colour}` : '' }),
-    el('span', { class: 'ao-row-what' }, item.summary || kind.label || item.kind),
+    el('span', {
+      class: `ao-row-what${item.by === 'rules' ? ' is-plain' : ''}`,
+      title: item.by === 'rules' ? 'Read without the model' : '',
+    }, item.summary || kind.label || item.kind),
     el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : `${Math.round(mins)}m`));
     return row;
   }));
@@ -461,8 +464,18 @@ function paintDock() {
   const lines = [];
   const demo = feed?.state?.startsWith('demo');
   const got = tally();
+  const by = feed?.read_by ?? {};
   if (demo) {
     lines.push('Demo mode: these reports are invented.');
+  } else if (by.rules && !by.model) {
+    // The case that used to show an empty map and a line of red text. It is
+    // worth saying plainly that the layer is working, just not as well.
+    lines.push(`${(feed?.channels ?? []).length} public Telegram channels, read `
+      + 'without the model — the patterns these reports are written in are '
+      + 'regular enough to follow. A model reads them better.');
+  } else if (by.rules) {
+    lines.push(`${(feed?.channels ?? []).length} public Telegram channels. `
+      + `${by.model} read by the model, ${by.rules} by pattern.`);
   } else {
     lines.push(`${(feed?.channels ?? []).length} public Telegram channels. `
       + 'A model reads the words; a gazetteer decides where they are.');

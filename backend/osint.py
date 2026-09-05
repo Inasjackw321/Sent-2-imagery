@@ -54,7 +54,7 @@ from typing import Any
 
 import requests
 
-from . import config, gazetteer
+from . import config, gazetteer, reports
 
 # The channels, and what each one is about.
 #
@@ -76,7 +76,29 @@ CHANNELS = (
 PREVIEW = "https://t.me/s/{channel}"
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "poolside/laguna-s-2.1:free"
+
+# The models to try, in order, all free. One free model being exhausted is the
+# ordinary case rather than the exceptional one -- they share a daily ceiling
+# per account and the popular ones reach it first -- so a list beats a single
+# name, and the layer only gives up on the model step when every one of them
+# has refused.
+MODELS = (
+    "poolside/laguna-s-2.1:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-3-27b-it:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+)
+MODEL = MODELS[0]
+
+# How long to leave OpenRouter alone after it says no. Doubling each time, up
+# to a quarter of an hour.
+#
+# The version before this had no backoff at all, and worse: it only recorded
+# that it had polled AFTER the model answered. So a rate limit meant the next
+# page refresh tried again immediately, and every refresh after that, which is
+# the one thing guaranteed to keep a rate limit in place.
+BACKOFF_START = 120.0
+BACKOFF_MAX = 900.0
 
 # How long a track stays on the map after the report that made it. Dead
 # reckoning decays: after twenty minutes an extrapolated position is a work of
@@ -168,6 +190,10 @@ _alerts: list[dict[str, Any]] = []
 _counter = 0
 _state = "not started"
 _last_poll = 0.0
+# When OpenRouter may be asked again, and how long the last rest was.
+_resting_until = 0.0
+_resting_for = 0.0
+_model_in_use = MODEL
 
 
 class OsintError(RuntimeError):
@@ -310,9 +336,19 @@ Rules:
 """
 
 
-def _call_model(messages: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+class RateLimited(OsintError):
+    """OpenRouter said no for now. Different from a broken key or a bad reply.
+
+    Its own class because the caller does something specific about it: backs
+    off, and falls through to reading the reports without a model rather than
+    showing an empty map.
+    """
+
+
+def _ask_model(model: str, messages: list[dict[str, Any]],
+               key: str) -> list[dict[str, Any]]:
     body = {
-        "model": MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": PROMPT},
             {"role": "user", "content": json.dumps(
@@ -338,17 +374,76 @@ def _call_model(messages: list[dict[str, Any]], key: str) -> list[dict[str, Any]
         raise OsintError(f"OpenRouter could not be reached: {exc}") from exc
     if resp.status_code == 401:
         raise OsintError("OpenRouter refused the key.")
-    if resp.status_code == 429:
-        raise OsintError("OpenRouter is rate limiting — the free tier has a ceiling.")
+    if resp.status_code in (402, 429):
+        raise RateLimited(retry_after(resp), model)
+    if resp.status_code >= 500:
+        raise RateLimited(60.0, model)
     if not resp.ok:
         raise OsintError(f"OpenRouter answered {resp.status_code}")
 
     try:
         content = resp.json()["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise OsintError(f"OpenRouter sent an answer with no content: {exc}") from exc
+    # A 200 whose content is null. It happens: a model that answers with a
+    # tool call, a reasoning-only reply, or a refusal leaves the field empty
+    # rather than omitting it, so the key is present and the value is None.
+    # This used to reach read_events and raise AttributeError -- which is not
+    # an OsintError, so it went straight past every handler and 500ed the
+    # endpoint instead of falling back to reading the reports without it.
+    if not isinstance(content, str) or not content.strip():
+        raise OsintError(f"{model} answered with no content")
     return read_events(content)
 
+
+def retry_after(resp: Any) -> float:
+    """How long the service asked to be left alone for, in seconds.
+
+    Honoured rather than guessed at. OpenRouter sends `Retry-After` in
+    seconds, or `X-RateLimit-Reset` as a millisecond timestamp of when the
+    window rolls over; either beats a number invented here, and ignoring both
+    is how a client keeps its own rate limit alive.
+    """
+    headers = getattr(resp, "headers", {}) or {}
+    plain = headers.get("Retry-After") or headers.get("retry-after")
+    if plain:
+        try:
+            return max(1.0, min(3600.0, float(str(plain).strip())))
+        except ValueError:
+            pass
+    resets = headers.get("X-RateLimit-Reset") or headers.get("x-ratelimit-reset")
+    if resets:
+        try:
+            # Milliseconds since the epoch, so seconds if it is implausibly
+            # large for a duration.
+            value = float(str(resets).strip())
+            when = value / 1000 if value > 1e11 else value
+            if when > time.time():
+                return max(1.0, min(3600.0, when - time.time()))
+        except ValueError:
+            pass
+    return 0.0
+
+
+def _call_model(messages: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    """Read the messages with whichever free model will answer.
+
+    Free models share a daily ceiling and the popular ones reach it first, so
+    one refusing is routine. Only when every one of them has refused is this a
+    rate limit as far as the caller is concerned.
+    """
+    global _model_in_use
+    asked, wait = [], 0.0
+    for model in MODELS:
+        try:
+            found = _ask_model(model, messages, key)
+        except RateLimited as exc:
+            asked.append(model.split("/")[-1])
+            wait = max(wait, float(exc.args[0] or 0))
+            continue
+        _model_in_use = model
+        return found
+    raise RateLimited(wait, ", ".join(asked))
 
 def read_events(content: str) -> list[dict[str, Any]]:
     """Take the events out of whatever the model actually returned.
@@ -357,7 +452,9 @@ def read_events(content: str) -> list[dict[str, Any]]:
     bare list instead of the object asked for. All three are cheap to survive
     and expensive to be surprised by at three in the morning.
     """
-    text = content.strip()
+    text = content.strip() if isinstance(content, str) else ""
+    if not text:
+        raise OsintError("the model returned nothing")
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\n?", "", text)
         text = re.sub(r"\n?```$", "", text).strip()
@@ -546,8 +643,7 @@ def _look(lookup, name: str, region: str | None, countries: str):
     return lookup(name, countries)
 
 
-def place_event(item: dict[str, Any], countries: str,
-                lookup=gazetteer.find) -> dict[str, Any]:
+def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, Any]:
     """Turn a report's place names into positions, if they are known.
 
     An unplaceable report is not a failure to be swallowed. It comes back with
@@ -555,6 +651,12 @@ def place_event(item: dict[str, Any], countries: str,
     "the gazetteer does not know these names" is visible as itself rather than
     as an empty map.
     """
+    # Resolved here rather than as a default argument. A default is bound
+    # once, when the function is defined, so a gazetteer swapped out later --
+    # in a test, or for the demo -- was silently ignored and the real one
+    # called instead.
+    lookup = lookup or gazetteer.find
+
     out = dict(item)
     out["lat"] = out["lon"] = out["heading"] = None
     out["dest_lat"] = out["dest_lon"] = out["dest_km"] = None
@@ -693,6 +795,7 @@ def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> No
     ident = f"AO{_counter:04d}"
     _alerts.append({
         "id": ident,
+        "by": item.get("by", "model"),
         "kind": placed["kind"],
         "rank": KINDS[placed["kind"]]["rank"],
         "summary": placed["summary"] or (placed.get("place") or "Report"),
@@ -710,6 +813,7 @@ def _record(item: dict[str, Any], message: dict[str, Any], countries: str) -> No
     _events.append({
         **placed,
         "id": ident,
+        "by": item.get("by", "model"),
         "origin_lat": placed["lat"],
         "origin_lon": placed["lon"],
         "seen": seen,
@@ -729,13 +833,41 @@ def _expire(now: float) -> None:
                   if a["seen"] >= now - ALERT_MINUTES * 60][-MAX_ALERTS:]
 
 
+def reset() -> None:
+    """Forget everything read so far. For tests and for starting over."""
+    global _counter, _state, _last_poll, _resting_until, _resting_for
+    with _lock:
+        _seen.clear()
+        _events.clear()
+        _alerts.clear()
+        _counter = 0
+        _state = "not started"
+        _last_poll = _resting_until = _resting_for = 0.0
+
+
+def _rest(now: float, asked: float) -> None:
+    """Leave OpenRouter alone for a while, doubling each time it says no.
+
+    The service's own Retry-After wins where it sent one -- it knows when its
+    window rolls over and this does not.
+    """
+    global _resting_until, _resting_for
+    grown = min(BACKOFF_MAX, max(BACKOFF_START, _resting_for * 2))
+    _resting_for = grown
+    _resting_until = now + max(grown, asked)
+
+
+def _wake() -> None:
+    """The model answered, so forget the backoff."""
+    global _resting_until, _resting_for
+    _resting_until = _resting_for = 0.0
+
+
 def poll() -> dict[str, Any]:
     """Read the channels once, and turn anything new into events."""
     global _state, _last_poll
     with _lock:
         key = _key
-    if not key:
-        raise OsintError("No OpenRouter key set — the reports cannot be read without one.")
 
     fresh: list[dict[str, Any]] = []
     trouble: list[str] = []
@@ -763,34 +895,85 @@ def poll() -> dict[str, Any]:
             fresh.append(post)
 
     now = time.time()
-    if fresh:
-        # One call for everything new, not one per message: the free tier has a
-        # ceiling and six channels can post a dozen times a minute between them.
-        batch = fresh[:40]
-        found = _call_model(batch, key)
-        by_id = {item["id"]: item for item in found if item.get("id")}
-        # Geocoding is done outside the lock: it may go to the network, and
-        # holding the lock across that would stall every request for the map.
-        for post in batch:
-            _seen.add(post["id"])
-            item = by_id.get(post["id"])
-            if item is None and len(batch) == 1 and found:
-                # A model that ignored the ids, with only one message to
-                # confuse: the single answer can only belong to it.
-                item = found[0]
+    if not fresh:
+        _state = "; ".join(trouble[:2]) if trouble else "nothing new"
+        _last_poll = now
+        return current()
+
+    # One call for everything new, not one per message: the free tier has a
+    # ceiling and six channels can post a dozen times a minute between them.
+    batch = fresh[:40]
+    found: list[dict[str, Any]] = []
+    limited = ""
+
+    if not key:
+        # Perfectly workable. The model reads these better, but it is not
+        # required to read them at all, and demanding a key before showing
+        # anything made the layer look broken to anyone who had not signed up
+        # for one.
+        limited = "no OpenRouter key"
+    elif _resting_until > now:
+        limited = f"waiting {round((_resting_until - now) / 60)} min before asking again"
+    else:
+        try:
+            found = _call_model(batch, key)
+        except RateLimited as exc:
+            limited = f"every free model is rate limited ({exc.args[1]})"
+            _rest(now, float(exc.args[0] or 0))
+        except OsintError as exc:
+            limited = str(exc)
+            _rest(now, 0.0)
+        else:
+            _wake()
+
+    by_id = {item["id"]: item for item in found if item.get("id")}
+
+    # Geocoding is done outside the lock: it may go to the network, and
+    # holding the lock across that would stall every request for the map.
+    read_by_rules = 0
+    for post in batch:
+        _seen.add(post["id"])
+        item = by_id.get(post["id"])
+        if item is None and len(batch) == 1 and found:
+            # A model that ignored the ids, with only one message to
+            # confuse: the single answer can only belong to it.
+            item = found[0]
+        if item is None:
+            # No model reading for this one -- it is resting, it refused, or
+            # it skipped the message. Read it here instead.
+            #
+            # This is the difference between a quiet night and a dead layer.
+            # Before this, a rate limit meant an empty map and a line of red
+            # text, which from the outside is indistinguishable from the
+            # feature being broken. These reports are formulaic enough to read
+            # without a model, so they are.
+            plain = reports.read(post.get("text", ""))
+            if not plain:
+                continue
+            item = _clean({**plain, "id": post["id"]})
             if item is None:
                 continue
-            with _lock:
-                _record(item, post, post["countries"])
+            item["by"] = "rules"
+            read_by_rules += 1
+        else:
+            item["by"] = "model"
         with _lock:
-            _expire(now)
-        _state = f"reading {len(CHANNELS)} channels"
+            _record(item, post, post["countries"])
+
+    with _lock:
+        _expire(now)
+
+    if limited and read_by_rules:
+        _state = (f"{limited} — reading {read_by_rules} of {len(batch)} reports "
+                  "without it")
+    elif limited:
+        _state = limited
     else:
-        _state = "nothing new"
+        _state = f"reading {len(CHANNELS)} channels"
+    if trouble:
+        _state = "; ".join([*trouble[:1], _state])
 
     _last_poll = now
-    if trouble:
-        _state = "; ".join(trouble[:2])
     return current()
 
 
@@ -835,8 +1018,14 @@ def current() -> dict[str, Any]:
         "orbit": {"km": ORBIT_KM, "minutes": ORBIT_MINUTES},
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
-        "model": MODEL,
+        "model": _model_in_use,
+        "models": list(MODELS),
         "keyed": has_key(),
+        "read_by": {
+            "model": sum(1 for a in alerts if a.get("by") == "model"),
+            "rules": sum(1 for a in alerts if a.get("by") == "rules"),
+        },
+        "resting_seconds": max(0, round(_resting_until - now)),
         "last_poll": _last_poll or None,
         # Said out loud, because an empty map with a healthy feed behind it is
         # the failure the previous version hid.

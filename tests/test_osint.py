@@ -21,6 +21,7 @@ those silently and made a patchy night look like a broken feature.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import time
@@ -549,6 +550,111 @@ class TestNothingIsSilentlyDropped:
         assert seen == sorted(seen, reverse=True)
 
 
+class TestWhenTheModelWillNotPlay:
+    """A free tier with a daily ceiling is not an exceptional condition."""
+
+    class Reply:
+        def __init__(self, status=200, body=None, headers=None):
+            self.status_code, self._body = status, body
+            self.ok = 200 <= status < 300
+            self.headers = headers or {}
+
+        def json(self):
+            if self._body is None:
+                raise ValueError("no json")
+            return self._body
+
+    def content(self, value):
+        return self.Reply(200, {"choices": [{"message": {"content": value}}]})
+
+    def test_a_200_with_null_content_does_not_crash_the_endpoint(self, monkeypatch):
+        # The failure the user hit. A model returns a 200 whose content field
+        # is null -- legitimate, it does that for a refusal -- and calling
+        # .strip() on None raises AttributeError, which is not any of the
+        # error classes the endpoints catch, so it went past all of them and
+        # 500ed instead of falling back to reading the reports plainly.
+        monkeypatch.setattr(osint.requests, "post",
+                            lambda *a, **k: self.content(None))
+        with pytest.raises(osint.OsintError):
+            osint._ask_model("m", [{"id": "x", "text": "y"}], "k")
+
+    def test_an_empty_string_is_the_same(self, monkeypatch):
+        monkeypatch.setattr(osint.requests, "post",
+                            lambda *a, **k: self.content("   "))
+        with pytest.raises(osint.OsintError):
+            osint._ask_model("m", [{"id": "x", "text": "y"}], "k")
+
+    def test_read_events_refuses_anything_that_is_not_text(self):
+        for junk in (None, "", "   ", 42, [], {}):
+            with pytest.raises(osint.OsintError):
+                osint.read_events(junk)
+
+    def test_a_rate_limit_is_its_own_kind_of_problem(self, monkeypatch):
+        monkeypatch.setattr(osint.requests, "post",
+                            lambda *a, **k: self.Reply(429))
+        with pytest.raises(osint.RateLimited):
+            osint._ask_model("m", [{"id": "x", "text": "y"}], "k")
+
+    def test_it_tries_the_next_free_model_when_one_is_exhausted(self, monkeypatch):
+        # Free models share a daily ceiling and the popular ones reach it
+        # first, so one refusing is routine rather than a failure.
+        tried = []
+
+        def answering(url, json=None, **kw):
+            tried.append(json["model"])
+            if len(tried) < 3:
+                return self.Reply(429)
+            return self.content('{"events": [{"kind": "drone", "place": "Kyiv"}]}')
+
+        monkeypatch.setattr(osint.requests, "post", answering)
+        got = osint._call_model([{"id": "x", "text": "y"}], "k")
+        assert len(tried) == 3
+        assert got[0]["place"] == "Kyiv"
+
+    def test_only_when_every_model_refuses_is_it_a_rate_limit(self, monkeypatch):
+        monkeypatch.setattr(osint.requests, "post",
+                            lambda *a, **k: self.Reply(429))
+        with pytest.raises(osint.RateLimited):
+            osint._call_model([{"id": "x", "text": "y"}], "k")
+
+    def test_the_service_is_taken_at_its_word_about_when_to_come_back(self):
+        assert osint.retry_after(self.Reply(429, headers={"Retry-After": "45"})) == 45
+        soon = (time.time() + 300) * 1000
+        got = osint.retry_after(self.Reply(429, headers={"X-RateLimit-Reset": str(soon)}))
+        assert 250 < got < 350
+
+    def test_a_missing_or_silly_header_is_no_answer_rather_than_an_error(self):
+        for headers in ({}, {"Retry-After": "soon"}, {"X-RateLimit-Reset": "-1"}):
+            assert osint.retry_after(self.Reply(429, headers=headers)) == 0.0
+
+    def test_the_backoff_grows_and_is_forgotten_on_success(self):
+        # The version before this had none at all, and only recorded that it
+        # had polled AFTER the model answered -- so a rate limit meant the
+        # next page refresh tried again immediately, and every one after that,
+        # which is the one thing guaranteed to keep a rate limit in place.
+        try:
+            osint._wake()
+            now = 1000.0
+            osint._rest(now, 0)
+            first = osint._resting_until - now
+            osint._rest(now, 0)
+            second = osint._resting_until - now
+            assert second > first
+            assert second <= osint.BACKOFF_MAX
+            osint._wake()
+            assert osint._resting_until == 0
+        finally:
+            osint._wake()
+
+    def test_the_services_own_wait_wins_when_it_is_longer(self):
+        try:
+            osint._wake()
+            osint._rest(1000.0, 800.0)
+            assert osint._resting_until - 1000.0 == pytest.approx(800.0)
+        finally:
+            osint._wake()
+
+
 class TestTheKey:
     def test_it_is_set_and_cleared_and_never_returned(self):
         try:
@@ -568,10 +674,27 @@ class TestTheKey:
         finally:
             osint.set_key(None)
 
-    def test_polling_without_a_key_says_so_rather_than_calling_out(self):
+    def test_the_layer_works_without_a_key_at_all(self, monkeypatch):
+        # It used to refuse to do anything without one, which made it look
+        # broken to anyone who had not signed up for an OpenRouter account.
+        # The model reads these reports better; it is not required to read
+        # them, and the rules reader needs no key, no quota and no network.
         osint.set_key(None)
-        with pytest.raises(osint.OsintError, match="No OpenRouter key"):
-            osint.poll()
+        monkeypatch.setattr(osint, "_fetch_channel", lambda name: [{
+            "id": f"{name}/1", "channel": name, "text": "БпЛА повз Кагарлик курсом на північ",
+            "when": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }])
+        monkeypatch.setattr(osint, "_call_model", lambda *a: pytest.fail(
+            "the model was called with no key"))
+        monkeypatch.setattr(osint.gazetteer, "find", lambda name, countries="": {
+            "lat": 49.86, "lon": 30.81, "name": name, "kind": "town"})
+        try:
+            got = osint.poll()
+        finally:
+            osint.reset()
+        assert got["count"] >= 1
+        assert got["events"][0]["by"] == "rules"
+        assert "no OpenRouter key" in got["state"]
 
 
 class TestDemo:

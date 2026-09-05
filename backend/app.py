@@ -26,6 +26,32 @@ FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="EarthViewer", version="1.0.0")
 
+
+@app.exception_handler(Exception)
+def anything_else(request, exc: Exception):
+    """Turn an unexpected failure into an answer rather than a crash.
+
+    Every one of these endpoints leans on somebody else's service, and a
+    service can change its reply at any time. Each handler catches its own
+    error class, which covers the failures that were thought of; this covers
+    the ones that were not.
+
+    It exists because of a real one. A free model returned a 200 whose content
+    field was null -- legitimate, it does that for a refusal -- and the reader
+    called .strip() on None. AttributeError is not any of the error classes
+    the endpoints catch, so it went past all of them, and the layer answered
+    an unreadable 500 instead of falling back to reading the reports without
+    a model, which it was perfectly able to do.
+
+    The traceback goes to the log, where it is useful. What the browser gets
+    is one sentence it can put in a panel.
+    """
+    log.exception("unhandled error in %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {exc}".strip()[:300]},
+    )
+
 # What the page in the browser is allowed to load, and from where.
 #
 # Most of this app's traffic goes out from Python, where a policy like this
@@ -307,6 +333,69 @@ def mtg_layers(refresh: bool = Query(False)) -> dict:
         return mtg.layers(refresh=refresh)
     except mtg.MTGError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/selftest")
+def selftest() -> dict:
+    """Try every outside service this app depends on, and say what happened.
+
+    Written because "fires, lightning and the rest don't work" is a report
+    nobody can act on, from either end. Each layer talks to a different
+    service, each fails quietly into its own panel, and none of them says
+    whether the problem is the network here, a provider that has changed, or
+    the code. This asks all of them at once and answers in one page.
+
+    Only reachability -- one small request each, no keys sent, nothing
+    interpreted. A service answering here and the layer still being empty is
+    itself a useful result: it separates "cannot get there from this machine"
+    from "got there and did not like the answer".
+    """
+    checks = [
+        ("fires", "NASA FIRMS",
+         f"{fires.FIRMS_ROOT}/api/area/csv/x/VIIRS_SNPP_NRT/-1,-1,1,1/1"),
+        ("radar", "RainViewer", "https://api.rainviewer.com/public/weather-maps.json"),
+        ("lightning", "EUMETSAT View", mtg.WMS + "?service=WMS&request=GetCapabilities"),
+        ("places", "Nominatim", config.NOMINATIM_URL + "?q=Kyiv&format=jsonv2&limit=1"),
+        ("imagery", "Copernicus STAC", config.STAC_URL),
+        ("reports", "Telegram preview", osint.PREVIEW.format(channel=osint.CHANNELS[0]["name"])),
+        ("basemap", "OpenStreetMap tiles", "https://tile.openstreetmap.org/0/0/0.png"),
+    ]
+
+    out = []
+    for layer, name, url in checks:
+        started = dt.datetime.now(dt.timezone.utc)
+        row: dict[str, Any] = {"layer": layer, "service": name}
+        try:
+            resp = requests.get(url, timeout=15,
+                                headers={"User-Agent": config.USER_AGENT},
+                                stream=True)
+            row["status"] = resp.status_code
+            # 4xx from a probe URL is still proof the host is reachable, which
+            # is the question being asked. Only a refusal to connect is a no.
+            row["reached"] = True
+            row["ok"] = resp.ok
+            resp.close()
+        except requests.RequestException as exc:
+            row["reached"] = False
+            row["ok"] = False
+            row["why"] = f"{type(exc).__name__}: {exc}"[:200]
+        row["ms"] = round(
+            (dt.datetime.now(dt.timezone.utc) - started).total_seconds() * 1000)
+        out.append(row)
+
+    return {
+        "checked": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "demo": config.DEMO_MODE,
+        "build": version.described(),
+        "services": out,
+        "unreachable": [r["service"] for r in out if not r["reached"]],
+        "keys": {
+            # Whether one is set, never what it is.
+            "firms_map_key": bool(fires.MAP_KEY),
+            "openrouter": osint.has_key(),
+            "aisstream": aisstream.has_key(),
+        },
+    }
 
 
 @app.get("/api/osint")
