@@ -71,9 +71,29 @@ def wait_turn() -> None:
         time.sleep(min(MIN_INTERVAL - gap, MIN_INTERVAL))
 
 
+# What a place named in an air-threat report can be: a settlement, or an
+# administrative area. Nothing else.
+#
+# This is not fussiness, it is the fix for a real and very convincing failure.
+# A report reading "past Kaharlyk, on a course north" had its town name mangled
+# to "Kagul", and Nominatim's best match for that was озеро Кагул -- a lake,
+# four hundred kilometres away in a different oblast. It answered with perfect
+# confidence and the marker went on the map.
+#
+# A lake is not somewhere a drone is reported over. Neither is a shop, a
+# roundabout or a farm building. Refusing the whole category costs nothing --
+# no report has ever meant one -- and turns a wrong answer into no answer,
+# which is the trade this module exists to make.
+ACCEPTED = ("place", "boundary")
+
+# Asked for a few rather than one, because the first hit is often a street or
+# a business that happens to share the name and the settlement is behind it.
+CANDIDATES = 6
+
+
 def _ask(name: str, countries: str) -> dict[str, Any] | None:
     global _calls
-    params = {"q": name, "format": "jsonv2", "limit": 1}
+    params = {"q": name, "format": "jsonv2", "limit": CANDIDATES}
     if countries:
         # The single most valuable parameter here. Without it "Sumy" is as
         # likely to be a street in another hemisphere, and half the point of
@@ -99,27 +119,37 @@ def _ask(name: str, countries: str) -> dict[str, Any] | None:
 
 
 def read_place(found: Any) -> dict[str, Any] | None:
-    """The one usable result out of whatever Nominatim sent back."""
-    if not isinstance(found, list) or not found:
+    """The best usable result out of whatever Nominatim sent back.
+
+    "Usable" is doing the work: the first result is taken only if it is a
+    settlement or an administrative area. Anything else is passed over, and if
+    nothing in the list qualifies the answer is None.
+    """
+    if not isinstance(found, list):
         return None
-    first = found[0]
-    if not isinstance(first, dict):
-        return None
-    try:
-        lat, lon = float(first["lat"]), float(first["lon"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return None
-    return {
-        "lat": lat,
-        "lon": lon,
-        "name": str(first.get("display_name") or "")[:200] or None,
-        # An oblast and a street corner are both "a place" and should not be
-        # drawn as though they were equally precise. The caller decides what
-        # to do about it; this only reports what was matched.
-        "kind": str(first.get("type") or first.get("category") or "")[:40] or None,
-    }
+    for candidate in found:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            lat, lon = float(candidate["lat"]), float(candidate["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        category = str(candidate.get("category") or candidate.get("class") or "")[:40]
+        if category and category not in ACCEPTED:
+            continue
+        return {
+            "lat": lat,
+            "lon": lon,
+            "name": str(candidate.get("display_name") or "")[:200] or None,
+            "category": category or None,
+            # An oblast and a street corner are both "a place" and should not
+            # be drawn as though they were equally precise. The caller decides
+            # what to do about it; this only reports what was matched.
+            "kind": str(candidate.get("type") or category or "")[:40] or None,
+        }
+    return None
 
 
 def find(name: str, countries: str = "") -> dict[str, Any] | None:

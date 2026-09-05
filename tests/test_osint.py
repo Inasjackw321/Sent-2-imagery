@@ -62,8 +62,8 @@ def gazetteer(name, countries=""):
 
 
 def one(**over):
-    return {"kind": "drone", "place": "Nikopol", "toward": None,
-            "count": 1, "summary": "Drone over Nikopol", **over}
+    return {"kind": "drone", "place": "Nikopol", "region": None, "toward": None,
+            "course": None, "count": 1, "summary": "Drone over Nikopol", **over}
 
 
 class TestReadingTheChannel:
@@ -164,6 +164,188 @@ class TestThePlaceNamesTheModelGives:
         assert "lat" not in got and "lon" not in got and "heading" not in got
 
 
+class TestCompassCourses:
+    """The other half of the Kaharlyk picture.
+
+    "повз Кагарлик курсом на північ" -- past Kaharlyk, on a course north --
+    gives a direction and names no destination. The version that only
+    understood destinations left the heading null, so the marker was drawn
+    with the starburst that means "brought down": the opposite of what the
+    report said, on a thing that was still flying.
+    """
+
+    def test_the_eight_points(self):
+        for word, degrees in [("N", 0), ("NE", 45), ("E", 90), ("SE", 135),
+                              ("S", 180), ("SW", 225), ("W", 270), ("NW", 315)]:
+            assert osint.read_course(word) == degrees
+
+    def test_the_in_between_points_too(self):
+        assert osint.read_course("NNE") == 22.5
+        assert osint.read_course("wsw") == 247.5
+
+    def test_written_out_in_words(self):
+        assert osint.read_course("north") == 0
+        assert osint.read_course("South-West") == 225
+        assert osint.read_course("northeast") == 45
+
+    def test_anything_else_is_no_course_rather_than_a_guess(self):
+        for junk in (None, "", "  ", "up", "towards Kyiv", "45", "north-ish", 12):
+            assert osint.read_course(junk) is None, junk
+
+    def test_a_course_becomes_a_heading_with_no_destination_needed(self):
+        got = osint.place_event(one(place="Nikopol", course=0.0), "ua", lookup=gazetteer)
+        assert got["placed"] is True
+        assert got["heading"] == 0.0
+        assert got["motion"] == "track"
+
+    def test_a_named_destination_still_beats_a_compass_course(self):
+        # The course is a direction; a destination is a direction AND a place
+        # to stop. Where a report gives both, the one with more in it wins.
+        got = osint.place_event(one(place="Nikopol", toward="Kherson", course=0.0),
+                                "ua", lookup=gazetteer)
+        assert got["heading"] != 0.0
+        assert got["dest_km"] is not None
+
+    def test_a_strike_is_given_no_course_however_the_sentence_reads(self):
+        got = osint.read_events(json.dumps({"events": [
+            {"kind": "explosion", "place": "Kyiv", "course": "N", "toward": "Lviv"}]}))[0]
+        assert got["course"] is None and got["toward"] is None
+
+
+class TestKindsAndHowTheyMove:
+    def test_every_kind_is_complete(self):
+        for name, look in osint.KINDS.items():
+            assert look["colour"].startswith("#"), name
+            assert look["label"] and look["rank"], name
+            assert look["motion"] in ("track", "orbit", "still"), name
+            assert isinstance(look["speed"], float), name
+
+    def test_the_derived_tables_agree_with_the_one_they_come_from(self):
+        # Both ends read speeds and motion out of this, so a table that
+        # disagreed with itself would put the marker in two places.
+        assert osint.SPEEDS == {k: v["speed"] for k, v in osint.KINDS.items()}
+        assert osint.MOTION == {k: v["motion"] for k, v in osint.KINDS.items()}
+
+    def test_a_jet_drone_is_faster_than_a_propeller_one(self):
+        assert osint.SPEEDS["jet_drone"] > osint.SPEEDS["drone"] * 2
+
+    def test_missiles_outrun_everything_that_is_not_a_missile(self):
+        slowest_missile = min(osint.SPEEDS["cruise"], osint.SPEEDS["ballistic"])
+        for kind in ("drone", "jet_drone", "recon", "helicopter"):
+            assert osint.SPEEDS[kind] < slowest_missile, kind
+        assert osint.SPEEDS["ballistic"] > osint.SPEEDS["cruise"]
+
+    def test_only_the_things_that_do_not_fly_stand_still(self):
+        for name, look in osint.KINDS.items():
+            if look["motion"] == "still":
+                assert look["speed"] == 0.0, name
+            else:
+                assert look["speed"] > 0.0, name
+
+    def test_recon_loiters_rather_than_travelling(self):
+        assert osint.MOTION["recon"] == "orbit"
+
+
+class TestOrbiting:
+    def event(self, minutes_ago, kind="recon"):
+        now = time.time()
+        return now, {"kind": kind, "motion": osint.MOTION[kind], "heading": None,
+                     "seen": now - minutes_ago * 60,
+                     "origin_lat": 47.8388, "origin_lon": 35.1396}
+
+    def test_it_goes_round_rather_than_staying_put(self):
+        now, event = self.event(2)
+        got = osint.project(event, now)
+        assert got["orbiting"] is True
+        assert osint.separation(got["lat"], got["lon"],
+                                event["origin_lat"], event["origin_lon"]) \
+            == pytest.approx(osint.ORBIT_KM, abs=0.1)
+
+    def test_it_comes_back_round_to_where_it_started(self):
+        # A full period must close the circle, or the marker drifts a little
+        # further from the place it was reported over on every lap -- which
+        # after an hour is a claim nobody made.
+        now, event = self.event(0)
+        start = osint.project(event, now)
+        event["seen"] = now - osint.ORBIT_MINUTES * 60
+        after = osint.project(event, now)
+        assert after["lat"] == pytest.approx(start["lat"], abs=1e-6)
+        assert after["lon"] == pytest.approx(start["lon"], abs=1e-6)
+
+    def test_it_is_somewhere_else_half_a_lap_later(self):
+        now, event = self.event(0)
+        start = osint.project(event, now)
+        event["seen"] = now - osint.ORBIT_MINUTES * 30
+        half = osint.project(event, now)
+        assert osint.separation(start["lat"], start["lon"],
+                                half["lat"], half["lon"]) \
+            == pytest.approx(2 * osint.ORBIT_KM, abs=0.2)
+
+    def test_it_points_along_the_circle_not_at_the_middle(self):
+        # The tangent, a quarter turn ahead of where it is on the ring.
+        now, event = self.event(0)
+        got = osint.project(event, now)
+        outward = osint.bearing(event["origin_lat"], event["origin_lon"],
+                                got["lat"], got["lon"])
+        assert (got["heading"] - outward) % 360 == pytest.approx(90, abs=1)
+
+    def test_it_never_arrives_anywhere(self):
+        # It was not on a journey, so there is nothing for it to finish. It
+        # leaves on age like everything else.
+        now, event = self.event(600)
+        event["dest_km"] = 5.0
+        assert osint._arrived(event, now) is False
+        assert osint.project(event, now)["arrived"] is False
+
+    def test_a_tracking_kind_does_not_orbit(self):
+        now, event = self.event(2, kind="drone")
+        event["heading"] = 90.0
+        got = osint.project(event, now)
+        assert got.get("orbiting") is not True
+
+
+class TestTellingSimilarPlacesApart:
+    """The rest of the Kaharlyk failure: the wrong Kaharlyk."""
+
+    def test_the_region_is_used_to_ask_a_narrower_question(self):
+        asked = []
+
+        def watching(name, countries):
+            asked.append(name)
+            return {"lat": 49.85, "lon": 30.81, "name": name, "kind": "town"}
+
+        osint.place_event(one(place="Kaharlyk", region="Kyiv oblast"),
+                          "ua", lookup=watching)
+        assert asked[0] == "Kaharlyk, Kyiv oblast"
+
+    def test_the_bare_name_is_tried_when_the_region_finds_nothing(self):
+        # The gazetteer may spell the oblast differently, and a right town
+        # found without the region beats no town at all.
+        asked = []
+
+        def only_bare(name, countries):
+            asked.append(name)
+            if "," in name:
+                return None
+            return {"lat": 49.85, "lon": 30.81, "name": name, "kind": "town"}
+
+        got = osint.place_event(one(place="Kaharlyk", region="Kyivshchyna"),
+                                "ua", lookup=only_bare)
+        assert asked == ["Kaharlyk, Kyivshchyna", "Kaharlyk"]
+        assert got["placed"] is True
+
+    def test_a_region_already_in_the_name_is_not_repeated(self):
+        asked = []
+
+        def watching(name, countries):
+            asked.append(name)
+            return {"lat": 49.7, "lon": 36.3, "name": name, "kind": "state"}
+
+        osint.place_event(one(place="Kharkiv oblast", region="Kharkiv oblast"),
+                          "ua", lookup=watching)
+        assert asked == ["Kharkiv oblast"]
+
+
 class TestPlacing:
     def test_a_known_place_gets_the_gazetteer_position(self):
         got = osint.place_event(one(), "ua", lookup=gazetteer)
@@ -261,7 +443,8 @@ class TestCarryingAMarkerForward:
         got = osint.project(event, now)
         assert got["projected"] is True
         assert (got["origin_lat"], got["origin_lon"]) == (50.0, 30.0)
-        assert got["projected_km"] == pytest.approx(133.3, abs=1)
+        assert got["projected_km"] == pytest.approx(
+            osint.SPEEDS["cruise"] / 6, abs=1)
 
     def test_a_report_with_no_course_does_not_move(self):
         now = time.time()
@@ -271,19 +454,18 @@ class TestCarryingAMarkerForward:
         assert (got["lat"], got["lon"]) == (50.0, 30.0)
         assert got["projected"] is False
 
-    def test_a_ballistic_track_is_not_extrapolated(self):
-        # It has a course but no useful constant speed: a marker sliding at a
-        # made-up figure would look like it was being followed.
+    def test_a_ballistic_track_outruns_everything(self):
+        # It used to be frozen in place, on the grounds that no single speed
+        # describes a ballistic flight. True, but a stationary marker said
+        # something worse -- that it had landed -- so it now moves at a figure
+        # that is at least the right order of magnitude, and expires quickly.
         now = time.time()
         event = {"kind": "ballistic", "heading": 90.0, "seen": now - 300,
                  "origin_lat": 50.0, "origin_lon": 30.0}
-        assert osint.project(event, now)["projected"] is False
-
-    def test_every_kind_has_a_speed_or_is_deliberately_not_airborne(self):
-        for kind in osint.KINDS:
-            assert kind in osint.SPEEDS or kind in osint.NOT_AIRBORNE, kind
-        for look in osint.KINDS.values():
-            assert look["colour"].startswith("#") and look["label"] and look["rank"]
+        ballistic = osint.project(event, now)
+        assert ballistic["projected"] is True
+        cruise = osint.project({**event, "kind": "cruise"}, now)
+        assert ballistic["projected_km"] > cruise["projected_km"] * 3
 
 
 class TestArrival:
@@ -407,6 +589,20 @@ class TestDemo:
     def test_the_demo_shows_both_a_moving_and_a_still_marker(self):
         headings = {e["heading"] is None for e in osint.demo()["events"]}
         assert headings == {True, False}
+
+    def test_the_demo_covers_every_way_a_marker_can_behave(self):
+        # Otherwise the build with no network exercises one drawing path and
+        # hides what the others do -- which is how a thing flying north came
+        # to be drawn with the mark for something that had been shot down.
+        events = osint.demo()["events"]
+        assert {e["motion"] for e in events} >= {"track", "orbit", "still"}
+        # A track whose report gave no direction at all. It must not be drawn
+        # with an arrow, so the demo has to contain one to check that.
+        assert any(e["motion"] == "track" and e["heading"] is None for e in events)
+        # And one whose direction came from a compass course rather than a
+        # named destination.
+        assert any(e["heading"] is not None and e["dest_km"] is None
+                   for e in events)
 
     def test_the_demo_courses_are_computed_from_its_own_gazetteer(self):
         for event in osint.demo()["events"]:

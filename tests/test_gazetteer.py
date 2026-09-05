@@ -28,7 +28,7 @@ def clean():
 
 def answer(**over):
     base = {"lat": "47.5665", "lon": "34.4053", "display_name": "Nikopol, Ukraine",
-            "type": "town"}
+            "category": "place", "type": "town"}
     return [{**base, **over}]
 
 
@@ -56,6 +56,76 @@ class TestReadingAnAnswer:
     def test_a_position_off_the_globe_is_refused(self):
         assert gazetteer.read_place(answer(lat="120")) is None
         assert gazetteer.read_place(answer(lon="-500")) is None
+
+
+class TestRefusingThingsThatAreNotPlaces:
+    """The Kaharlyk failure.
+
+    A report reading "past Kaharlyk, on a course north" had its town name
+    mangled to "Kagul". Nominatim's best match for that was озеро Кагул -- a
+    lake, four hundred kilometres away in a different oblast -- and it answered
+    with complete confidence. The marker went on the map next to correct ones.
+
+    A drone is not reported over a lake, a shop or a roundabout. Refusing the
+    whole category turns a wrong answer into no answer, which is the trade
+    this module exists to make.
+    """
+
+    LAKE = {"lat": "45.9", "lon": "28.2", "display_name": "озеро Кагул",
+            "category": "natural", "type": "water"}
+
+    def test_a_lake_is_not_a_place_a_drone_is_reported_over(self):
+        assert gazetteer.read_place([self.LAKE]) is None
+
+    def test_the_settlement_behind_it_is_found_instead(self):
+        # The real fix: several candidates are asked for, and the first one
+        # that is actually a settlement wins rather than the first one at all.
+        got = gazetteer.read_place([self.LAKE, *answer()])
+        assert got["name"] == "Nikopol, Ukraine"
+
+    def test_the_usual_suspects_are_all_refused(self):
+        for category, kind in [("natural", "water"), ("waterway", "river"),
+                               ("shop", "supermarket"), ("highway", "residential"),
+                               ("building", "yes"), ("landuse", "farmland"),
+                               ("amenity", "cafe"), ("leisure", "park")]:
+            assert gazetteer.read_place(answer(category=category, type=kind)) is None, kind
+
+    def test_settlements_and_administrative_areas_are_kept(self):
+        for category, kind in [("place", "town"), ("place", "city"),
+                               ("place", "village"), ("place", "hamlet"),
+                               ("boundary", "administrative")]:
+            got = gazetteer.read_place(answer(category=category, type=kind))
+            assert got is not None, kind
+            assert got["category"] == category
+
+    def test_a_result_with_no_category_is_given_the_benefit_of_the_doubt(self):
+        # Not every deployment sends one, and refusing everything unlabelled
+        # would turn the guard into an outage.
+        got = gazetteer.read_place([{"lat": "47.5", "lon": "34.4",
+                                     "display_name": "Somewhere"}])
+        assert got is not None
+
+    def test_a_list_of_nothing_usable_is_none(self):
+        assert gazetteer.read_place([self.LAKE, self.LAKE]) is None
+
+    def test_several_candidates_are_asked_for(self, monkeypatch):
+        # With limit=1 the lake would be the only answer available and the
+        # filter above would turn a wrong marker into no marker -- better, but
+        # the town is right there behind it.
+        seen = {}
+
+        class Reply:
+            status_code, ok = 200, True
+
+            @staticmethod
+            def json():
+                return answer()
+
+        monkeypatch.setattr(gazetteer.requests, "get",
+                            lambda url, params=None, **kw: (seen.update(params), Reply())[1])
+        gazetteer._last_call = time.time() - 99
+        gazetteer.find("Kaharlyk", "ua")
+        assert seen["limit"] > 1
 
 
 class TestNotKnowing:

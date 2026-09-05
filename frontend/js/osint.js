@@ -84,20 +84,47 @@ function advance(lat, lon, heading, km) {
   return [lat2 * 180 / Math.PI, ((lon2 * 180 / Math.PI) + 540) % 360 - 180];
 }
 
-/** Where a reported object is now, if it kept going as reported. */
+/** What kind of thing this is, from the table the backend sent.
+ *
+ * Read from the feed rather than kept here, so the speeds and the way each
+ * kind moves are defined once, on the server, and the two ends cannot drift
+ * into disagreeing about how fast a jet drone flies.
+ */
+const look = (event) => feed?.kinds?.[event.kind] ?? {};
+const speedOf = (event) => look(event).speed ?? feed?.speeds?.[event.kind] ?? 0;
+const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
+
+// Matches the backend's orbit. Both ends compute it, so both ends need the
+// same numbers; they arrive with the feed for exactly that reason.
+const orbitKm = () => feed?.orbit?.km ?? 9;
+const orbitMinutes = () => feed?.orbit?.minutes ?? 7;
+
+/** Where a reported object is now, if it carried on as reported. */
 function positionOf(event, atSeconds) {
-  const speed = feed?.speeds?.[event.kind] ?? 0;
-  if (event.heading == null || !(speed > 0)) {
-    return { lat: event.origin_lat, lon: event.origin_lon, km: 0, arrived: false };
-  }
+  const still = { lat: event.origin_lat, lon: event.origin_lon, km: 0, arrived: false };
+  const speed = speedOf(event);
+  const motion = motionOf(event);
   const minutes = Math.max(0, (atSeconds - event.seen) / 60);
+
+  if (motion === 'orbit' && speed > 0) {
+    // On station: round and round the place it was reported over, pointing
+    // along the circle. Carrying a loitering drone off in a straight line for
+    // twenty minutes would put it in the next country and claim something the
+    // report never said.
+    const angle = (360 * minutes / orbitMinutes()) % 360;
+    const [lat, lon] = advance(event.origin_lat, event.origin_lon, angle, orbitKm());
+    return { lat, lon, km: 0, arrived: false, facing: (angle + 90) % 360 };
+  }
+
+  if (event.heading == null || !(speed > 0) || motion !== 'track') return still;
+
   let km = speed * (minutes / 60);
   // A report that named where it was going also said where this stops. The
   // marker goes no further than the place it was flying to, and then goes.
   const arrived = event.dest_km > 0 && km >= event.dest_km;
   if (arrived) km = event.dest_km;
   const [lat, lon] = advance(event.origin_lat, event.origin_lon, event.heading, km);
-  return { lat, lon, km, arrived };
+  return { lat, lon, km, arrived, facing: event.heading };
 }
 
 // ── The markers ────────────────────────────────────────────────
@@ -114,27 +141,63 @@ function label(event) {
   return event.count > 1 ? `${name} ×${Number(event.count) || 1}` : name;
 }
 
-/** One marker: a triangle pointing where it is going, and its label.
+/** The drawing for one kind of thing, pointing where it is going.
  *
- * The heading is baked into the icon at build time rather than applied every
- * step, because a heading comes from a report and only changes when a new
- * report arrives. Moving the marker is then a `setLatLng` and nothing else.
+ * Three shapes, because there are three things being said and drawing them
+ * alike was the bug in the picture that prompted this: a jet drone flying past
+ * a town on a course north was drawn as a starburst -- the mark for something
+ * that has come down -- because it had a compass course and no named
+ * destination, and only a destination counted as movement.
+ *
+ *   arrow    it is flying, and this is the way. Rotated to the course.
+ *   ring     it is on station over here, going round. The gap in the ring
+ *            turns with it, so it reads as circling rather than as a dot.
+ *   burst    it is not flying: a strike, or something brought down.
+ *   chevron  a warning about a place, which is not an object at all.
  */
-function icon(event) {
-  const colour = feed?.kinds?.[event.kind]?.colour ?? '#ff8a3b';
-  const moving = event.heading != null && (feed?.speeds?.[event.kind] ?? 0) > 0;
-  const shape = moving
-    ? `<svg class="ao-glyph" width="18" height="18" viewBox="0 0 18 18"
-            style="transform: rotate(${event.heading.toFixed(1)}deg)">
-         <path d="M9 1 L15.5 16 L9 12.4 L2.5 16 Z" fill="${colour}"/>
-       </svg>`
-    // Nothing with a heading, so nothing that points: a burst for a strike,
-    // which is a place rather than a direction.
-    : `<svg class="ao-glyph" width="18" height="18" viewBox="0 0 18 18">
-         <path d="M9 0.5 L11 6.4 L17.5 5 L13 9.4 L17.5 13.8 L11 12.4
-                  L9 17.5 L7 12.4 L0.5 13.8 L5 9.4 L0.5 5 L7 6.4 Z"
-               fill="${colour}"/>
-       </svg>`;
+function glyph(event, colour, facing) {
+  const motion = motionOf(event);
+  const svg = (shape, body, turn) =>
+    `<svg class="ao-glyph" data-shape="${shape}" width="18" height="18"
+          viewBox="0 0 18 18"${turn == null ? '' : ` style="transform: rotate(${turn.toFixed(1)}deg)"`}>`
+    + `${body}</svg>`;
+
+  if (event.kind === 'alert') {
+    return svg('chevron',
+      `<path d="M9 1.5 L17 15.5 H1 Z" fill="none" stroke="${colour}"
+             stroke-width="2" stroke-linejoin="round"/>
+       <path d="M9 6.5 v3.6" stroke="${colour}" stroke-width="2" stroke-linecap="round"/>
+       <circle cx="9" cy="12.8" r="1.1" fill="${colour}"/>`);
+  }
+  if (motion === 'still') {
+    return svg('burst',
+      `<path d="M9 0.5 L11 6.4 L17.5 5 L13 9.4 L17.5 13.8 L11 12.4
+                L9 17.5 L7 12.4 L0.5 13.8 L5 9.4 L0.5 5 L7 6.4 Z" fill="${colour}"/>`);
+  }
+  if (motion === 'orbit') {
+    return svg('ring',
+      `<path d="M9 2.2 A6.8 6.8 0 1 1 4.2 4.2" fill="none" stroke="${colour}"
+             stroke-width="2" stroke-linecap="round"/>
+       <path d="M9 2.2 L6.2 0.4 L6.2 4 Z" fill="${colour}"/>
+       <circle cx="9" cy="9" r="1.6" fill="${colour}"/>`, facing ?? 0);
+  }
+  if (facing == null) {
+    // In the air, but the report said nothing about which way. An arrow here
+    // would point north and mean it -- the same invention this whole layer
+    // exists to avoid, just with a nicer shape. A ringed dot says "reported
+    // over here" and claims nothing further.
+    return svg('dot',
+      `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
+               stroke-width="1.6" opacity="0.65"/>
+       <circle cx="9" cy="9" r="3.1" fill="${colour}"/>`);
+  }
+  return svg('arrow',
+    `<path d="M9 1 L15.5 16 L9 12.4 L2.5 16 Z" fill="${colour}"/>`, facing);
+}
+
+/** One marker: its glyph, and its label underneath. */
+function icon(event, facing) {
+  const colour = look(event).colour ?? '#ff8a3b';
   return L.divIcon({
     className: 'ao-pin',
     // The label says what is being reported. An opaque identifier told the
@@ -143,7 +206,8 @@ function icon(event) {
     //
     // No speed: the speed is a table lookup for the type, not a measurement
     // of the object, and printing it would dress an assumption up as telemetry.
-    html: `${shape}<span class="ao-tag" style="color:${colour}">${label(event)}</span>`,
+    html: `${glyph(event, colour, facing)}`
+      + `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`,
     iconSize: [18, 18],
     iconAnchor: [9, 9],
   });
@@ -166,10 +230,15 @@ function popup(event, km) {
   }
   if (event.count > 1) rows.push(`${Number(event.count) || 1} reported together`);
   rows.push(`${Math.round(event.age_minutes ?? 0)} min since the report`);
-  if (km > 0.5) {
+  if (motionOf(event) === 'orbit') {
+    // Said plainly, because a marker going round in circles is the one thing
+    // here most likely to be read as a measurement of a flight path.
+    rows.push('<b>Shown circling</b> — reported on station here. The circle is '
+      + 'a way of saying "over this place and still flying", not a track.');
+  } else if (km > 0.5) {
     rows.push('<b>Position estimated</b> — carried '
-      + `${Math.round(km)} km along the reported course at a typical speed for `
-      + 'the type. Not a track.');
+      + `${Math.round(km)} km along the reported course at a typical speed `
+      + `(${Math.round(speedOf(event))} km/h) for the type. Not a track.`);
   }
   return `<div class="ao-pop">
     <h4>${label(event)}</h4>
@@ -201,13 +270,13 @@ function reconcile(events) {
       if (held.event.heading !== event.heading
           || held.event.kind !== event.kind
           || held.event.count !== event.count) {
-        held.marker.setIcon(icon(event));
+        held.marker.setIcon(icon(event, at.facing));
       }
       held.event = event;
       held.marker.setLatLng([at.lat, at.lon]);
     } else {
       const marker = L.marker([at.lat, at.lon], {
-        icon: icon(event), pane: 'osint', keyboard: false,
+        icon: icon(event, at.facing), pane: 'osint', keyboard: false,
       });
       marker.bindPopup(() => popup(event, positionOf(event, Date.now() / 1000).km));
       marker.addTo(layer);
@@ -221,14 +290,17 @@ function reconcile(events) {
   }
 }
 
-/** Slide every marker along its heading. Called once a second. */
+/** Move every marker along. Called once a second. */
 function step() {
   // Nothing to see and nothing to spend: a hidden tab gets no arithmetic.
   if (!enabled || document.hidden || !drawn.size) return;
   const now = Date.now() / 1000;
   let gone = false;
   for (const [id, held] of drawn) {
-    if (held.event.heading == null) continue;
+    const motion = motionOf(held.event);
+    if (motion === 'still') continue;
+    if (motion === 'track' && held.event.heading == null) continue;
+
     const at = positionOf(held.event, now);
     if (at.arrived) {
       // It has reached the place the report said it was going to. Carrying it
@@ -239,6 +311,15 @@ function step() {
       continue;
     }
     held.marker.setLatLng([at.lat, at.lon]);
+
+    // Something circling changes the way it is facing every second, so its
+    // glyph has to turn with it. The SVG is spun in place rather than the
+    // icon rebuilt: setIcon replaces the element, which would drop an open
+    // popup and re-run the marker's layout sixty times a minute.
+    if (motion === 'orbit' && at.facing != null) {
+      const mark = held.marker.getElement()?.querySelector('.ao-glyph');
+      if (mark) mark.style.transform = `rotate(${at.facing.toFixed(1)}deg)`;
+    }
   }
   if (gone) paintDock();
 }

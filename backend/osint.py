@@ -96,34 +96,66 @@ LOOKBACK_MINUTES = 45
 # model call against a free-tier ceiling.
 MIN_POLL_SECONDS = 55
 
-# How fast each kind of thing travels, in km/h, for carrying a marker forward
-# between reports. Rough figures for the type, not measurements of the object:
-# a Shahed is a propeller drone at a couple of hundred, a cruise missile is
-# subsonic and fast, a ballistic one is not usefully extrapolated at all.
-SPEEDS = {
-    "drone": 180.0,
-    "cruise": 800.0,
-    "ballistic": 0.0,
-    "aircraft": 700.0,
-    "explosion": 0.0,
-    "unknown": 200.0,
-}
-
-# What each kind looks like, and how loud it is. `rank` orders the alert
-# stream: a strike outranks a drone crossing an oblast.
+# What each kind is, how fast it goes and how it moves.
+#
+#   speed   km/h. A rough figure for the type, never a measurement of the
+#           object. A Shahed is a propeller aircraft at a couple of hundred; a
+#           jet-powered one is three times that; a cruise missile is subsonic
+#           and fast; a ballistic one is quicker than anything else here by an
+#           order of magnitude and is over in minutes.
+#
+#   motion  how the marker behaves.
+#             "track"  carried along its course, and stops when it arrives
+#             "orbit"  circles the place it was reported over
+#             "still"  stays exactly where the report put it
+#
+#           Orbit is the one that is about honesty rather than realism. A
+#           reconnaissance drone is on station: it is over somewhere, going
+#           round, and it is not going anywhere else. Carrying it off in a
+#           straight line for twenty minutes would put it in the next country
+#           and claim something the report never said. Circling says "it is
+#           here, and it is still flying", which is exactly what was reported.
+#
+#   rank    orders the alert stream. A strike outranks a drone crossing an
+#           oblast, which outranks a warning.
 KINDS = {
-    "drone": {"colour": "#ff3b30", "label": "Drone", "rank": 2},
-    "cruise": {"colour": "#ff3b30", "label": "Cruise missile", "rank": 3},
-    "ballistic": {"colour": "#ff3b30", "label": "Ballistic", "rank": 4},
-    "aircraft": {"colour": "#ff3b30", "label": "Aircraft", "rank": 2},
-    "explosion": {"colour": "#b06bff", "label": "Explosion", "rank": 5},
-    "alert": {"colour": "#ffb020", "label": "Air alert", "rank": 1},
-    "unknown": {"colour": "#ff8a3b", "label": "Unidentified", "rank": 1},
+    "recon":     {"colour": "#4cc2ff", "label": "Recon drone",
+                  "speed": 140.0, "motion": "orbit", "rank": 2},
+    "drone":     {"colour": "#ff3b30", "label": "Drone",
+                  "speed": 180.0, "motion": "track", "rank": 3},
+    "jet_drone": {"colour": "#ff3b30", "label": "Jet drone",
+                  "speed": 550.0, "motion": "track", "rank": 4},
+    "cruise":    {"colour": "#ff6a3b", "label": "Cruise missile",
+                  "speed": 850.0, "motion": "track", "rank": 5},
+    "ballistic": {"colour": "#ff2d6f", "label": "Ballistic missile",
+                  "speed": 3500.0, "motion": "track", "rank": 6},
+    "aircraft":  {"colour": "#ffd23b", "label": "Aircraft",
+                  "speed": 750.0, "motion": "track", "rank": 3},
+    "helicopter": {"colour": "#ffd23b", "label": "Helicopter",
+                   "speed": 220.0, "motion": "track", "rank": 2},
+    "explosion": {"colour": "#b06bff", "label": "Explosion",
+                  "speed": 0.0, "motion": "still", "rank": 7},
+    "alert":     {"colour": "#ffb020", "label": "Air alert",
+                  "speed": 0.0, "motion": "still", "rank": 1},
+    "unknown":   {"colour": "#ff8a3b", "label": "Unidentified",
+                  "speed": 200.0, "motion": "track", "rank": 2},
 }
 
-# Kinds that are announcements rather than objects: worth reading, never worth
-# drawing as a thing in the air with a course and a speed.
-NOT_AIRBORNE = ("explosion", "alert")
+# Kept as its own table because the browser wants it as one, and because
+# reading a speed out of the same place both ends do is how the two stay in
+# step. Everything here is derived, never edited on its own.
+SPEEDS = {name: look["speed"] for name, look in KINDS.items()}
+MOTION = {name: look["motion"] for name, look in KINDS.items()}
+
+# Kinds that are announcements or places rather than things in flight.
+NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "still")
+
+# The orbit a reconnaissance drone is drawn flying. Not a measurement of
+# anything -- a real racetrack is longer and not a circle -- but the size and
+# the pace are chosen to read as "on station over here" at the zoom these are
+# looked at, which is all the marker is claiming.
+ORBIT_KM = 9.0
+ORBIT_MINUTES = 7.0
 
 MAX_EVENTS = 400
 MAX_ALERTS = 200
@@ -229,15 +261,29 @@ given, in the same order, using the "id" you were given. No prose, no fences.
 
 Each event:
   "id"      the id of the message this came from, copied exactly
-  "kind"    one of: drone, cruise, ballistic, aircraft, explosion, alert,
-            unknown. Use "alert" for an air-raid warning or all-clear, and
-            "explosion" for a strike, an interception, or something down.
+  "kind"    one of: recon, drone, jet_drone, cruise, ballistic, aircraft,
+            helicopter, explosion, alert, unknown.
+              recon      a reconnaissance or observation UAV, one that
+                         loiters: "розвідувальний БпЛА", "Orlan", "ZALA",
+                         "Supercam", "борт-розвідник"
+              jet_drone  a jet-powered one: "реактивний БпЛА", "Shahed-238"
+              drone      any other one-way attack UAV: "Shahed", "Geran"
+              alert      an air-raid warning or an all-clear
+              explosion  a strike, an interception, or something brought down
   "place"   the NAME of the place the report is about, as a plain place name
             a map would recognise: "Nikopol", "Kharkiv oblast", "Beirut".
-            Transliterate to Latin script. Put the place in the nominative,
-            not the genitive: "Харківщини" -> "Kharkiv oblast". Null if the
-            report names no place.
+            Transliterate to Latin script, and use the standard English
+            spelling of the town: "Кагарлик" is "Kaharlyk". Put the place in
+            the nominative, not the genitive: "Харківщини" -> "Kharkiv
+            oblast". Null if the report names no place.
+  "region"  the oblast, governorate or province the place is in, if the
+            report says or if you know it: "Kyiv oblast". Null otherwise.
+            This is used to tell places with similar names apart, so it
+            matters more than it looks.
   "toward"  the NAME of the place it is travelling TO, or null.
+  "course"  the compass direction it is travelling, when the report gives one
+            and names no destination. One of: N, NE, E, SE, S, SW, W, NW,
+            NNE, ENE, ESE, SSE, SSW, WSW, WNW, NNW. Null otherwise.
   "count"   how many objects, if stated, else 1
   "summary" one short English sentence saying what is being reported, under
             110 characters. This is read aloud on a wall display.
@@ -247,13 +293,16 @@ asked for them and they will be discarded. Somewhere else turns names into
 positions; your job is the words.
 
 Rules:
-  - A DIRECTION AND A LOCATION ARE DIFFERENT THINGS. Set "toward" only when
-    the report says the object is MOVING somewhere:
-        "курс на Полтаву", "у напрямку Києва", "прямують до Дніпра"
+  - A DIRECTION AND A LOCATION ARE DIFFERENT THINGS. Set "toward" or
+    "course" only when the report says the object is MOVING:
+        "курс на Полтаву", "у напрямку Києва"   -> toward: "Poltava"/"Kyiv"
+        "курсом на північ", "рухаються на південь" -> course: "N" / "S"
     A phrase saying which PART of a region something is in is not a
-    destination and "toward" must be null:
+    direction, and both must be null:
         "на північний схід Харківщини" = in the north-east OF Kharkiv oblast.
-        That is "place": "Kharkiv oblast", and "toward": null.
+        That is "place": "Kharkiv oblast", "toward" and "course" both null.
+  - "повз X курсом на північ" means it is passing X and heading north:
+        "place": "X", "course": "N", "toward": null.
   - If the report names no place at all, still return the event with "place"
     null. It will be listed rather than mapped. Do not invent a place.
   - Appeals for donations, channel promotion, and general commentary are not
@@ -351,12 +400,45 @@ def _name(value: Any) -> str | None:
     return text[:80]
 
 
+# The sixteen points of the compass, as degrees. A report saying "курсом на
+# північ" has given a course as surely as one naming a town, and the version
+# that only understood destinations drew it as a stationary burst -- a thing
+# that had landed, which is the opposite of what it said.
+COMPASS = {
+    "n": 0, "nne": 22.5, "ne": 45, "ene": 67.5,
+    "e": 90, "ese": 112.5, "se": 135, "sse": 157.5,
+    "s": 180, "ssw": 202.5, "sw": 225, "wsw": 247.5,
+    "w": 270, "wnw": 292.5, "nw": 315, "nnw": 337.5,
+}
+
+# Written out, in case the model answers in words rather than letters.
+COMPASS_WORDS = {
+    "north": "n", "north-east": "ne", "northeast": "ne", "east": "e",
+    "south-east": "se", "southeast": "se", "south": "s",
+    "south-west": "sw", "southwest": "sw", "west": "w",
+    "north-west": "nw", "northwest": "nw",
+    "north-north-east": "nne", "east-north-east": "ene",
+    "east-south-east": "ese", "south-south-east": "sse",
+    "south-south-west": "ssw", "west-south-west": "wsw",
+    "west-north-west": "wnw", "north-north-west": "nnw",
+}
+
+
+def read_course(value: Any) -> float | None:
+    """A compass course as degrees, or None if that is not what this is."""
+    text = " ".join(str(value or "").split()).lower().strip(" .")
+    if not text:
+        return None
+    text = COMPASS_WORDS.get(text, text)
+    return float(COMPASS[text]) if text in COMPASS else None
+
+
 def _clean(item: Any) -> dict[str, Any] | None:
     """One report from the model, checked. Names only -- no positions yet."""
     if not isinstance(item, dict):
         return None
 
-    kind = str(item.get("kind") or "unknown").lower().strip()
+    kind = str(item.get("kind") or "unknown").lower().strip().replace("-", "_")
     if kind not in KINDS:
         kind = "unknown"
 
@@ -364,18 +446,27 @@ def _clean(item: Any) -> dict[str, Any] | None:
     count = int(count) if isinstance(count, (int, float)) and 1 <= count <= 999 else 1
 
     place = _name(item.get("place"))
+    region = _name(item.get("region"))
     toward = _name(item.get("toward"))
     # "Heading for where it already is" is not a journey, and is usually the
     # model filling a field for the sake of it.
     if toward and place and toward.lower() == place.lower():
         toward = None
 
+    course = read_course(item.get("course"))
+    # A thing that is not in flight has no course, whatever the sentence
+    # around it happened to mention.
+    if kind in NOT_AIRBORNE:
+        course, toward = None, None
+
     summary = " ".join(str(item.get("summary") or "").split())[:160]
     return {
         "id": str(item.get("id") or "")[:120] or None,
         "kind": kind,
         "place": place,
+        "region": region,
         "toward": toward,
+        "course": course,
         "count": count,
         "summary": summary,
     }
@@ -435,6 +526,26 @@ def advance(lat: float, lon: float, heading: float, km: float) -> tuple[float, f
     return math.degrees(lat2), (math.degrees(lon2) + 540) % 360 - 180
 
 
+def _look(lookup, name: str, region: str | None, countries: str):
+    """Find a place, using the region the report gave to tell it apart.
+
+    This is the other half of the Kaharlyk failure. "Kaharlyk" on its own is a
+    town in Kyiv oblast and also a handful of smaller things elsewhere;
+    "Kaharlyk, Kyiv oblast" is one of them. Asking with the region first costs
+    a lookup that is almost always cached and removes a whole class of
+    confident wrong answers.
+
+    The bare name is still tried afterwards, because the region may be one the
+    gazetteer spells differently, and a right town found without it beats no
+    town at all.
+    """
+    if region and region.lower() not in name.lower():
+        found = lookup(f"{name}, {region}", countries)
+        if found:
+            return found
+    return lookup(name, countries)
+
+
 def place_event(item: dict[str, Any], countries: str,
                 lookup=gazetteer.find) -> dict[str, Any]:
     """Turn a report's place names into positions, if they are known.
@@ -447,6 +558,7 @@ def place_event(item: dict[str, Any], countries: str,
     out = dict(item)
     out["lat"] = out["lon"] = out["heading"] = None
     out["dest_lat"] = out["dest_lon"] = out["dest_km"] = None
+    out["motion"] = "still"
     out["placed"] = False
 
     if not item.get("place"):
@@ -454,7 +566,7 @@ def place_event(item: dict[str, Any], countries: str,
         return out
 
     try:
-        here = lookup(item["place"], countries)
+        here = _look(lookup, item["place"], item.get("region"), countries)
     except gazetteer.GazetteerError as exc:
         out["why_unplaced"] = str(exc)
         return out
@@ -466,14 +578,22 @@ def place_event(item: dict[str, Any], countries: str,
     out["place_match"] = here.get("name")
     out["place_kind"] = here.get("kind")
     out["placed"] = True
+    out["motion"] = MOTION.get(item["kind"], "track")
     out.pop("why_unplaced", None)
 
-    # Only airborne things travel. A strike or an alert has a place and stays
-    # there, whatever else the report happens to mention.
-    if not item.get("toward") or item["kind"] in NOT_AIRBORNE:
+    # Something on station is not going anywhere, so a course would be a
+    # claim the report did not make. It circles instead.
+    if out["motion"] != "track":
+        return out
+
+    # A compass course is a real answer and is used when no destination was
+    # named. A destination is better, so it wins where there is one.
+    out["heading"] = item.get("course")
+
+    if not item.get("toward"):
         return out
     try:
-        there = lookup(item["toward"], countries)
+        there = _look(lookup, item["toward"], item.get("region"), countries)
     except gazetteer.GazetteerError:
         return out
     if not there:
@@ -502,10 +622,24 @@ def project(event: dict[str, Any], now: float) -> dict[str, Any]:
     """
     minutes = max(0.0, (now - event["seen"]) / 60)
     speed = SPEEDS.get(event["kind"], SPEEDS["unknown"])
+    motion = event.get("motion") or MOTION.get(event["kind"], "track")
     out = dict(event)
     out["age_minutes"] = round(minutes, 1)
     out["arrived"] = False
-    if event.get("heading") is None or speed <= 0:
+
+    if motion == "orbit" and speed > 0:
+        # Round and round the place it was reported over. The marker points
+        # along the circle, which is the tangent -- a quarter turn ahead of
+        # where it is on the ring.
+        angle = (360.0 * minutes / ORBIT_MINUTES) % 360.0
+        out["lat"], out["lon"] = advance(
+            event["origin_lat"], event["origin_lon"], angle, ORBIT_KM)
+        out["heading"] = (angle + 90) % 360
+        out["projected"] = True
+        out["orbiting"] = True
+        return out
+
+    if event.get("heading") is None or speed <= 0 or motion != "track":
         out["lat"], out["lon"] = event["origin_lat"], event["origin_lon"]
         out["projected"] = False
         return out
@@ -528,7 +662,10 @@ def project(event: dict[str, Any], now: float) -> dict[str, Any]:
 def _arrived(event: dict[str, Any], now: float) -> bool:
     """Whether a track has got where the report said it was going."""
     limit, speed = event.get("dest_km"), SPEEDS.get(event["kind"], 0.0)
-    if not limit or event.get("heading") is None or speed <= 0:
+    motion = event.get("motion") or MOTION.get(event["kind"], "track")
+    # Something circling has nowhere to arrive at; it leaves on age like
+    # anything else, but it never finishes a journey it was not on.
+    if motion != "track" or not limit or event.get("heading") is None or speed <= 0:
         return False
     return speed * (max(0.0, now - event["seen"]) / 3600) >= limit
 
@@ -693,6 +830,9 @@ def current() -> dict[str, Any]:
         "alert_minutes": ALERT_MINUTES,
         "speeds": SPEEDS,
         "kinds": KINDS,
+        # The browser recomputes the same motion between polls, so it needs
+        # the same numbers. Sent rather than duplicated there.
+        "orbit": {"km": ORBIT_KM, "minutes": ORBIT_MINUTES},
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
         "model": MODEL,
@@ -717,22 +857,35 @@ DEMO_PLACES = {
     "Beryslav": (46.8397, 33.4269), "Odesa": (46.4825, 30.7233),
     "Mykolaiv": (46.9750, 31.9946), "Kharkiv oblast": (49.7, 36.3),
     "Beirut": (33.8938, 35.5018), "Ochakiv": (46.6128, 31.5406),
+    "Kaharlyk": (49.8556, 30.8125), "Zaporizhzhia": (47.8388, 35.1396),
 }
 
 DEMO_SEED = [
-    ("drone", "Nikopol", "Kherson", 2, "Two drones over Nikopol heading for Kherson"),
-    ("drone", "Beryslav", "Mykolaiv", 1, "Drone over Beryslav on a course for Mykolaiv"),
-    ("drone", "Kharkiv oblast", None, 3, "Three drones over Kharkiv oblast"),
+    # kind, place, toward, course, count, summary
+    ("drone", "Nikopol", "Kherson", None, 2,
+     "Two drones over Nikopol heading for Kherson"),
+    # A course and no destination -- the case that drew a stationary burst
+    # over a town it was flying past, which is what prompted all of this.
+    ("jet_drone", "Kaharlyk", None, "N", 1,
+     "Jet drone past Kaharlyk on a course north"),
+    # On station: it circles rather than setting off across the country.
+    ("recon", "Zaporizhzhia", None, None, 1,
+     "Reconnaissance drone loitering over Zaporizhzhia"),
+    ("drone", "Kharkiv oblast", None, None, 3,
+     "Three drones over Kharkiv oblast"),
     # A hundred kilometres at cruise speed: in flight when the page loads and
     # arriving a couple of minutes later, so the demo shows a marker reaching
     # where it was going and leaving, not only things in transit.
-    ("cruise", "Ochakiv", "Odesa", 1, "Cruise missile past Ochakiv towards Odesa"),
-    ("explosion", "Kherson", None, 1, "Explosions reported in Kherson"),
-    ("alert", "Beirut", None, 1, "Air raid warning for Beirut"),
+    ("cruise", "Ochakiv", "Odesa", None, 1,
+     "Cruise missile past Ochakiv towards Odesa"),
+    ("explosion", "Kherson", None, None, 1, "Explosions reported in Kherson"),
+    ("alert", "Beirut", None, None, 1, "Air raid warning for Beirut"),
     # The case the previous version hid: a real report that cannot be placed.
     # It belongs in the alert stream and nowhere else.
-    ("drone", "Somewhere unnamed", None, 1, "Drone activity reported, no location given"),
+    ("drone", "Somewhere unnamed", None, None, 1,
+     "Drone activity reported, no location given"),
 ]
+
 
 # How long the demo runs before starting over. Long enough for the slowest
 # track to expire on age, so a full cycle shows every ending there is.
@@ -742,7 +895,7 @@ _demo_epoch = 0.0
 
 
 def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
-    """A gazetteer of eight places, for the build with no network."""
+    """A small gazetteer, for the build with no network."""
     found = DEMO_PLACES.get(name)
     if not found:
         return None
@@ -769,9 +922,10 @@ def demo() -> dict[str, Any]:
         epoch = _demo_epoch
 
     events, alerts = [], []
-    for i, (kind, place, toward, count, summary) in enumerate(DEMO_SEED, start=1):
+    for i, (kind, place, toward, course, count, summary) in enumerate(DEMO_SEED, start=1):
         seen = epoch - i * 90
         item = {"kind": kind, "place": place, "toward": toward,
+                "course": read_course(course), "region": None,
                 "count": count, "summary": summary}
         placed = place_event(item, "ua", lookup=_demo_lookup)
         ident = f"AO{100 + i * 7:04d}"
@@ -799,6 +953,7 @@ def demo() -> dict[str, Any]:
         "state": "demo — synthetic reports",
         "keep_minutes": KEEP_MINUTES, "alert_minutes": ALERT_MINUTES,
         "speeds": SPEEDS, "kinds": KINDS,
+        "orbit": {"km": ORBIT_KM, "minutes": ORBIT_MINUTES},
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
         "model": MODEL, "keyed": True, "last_poll": now,
