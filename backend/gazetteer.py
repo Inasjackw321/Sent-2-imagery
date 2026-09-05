@@ -118,6 +118,25 @@ def _ask(name: str, countries: str) -> dict[str, Any] | None:
     return read_place(found)
 
 
+def read_bbox(raw: Any) -> list[float] | None:
+    """Nominatim's bounding box as [south, north, west, east], or None.
+
+    It arrives as four strings, and in that order -- not the [west, south,
+    east, north] most things use. Reordering it here rather than at each
+    reader is one place to get it wrong instead of several.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    try:
+        south, north, west, east = (float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= south <= north <= 90
+            and -180 <= west <= 180 and -180 <= east <= 180):
+        return None
+    return [south, north, west, east]
+
+
 def read_place(found: Any) -> dict[str, Any] | None:
     """The best usable result out of whatever Nominatim sent back.
 
@@ -144,6 +163,12 @@ def read_place(found: Any) -> dict[str, Any] | None:
             "lon": lon,
             "name": str(candidate.get("display_name") or "")[:200] or None,
             "category": category or None,
+            # How big the place is, as Nominatim measured it. Carried because
+            # a report is about an area, not a point: a strike in a village
+            # and an air alert over an oblast are the same shape of statement
+            # about two things a hundred kilometres different in size, and
+            # only the gazetteer knows which is which.
+            "bbox": read_bbox(candidate.get("boundingbox")),
             # An oblast and a street corner are both "a place" and should not
             # be drawn as though they were equally precise. The caller decides
             # what to do about it; this only reports what was matched.

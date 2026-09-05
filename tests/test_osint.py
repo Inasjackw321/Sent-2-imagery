@@ -413,6 +413,55 @@ class TestPlacing:
         assert got["heading"] is None
 
 
+class TestTheAreaAnAlertCovers:
+    """An air-raid warning is about a region, not a point.
+
+    The size has to come from the gazetteer rather than a constant, because
+    the two things this draws are enormously different: a strike in a village
+    is a couple of kilometres across and a warning over an oblast is a
+    hundred. One size for both would either lose the strike in a blob or
+    shrink the oblast to a dot.
+    """
+
+    def test_an_oblast_is_drawn_far_wider_than_a_town(self):
+        oblast = osint.area_km({"bbox": [49.2, 51.6, 29.2, 32.2], "kind": "administrative"})
+        town = osint.area_km({"bbox": [49.84, 49.87, 30.79, 30.83], "kind": "town"})
+        assert oblast > town * 10
+
+    def test_it_is_half_the_diagonal_of_what_the_gazetteer_measured(self):
+        box = [49.2, 51.6, 29.2, 32.2]
+        want = osint.separation(box[0], box[2], box[1], box[3]) / 2
+        assert osint.area_km({"bbox": box}) == pytest.approx(min(want, osint.AREA_MAX_KM),
+                                                             abs=0.2)
+
+    def test_a_place_with_no_extent_falls_back_on_what_sort_it_is(self):
+        assert osint.area_km({"kind": "village"}) < osint.area_km({"kind": "city"})
+        assert osint.area_km({"kind": "city"}) < osint.area_km({"kind": "administrative"})
+
+    def test_a_place_with_nothing_at_all_still_gets_a_sensible_size(self):
+        assert 1 < osint.area_km({}) < osint.AREA_MAX_KM
+
+    def test_a_country_sized_box_is_capped(self):
+        # Ukraine's own bounding box would otherwise shade a continent, and a
+        # warning is never that. A cap is a smaller lie than the alternative.
+        assert osint.area_km({"bbox": [44.0, 52.4, 22.1, 40.2]}) == osint.AREA_MAX_KM
+
+    def test_a_degenerate_box_does_not_give_a_zero_radius(self):
+        assert osint.area_km({"bbox": [50.0, 50.0, 30.0, 30.0], "kind": "town"}) > 0
+
+    def test_the_area_reaches_the_events_that_need_it(self):
+        for event in osint.demo()["events"]:
+            assert event["area_km"] > 0, event["place"]
+
+    def test_the_demo_has_both_a_wide_alert_and_a_narrow_strike(self):
+        # Otherwise the build with no network draws one size and hides
+        # whether the other is right.
+        sizes = [e["area_km"] for e in osint.demo()["events"]
+                 if e["motion"] == "still"]
+        assert len(sizes) >= 2
+        assert max(sizes) > min(sizes)
+
+
 class TestCarryingAMarkerForward:
     def test_due_north_changes_only_the_latitude(self):
         lat, lon = osint.advance(50.0, 30.0, 0, 111.195)

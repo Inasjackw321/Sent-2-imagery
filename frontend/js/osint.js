@@ -40,6 +40,8 @@ const EARTH_KM = 6371.0088;
 
 let map = null;
 let layer = null;
+let areas = null;
+let areaInk = null;
 let enabled = false;
 let keySaved = false;
 let feed = null;
@@ -57,7 +59,19 @@ export function initOsint(leafletMap) {
   // Above the imagery panes and above the ship and quake markers: these are
   // the things you opened the layer for.
   map.createPane('osint').style.zIndex = 632;
+  // The shaded areas go in their own pane, under the markers. A wash over a
+  // whole oblast drawn in the marker pane would sit on top of the arrows
+  // crossing it, and swallow their clicks with them.
+  map.createPane('osintArea').style.zIndex = 428;
+  map.getPane('osintArea').style.pointerEvents = 'none';
+  // An explicit SVG renderer, because the map is built with preferCanvas and
+  // a canvas-rendered circle is pixels: it has no element, so className is
+  // ignored and the CSS that makes an alert pulse never applies to anything.
+  // There are a handful of these at a time, so the reason preferCanvas exists
+  // -- hundreds of vectors -- does not arise.
+  areaInk = L.svg({ pane: 'osintArea' });
   layer = L.layerGroup([], { pane: 'osint' });
+  areas = L.layerGroup([], { pane: 'osintArea' });
   buildDock();
 }
 
@@ -230,6 +244,10 @@ function popup(event, km) {
   }
   if (event.count > 1) rows.push(`${Number(event.count) || 1} reported together`);
   rows.push(`${Math.round(event.age_minutes ?? 0)} min since the report`);
+  if (hasArea(event)) {
+    rows.push(`Shaded about ${Math.round(event.area_km ?? 8)} km around — the `
+      + 'size of the place named, not a measured extent.');
+  }
   if (motionOf(event) === 'orbit') {
     // Said plainly, because a marker going round in circles is the one thing
     // here most likely to be read as a measurement of a flight path.
@@ -251,6 +269,41 @@ function popup(event, km) {
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/**
+ * The shaded ground an alert or a strike covers.
+ *
+ * Only for the things that ARE somewhere rather than passing over it: an
+ * air-raid warning and a strike. A drone crossing an oblast is at a point on
+ * its way through, and shading the whole region for it would say the warning
+ * covers ground nobody mentioned.
+ *
+ * The radius comes from the gazetteer's own extent for the place, not from a
+ * fixed number, because the two cases are enormously different in size -- a
+ * strike in a village is a couple of kilometres and a warning over an oblast
+ * is a hundred. One size would either lose the strike in a blob or shrink the
+ * oblast to a dot.
+ */
+function areaFor(event) {
+  const colour = look(event).colour ?? '#ff8a3b';
+  return L.circle([event.origin_lat, event.origin_lon], {
+    radius: Math.max(1500, (event.area_km ?? 8) * 1000),
+    pane: 'osintArea',
+    renderer: areaInk,
+    interactive: false,
+    className: `ao-area ao-area-${event.kind}`,
+    color: colour,
+    weight: 1.5,
+    opacity: 0.55,
+    fillColor: colour,
+    fillOpacity: 0.12,
+  });
+}
+
+/** Whether this report is about an area rather than something passing over. */
+const hasArea = (event) => event.placed !== false
+  && motionOf(event) === 'still'
+  && Number.isFinite(event.origin_lat);
 
 /** Bring the drawn markers into line with the events just fetched. */
 function reconcile(events) {
@@ -280,12 +333,15 @@ function reconcile(events) {
       });
       marker.bindPopup(() => popup(event, positionOf(event, Date.now() / 1000).km));
       marker.addTo(layer);
-      drawn.set(event.id, { event, marker });
+      const area = hasArea(event) ? areaFor(event) : null;
+      area?.addTo(areas);
+      drawn.set(event.id, { event, marker, area });
     }
   }
   for (const [id, held] of drawn) {
     if (alive.has(id)) continue;
     layer.removeLayer(held.marker);
+    if (held.area) areas.removeLayer(held.area);
     drawn.delete(id);
   }
 }
@@ -306,6 +362,7 @@ function step() {
       // It has reached the place the report said it was going to. Carrying it
       // past there would be inventing a second journey nobody described.
       layer.removeLayer(held.marker);
+      if (held.area) areas.removeLayer(held.area);
       drawn.delete(id);
       gone = true;
       continue;
@@ -400,6 +457,7 @@ function toggle() {
   $('#osintToggle').classList.toggle('is-on', enabled);
   $('#osintBody').hidden = !enabled;
   if (enabled) {
+    areas.addTo(map);
     layer.addTo(map);
     load();
     poller = setInterval(load, POLL_MS);
@@ -410,6 +468,8 @@ function toggle() {
     poller = stepper = null;
     layer.remove();
     layer.clearLayers();
+    areas.remove();
+    areas.clearLayers();
     drawn.clear();
   }
   paintDock();

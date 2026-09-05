@@ -623,6 +623,41 @@ def advance(lat: float, lon: float, heading: float, km: float) -> tuple[float, f
     return math.degrees(lat2), (math.degrees(lon2) + 540) % 360 - 180
 
 
+# How wide an alert is drawn when the gazetteer gave no extent to go on, by
+# what sort of place it matched. Round numbers, and deliberately modest: an
+# area drawn too large claims a warning covers ground nobody mentioned.
+AREA_FALLBACK_KM = {
+    "administrative": 45.0, "state": 45.0, "region": 45.0, "province": 45.0,
+    "county": 25.0, "district": 25.0, "municipality": 15.0,
+    "city": 12.0, "town": 6.0, "village": 3.0, "hamlet": 2.0,
+    "suburb": 3.0, "neighbourhood": 2.0,
+}
+AREA_DEFAULT_KM = 8.0
+AREA_MAX_KM = 120.0
+
+
+def area_km(place: dict[str, Any]) -> float:
+    """How far around a place an alert reaches, in kilometres.
+
+    Taken from the extent the gazetteer reported rather than assumed, because
+    the difference between the two cases this has to cover is enormous: a
+    strike in a village is a couple of kilometres and an air alert over an
+    oblast is a hundred. Drawing both the same size would either lose the
+    strike in a blob or shrink the oblast to a dot.
+
+    Half the diagonal of the bounding box, which for a roughly square oblast
+    is close and for a long thin one is generous. Capped, because a country's
+    own bounding box would otherwise shade a continent.
+    """
+    box = place.get("bbox")
+    if box:
+        south, north, west, east = box
+        across = separation(south, west, north, east)
+        if across > 0:
+            return round(min(AREA_MAX_KM, max(1.5, across / 2)), 1)
+    return AREA_FALLBACK_KM.get(str(place.get("kind") or "").lower(), AREA_DEFAULT_KM)
+
+
 def _look(lookup, name: str, region: str | None, countries: str):
     """Find a place, using the region the report gave to tell it apart.
 
@@ -679,6 +714,7 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     out["lat"], out["lon"] = here["lat"], here["lon"]
     out["place_match"] = here.get("name")
     out["place_kind"] = here.get("kind")
+    out["area_km"] = area_km(here)
     out["placed"] = True
     out["motion"] = MOTION.get(item["kind"], "track")
     out.pop("why_unplaced", None)
@@ -1083,12 +1119,24 @@ DEMO_CYCLE = (KEEP_MINUTES + 4) * 60
 _demo_epoch = 0.0
 
 
+# Roughly how big each demo place is, so the alert areas differ the way real
+# ones do: a strike in a town is a few kilometres across and a warning over an
+# oblast is most of a region.
+DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Beirut": 0.09}
+
+
 def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
     """A small gazetteer, for the build with no network."""
     found = DEMO_PLACES.get(name)
     if not found:
         return None
-    return {"lat": found[0], "lon": found[1], "name": name, "kind": "demo"}
+    lat, lon = found
+    half = DEMO_EXTENT.get(name, 0.06)
+    return {
+        "lat": lat, "lon": lon, "name": name,
+        "kind": "administrative" if half > 1 else "town",
+        "bbox": [lat - half, lat + half, lon - half, lon + half],
+    }
 
 
 def demo() -> dict[str, Any]:

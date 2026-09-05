@@ -1479,3 +1479,22 @@ body.is-walled { overflow: hidden; }
 /* A report read without the model. Marked, not hidden: it is a weaker
    reading than one the model made and the panel should not blur the two. */
 .ao-row-what.is-plain { border-bottom: 1px dotted rgba(143, 168, 216, .35); }
+
+/* The shaded ground an alert or a strike covers.
+
+   It pulses, slowly. A wall display that has been up for an hour needs the
+   difference between "a warning is running here" and "a warning ran here at
+   some point" to be visible from across a room, and a static wash is not.
+   Slow enough not to be a distraction on a map somebody is working on. */
+.ao-area { animation: ao-breathe 4.5s ease-in-out infinite; }
+@keyframes ao-breathe {
+  50% { fill-opacity: .22; stroke-opacity: .85; }
+}
+/* An air-raid warning is a boundary you want to read the edge of; a strike is
+   a point you want to find. So the warning is drawn as an outline and the
+   strike as a filled mark. */
+.ao-area-alert { stroke-dasharray: 7 5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ao-area { animation: none; }
+}
