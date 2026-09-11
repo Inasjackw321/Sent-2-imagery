@@ -193,7 +193,22 @@ def parse_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
     return {"live": live, "stale": stale, "imagery": imagery}
 
 
-def _fetch() -> dict[str, Any]:
+_xml: str | None = None
+_xml_at = 0.0
+
+
+def capabilities(refresh: bool = False) -> str:
+    """EUMETSAT's catalogue, as it came. Fetched at most every few hours.
+
+    Shared rather than fetched per feature. The same document lists the
+    lightning products, the Sentinel-3 imagery and everything else EUMETSAT
+    serves, and it is a large file -- downloading it once per layer that wants
+    a look would be three copies of several megabytes for no reason.
+    """
+    global _xml, _xml_at
+    with _lock:
+        if _xml is not None and not refresh and time.time() - _xml_at < CACHE_SECONDS:
+            return _xml
     try:
         resp = requests.get(CAPABILITIES, timeout=40,
                             headers={"User-Agent": config.USER_AGENT})
@@ -201,8 +216,15 @@ def _fetch() -> dict[str, Any]:
         raise MTGError(f"EUMETSAT View could not be reached: {exc}") from exc
     if not resp.ok:
         raise MTGError(f"EUMETSAT View answered {resp.status_code}")
-    found = parse_layers(resp.text)
-    found["catalogue_size"] = resp.text.count("<Name>")
+    with _lock:
+        _xml, _xml_at = resp.text, time.time()
+    return resp.text
+
+
+def _fetch() -> dict[str, Any]:
+    xml = capabilities()
+    found = parse_layers(xml)
+    found["catalogue_size"] = xml.count("<Name>")
     return found
 
 

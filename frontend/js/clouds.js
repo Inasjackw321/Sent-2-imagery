@@ -21,6 +21,37 @@ const TILES = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best'
 // crosses at a fixed local time, so which one you pick is really a choice of
 // what hour of the day you are looking at.
 const SOURCES = {
+  // ── Geostationary: actually live ──────────────────────────────
+  //
+  // These are the ones that make this layer worth calling live. A satellite
+  // parked over one longitude photographs its whole disc every ten minutes,
+  // so the cloud you see is the cloud that is there now, and it is there at
+  // night too. The polar mosaics below are one strip per orbit stitched into
+  // a day -- excellent for a picture of the whole planet, useless for asking
+  // what the sky is doing this afternoon.
+  //
+  // Each only sees its own third of the world, which is why there are three
+  // and why the panel says which one covers where you are looking.
+  'goes-east': {
+    layer: 'GOES-East_ABI_GeoColor',
+    label: 'GOES-East · live', kind: 'live',
+    covers: 'the Americas and the Atlantic', centre: -75, reach: 70,
+    stepMinutes: 10, matrix: 'GoogleMapsCompatible_Level7', native: 7,
+  },
+  'goes-west': {
+    layer: 'GOES-West_ABI_GeoColor',
+    label: 'GOES-West · live', kind: 'live',
+    covers: 'the Pacific and western North America', centre: -137, reach: 70,
+    stepMinutes: 10, matrix: 'GoogleMapsCompatible_Level7', native: 7,
+  },
+  himawari: {
+    layer: 'Himawari_AHI_Geocolor',
+    label: 'Himawari · live', kind: 'live',
+    covers: 'Asia, Australia and the western Pacific', centre: 140, reach: 70,
+    stepMinutes: 10, matrix: 'GoogleMapsCompatible_Level7', native: 7,
+  },
+
+  // ── Polar: one pass a day, but everywhere ─────────────────────
   'viirs-noaa20': {
     layer: 'VIIRS_NOAA20_CorrectedReflectance_TrueColor',
     label: 'VIIRS · NOAA-20', when: 'about 13:30 local', metres: 250,
@@ -39,11 +70,26 @@ const SOURCES = {
   },
 };
 
+const isLive = (key) => SOURCES[key]?.kind === 'live';
+
 // GIBS names its tile grids by how deep they go, and 250 m imagery stops at
 // level 9. Past that the tiles are stretched rather than withheld, so the
 // layer stays on screen when you zoom into an area instead of vanishing.
 const MATRIX = 'GoogleMapsCompatible_Level9';
 const NATIVE_ZOOM = 9;
+
+// How long after an observation the tiles actually appear. Asking for the
+// slot that has just begun gets nothing back, which looks like a dead layer
+// rather than one that is a few minutes behind the world.
+const PUBLISH_LAG_MINUTES = 20;
+
+// How far back to walk, one slot or one day at a time, before giving up and
+// saying so. The old version stepped back exactly once and then gave up
+// silently, so a satellite having a bad morning looked like a broken app.
+const MOST_STEPS_BACK = 6;
+
+// How often to fetch a newer frame from a geostationary source.
+const LIVE_REFRESH_MS = 5 * 60 * 1000;
 
 // How cloud is told apart from ground. The tiles are a picture of the whole
 // Earth -- land, sea and cloud together -- and only the cloud is wanted, so
@@ -103,7 +149,12 @@ let opacity = 0.85;
 // Tuned against known ground colours: thick and thin cloud at full strength,
 // haze most of the way, a grey city only faintly.
 let sensitivity = 0.42;
-let steppedBack = false;
+// How many slots (live) or days (polar) behind the present the layer is
+// showing, because what was asked for first came back empty.
+let stepsBack = 0;
+let liveTimer = null;
+// Why the layer is empty, when it is. Said rather than left to be guessed at.
+let problem = '';
 
 export function initClouds(leafletMap) {
   map = leafletMap;
@@ -117,6 +168,28 @@ export function initClouds(leafletMap) {
 
 function today() {
   return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * The timestamp to ask a geostationary source for.
+ *
+ * Rounded down to the satellite's own slot and set back by the publishing
+ * lag, then by however many slots have already come back empty. GIBS wants an
+ * exact slot boundary: a time in between returns nothing at all, which is
+ * indistinguishable from the layer being broken.
+ */
+function liveStamp(spec, back = 0) {
+  const step = spec.stepMinutes * 60000;
+  const when = new Date(
+    Math.floor((Date.now() - PUBLISH_LAG_MINUTES * 60000 - back * step) / step) * step);
+  return when.toISOString().replace(/\.\d+Z$/, 'Z');
+}
+
+/** How far the map's centre is from the middle of a satellite's disc. */
+function reach(spec) {
+  if (spec.centre == null) return { away: 0, inside: true };
+  const away = Math.abs(((map.getCenter().lng - spec.centre + 540) % 360) - 180);
+  return { away, inside: away <= spec.reach };
 }
 
 function shift(date, days) {
@@ -134,7 +207,7 @@ function buildDock() {
     el('button', { class: 'cloud-toggle', id: 'cloudToggle', onclick: toggle },
       el('span', { class: 'cloud-mark' }, '☁'), 'Live clouds'),
     el('div', { class: 'cloud-body', id: 'cloudBody', hidden: true },
-      el('div', { class: 'cloud-days' },
+      el('div', { class: 'cloud-days', id: 'cloudDays' },
         el('button', { class: 'cloud-step', title: 'The day before',
           onclick: () => setDay(shift(day, -1)) }, '‹'),
         el('span', { class: 'cloud-date', id: 'cloudDate' }, day),
@@ -147,7 +220,13 @@ function buildDock() {
           onclick: matchImagery }, 'Match the imagery')),
       el('select', {
         class: 'cloud-source', id: 'cloudSource',
-        onchange: (e) => { source = e.target.value; paint(); rebuild(); },
+        onchange: (e) => {
+          source = e.target.value;
+          stepsBack = 0;
+          problem = '';
+          paint();
+          rebuild();
+        },
       }, ...Object.entries(SOURCES).map(([key, spec]) =>
         el('option', { value: key, selected: key === source }, spec.label))),
       el('label', { class: 'cloud-fade' }, 'Fade',
@@ -174,28 +253,63 @@ function buildDock() {
 /** Keep the panel saying what is actually on the map. */
 function rebuild() {
   const spec = SOURCES[source];
-  $('#cloudDate').textContent = day === today() ? `${day} · today` : day;
-  $('#cloudNote').innerHTML =
-    `Crosses ${spec.when}, published within about three hours.<br>`
-    + 'One pass a day, and none of the night side.<br>'
-    + '<b>Cloud only</b> — the ground is cut out. Snow reads as cloud.';
+  const live = isLive(source);
+  const when = $('#cloudDate');
+  const lines = [];
+
+  if (live) {
+    // The age of the frame actually on screen, which is the only number worth
+    // showing for something that calls itself live.
+    const minutes = PUBLISH_LAG_MINUTES + stepsBack * spec.stepMinutes;
+    when.textContent = `${minutes} min ago`;
+    const view = reach(spec);
+    lines.push(`Every ${spec.stepMinutes} minutes, day and night, over `
+      + `${spec.covers}.`);
+    if (!view.inside) {
+      lines.push('<b>Over its horizon here</b> — this satellite cannot see '
+        + 'where you are looking. Try another, or a daily mosaic.');
+    }
+  } else {
+    when.textContent = day === today() ? `${day} · today` : day;
+    lines.push(`Crosses ${spec.when}, published within about three hours.`);
+    lines.push('One pass a day, and none of the night side.');
+  }
+  lines.push('<b>Cloud only</b> — the ground is cut out. Snow reads as cloud.');
+  if (problem) lines.push(`<b>${problem}</b>`);
+  $('#cloudNote').innerHTML = lines.join('<br>');
+
+  // The day controls mean nothing for a source that publishes every ten
+  // minutes, so they go rather than sitting there doing nothing.
+  const days = $('#cloudDays');
+  if (days) days.hidden = live;
+
   const shown = store.image?.meta?.scene?.date;
   const match = $('#cloudMatch');
-  match.hidden = !shown || shown === day;
+  match.hidden = live || !shown || shown === day;
   if (shown) match.textContent = `Match ${fmt.date(shown)}`;
+  const now = $('#cloudToday');
+  if (now) now.hidden = live;
 }
 
 function toggle() {
   enabled = !enabled;
   $('#cloudToggle').classList.toggle('is-on', enabled);
   $('#cloudBody').hidden = !enabled;
+  if (!enabled) {
+    // A geostationary source keeps fetching a new frame every five minutes.
+    // Left running with the layer switched off, that is somebody else's
+    // bandwidth spent on tiles nobody is looking at.
+    clearInterval(liveTimer);
+    liveTimer = null;
+  }
   paint();
 }
 
 function setDay(next) {
   // Nothing has been photographed tomorrow yet.
   day = next > today() ? today() : next;
-  steppedBack = false;
+  stepsBack = 0;
+  problem = '';
   paint();
   rebuild();
 }
@@ -271,14 +385,17 @@ function paint() {
     return;
   }
   const spec = SOURCES[source];
+  const live = isLive(source);
   layer = new CloudTiles(TILES, {
     layer: spec.layer,
-    matrix: MATRIX,
-    date: day,
+    matrix: live ? spec.matrix : MATRIX,
+    // A geostationary source is asked for an instant; a polar mosaic for a
+    // day. Same URL shape, and GIBS accepts either in the same slot.
+    date: live ? liveStamp(spec, stepsBack) : day,
     fmt: 'jpg',
     sensitivity,
     opacity,
-    maxNativeZoom: NATIVE_ZOOM,
+    maxNativeZoom: live ? spec.native : NATIVE_ZOOM,
     maxZoom: 19,
     // Cloud sits above the ground, and now that only the cloud is drawn it can
     // sit above the imagery too without hiding any of it.
@@ -287,8 +404,19 @@ function paint() {
     attribution: 'NASA EOSDIS GIBS',
   });
   layer.on('tileerror', missing);
+  // A frame that arrived means the walk back is over, whatever it cost.
+  layer.on('tileload', () => { walking = false; });
   layer.addTo(map);
   rebuild();
+
+  // Geostationary sources move on their own. Nothing else here does, so the
+  // timer only exists while one is chosen.
+  clearInterval(liveTimer);
+  liveTimer = live ? setInterval(() => {
+    if (!enabled || document.hidden) return;
+    stepsBack = 0;
+    paint();
+  }, LIVE_REFRESH_MS) : null;
 }
 
 /**
@@ -302,11 +430,47 @@ function paint() {
 // travel; one repaint once the thumb settles is enough.
 const queueRepaint = debounce(() => { if (enabled) paint(); }, 180);
 
+let walking = false;
+
+/**
+ * Nothing came back, so step further back and try again.
+ *
+ * The old version stepped back exactly one day and then gave up, silently, so
+ * a satellite having a bad morning looked identical to a broken app -- and it
+ * could only ever be a day, which is the wrong unit entirely for a source
+ * that publishes every ten minutes.
+ *
+ * Now it walks: one slot at a time for a geostationary source, one day at a
+ * time for a polar mosaic, up to a handful, and then says plainly that the
+ * source is not answering rather than leaving an empty layer to be puzzled
+ * over.
+ */
 const missing = debounce(() => {
-  if (steppedBack || day !== today()) return;
-  steppedBack = true;
-  day = shift(day, -1);
+  if (!enabled || walking) return;
+  const live = isLive(source);
+
+  if (!live && day !== today()) {
+    // A day deliberately chosen rather than today's, and it has nothing. That
+    // is a fact about that day, not something to paper over by showing a
+    // different one -- somebody asked for this date.
+    problem = `Nothing published for ${day} from ${SOURCES[source].label}.`;
+    rebuild();
+    return;
+  }
+
+  if (stepsBack >= MOST_STEPS_BACK) {
+    problem = live
+      ? `${SOURCES[source].label} has published nothing in the last `
+        + `${Math.round((MOST_STEPS_BACK * SOURCES[source].stepMinutes
+          + PUBLISH_LAG_MINUTES) / 60 * 10) / 10} h.`
+      : `Nothing from ${SOURCES[source].label} in the last ${MOST_STEPS_BACK} days.`;
+    rebuild();
+    return;
+  }
+
+  walking = true;
+  stepsBack += 1;
+  if (!live) day = shift(today(), -stepsBack);
   paint();
   rebuild();
-  toast(`Today's mosaic is not published yet — showing ${day}`);
 }, 400);

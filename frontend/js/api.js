@@ -35,6 +35,7 @@ export const api = {
       east: east.toFixed(4), north: north.toFixed(4), source,
     })}`, { method: 'GET' }),
   mtg: () => request('/api/mtg', { method: 'GET' }),
+  copernicus: () => request('/api/copernicus', { method: 'GET' }),
   osint: () => request('/api/osint', { method: 'GET' }),
   osintKey: (key) => request('/api/osint/key', { body: { key } }),
 

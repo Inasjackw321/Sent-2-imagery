@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, fires, gazetteer, mtg, osint, passes,
-    seismic, service, stac, version, vessels, weather,
+    aisstream, composite, config, copernicus, fires, gazetteer, mtg, osint,
+    passes, seismic, service, stac, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -332,6 +332,22 @@ def mtg_layers(refresh: bool = Query(False)) -> dict:
     try:
         return mtg.layers(refresh=refresh)
     except mtg.MTGError as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/copernicus")
+def copernicus_layers(refresh: bool = Query(False)) -> dict:
+    """Sentinel-3 and Sentinel-5P, as live layers rather than as imagery.
+
+    They are published as NetCDF granules, which the render pipeline -- built
+    on windowed reads of cloud-optimised GeoTIFFs -- cannot use. EUMETSAT
+    serves them as ordinary WMS, so that is how they arrive.
+    """
+    if config.DEMO_MODE:
+        return copernicus.demo()
+    try:
+        return copernicus.layers(refresh=refresh)
+    except copernicus.CopernicusError as exc:
         raise _fail(exc)
 
 

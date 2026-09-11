@@ -242,9 +242,42 @@ const stillLoading = () => frames.filter((f) => !ready.has(keyOf(f))).length;
 const PATIENCE_MS = 4000;
 let waitingSince = 0;
 
+// How many frames ahead must be in hand before the loop starts at all.
+//
+// Waiting only for the next frame is enough to keep the loop from playing
+// blanks, and it is not enough to make it smooth: the loop catches up with
+// the download queue and stutters for the first lap. Measured at 150 ms a
+// tile over six connections, five of the first thirty steps ran long, the
+// worst at 1672 ms against a 464 ms beat -- and every step after the tiles
+// were all in was exact.
+//
+// So it holds until a short run is ready and then plays evenly from the first
+// step. Only at the start: a hiccup once it is running is better ridden out
+// than stopped for.
+const WARM_FRAMES = 5;
+let warmed = false;
+
 function step() {
   clearTimeout(timer);
   if (!enabled || !playing || !frames.length) return;
+
+  // Before the first step, wait for a short run rather than a single frame,
+  // so the loop does not set off into the back of the download queue.
+  if (!warmed) {
+    const ahead = Array.from({ length: WARM_FRAMES }, (_, i) =>
+      frames[(at + 1 + i) % frames.length]);
+    const got = ahead.filter((f) => ready.has(keyOf(f))).length;
+    if (got < Math.min(WARM_FRAMES, frames.length - 1)) {
+      waitingSince = waitingSince || performance.now();
+      if (performance.now() - waitingSince < PATIENCE_MS * 2) {
+        timer = setTimeout(step, 120);
+        paintDock();
+        return;
+      }
+    }
+    warmed = true;
+    waitingSince = 0;
+  }
 
   // Wait for the frame about to be shown, and only that one.
   //
@@ -306,6 +339,8 @@ async function refresh({ keepPosition = false, fetchIndex = true } = {}) {
       }
     }
     frames = next;
+    // A new set of frames is a new download queue to get ahead of.
+    warmed = false;
     // Which frame is about to be shown decides what order the tiles are
     // asked for in, so it is settled before anything is fetched.
     const start = keepPosition
@@ -509,6 +544,13 @@ function paintDock() {
       el('i', { style: `background:${colour}` }), label)));
 
   const still = stillLoading();
+  if (!warmed && still > 0 && playing) {
+    // Said, rather than shown as a loop that has not started. A couple of
+    // seconds of "getting ready" reads as working; the same seconds with a
+    // frozen frame and a play button read as broken.
+    note.textContent = `${NOTE} Getting a run of frames in hand before it plays…`;
+    return;
+  }
   note.textContent = frame.forecast
     ? 'Extrapolated from the recent motion — not an observation.'
     // The count is progress, not a stall: the loop plays as soon as the frame
