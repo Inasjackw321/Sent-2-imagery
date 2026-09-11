@@ -30,6 +30,9 @@ let enabled = false;
 let catalogue = null;
 let chosen = null;      // { family, layer }
 let opacity = 0.8;
+// Which day of the week on offer is showing. -1 is the whole week composited
+// into one picture, which is the fullest globe available.
+let dayAt = -1;
 let timer = null;
 let problem = '';
 
@@ -58,9 +61,15 @@ function show() {
     // 1.3.0 is what the capabilities are read at, and mixing versions is how
     // you get axis order wrong and the picture mirrored.
     version: '1.3.0',
-    // The frame the catalogue says is newest. Without it EUMETSAT serves
-    // whatever its own default is, which is not necessarily the latest.
-    ...(chosen.layer.time_default ? { time: chosen.layer.time_default } : {}),
+    // A whole day, or a whole week -- not an instant.
+    //
+    // One instant from a polar orbiter is one orbit strip: a few hundred
+    // kilometres of the planet and nothing else, which on a world map reads
+    // as a broken layer rather than as a satellite that has not been over the
+    // rest of the world yet. A WMS given a TIME range draws everything inside
+    // it, so a day is every pass that day and a week is seven of them -- and
+    // at three hundred metres that is the globe.
+    ...(timeParam() ? { time: timeParam() } : {}),
     pane: 'copernicus',
     opacity,
     attribution: catalogue.attribution,
@@ -100,6 +109,18 @@ async function load() {
   show();
 }
 
+/** The TIME parameter for whatever span is selected. */
+function timeParam() {
+  const days = chosen?.layer?.days ?? [];
+  if (!days.length) return chosen?.layer?.time_default ?? null;
+  if (dayAt < 0) return chosen.layer.whole_week;
+  const day = days[Math.min(dayAt, days.length - 1)];
+  // One whole day, expressed as the range that covers it. A bare date works
+  // on some servers and is read as midnight exactly on others, which would
+  // put us back to one instant and one strip.
+  return `${day}T00:00:00Z/${day}T23:59:59Z`;
+}
+
 /** What to say when EUMETSAT answered but nothing it holds is current. */
 function nothingLive(got) {
   const stale = (got.families ?? []).reduce((n, f) => n + (f.stale ?? 0), 0);
@@ -134,6 +155,36 @@ function buildDock() {
             title: `${layer.title} — ${layer.id}`,
             onclick: () => { chosen = { family, layer }; buildDock(); show(); },
           }, shortName(layer)))))),
+      // The span: a week composited, or one day of it at a time.
+      chosen?.layer?.days?.length
+        ? el('div', { class: 'cop-span' },
+          el('button', {
+            class: `cop-day${dayAt < 0 ? ' is-on' : ''}`,
+            title: 'Every pass in the last week, drawn together — the fullest '
+              + 'picture of the whole Earth available',
+            onclick: () => { dayAt = -1; buildDock(); show(); },
+          }, 'Whole week'),
+          el('button', {
+            class: 'cop-step', title: 'A day earlier',
+            onclick: () => {
+              dayAt = dayAt < 0 ? chosen.layer.days.length - 2
+                : Math.max(0, dayAt - 1);
+              buildDock();
+              show();
+            },
+          }, '‹'),
+          el('span', { class: 'cop-when' },
+            dayAt < 0 ? `${chosen.layer.days.length} days`
+              : chosen.layer.days[Math.min(dayAt, chosen.layer.days.length - 1)]),
+          el('button', {
+            class: 'cop-step', title: 'A day later',
+            onclick: () => {
+              if (dayAt >= 0 && dayAt < chosen.layer.days.length - 1) dayAt += 1;
+              buildDock();
+              show();
+            },
+          }, '›'))
+        : null,
       families.length
         ? el('label', { class: 'cop-fade' }, 'Fade',
           el('input', {
@@ -190,7 +241,14 @@ function paint() {
     age == null ? 'live' : age < 60 ? `${age} min ago`
       : `${Math.round(age / 60)} h ago`}`;
 
-  const lines = [chosen.family.about];
+  const lines = [
+    dayAt < 0
+      ? `Every pass in the last ${chosen.layer.days?.length ?? 7} days drawn `
+        + 'together, which is the whole Earth. One instant would be a single '
+        + 'orbit strip.'
+      : 'One whole day: every pass that day.',
+    chosen.family.about,
+  ];
   if (catalogue.attribution === 'synthetic') {
     lines.push('Demo mode: the tiles are stand-ins.');
   } else {

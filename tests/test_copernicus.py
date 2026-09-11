@@ -126,6 +126,57 @@ class TestLivenessIsNotAboutNames:
             copernicus.sort_layers("<not xml")
 
 
+class TestAWeekOfWholeEarth:
+    """One instant is one orbit strip.
+
+    A polar orbiter photographs a few hundred kilometres at a time. Asked for
+    a single moment, the layer draws that one strip and nothing else, which on
+    a world map reads as broken rather than as a satellite that has not been
+    over the rest of the world yet. A whole day is every pass that day, and at
+    three hundred metres that is the globe.
+    """
+
+    def test_a_week_of_whole_days_is_offered(self):
+        days = copernicus.days_offered(NOW)
+        assert len(days) == copernicus.DAYS_OFFERED
+        assert days == sorted(days)
+        assert days[-1] == "2026-09-11"
+        assert days[0] == "2026-09-05"
+
+    def test_they_are_dates_rather_than_instants(self):
+        # The whole point: a date spans a day's worth of passes. An instant
+        # spans one.
+        for day in copernicus.days_offered(NOW):
+            assert len(day) == 10 and day.count("-") == 2
+
+    def test_the_week_ends_at_the_newest_frame_not_at_the_clock(self):
+        # A service that is two days behind should offer the two days before
+        # that, not seven days ending today with two of them empty.
+        days = copernicus.days_offered(NOW - dt.timedelta(days=2))
+        assert days[-1] == "2026-09-09"
+
+    def test_no_frames_means_no_days(self):
+        assert copernicus.days_offered(None) == []
+
+    def test_every_live_layer_carries_its_week(self):
+        got = copernicus.sort_layers(capabilities(
+            layer("x:olci", title="Sentinel-3 OLCI", extent=iso(3))), now=NOW)
+        entry = [f for f in got["families"] if f["key"] == "sentinel-3"][0]["layers"][0]
+        assert len(entry["days"]) == copernicus.DAYS_OFFERED
+        assert entry["whole_week"] == f"{entry['days'][0]}/{entry['days'][-1]}"
+
+    def test_the_whole_week_is_a_range_a_wms_understands(self):
+        got = copernicus.demo()["families"][1]["layers"][0]
+        start, _, end = got["whole_week"].partition("/")
+        assert start < end
+        assert dt.date.fromisoformat(start) < dt.date.fromisoformat(end)
+
+    def test_the_demo_carries_it_too(self):
+        for family in copernicus.demo()["families"]:
+            for entry in family["layers"]:
+                assert entry["days"] and entry["whole_week"]
+
+
 class TestTheAnswer:
     def test_the_time_handed_to_wms_ends_in_z(self):
         got = copernicus.sort_layers(capabilities(

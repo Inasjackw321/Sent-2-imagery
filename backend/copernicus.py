@@ -75,6 +75,15 @@ FAMILIES: tuple[dict[str, Any], ...] = (
     },
 )
 
+# How many days of history to offer.
+#
+# A single instant from one of these is one orbit strip, a few hundred
+# kilometres wide -- which on a world map looks like a broken layer rather
+# than a satellite that has not been over the rest of the world yet. A day of
+# strips is the whole globe, and a week of days is a week you can step
+# through.
+DAYS_OFFERED = 7
+
 # How fresh a frame has to be to count as live.
 #
 # A day, not the lightning layer's six hours: these are polar orbiters, so a
@@ -97,6 +106,22 @@ def family_of(name: str, title: str) -> str | None:
         if any(word in low for word in family["words"]):
             return family["key"]
     return None
+
+
+def days_offered(newest: dt.datetime | None) -> list[str]:
+    """The last week of whole days, newest last, as WMS date ranges.
+
+    Each entry is one day rather than one instant, because an instant is one
+    orbit strip: a few hundred kilometres of the planet and nothing else. A
+    WMS given a range draws everything inside it, so "this whole day" is every
+    pass that day, which for a polar orbiter at three hundred metres is the
+    globe.
+    """
+    if newest is None:
+        return []
+    end = newest.astimezone(dt.timezone.utc).date()
+    return [(end - dt.timedelta(days=n)).isoformat()
+            for n in range(DAYS_OFFERED - 1, -1, -1)]
 
 
 def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
@@ -128,6 +153,12 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
             continue
 
         newest, entry = mtg._entry(node, name, title)
+        # A day at a time, and the whole week as one composite. What a WMS
+        # does with a TIME range is draw everything in it, so a day of orbit
+        # strips comes back as a covered globe rather than as one pass.
+        entry["days"] = days_offered(newest)
+        entry["whole_week"] = (
+            f"{entry['days'][0]}/{entry['days'][-1]}" if entry["days"] else None)
         fresh = newest is not None and now - newest <= LIVE_WITHIN
         entry["live"] = fresh
         entry["age_minutes"] = (
@@ -151,6 +182,7 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
         "wms": mtg.WMS,
         "attribution": ATTRIBUTION,
         "live_within_hours": LIVE_WITHIN.total_seconds() / 3600,
+        "days_offered": DAYS_OFFERED,
     }
 
 
@@ -175,9 +207,12 @@ def demo() -> dict[str, Any]:
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     recent = mtg._stamp(now - dt.timedelta(hours=3))
 
+    days = days_offered(now)
+
     def entry(ident: str, title: str) -> dict[str, Any]:
         return {"id": ident, "title": title, "time_default": recent,
-                "newest": recent, "age_minutes": 180, "live": True}
+                "newest": recent, "age_minutes": 180, "live": True,
+                "days": days, "whole_week": f"{days[0]}/{days[-1]}"}
 
     seeded = {
         "sentinel-3": [entry("copernicus:s3_olci_truecolour",
@@ -195,5 +230,6 @@ def demo() -> dict[str, Any]:
         "wms": mtg.WMS,
         "attribution": "synthetic",
         "live_within_hours": LIVE_WITHIN.total_seconds() / 3600,
+        "days_offered": DAYS_OFFERED,
         "catalogue_size": 3,
     }

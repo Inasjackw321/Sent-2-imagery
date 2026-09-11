@@ -1279,61 +1279,6 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
    under it and the flashes over it both stay readable. */
 .mtg-cloud { filter: grayscale(1) contrast(1.1); }
 
-/* ── Air threats, from public Telegram channels ──────────────── */
-
-.ao-dock { display: grid; gap: 8px; }
-.ao-toggle {
-  display: flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
-  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
-  border: 1px solid var(--line); backdrop-filter: blur(6px);
-}
-.ao-toggle:hover { color: var(--ink); border-color: #3a4a66; }
-.ao-toggle.is-on {
-  color: #ffeceb; border-color: rgba(255,59,48,.6); background: rgba(58,16,18,.88);
-  font-weight: 600;
-}
-.ao-mark { font-size: 11px; opacity: .6; }
-.ao-toggle.is-on .ao-mark { opacity: 1; color: #ff5b52; }
-
-.ao-body {
-  display: grid; gap: 7px; padding: 9px 11px;
-  border-radius: 9px; background: rgba(13,16,21,.9);
-  border: 1px solid var(--line); backdrop-filter: blur(6px);
-}
-.ao-count { font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
-.ao-note, .ao-hint { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
-.ao-hint a { color: #7cc4ff; }
-
-/* The marker itself. The label hangs below the glyph and out of the icon's
-   own box, so it never enlarges the hit area or shifts the anchor -- the
-   triangle's centre is the reported position and has to stay that way. */
-.ao-pin { background: none; border: 0; overflow: visible; }
-.ao-glyph {
-  display: block;
-  /* Rotation is about the glyph's own centre, which is the anchor point;
-     the default origin would swing the marker off the position as it turns. */
-  transform-origin: 50% 50%;
-  filter: drop-shadow(0 0 3px rgba(0,0,0,.85));
-}
-/* The label hangs below the glyph, clear of it. `top` tracks the icon size
-   set in osint.js -- 24 px plus a couple of pixels of air. */
-.ao-tag {
-  position: absolute; top: 26px; left: 50%; transform: translateX(-50%);
-  font-size: 10px; font-weight: 600; letter-spacing: .02em; white-space: nowrap;
-  text-shadow: 0 0 3px #000, 0 0 5px #000;
-  pointer-events: none;
-}
-
-.ao-pop { max-width: 240px; }
-.ao-pop h4 { margin: 0 0 5px; font-size: 12px; color: var(--ink); }
-.ao-pop p { margin: 0 0 4px; font-size: 10.5px; color: var(--ink-dim); line-height: 1.45; }
-.ao-pop blockquote {
-  margin: 6px 0 4px; padding-left: 7px; font-size: 10px; color: var(--ink-faint);
-  border-left: 2px solid rgba(255,59,48,.45);
-}
-.ao-pop .ao-src { font-size: 9.5px; color: var(--ink-faint); }
-
 /* ── Presentation mode ───────────────────────────────────────── */
 
 .btn-present {
@@ -1458,125 +1403,6 @@ body.is-walled { overflow: hidden; }
   .wall-tools { display: none; }
 }
 
-/* ── Air threats: the report list in the side panel ──────────── */
-
-.ao-list { display: grid; gap: 2px; max-height: 168px; overflow-y: auto; }
-.ao-row {
-  display: flex; align-items: center; gap: 7px; width: 100%;
-  padding: 4px 5px; cursor: pointer; font: inherit; font-size: 10.5px;
-  text-align: left; background: transparent; color: var(--ink-dim);
-  border: 0; border-radius: 5px;
-}
-.ao-row:hover { background: rgba(124,196,255,.1); color: var(--ink); }
-/* A report nobody could place is still a report. It is listed, dimmed, and
-   does nothing when clicked, because there is nowhere to go. */
-.ao-row.is-unplaced { opacity: .55; cursor: default; }
-.ao-row.is-unplaced:hover { background: transparent; }
-.ao-row i { width: 6px; height: 6px; border-radius: 50%; background: #ff8a3b; flex: none; }
-.ao-row-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ao-row-when { color: var(--ink-faint); font-size: 9.5px; flex: none; }
-.ao-sum { font-weight: 600; }
-.ao-match { color: var(--ink-faint); }
-
-/* A report read without the model. Marked, not hidden: it is a weaker
-   reading than one the model made and the panel should not blur the two. */
-.ao-row-what.is-plain { border-bottom: 1px dotted rgba(143, 168, 216, .35); }
-
-/* The shaded ground an alert or a strike covers.
-
-   It pulses, slowly. A wall display that has been up for an hour needs the
-   difference between "a warning is running here" and "a warning ran here at
-   some point" to be visible from across a room, and a static wash is not.
-   Slow enough not to be a distraction on a map somebody is working on. */
-.ao-area { animation: ao-breathe 4.5s ease-in-out infinite; }
-@keyframes ao-breathe {
-  50% { fill-opacity: .22; stroke-opacity: .85; }
-}
-/* An air-raid warning is a boundary you want to read the edge of; a strike is
-   a point you want to find. So the warning is drawn as an outline and the
-   strike as a filled mark. */
-.ao-area-alert { stroke-dasharray: 7 5; }
-/* A whole region under a warning. Drawn as its own boundary rather than a
-   circle, so the edge is the thing worth seeing and gets a longer dash and a
-   fainter wash -- a province filled at the same strength as a town would
-   swamp everything inside it. */
-.ao-area.is-region { stroke-dasharray: 12 7; }
-
-@media (prefers-reduced-motion: reduce) {
-  .ao-area { animation: none; }
-}
-.ao-row-more {
-  padding: 3px 5px 1px 18px; font-size: 9.5px; color: var(--ink-faint);
-}
-
-/* A region drawn because that is all the report located something to, rather
-   than because the region is under anything. Barely there: a thin dotted edge
-   and almost no fill, so it reads as "somewhere in here" and cannot be
-   mistaken for the filled wash of an actual warning. */
-.ao-area.is-located {
-  stroke-dasharray: 2 6;
-  animation: none;
-}
-
-/* ── Warnings and strikes, made findable ─────────────────────── */
-
-/* The two things anyone scanning this map is looking for. At the zoom it
-   actually gets used at, a 24-pixel glyph in a colour vanished into the
-   basemap -- which is the whole complaint. A halo behind the mark gives it
-   something to sit on, and it pulses so the eye is drawn to it across a
-   screen full of terrain. */
-.ao-pin.is-loud { z-index: 700 !important; }
-.ao-halo {
-  position: absolute; left: 50%; top: 50%;
-  width: 40px; height: 40px; margin: -20px 0 0 -20px;
-  border-radius: 50%; opacity: .22; pointer-events: none;
-  animation: ao-ping 2.2s cubic-bezier(0, .55, .45, 1) infinite;
-}
-@keyframes ao-ping {
-  0%   { transform: scale(.45); opacity: .45; }
-  70%  { transform: scale(1.6);  opacity: 0; }
-  100% { transform: scale(1.6);  opacity: 0; }
-}
-/* A strike has happened and is not still arriving, so it gets the ring
-   without the urgency: slower, and it does not race. */
-.ao-pin.is-explosion .ao-halo { animation-duration: 3.6s; opacity: .16; }
-
-/* The glyph itself, over the halo and with an outline so it reads on light
-   terrain as well as dark water. */
-.ao-pin.is-loud .ao-glyph {
-  position: relative;
-  filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 6px rgba(0, 0, 0, .9));
-}
-/* The label was 10px of coloured text on a busy basemap. Given a plate to sit
-   on it survives being drawn over a town name. */
-.ao-pin.is-loud .ao-tag {
-  padding: 1px 5px; border-radius: 4px;
-  background: rgba(6, 8, 11, .82);
-  border: 1px solid currentColor;
-  text-shadow: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ao-halo { animation: none; opacity: .3; }
-}
-
-/* A region-wide warning, made to read at the zoom a whole country fits in. */
-.ao-area.is-covers.ao-area-alert {
-  stroke-width: 3;
-}
-
-.ao-sources { font-size: 10px; }
-.ao-sources summary { color: var(--ink-faint); cursor: pointer; padding: 2px 0; }
-.ao-src-row {
-  display: flex; gap: 8px; justify-content: space-between;
-  padding: 1px 0 1px 8px; color: var(--ink-dim);
-}
-.ao-src-row b { font-weight: 600; }
-.ao-src-row span { color: var(--ink-faint); }
-/* A channel that gave nothing usable. Dimmed rather than hidden: the whole
-   point of the list is that a silent channel is visible. */
-.ao-src-row.is-quiet { opacity: .55; }
-
 /* ── Sentinel-3 and Sentinel-5P ──────────────────────────────── */
 
 .cop-dock { display: grid; gap: 8px; }
@@ -1625,3 +1451,31 @@ body.is-walled { overflow: hidden; }
 .cop-fade input { flex: 1; accent-color: #4ce0b3; }
 .cop-count { font-size: 11.5px; color: var(--ink); }
 .cop-note { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
+
+/* The way out of a radar that will not load, other than waiting. */
+.radar-retry {
+  padding: 4px 10px; cursor: pointer; font: inherit; font-size: 10.5px;
+  border-radius: 6px; background: rgba(255,143,94,.16); color: var(--ink);
+  border: 1px solid rgba(255,143,94,.45);
+}
+.radar-retry:hover { background: rgba(255,143,94,.3); }
+
+.cop-span { display: flex; align-items: center; gap: 5px; }
+.cop-day {
+  flex: 1; padding: 4px 6px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.cop-day.is-on {
+  color: #e6fff7; background: rgba(76,224,179,.16); border-color: rgba(76,224,179,.55);
+}
+.cop-step {
+  width: 22px; padding: 3px 0; cursor: pointer; font: inherit; font-size: 11px;
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 5px;
+}
+.cop-step:hover { color: var(--ink); }
+.cop-when {
+  min-width: 74px; text-align: center; font-size: 10px; color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}

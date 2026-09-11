@@ -36,8 +36,6 @@ export const api = {
     })}`, { method: 'GET' }),
   mtg: () => request('/api/mtg', { method: 'GET' }),
   copernicus: () => request('/api/copernicus', { method: 'GET' }),
-  osint: () => request('/api/osint', { method: 'GET' }),
-  osintKey: (key) => request('/api/osint/key', { body: { key } }),
 
   quakes: ({ west, south, east, north, hours, minMagnitude }) => request(
     `/api/quakes?${new URLSearchParams({

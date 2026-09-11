@@ -130,12 +130,47 @@ export function cloudiness(r, g, b, sensitivity = 0.5) {
   return bright * colourless;
 }
 
+// Every answer cloudiness() can give, worked out once.
+//
+// The judgement above reads three channels but only ever uses two numbers from
+// them -- the brightest and the dimmest -- so there are 256 x 256 possible
+// answers, not sixteen million. A tile is sixty-five thousand pixels and a
+// screenful is a couple of dozen tiles, so the same few hundred answers were
+// being recomputed a million and a half times per pan, on the thread that
+// draws. Computing the table instead costs one tile's worth of work, once per
+// sensitivity, and every pixel after that is an array lookup.
+//
+// This is arithmetic, not approximation: the table holds exactly what the
+// loop used to produce, and a test compares the two pixel by pixel.
+let table = null;
+let tableFor = -1;
+
+function lookup(sensitivity) {
+  if (table && tableFor === sensitivity) return table;
+  table = new Uint8Array(256 * 256);
+  for (let high = 0; high < 256; high += 1) {
+    for (let low = 0; low <= high; low += 1) {
+      table[(high << 8) | low] =
+        Math.round(255 * cloudiness(high, low, low, sensitivity));
+    }
+  }
+  tableFor = sensitivity;
+  return table;
+}
+
 /** Rewrite a tile's alpha so only its cloud survives. */
 export function maskToCloud(pixels, sensitivity) {
   const data = pixels.data;
+  const answers = lookup(sensitivity);
   for (let i = 0; i < data.length; i += 4) {
-    data[i + 3] = Math.round(255 * cloudiness(data[i], data[i + 1], data[i + 2],
-                                              sensitivity));
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    let high = r;
+    let low = r;
+    if (g > high) high = g; else if (g < low) low = g;
+    if (b > high) high = b; else if (b < low) low = b;
+    data[i + 3] = answers[(high << 8) | low];
   }
   return pixels;
 }

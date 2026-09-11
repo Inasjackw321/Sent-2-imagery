@@ -1,24 +1,24 @@
 """Place names to coordinates, via OpenStreetMap's Nominatim.
 
-Pulled out into its own module for one reason: a language model must never be
-the thing that decides where a marker goes.
-
-Asked to read a report and return coordinates, a model will always return
-coordinates. For a capital city they will be about right. For a district, a
-village, or an oblast named in the genitive they are recalled, interpolated or
-invented, and there is nothing in the number to say which. The failure is
-silent and it looks exactly like success -- a marker, on a map, in the wrong
-country.
-
-So the two jobs are separated. Reading Ukrainian and Russian prose and saying
-"this is a drone and the place named is Nikopol" is language work, which a
-model is good at. Turning "Nikopol" into 47.57 N 34.40 E is a lookup in a
-gazetteer, which is what a gazetteer is for. This is the second half.
-
 Nominatim is free and asks two things in return: identify yourself, and do not
-hammer it. Both are honoured here -- one request a second at most, and
-everything remembered, which costs almost nothing because these reports name
-the same two dozen oblasts over and over.
+hammer it. Both are honoured here -- one request a second at most, across the
+whole process, and every answer remembered for as long as the process lives.
+
+That rate limit is what the rest of the app uses this module for. The search
+box in the map calls Nominatim directly, because it wants a list to choose
+from rather than one best answer, but it takes its turn through wait_turn()
+here: the policy is about this process, not about which of its functions is
+asking.
+
+The other half -- find(), and the reading it does in read_place() -- is not
+currently called by anything. It was written for the air-threat reports, which
+have been removed. It is kept rather than deleted because what it knows is not
+obvious and was not cheap to learn: that a place named in a report may only be
+a settlement or an administrative area, that Nominatim will otherwise answer a
+mangled town name with a lake four hundred kilometres away and sound just as
+certain, and that the answer has to be checked against the country it was
+supposed to be in. Anything that needs to put a marker where a piece of prose
+says it should go wants this, and wants it exactly as tested.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ def wait_turn() -> None:
         time.sleep(min(MIN_INTERVAL - gap, MIN_INTERVAL))
 
 
-# What a place named in an air-threat report can be: a settlement, or an
+# What a place named in a piece of prose can be: a settlement, or an
 # administrative area. Nothing else.
 #
 # This is not fussiness, it is the fix for a real and very convincing failure.

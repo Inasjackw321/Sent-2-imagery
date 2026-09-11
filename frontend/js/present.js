@@ -1,4 +1,4 @@
-// Presentation mode: the cameras as a wall, with the reports running under it.
+// Presentation mode: the cameras as a wall, with what they are doing under it.
 //
 // The rest of this app is for working: you pick an area, search it, compare
 // dates, read a panel. This is the opposite -- a screen nobody is holding a
@@ -6,11 +6,11 @@
 // across a room, so everything here is bigger, quieter and unattended.
 //
 // It is built out of what already exists rather than beside it: the same
-// camera list the map pins, the same air-threat feed the map draws. What is
-// different is the framing. A grid of cameras answers "what does it look like
-// there now", the ticker answers "what is being reported", and a clock says
-// when -- which matters more than usual, because someone glancing at a wall
-// display has no idea how old what they are seeing is.
+// camera list the map pins. What is different is the framing. A grid answers
+// "what does it look like there now", the strip underneath says which of them
+// are actually answering and how old each picture is, and a clock says when --
+// which matters more than usual, because someone glancing at a wall display
+// has no idea how old what they are seeing is.
 //
 // Three things are deliberate:
 //
@@ -26,7 +26,6 @@
 //   Nothing here can change anything. It is a display; there is no control on
 //   it that touches the map underneath.
 
-import { api } from './api.js';
 import { CAMS } from './cams.js';
 import { $, el } from './ui.js';
 
@@ -39,8 +38,7 @@ const STILL_SECONDS = 90;
 // current when it is not.
 const STALE_SECONDS = STILL_SECONDS * 3;
 
-// How often to ask for new reports, and how often to move the ticker on.
-const FEED_MS = 60000;
+// How often the strip along the bottom moves on to the next camera.
 const TICKER_MS = 6000;
 
 // How long before the grid moves to the next set of cameras. Long enough to
@@ -59,10 +57,8 @@ let open = false;
 let layout = '3×3';
 let page = 0;
 let rotating = true;
-let feed = null;
-let alertAt = 0;
+let tickAt = 0;
 const running = new Map();      // cam id -> { timer } | { player } | { video }
-let feedTimer = null;
 let tickTimer = null;
 let rotateTimer = null;
 let clockTimer = null;
@@ -97,9 +93,7 @@ function show() {
   document.body.classList.add('is-walled');
   build();
 
-  loadFeed();
-  feedTimer = setInterval(loadFeed, FEED_MS);
-  tickTimer = setInterval(nextAlert, TICKER_MS);
+  tickTimer = setInterval(nextTick, TICKER_MS);
   rotateTimer = setInterval(() => { if (rotating) turn(1); }, ROTATE_MS);
   clockTimer = setInterval(paintClock, 1000);
 
@@ -113,11 +107,10 @@ function close() {
   if (!open) return;
   open = false;
   stopAll();
-  clearInterval(feedTimer);
   clearInterval(tickTimer);
   clearInterval(rotateTimer);
   clearInterval(clockTimer);
-  feedTimer = tickTimer = rotateTimer = clockTimer = null;
+  tickTimer = rotateTimer = clockTimer = null;
   root?.remove();
   root = null;
   document.body.classList.remove('is-walled');
@@ -161,12 +154,12 @@ function build() {
       ...cams.map(tile)),
 
     el('div', { class: 'wall-foot' },
-      el('div', { class: 'wall-status', id: 'wallStatus' }, 'Reports loading…'),
+      el('div', { class: 'wall-status', id: 'wallStatus' }, ''),
       el('div', { class: 'wall-ticker', id: 'wallTicker' },
-        el('div', { class: 'wall-tick', id: 'wallTick' }, 'Waiting for reports…'))));
+        el('div', { class: 'wall-tick', id: 'wallTick' }, ''))));
 
   paintClock();
-  paintFeed();
+  paintStrip();
 }
 
 /** One camera on the wall. */
@@ -323,74 +316,55 @@ function paintBar() {
   }
 }
 
-// ── The reports ────────────────────────────────────────────────
-
-async function loadFeed() {
-  try {
-    feed = await api.osint();
-    alertAt = 0;
-  } catch (err) {
-    feed = { alerts: [], count: 0, state: err.message };
-  }
-  paintFeed();
-}
-
-function paintFeed() {
-  const status = $('#wallStatus');
-  if (!status) return;
-  const alerts = feed?.alerts ?? [];
-  const air = feed?.count ?? 0;
-  const worst = alerts.length ? Math.max(...alerts.map((a) => a.rank ?? 0)) : 0;
-
-  status.replaceChildren(
-    el('span', { class: `wall-pip rank-${worst}` }),
-    el('b', {}, air ? `${air} tracked` : 'nothing tracked'),
-    el('span', {}, alerts.length
-      ? `${alerts.length} reports · last ${feed.alert_minutes ?? 90} min`
-      : (feed?.state ?? 'no reports')));
-  nextAlert();
-}
+// ── The strip along the bottom ─────────────────────────────────
 
 /**
- * Move the ticker on one report.
+ * What the wall says underneath the cameras.
  *
- * A crawl was the obvious thing and is the wrong one: a line sliding past at a
- * readable speed fits about one report a minute, and on a night when six
- * things are reported at once the sixth appears five minutes late. One at a
- * time, held long enough to read, gets through all of them.
+ * It used to carry an air-threat ticker. That feature is gone, and the strip
+ * with it would have left a wall with a dead bar along the bottom -- so it
+ * now says what the wall itself is doing: how many cameras are up, how many
+ * are answering, and each one in turn with the age of its last frame.
+ *
+ * Which is the thing you cannot see by looking at the grid. A tile showing a
+ * picture looks the same whether that picture arrived a minute ago or two
+ * hours ago, and on an unattended screen that is the failure that matters.
  */
-function nextAlert() {
+function paintStrip() {
+  const status = $('#wallStatus');
+  if (!status) return;
+  const cams = onScreen();
+  const live = cams.filter((cam) => running.has(cam.id)).length;
+  const bad = [...root.querySelectorAll('.tile-wait.is-bad')].length;
+
+  status.replaceChildren(
+    el('span', { class: `wall-pip ${bad ? 'rank-4' : 'rank-2'}` }),
+    el('b', {}, `${live - bad} of ${cams.length} answering`),
+    el('span', {}, `page ${page + 1} of ${pages()}`));
+  nextTick();
+}
+
+/** One camera at a time, with the age of the frame actually on screen. */
+function nextTick() {
   const tick = $('#wallTick');
   if (!tick) return;
-  const alerts = feed?.alerts ?? [];
-  if (!alerts.length) {
-    tick.replaceChildren(el('span', { class: 'tick-quiet' },
-      feed?.state?.startsWith('demo')
-        ? 'Demo mode — these reports are invented.'
-        : 'Nothing reported.'));
+  const cams = onScreen();
+  if (!cams.length) {
+    tick.replaceChildren(el('span', { class: 'tick-quiet' }, 'No cameras here.'));
     return;
   }
 
-  const item = alerts[alertAt % alerts.length];
-  alertAt += 1;
-  const kind = feed?.kinds?.[item.kind] ?? {};
-  const mins = Math.max(0, Math.round((Date.now() / 1000 - item.seen) / 60));
+  const cam = cams[tickAt % cams.length];
+  tickAt += 1;
+  const stamp = $(`#tile-${CSS.escape(cam.id)} .tile-stamp`)?.textContent ?? '—';
+  const dead = $(`#tile-${CSS.escape(cam.id)} .tile-wait.is-bad`);
 
   tick.replaceChildren(
-    el('span', { class: 'tick-when' }, mins < 1 ? 'now' : `${mins} min`),
-    el('span', {
-      class: `tick-kind rank-${item.rank ?? 1}`,
-      style: kind.colour ? `color:${kind.colour}` : '',
-    }, kind.label ?? item.kind),
-    el('span', { class: 'tick-what' }, item.summary),
-    // A report that could not be placed still reaches the wall, and says so.
-    // The alternative -- dropping it -- is how the previous version made a
-    // patchy night look identical to a broken feed.
-    item.placed
-      ? el('span', { class: 'tick-where' }, item.place ?? '')
-      : el('span', { class: 'tick-where is-unplaced' }, 'not mapped'),
-    el('span', { class: 'tick-src' }, item.channel ?? ''));
-  // Restart the fade so each report arrives rather than swapping in place.
+    el('span', { class: 'tick-when' }, dead ? 'down' : stamp),
+    el('span', { class: 'tick-kind' }, cam.name),
+    el('span', { class: 'tick-what' }, cam.place),
+    el('span', { class: 'tick-src' }, cam.host));
+  // Restart the fade so each one arrives rather than swapping in place.
   tick.classList.remove('is-in');
   void tick.offsetWidth;
   tick.classList.add('is-in');

@@ -371,14 +371,31 @@ async function toggle() {
   }
   playing = true;
   paintDock();
+  // The panel stays open whether or not the service answers.
+  //
+  // It used to switch itself back off on a failure: the button did not light,
+  // the body never opened, and the explanation was written into a panel
+  // nobody could see. From outside that is a control that does nothing when
+  // you press it, which is what "the weather radar does not load" looks like.
+  // Now the panel opens, says what went wrong, and offers to try again -- and
+  // keeps trying on its own, so an outage that ends is not a dead button
+  // until somebody thinks to click twice.
+  refresher = setInterval(
+    () => refresh({ keepPosition: true }).then(step).catch(() => paintDock()),
+    REFRESH_MS);
+  await attempt();
+}
+
+/** Fetch the frames, and turn a failure into something readable. */
+async function attempt() {
+  failed = '';
+  paintDock();
   try {
     await refresh();
     step();
-    refresher = setInterval(() => refresh({ keepPosition: true }).catch(() => {}), REFRESH_MS);
   } catch (err) {
-    enabled = false;
-    clearInterval(refresher);
-    toast(`No live weather — ${err.message}`, 'err');
+    failed = `${err.message}. RainViewer may be down, or this network may not `
+      + 'be able to reach it.';
     paintDock();
   }
 }
@@ -510,9 +527,12 @@ function paintDock() {
   const scrub = $('#radarScrub');
 
   if (failed) {
-    time.textContent = '—';
-    key.replaceChildren();
-    note.textContent = failed;
+    time.textContent = 'Not loading';
+    key.replaceChildren(el('button', {
+      class: 'radar-retry', type: 'button', onclick: () => attempt(),
+    }, 'Try again'));
+    note.textContent = `${failed} Retrying by itself every `
+      + `${Math.round(REFRESH_MS / 60000)} minutes.`;
     return;
   }
   if (!frames.length) {
