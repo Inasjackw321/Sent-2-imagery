@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import threading
 import time
 
 import pytest
@@ -61,6 +62,27 @@ class PhotoReply:
     def iter_content(self, size):
         for at in range(0, len(self._body), size):
             yield self._body[at:at + size]
+
+
+def knows_cyrillic(name, countries=""):
+    """A gazetteer that knows the Cyrillic names these posts actually use.
+
+    fake_find below matches a handful of Latin spellings, which was right when
+    the model was asked to transliterate. It is asked for the original script
+    now, so a test feeding real Ukrainian needs a gazetteer that speaks it.
+    """
+    known = {
+        "Нікопол": (47.5665, 34.4053), "Харк": (49.9935, 36.2304),
+        "Київ": (50.4501, 30.5234), "Кагарлик": (49.8556, 30.8125),
+        "Волин": (51.2, 25.3), "Kyiv": (50.4501, 30.5234),
+    }
+    for stem, (lat, lon) in known.items():
+        if stem.lower() in name.lower():
+            return {"lat": lat, "lon": lon, "name": name, "kind": "town",
+                    "category": "place",
+                    "bbox": [lat - 0.05, lat + 0.05, lon - 0.05, lon + 0.05],
+                    "shape": None}
+    return None
 
 
 def fake_find(name, countries=""):
@@ -154,8 +176,8 @@ class TestReadingTheModel:
         assert len(got) == 1
 
     def test_a_sentence_before_the_json_is_survived(self):
-        got = tracker.read_events('Here you go:\n{"events": [{"kind": "cruise", "place": "Kyiv"}]}')
-        assert got[0]["kind"] == "cruise"
+        got = tracker.read_events('Here you go:\n{"events": [{"kind": "missile", "place": "Kyiv"}]}')
+        assert got[0]["kind"] == "missile"
 
     def test_a_bare_list_is_survived(self):
         assert len(tracker.read_events('[{"kind": "drone", "place": "Nikopol"}]')) == 1
@@ -291,7 +313,7 @@ class TestKindsAndHowTheyLast:
         # still true six hours later, and a report of a drone crossing an
         # oblast is not.
         assert tracker.KEEP["explosion"] >= 6 * tracker.KEEP["drone"]
-        for kind in ("drone", "jet_drone", "cruise", "ballistic", "recon"):
+        for kind in ("drone", "jet_drone", "missile", "aircraft"):
             assert tracker.KEEP[kind] < tracker.KEEP["explosion"], kind
 
     def test_a_strike_outranks_everything_in_the_stream(self):
@@ -303,11 +325,70 @@ class TestKindsAndHowTheyLast:
             assert tracker.MOTION[name] == "still", name
         assert set(tracker.NOT_AIRBORNE) == {"explosion", "alert"}
 
-    def test_recon_loiters_rather_than_travelling(self):
-        # Kept as a fact about the kind even though nothing circles any more:
-        # it is why a recon drone's mark means "over here somewhere" rather
-        # than "at this point".
-        assert tracker.MOTION["recon"] == "orbit"
+    def test_the_kinds_are_the_four_differences_worth_drawing(self):
+        # Seven, down from ten. Three of them are not things in the air.
+        assert set(tracker.KINDS) == {
+            "drone", "jet_drone", "missile", "aircraft",
+            "explosion", "alert", "unknown"}
+
+    def test_every_removed_kind_folds_somewhere_real(self):
+        for was, becomes in tracker.FOLD.items():
+            assert was not in tracker.KINDS, f"{was} was not actually removed"
+            assert becomes in tracker.KINDS, f"{was} folds to nothing"
+            assert tracker.fold_kind(was) == becomes
+
+    def test_the_kinds_the_readers_still_produce_are_all_named(self):
+        """Named one by one, not looped over FOLD.
+
+        Looping over FOLD only checks the entries that are there, so deleting
+        one passes -- and a deleted entry is not a small thing: both readers
+        go on producing these names, the prompt still has "балістика" in it
+        and reports.py still has a regex for cruise missiles, so a missing
+        fold means the model says "cruise" and the map draws an "unknown" in
+        grey. Every missile, every time.
+        """
+        assert tracker.fold_kind("cruise") == "missile"
+        assert tracker.fold_kind("ballistic") == "missile"
+        assert tracker.fold_kind("recon") == "drone"
+        assert tracker.fold_kind("helicopter") == "aircraft"
+
+    def test_the_rule_reader_never_produces_a_kind_that_folds_to_unknown(self):
+        # The other end of the same worry, checked against the reader itself
+        # rather than against a list: whatever reports.py can return, this app
+        # must have somewhere to put.
+        from backend import reports
+        for text in ("Розвідувальний БпЛА над районом", "Балістика на Дніпро",
+                     "Крилаті ракети з моря", "Шахед над містом",
+                     "реактивний БпЛА", "Вибухи в Одесі",
+                     "Повітряна тривога", "Гелікоптер у повітрі"):
+            raw = reports.find_kind(text)
+            folded = tracker.fold_kind(raw)
+            assert folded in tracker.KINDS, f"{text!r}: {raw} -> {folded}"
+            if raw != "unknown":
+                assert folded != "unknown", \
+                    f"{text!r} read as {raw} and then thrown away"
+
+    def test_a_kind_nobody_recognises_is_unknown_rather_than_dropped(self):
+        for junk in ("hovercraft", "", None, 42, "recon_drone"):
+            assert tracker.fold_kind(junk) == "unknown", junk
+
+    def test_there_is_no_recon_kind_any_more(self):
+        """Removed, and folded into "drone".
+
+        The distinction it drew is not one this data supports. Telling a
+        reconnaissance drone from an attack drone means knowing the airframe;
+        these reports say "БпЛА" most of the time; and a wrong guess between
+        the two changes a mark from "something is coming" to "something is
+        watching", which is the most consequential thing on this map to get
+        wrong.
+
+        The reader still recognises the phrase -- "розвідувальний БпЛА" is
+        real and unambiguous when it appears -- and FOLD collapses it here,
+        which is what makes putting it back a one-line change.
+        """
+        assert "recon" not in tracker.KINDS
+        assert tracker.fold_kind("recon") == "drone"
+        assert "orbit" not in tracker.MOTION.values()
 
 
 class TestTellingSimilarPlacesApart:
@@ -432,8 +513,7 @@ class TestHowLongThingsStay:
         assert tracker.keep_minutes("explosion") >= 180
 
     def test_things_in_flight_still_go_quickly(self):
-        for kind in ("drone", "jet_drone", "cruise", "ballistic", "recon",
-                     "aircraft", "helicopter"):
+        for kind in ("drone", "jet_drone", "missile", "aircraft", "unknown"):
             assert tracker.keep_minutes(kind) == tracker.KEEP_MINUTES, kind
 
     def test_a_kind_that_says_nothing_gets_the_default(self):
@@ -683,8 +763,7 @@ class TestEveryKindIsDrawable:
     def test_a_drone_and_a_missile_are_not_the_same_colour(self):
         # The whole weight of distinguishing them rests here now.
         drone = tracker.KINDS["drone"]["colour"]
-        for kind in ("cruise", "ballistic", "aircraft", "recon", "explosion",
-                     "alert"):
+        for kind in ("missile", "aircraft", "explosion", "alert"):
             assert tracker.KINDS[kind]["colour"] != drone, kind
 
     def test_a_missile_is_not_drawn_like_a_drone(self):
@@ -704,7 +783,7 @@ class TestEveryKindIsDrawable:
         assert "SLIM_KINDS" in text
         block = text[text.index("const SLIM_KINDS"):]
         named = block[:block.index("]")]
-        for kind in ("cruise", "ballistic"):
+        for kind in ("missile",):
             assert kind in named, kind
         for kind in ("drone", "jet_drone"):
             assert kind not in named, f"{kind} is not a missile"
@@ -725,7 +804,7 @@ class TestEveryKindIsDrawable:
 
         # Everything drawn as a wide arrow, and everything drawn as a slim one.
         wide = ("drone", "aircraft", "unknown")
-        slim = ("cruise", "ballistic")
+        slim = ("missile",)
         for family in (wide, slim):
             for i, one in enumerate(family):
                 for other in family[i + 1:]:
@@ -733,17 +812,18 @@ class TestEveryKindIsDrawable:
                         f"{one} and {other} share a shape and are too close"
         # And a drone against a missile, which is the pairing that matters
         # most: different shape AND a usable colour gap.
-        assert apart("drone", "ballistic") >= 60
+        assert apart("drone", "missile") >= 60
 
     def test_the_kinds_drawn_by_behaviour_are_still_drawn_that_way(self):
-        # Recon circles, strikes burst, warnings are a triangle. Those read by
-        # what they do rather than by a direction, and none of them is an
-        # arrow: an arrow on a loitering drone or a strike would be pointing
-        # somewhere for no reason.
-        for name in ("recon",):
-            assert tracker.MOTION[name] == "orbit", name
+        # Strikes burst, warnings are a triangle over their area. Those read
+        # by what they are rather than by a direction, and neither is an
+        # arrow: an arrow on a strike would be pointing somewhere for no
+        # reason.
         for name in ("explosion", "alert"):
             assert tracker.MOTION[name] == "still", name
+        # And everything else is in the air and gets an arrow.
+        for name in ("drone", "jet_drone", "missile", "aircraft", "unknown"):
+            assert tracker.MOTION[name] == "track", name
 
 
 class TestSayingWhichChannelGaveWhat:
@@ -774,7 +854,8 @@ class TestSayingWhichChannelGaveWhat:
         assert {r["channel"] for r in rows} == {c["name"] for c in tracker.CHANNELS}
         # All four states a channel can be in, so each renders at least once.
         assert any(r["problem"] for r in rows)
-        assert any(r["posts"] == 0 and not r["problem"] for r in rows)
+        assert any(r["posts"] > 0 and r["fresh"] == 0 and not r["problem"]
+                   for r in rows)
         assert any(r["read"] and not r["placed"] for r in rows)
         assert any(r["placed"] for r in rows)
 
@@ -884,7 +965,7 @@ class TestNothingMoves:
                      "origin_lat": 50.0, "origin_lon": 30.0, **over}
 
     def test_a_fast_thing_an_hour_old_is_still_where_it_was_reported(self):
-        now, event = self.event("ballistic", 60)
+        now, event = self.event("missile", 60)
         got = tracker.project(event, now)
         assert (got["lat"], got["lon"]) == (50.0, 30.0)
         assert got["projected"] is False
@@ -895,8 +976,11 @@ class TestNothingMoves:
             got = tracker.project(event, now)
             assert (got["lat"], got["lon"]) == (50.0, 30.0), kind
 
-    def test_a_loitering_drone_does_not_circle(self):
-        now, event = self.event("recon", 3)
+    def test_an_aircraft_does_not_move_either(self):
+        # Replaces a test about a recon drone circling. There is no recon kind
+        # and no orbiting motion any more: everything in the air is a static
+        # arrow, and "aircraft" is the kind that used to be the other case.
+        now, event = self.event("aircraft", 3)
         first = tracker.project(event, now)
         event["seen"] = now - 9 * 60
         later = tracker.project(event, now)
@@ -1467,11 +1551,12 @@ class TestGivingEachMarkADirection:
         assert got["heading"] is None
         assert got["course_from"] is None
 
-    def test_something_loitering_is_given_no_course_at_all(self):
-        # A recon drone on station is not going anywhere, so a course would be
-        # a claim the report did not make.
+    def test_a_strike_is_given_no_course_at_all(self):
+        # Replaces the recon case, which no longer exists. The rule is about
+        # motion rather than about the kind: something that is not travelling
+        # has no course, and a strike is a place rather than a direction.
         got = tracker.place_event(
-            {"kind": "recon", "place": "Nikopol", "course": 90.0,
+            {"kind": "explosion", "place": "Nikopol", "course": 90.0,
              "count": 1, "summary": ""}, "ua", lookup=fake_find)
         assert got["heading"] is None
 
@@ -1812,6 +1897,263 @@ class TestLoadingQuickly:
         assert tracker.MIN_POLL_SECONDS >= 20
 
 
+class TestReadingByRuleFirst:
+    """Marks appear before the model has finished, not after.
+
+    The model was the slow step by a wide margin -- four page fetches take
+    350 ms and a local model asked about twenty posts can take the better part
+    of a minute -- and nothing reached the map until it had answered. A first
+    open on a busy night showed an empty country for as long as the model took
+    to think.
+
+    The rules are microseconds and read most of these posts correctly, so they
+    go up straight away and the model's reading replaces them when it lands.
+    Measured at 372 ms to first marks against 12.4 s, with a twelve-second
+    model.
+    """
+
+    def feed(self, monkeypatch, texts, model=None, one_channel=True):
+        # One channel by default. With four, every channel has a post whose id
+        # ends "/0", so "the post the model read" is ambiguous and an earlier
+        # version of these tests asserted against four events when it meant
+        # one.
+        if one_channel:
+            monkeypatch.setattr(tracker, "CHANNELS", (
+                {"name": "eRadarrua", "region": "Ukraine",
+                 "countries": "ua,ru,by"},))
+        when = dt.datetime.now(dt.timezone.utc).isoformat()
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/{i}", "channel": channel, "when": when,
+             "text": text, "photos": [], "link": None}
+            for i, text in enumerate(texts)])
+        # Knows the Cyrillic, because that is what these posts contain and
+        # what the model is now asked to return.
+        monkeypatch.setattr(tracker.gazetteer, "find", knows_cyrillic)
+        monkeypatch.setattr(
+            tracker, "_call_model",
+            model or (lambda batch: (_ for _ in ()).throw(
+                tracker.ollama.NotRunning("not running"))))
+
+    def test_marks_exist_before_the_model_answers(self, monkeypatch):
+        """The measurement, as a test.
+
+        The model is made to block until it is told the map already has marks
+        on it -- so if nothing is drawn before it answers, this deadlocks and
+        fails on its own timeout rather than passing quietly.
+        """
+        seen_early = threading.Event()
+        released = threading.Event()
+
+        def slow_model(batch):
+            # Whatever is on the map at this moment was put there without me.
+            if tracker.current()["count"]:
+                seen_early.set()
+            released.set()
+            return []
+
+        tracker.reset()
+        self.feed(monkeypatch, ["Шахед над Нікополем курсом на північ"],
+                  model=slow_model)
+        tracker.poll()
+        assert released.is_set(), "the model was never called"
+        assert seen_early.is_set(), \
+            "nothing was on the map when the model was asked"
+
+    def test_the_model_replaces_the_rules_reading_rather_than_adding_to_it(
+            self, monkeypatch):
+        # Both together would draw the post twice, which on a busy night is
+        # the map claiming forty drones when there are twenty -- a worse error
+        # than a late reading.
+        def model(batch):
+            return [{"id": batch[0]["id"], "kind": "missile", "place": "Kyiv",
+                     "count": 1, "summary": "the model read this",
+                     "region": None, "toward": None, "course": None}]
+
+        tracker.reset()
+        self.feed(monkeypatch, ["Шахед над Нікополем курсом на північ"],
+                  model=model)
+        got = tracker.poll()
+        # One post, one mark -- not two.
+        assert got["count"] == 1, [e["by"] for e in got["events"]]
+        only = got["events"][0]
+        assert only["by"] == "model"
+        assert only["kind"] == "missile"
+        # And one row in the panel, for the same reason.
+        assert len(got["alerts"]) == 1
+
+    def test_a_post_the_model_skips_keeps_its_rules_reading(self, monkeypatch):
+        # The reason the rules run first at all: there is never a moment where
+        # a readable post is absent from the map.
+        def picky(batch):
+            return [{"id": batch[0]["id"], "kind": "drone", "place": "Kyiv",
+                     "count": 1, "summary": "only the first",
+                     "region": None, "toward": None, "course": None}]
+
+        tracker.reset()
+        self.feed(monkeypatch,
+                  ["Шахед над Нікополем курсом на північ", "Вибухи у Харкові"],
+                  model=picky)
+        got = tracker.poll()
+        ways = {e["by"] for e in got["events"]}
+        assert ways == {"model", "rules"}, [
+            (e["kind"], e["by"]) for e in got["events"]]
+        # And the skipped one is the strike, read by rule, still on the map.
+        strikes = [e for e in got["events"] if e["kind"] == "explosion"]
+        assert strikes and all(e["by"] == "rules" for e in strikes)
+
+    def test_no_model_at_all_still_fills_the_map(self, monkeypatch):
+        tracker.reset()
+        self.feed(monkeypatch, ["Шахед над Нікополем курсом на північ",
+                                "Вибухи у Харкові"])
+        got = tracker.poll()
+        assert got["count"] > 0
+        assert got["read_by"]["rules"] > 0
+        assert got["read_by"]["model"] == 0
+
+    def test_a_post_the_rules_cannot_read_is_not_invented(self, monkeypatch):
+        # Commentary and appeals for donations are not events, and a reader
+        # that produced one for every post would be worse than a slow one.
+        tracker.reset()
+        self.feed(monkeypatch, ["Підписуйтесь на наш канал"])
+        got = tracker.poll()
+        assert got["count"] == 0
+
+    def test_forgetting_a_post_takes_its_alert_with_it(self):
+        # Both lists, or the panel keeps a row for a mark that is gone.
+        tracker.reset()
+        assert tracker.forget_source(None) == 0
+        assert tracker.forget_source("nothing/0") == 0
+
+
+class TestWhatEachChannelActuallyDid:
+    """The panel said "20 posts, none readable" for all four channels at once.
+
+    Which claims the app cannot read them. What was true was "nothing new" --
+    twenty posts, none of them inside the twenty-minute window -- and that is
+    not a fault at all. The tally has always carried the distinction; the
+    message ignored it.
+    """
+
+    def read_one(self, monkeypatch, posts, ages=None):
+        tracker.reset()
+        ages = ages or {}
+        now = dt.datetime.now(dt.timezone.utc)
+
+        def fetch(channel):
+            if channel not in posts:
+                return []
+            old = ages.get(channel, 0)
+            when = (now - dt.timedelta(minutes=old)).isoformat()
+            return [{"id": f"{channel}/1", "channel": channel, "when": when,
+                     "text": posts[channel], "photos": [], "link": None}]
+
+        monkeypatch.setattr(tracker, "_fetch_channel", fetch)
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
+        return {row["channel"]: row for row in tracker.poll()["sources"]}
+
+    def test_a_post_inside_the_window_counts_as_fresh(self, monkeypatch):
+        rows = self.read_one(monkeypatch,
+                             {"eRadarrua": "Шахед над Нікополем"}, {"eRadarrua": 5})
+        assert rows["eRadarrua"]["posts"] == 1
+        assert rows["eRadarrua"]["fresh"] == 1
+
+    def test_a_post_older_than_the_window_is_seen_but_not_fresh(self, monkeypatch):
+        # The exact case that read as "none readable". One post, read from the
+        # page perfectly well, simply too old to be news.
+        rows = self.read_one(monkeypatch,
+                             {"eRadarrua": "Шахед над Нікополем"}, {"eRadarrua": 90})
+        assert rows["eRadarrua"]["posts"] == 1
+        assert rows["eRadarrua"]["fresh"] == 0
+        assert rows["eRadarrua"]["problem"] is None, \
+            "nothing went wrong, so nothing should be reported as a problem"
+
+    def test_the_tally_carries_the_four_numbers_the_panel_needs(self, monkeypatch):
+        # posts, fresh, read, placed -- in the order the reading happens, so
+        # the panel can say where it stopped.
+        rows = self.read_one(monkeypatch, {"kpszsu": "Вибухи у Харкові"})
+        for row in rows.values():
+            assert set(row) >= {"posts", "fresh", "read", "placed", "problem"}
+
+    def test_the_demo_shows_a_channel_with_posts_but_nothing_new(self):
+        """The state all four channels were in on a live start.
+
+        And the state the demo could not produce, which is why the wording
+        for it was never looked at -- it said "20 posts, none readable", which
+        claims the app cannot read the channel. Third time a drawing has gone
+        unexamined because the offline build could not reach it, so it is
+        pinned here.
+        """
+        rows = tracker.demo()["sources"]
+        quiet = [r for r in rows
+                 if r["posts"] > 0 and r["fresh"] == 0 and not r["problem"]]
+        assert quiet, [(r["channel"], r["posts"], r["fresh"]) for r in rows]
+
+    def test_the_demo_still_shows_the_other_three_states(self):
+        rows = tracker.demo()["sources"]
+        assert any(r["problem"] for r in rows), "unreachable"
+        assert any(r["fresh"] and not r["placed"] for r in rows), "none placeable"
+        assert any(r["placed"] for r in rows), "working"
+
+
+class TestWhatItGrabsOnStartUp:
+    """Twenty minutes, from a cold start.
+
+    Worth pinning because it is easy to believe it is broken: a channel that
+    has not posted for half an hour gives a cold start nothing at all, which
+    looks identical to a reader that cannot read.
+    """
+
+    def posts_at(self, monkeypatch, *ages):
+        tracker.reset()
+        now = dt.datetime.now(dt.timezone.utc)
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/{i}", "channel": channel,
+             "when": (now - dt.timedelta(minutes=old)).isoformat(),
+             "text": "Шахед над Нікополем курсом на північ",
+             "photos": [], "link": None}
+            for i, old in enumerate(ages)])
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
+        return tracker.poll()
+
+    def test_the_window_is_twenty_minutes(self):
+        assert tracker.LOOKBACK_MINUTES == 20
+
+    def test_everything_inside_it_is_taken(self, monkeypatch):
+        got = self.posts_at(monkeypatch, 1, 5, 12, 19)
+        # Four posts per channel, four channels.
+        assert got["count"] == 4 * len(tracker.CHANNELS)
+
+    def test_and_nothing_outside_it(self, monkeypatch):
+        got = self.posts_at(monkeypatch, 25, 40, 180)
+        assert got["count"] == 0
+
+    def test_the_boundary_is_the_window(self, monkeypatch):
+        inside = self.posts_at(monkeypatch, tracker.LOOKBACK_MINUTES - 1)
+        outside = self.posts_at(monkeypatch, tracker.LOOKBACK_MINUTES + 1)
+        assert inside["count"] == len(tracker.CHANNELS)
+        assert outside["count"] == 0
+
+    def test_an_old_post_is_remembered_so_it_is_not_read_twice(self, monkeypatch):
+        # Otherwise every poll re-reads and re-discards the whole page.
+        self.posts_at(monkeypatch, 40)
+        assert len(tracker._seen) == len(tracker.CHANNELS)
+
+    def test_a_post_with_an_unreadable_date_is_not_silently_a_mark(
+            self, monkeypatch):
+        # It cannot be placed in time, so it cannot be known to be current --
+        # and a mark that might be from last week is worse than no mark.
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/1", "channel": channel, "when": "not a date",
+             "text": "Шахед над Нікополем", "photos": [], "link": None}])
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
+        got = tracker.poll()
+        assert got["count"] == 0
+
+
 class TestConcentrateMode:
     """Grouping marks into a mass.
 
@@ -1932,7 +2274,7 @@ class TestConcentrateMode:
 
     def test_and_does_not_when_they_do_not(self):
         mixed = self.marks((50.4, 30.5), (50.45, 30.55))
-        mixed += [{"id": "c", "kind": "cruise", "lat": 50.5, "lon": 30.6, "seen": 1}]
+        mixed += [{"id": "c", "kind": "missile", "lat": 50.5, "lon": 30.6, "seen": 1}]
         assert tracker.massed(mixed)[0]["label"] == "3 tracks"
 
     def test_every_id_is_accounted_for_exactly_once(self):
@@ -2013,7 +2355,8 @@ class TestDemo:
         # hides what the others do -- which is how a thing flying north came
         # to be drawn with the mark for something that had been shot down.
         events = tracker.demo()["events"]
-        assert {e["motion"] for e in events} >= {"track", "orbit", "still"}
+        # Two behaviours now, not three: "orbit" went with the recon kind.
+        assert {e["motion"] for e in events} == {"track", "still"}
         # A track whose report gave no direction at all. It must not be drawn
         # with an arrow, so the demo has to contain one to check that.
         assert any(e["motion"] == "track" and e["heading"] is None for e in events)

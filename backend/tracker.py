@@ -192,45 +192,53 @@ MIN_POLL_SECONDS = 30
 #   rank    orders the alert stream. A strike outranks a drone crossing an
 #           oblast, which outranks a warning.
 KINDS = {
-    "recon":     {"colour": "#4cc2ff", "label": "Recon drone",
-                  "motion": "orbit", "rank": 2},
+    # Four things in the air, and the differences between them are the ones a
+    # reader can actually use.
+    #
+    # There were seven. "Recon drone" was one, and it went because the
+    # distinction it drew was not one this data supports: telling a
+    # reconnaissance drone from an attack drone means knowing the airframe,
+    # these reports say "БпЛА" most of the time, and a wrong guess between the
+    # two changes a marker from "something is coming" to "something is
+    # watching" -- which is the most consequential thing on this map to get
+    # wrong. Folded into "drone".
+    #
+    # Cruise and ballistic were two, and they are now one "missile". The
+    # difference matters enormously in life and not at all here: both are
+    # inbound, both are drawn at the same place, and neither changes what the
+    # map can tell you. One kind that is always right beats two that are
+    # sometimes swapped.
     "drone":     {"colour": "#ffd400", "label": "Drone",
                   "motion": "track", "rank": 3},
-    "jet_drone": {"colour": "#ffd400", "label": "Jet drone",
+    "jet_drone": {"colour": "#ff9d00", "label": "Jet drone",
                   "motion": "track", "rank": 4},
-    "cruise":    {"colour": "#ff6a00", "label": "Cruise missile",
-                  "motion": "track", "rank": 5},
-    "ballistic": {"colour": "#ff2d6f", "label": "Ballistic missile",
+    "missile":   {"colour": "#ff2d6f", "label": "Missile",
                   "motion": "track", "rank": 6},
+    # Kept separate, and deliberately. A crewed aircraft is neither a drone nor
+    # a missile: "тактична авіація" means aircraft are up, which is a warning
+    # about what may follow rather than about something already inbound, and
+    # folding it into either would be saying something the report did not.
     "aircraft":  {"colour": "#7dffcf", "label": "Aircraft",
                   "motion": "track", "rank": 3},
-    "helicopter": {"colour": "#7dffcf", "label": "Helicopter",
-                  "motion": "track", "rank": 2},
     "explosion": {"colour": "#b06bff", "label": "Explosion",
                   "motion": "still", "rank": 7,
-                  # Twenty-five hours. A strike is a fact about a place
-                  # rather than a guess about one, so nothing about it decays,
-                  # and a night's damage read together is most of why anyone
-                  # opens this layer.
-                  #
-                  # Twenty-five rather than twenty-four on purpose. Exactly a
-                  # day means a strike reported at nine in the morning
-                  # disappears at nine the next morning -- while somebody is
-                  # looking at it, and just as they go to compare it with
-                  # today. The extra hour is the overlap that makes "the last
-                  # day" mean the whole of the last day.
+                  # Twenty-five hours. A strike is a fact about a place rather
+                  # than a guess about one, so nothing about it decays, and a
+                  # night's damage read together is most of why anyone opens
+                  # this layer. Twenty-five rather than twenty-four so that a
+                  # strike reported at nine in the morning is still there at
+                  # nine the next morning, rather than going while somebody is
+                  # looking at it.
                   "keep": 1500},
     "alert":     {"colour": "#ffb020", "label": "Air alert",
                   "motion": "still", "rank": 1,
-                  # An hour. A warning is not a position that decays, so the
-                  # twenty-minute default was wrong for it in the same way it
-                  # was wrong for a strike -- just less dramatically. An hour
-                  # is roughly how long an alert for a city actually runs, and
-                  # long enough that one declared while you were looking
-                  # elsewhere is still there when you come back.
+                  # An hour, which is roughly how long an alert for a city
+                  # actually runs -- and long enough that one declared while
+                  # you were looking elsewhere is still there when you return.
                   "keep": 60},
     "unknown":   {"colour": "#9aa4b2", "label": "Unidentified",
                   "motion": "track", "rank": 2},
+
 }
 
 # Derived, never edited on their own. "motion" no longer drives any movement
@@ -563,14 +571,39 @@ def read_course(value: Any) -> float | None:
     return float(COMPASS[text]) if text in COMPASS else None
 
 
+# The kinds that were removed, and what they became.
+#
+# Applied wherever a kind enters rather than by rewriting every regex in
+# reports.py and every example in the prompt. Both readers are allowed to go
+# on making the finer distinction -- "розвідувальний БпЛА" is genuinely a
+# recognisable phrase and "балістика" is genuinely not a cruise missile -- and
+# it is collapsed here, in one place, where the decision to collapse it was
+# made.
+#
+# Keeping the readers as they are also means this is reversible: the
+# information is still being extracted, and putting a kind back is a line in
+# this table rather than a re-derivation.
+FOLD = {
+    "recon": "drone",
+    "cruise": "missile",
+    "ballistic": "missile",
+    "helicopter": "aircraft",
+}
+
+
+def fold_kind(kind: Any) -> str:
+    """A kind as this app draws it, whatever the reader called it."""
+    name = str(kind or "unknown").lower().strip().replace("-", "_")
+    name = FOLD.get(name, name)
+    return name if name in KINDS else "unknown"
+
+
 def _clean(item: Any) -> dict[str, Any] | None:
     """One report from the model, checked. Names only -- no positions yet."""
     if not isinstance(item, dict):
         return None
 
-    kind = str(item.get("kind") or "unknown").lower().strip().replace("-", "_")
-    if kind not in KINDS:
-        kind = "unknown"
+    kind = fold_kind(item.get("kind"))
 
     count = item.get("count")
     count = int(count) if isinstance(count, (int, float)) and 1 <= count <= 999 else 1
@@ -1144,6 +1177,9 @@ def _record(item: dict[str, Any], message: dict[str, Any],
     ident = f"AO{_counter:04d}"
     _alerts.append({
         "id": ident,
+        # Which post this came from, so a rules-first reading can be replaced
+        # by the model's when it arrives rather than appearing twice.
+        "source": message.get("id"),
         "by": item.get("by", "model"),
         "kind": placed["kind"],
         "rank": KINDS[placed["kind"]]["rank"],
@@ -1186,6 +1222,26 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         "link": message.get("link"),
     })
     return True
+
+
+def forget_source(post_id: Any) -> int:
+    """Drop everything that came from one post.
+
+    So the model's reading can replace the rules-read one rather than sit
+    beside it. Without this, reading twice draws every mark twice -- which on
+    a busy night is the map saying there are forty drones when there are
+    twenty, and that is a worse error than a late reading.
+
+    Matched on the post id rather than on the generated AO identifier, because
+    the two readings of one post get different identifiers and it is the post
+    they have in common.
+    """
+    if not post_id:
+        return 0
+    before = len(_events) + len(_alerts)
+    _events[:] = [e for e in _events if e.get("source") != post_id]
+    _alerts[:] = [a for a in _alerts if a.get("source") != post_id]
+    return before - len(_events) - len(_alerts)
 
 
 def keep_minutes(kind: str) -> int:
@@ -1313,11 +1369,36 @@ def poll() -> dict[str, Any]:
         _last_poll = now
         return current()
 
-    # One call for everything new rather than one per message. Not for a quota
-    # any more -- there is not one -- but because a local model is asked once
-    # and thinks once, and four channels can post a dozen times a minute
-    # between them.
     batch = fresh[:40]
+
+    # Read by rule first, and publish that immediately.
+    #
+    # This is the whole of "load fast". The model is the slow step by a wide
+    # margin -- four page fetches take 350 ms and a local model asked about
+    # twenty posts can take the better part of a minute -- and until now
+    # nothing appeared on the map until it had finished. A first open on a
+    # busy night showed an empty country for as long as the model took to
+    # think.
+    #
+    # The rules are microseconds and they read most of these posts correctly:
+    # they are written to be scanned during an air raid and they are formulaic
+    # to the point of being a grammar. So they go up straight away, marked as
+    # rules-read, and the model's version replaces them when it lands.
+    #
+    # Nothing is lost by the replacement being late. A mark that appears in a
+    # third of a second and gets a better reading twenty seconds later is
+    # strictly better than the same mark appearing at twenty seconds, and the
+    # panel says which reading each one came from either way.
+    for post in batch:
+        plain = reports.read(post.get("text", ""))
+        if not plain:
+            continue
+        plain["kind"] = fold_kind(plain.get("kind"))
+        item = _clean({**plain, "id": post["id"]})
+        if item:
+            item["by"] = "rules"
+            _record(item, post, post.get("countries", ""))
+
     found: list[dict[str, Any]] = []
     limited = ""
 
@@ -1342,6 +1423,13 @@ def poll() -> dict[str, Any]:
 
     # Geocoding is done outside the lock: it may go to the network, and
     # holding the lock across that would stall every request for the map.
+    # Now the model's readings, each one replacing the rules-read version of
+    # the same post.
+    #
+    # Only where the model actually answered about that post. A post it
+    # skipped keeps the reading it already has, which is the whole reason the
+    # rules run first -- there is never a moment where a readable post is
+    # absent from the map.
     read_by_rules = 0
     for post in batch:
         _seen.add(post["id"])
@@ -1350,29 +1438,33 @@ def poll() -> dict[str, Any]:
             # A model that ignored the ids, with only one message to
             # confuse: the single answer can only belong to it.
             item = found[0]
+
+        tally = _sources.get(post.get("channel"))
         if item is None:
-            # No model reading for this one -- it is resting, it refused, or
-            # it skipped the message. Read it here instead.
+            # No model reading for this one -- it is not running, it refused,
+            # or it skipped the message. Whatever the rules made of it stands,
+            # and it is already on the map.
             #
             # This is the difference between a quiet night and a dead layer.
-            # Before this, a rate limit meant an empty map and a line of red
+            # A missing model used to mean an empty map and a line of red
             # text, which from the outside is indistinguishable from the
-            # feature being broken. These reports are formulaic enough to read
-            # without a model, so they are.
-            plain = reports.read(post.get("text", ""))
-            if not plain:
-                continue
-            item = _clean({**plain, "id": post["id"]})
-            if item is None:
-                continue
-            item["by"] = "rules"
-            read_by_rules += 1
-        else:
-            item["by"] = "model"
-        tally = _sources.get(post.get("channel"))
+            # feature being broken.
+            if any(e.get("source") == post["id"] for e in _events) \
+                    or any(a.get("source") == post["id"] for a in _alerts):
+                read_by_rules += 1
+                if tally is not None:
+                    tally["read"] += 1
+                    if any(e.get("source") == post["id"] for e in _events):
+                        tally["placed"] += 1
+            continue
+
+        item["by"] = "model"
         if tally is not None:
             tally["read"] += 1
         with _lock:
+            # Out with the rules reading, in with the model's. Both together
+            # would draw the post twice.
+            forget_source(post["id"])
             placed = _record(item, post, post["countries"])
         if tally is not None and placed:
             tally["placed"] += 1
@@ -1540,22 +1632,23 @@ DEMO_SEED = [
     # over a town it was flying past, which is what prompted all of this.
     ("jet_drone", "Kaharlyk", None, "N", 1,
      "Jet drone past Kaharlyk on a course north"),
-    # On station: it circles rather than setting off across the country.
-    ("recon", "Zaporizhzhia", None, None, 1,
-     "Reconnaissance drone loitering over Zaporizhzhia"),
+    # An aircraft, which is the one airborne kind that is neither a drone nor
+    # a missile and is kept separate for that reason. Replaces a recon drone,
+    # a distinction the data does not support.
+    ("aircraft", "Zaporizhzhia", None, None, 1,
+     "Tactical aviation reported over Zaporizhzhia"),
     # Located to an oblast and nowhere finer, which is most of what these
     # channels actually post. The demo needs one so the "somewhere in this
     # region" band is drawn at all in the build with no network.
     ("drone", "Kharkiv oblast", None, None, 3,
      "Three drones over Kharkiv oblast"),
-    # A hundred kilometres at cruise speed: in flight when the page loads and
-    # arriving a couple of minutes later, so the demo shows a marker reaching
-    # where it was going and leaving, not only things in transit.
-    ("cruise", "Ochakiv", "Odesa", None, 1,
-     "Cruise missile past Ochakiv towards Odesa"),
-    # A course and no destination, so it never arrives and stays for its full
-    # twenty minutes -- which is what makes its own drawing checkable at all.
-    ("cruise", "Nikopol", None, "W", 2, "Two cruise missiles past Nikopol, heading west"),
+    # A missile with a named destination, so the demo exercises a heading
+    # computed between two places rather than read off a compass word.
+    ("missile", "Ochakiv", "Odesa", None, 1,
+     "Missile past Ochakiv towards Odesa"),
+    # And one with a course and no destination, which is the other way a
+    # heading arrives. Two objects, so the trailing line is drawn as well.
+    ("missile", "Nikopol", None, "W", 2, "Two missiles past Nikopol, heading west"),
     ("explosion", "Kherson", None, None, 1, "Explosions reported in Kherson"),
     # Twenty hours old: four fifths of the way through a strike's
     # twenty-five, so the demo shows a faded one beside a fresh one and the
@@ -1640,8 +1733,17 @@ DEMO_SOURCE_STATES = (
     {"posts": 14, "fresh": 6, "read": 6, "placed": 5, "problem": None},
     # Reading, but naming places the gazetteer does not know.
     {"posts": 5, "fresh": 2, "read": 2, "placed": 0, "problem": None},
-    # Reachable and quiet. Nothing wrong with it; there is just no news.
-    {"posts": 0, "fresh": 0, "read": 0, "placed": 0, "problem": None},
+    # Reachable, posting, and with nothing inside the twenty-minute window.
+    #
+    # The commonest quiet state by a distance, and the one that was missing:
+    # a channel whose page has posts on it but none of them new. All four
+    # channels were in it on a live start, and because the demo could not
+    # produce it, the wording for it was never looked at -- so the panel said
+    # "20 posts, none readable", which claims the app cannot read them.
+    #
+    # It replaces a "no posts at all" state, which a real channel is
+    # essentially never in: the preview page always carries its last twenty.
+    {"posts": 17, "fresh": 0, "read": 0, "placed": 0, "problem": None},
     # Not answering at all.
     {"posts": 0, "fresh": 0, "read": 0, "placed": 0,
      "problem": "the channel answered 404"},

@@ -36,13 +36,21 @@ class TestWhatKindOfThing:
         assert reports.find_kind("реактивний БпЛА повз Кагарлик") == "jet_drone"
         assert reports.find_kind("Шахед-238") == "jet_drone"
 
-    def test_reconnaissance_is_told_from_attack(self):
-        # The whole difference between circling and flying across a country.
+    def test_reconnaissance_is_still_recognised_here(self):
+        # The reader keeps the distinction even though the map no longer draws
+        # it: tracker.FOLD collapses "recon" into "drone", because telling a
+        # reconnaissance drone from an attack one needs the airframe and these
+        # reports usually just say "БпЛА".
+        #
+        # Kept because the phrase is real and unambiguous when it does appear,
+        # and because keeping it is what makes the decision reversible -- the
+        # information is still extracted, and putting the kind back is a line
+        # in a table rather than a re-derivation.
         for text in ("Розвідувальний БпЛА", "Орлан-10 над районом",
                      "ZALA у повітрі", "борт-розвідник"):
             assert reports.find_kind(text) == "recon", text
 
-    def test_missiles_are_told_apart(self):
+    def test_missile_types_are_still_told_apart_here(self):
         assert reports.find_kind("Балістика на Дніпропетровщині") == "ballistic"
         assert reports.find_kind("балістичного озброєння") == "ballistic"
         assert reports.find_kind("Крилаті ракети") == "cruise"
@@ -486,11 +494,29 @@ class TestTheWholeReading:
 
 
 class TestTheOutputFitsWhatConsumesIt:
-    def test_every_kind_it_can_return_is_one_the_map_knows(self):
+    def test_every_kind_it_can_return_is_one_the_map_can_draw(self):
+        """Folds to one, rather than being one.
+
+        This asserted direct membership until the kinds were collapsed. The
+        reader still makes the finer distinctions -- "розвідувальний БпЛА" is
+        a real and unambiguous phrase, and балістика is genuinely not a cruise
+        missile -- and tracker.FOLD collapses them at the boundary, so what
+        has to hold is that everything the reader produces lands somewhere the
+        map knows.
+
+        Stronger than the old version, which would have passed with the fold
+        table empty and every missile drawn grey.
+        """
         from backend import tracker
         for kind, _ in reports.KIND_WORDS:
-            assert kind in tracker.KINDS, kind
-        assert set(reports.SAYS) <= set(tracker.KINDS) | {"unknown"}
+            folded = tracker.fold_kind(kind)
+            assert folded in tracker.KINDS, f"{kind} -> {folded}"
+            # And not silently thrown away: a kind the reader identified must
+            # not come out the other side as "unknown".
+            assert folded != "unknown" or kind == "unknown", \
+                f"{kind} was read and then discarded"
+        for kind in reports.SAYS:
+            assert tracker.fold_kind(kind) in tracker.KINDS, kind
 
     def test_every_course_it_can_return_is_one_the_map_can_read(self):
         from backend import tracker

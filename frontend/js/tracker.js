@@ -242,7 +242,12 @@ const ARROW = (c) => `<path d="M9 1.4 L15.6 15.6 L2.4 15.6 Z" fill="${c}"/>`;
 const SLIM = (c) => `<path d="M9 0.6 L13 16.8 L5 16.8 Z" fill="${c}"/>`;
 
 // Which kinds get the slim arrow. Missiles, and nothing else.
-const SLIM_KINDS = new Set(['cruise', 'ballistic']);
+//
+// One entry now rather than two: cruise and ballistic were folded into one
+// "missile", because the difference matters enormously in life and not at all
+// on this map -- both are inbound, both are drawn at the same place, and one
+// kind that is always right beats two that are sometimes swapped.
+const SLIM_KINDS = new Set(['missile']);
 
 // The same arrow as an outline, for a course borrowed from the group around it
 // rather than stated for that mark. Hollow because the difference is worth
@@ -1223,14 +1228,25 @@ function paintSources() {
   }
   host.replaceChildren(...rows.map((row) => {
     // Said in the order the reading happens, so where it stops is where the
-    // problem is: reached, read, placed.
+    // problem is: reached, in the window, read, placed.
+    //
+    // "fresh" is the step that was missing, and leaving it out made the panel
+    // lie in the most confusing way available. A channel with twenty posts,
+    // none of them inside the twenty-minute window, has fresh 0 and therefore
+    // read 0 -- and this said "20 posts, none readable", which claims the app
+    // cannot read that channel. All four said it at once on a quiet start.
+    // What was true was "nothing new", which is not a fault at all.
     const why = row.problem ? 'unreachable'
       : row.posts === 0 ? 'no posts'
-        : row.read === 0 ? `${row.posts} posts, none readable`
-          : row.placed === 0 ? `${row.read} read, none placeable`
-            : `${row.placed} placed of ${row.read} read`;
+        : row.fresh === 0 ? `${row.posts} posts, nothing new`
+          : row.read === 0 ? `${row.fresh} new, none readable`
+            : row.placed === 0 ? `${row.read} read, none placeable`
+              : `${row.placed} placed of ${row.read} read`;
     return el('div', {
-      class: `ao-src-row${row.problem || !row.placed ? ' is-quiet' : ''}`,
+      // Dimmed for a fault, not for quiet. A channel with nothing new is
+      // working perfectly and should not be greyed out as though it were not.
+      class: `ao-src-row${row.problem
+        || (row.fresh > 0 && !row.placed) ? ' is-quiet' : ''}`,
       title: row.problem ?? '',
     },
     el('b', {}, row.channel),
