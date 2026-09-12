@@ -75,8 +75,7 @@ CSP = "; ".join([
     # Map tiles come from several providers, and a rendered scene arrives as a
     # data: URL. blob: is the decoded seismogram.
     "img-src 'self' data: blob: "
-    "https://*.tile.openstreetmap.org https://tile.openstreetmap.org "
-    "https://*.tile.openstreetmap.fr https://*.tile.opentopomap.org "
+    "https://*.basemaps.cartocdn.com https://*.tile.opentopomap.org "
     "https://server.arcgisonline.com https://*.rainviewer.com "
     "https://gibs.earthdata.nasa.gov "
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
@@ -89,7 +88,14 @@ CSP = "; ".join([
     # a playlist names its own segment host, so this one is a wildcard where
     # the others are exact. It widens the policy only across a domain already
     # trusted enough to be framed below.
+    # The tile hosts appear here as well as in img-src because the map fetches
+    # one tile from each service to read its status code. A refusal can arrive
+    # as a perfectly valid picture, and an <img> never reveals that it came
+    # with a 403 on it. This allows a GET of a URL already permitted as an
+    # image, which widens nothing.
     "connect-src 'self' https://api.rainviewer.com "
+    "https://*.basemaps.cartocdn.com https://*.tile.opentopomap.org "
+    "https://server.arcgisonline.com "
     "https://*.streamlock.net https://*.vdotcameras.com "
     "https://*.earthcam.com https://cdn.jsdelivr.net",
     "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
@@ -373,7 +379,8 @@ def selftest() -> dict:
         ("lightning", "EUMETSAT View", mtg.WMS + "?service=WMS&request=GetCapabilities"),
         ("places", "Nominatim", config.NOMINATIM_URL + "?q=Kyiv&format=jsonv2&limit=1"),
         ("imagery", "Copernicus STAC", config.STAC_URL),
-        ("basemap", "OpenStreetMap tiles", "https://tile.openstreetmap.org/0/0/0.png"),
+        ("basemap", "CARTO basemap tiles",
+         "https://a.basemaps.cartocdn.com/rastertiles/voyager/3/4/2.png"),
     ]
 
     out = []

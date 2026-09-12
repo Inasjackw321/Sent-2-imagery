@@ -19,6 +19,7 @@ import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
 import { initDayNight, sunBlock } from './daynight.js';
+import { refusal, saidNo } from './tiles.js';
 
 let map;
 let aoiLayer = null;
@@ -58,17 +59,30 @@ const HINTS = {
 // nothing failed, it just went wrong in public. Everything here is keyless,
 // and if one of them goes the same way the next in the list takes over rather
 // than leaving a watermarked map on screen.
-// The default is plain OpenStreetMap: the map most people have already read a
-// thousand times, and the one whose place names are right. Esri's label layer
-// was putting wrong titles on cities, which is worse than an ugly backdrop --
-// a name you cannot trust makes the whole map suspect. OSM's names are edited
-// by the people who live there and are baked into the tile rather than
-// stacked on top of it, so there is no second layer to disagree with.
+// The default draws OpenStreetMap's data, but not from OpenStreetMap's own
+// servers.
+//
+// tile.openstreetmap.org is run by volunteers and paid for by donations, and
+// its usage policy says plainly that it is not there to be the basemap of an
+// application. This app was using it as exactly that, and it was blocked: every
+// tile came back 403 with a picture of a warning sign in it. That is the
+// project being treated as it asked to be treated, not an outage, so the fix
+// is to stop asking rather than to retry more politely.
+//
+// CARTO serve the same OpenStreetMap data, rendered from their own hardware
+// and offered for this. The names are still the ones edited by the people who
+// live there, still baked into the tile rather than stacked on top from a
+// separate gazetteer that can disagree with the map underneath -- which is why
+// there is no label overlay anywhere in this list. Esri's was the one
+// captioning cities with names decades out of date.
 const BASEMAPS = [
   {
-    key: 'streets', label: 'OpenStreetMap',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    options: { maxZoom: 19, attribution: '© OpenStreetMap contributors' },
+    key: 'streets', label: 'Streets',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+    options: {
+      subdomains: 'abcd', maxNativeZoom: 20, maxZoom: 20,
+      attribution: '© OpenStreetMap contributors © CARTO',
+    },
   },
   {
     key: 'satellite', label: 'Satellite',
@@ -99,22 +113,27 @@ const BASEMAPS = [
     },
   },
   {
-    key: 'humanitarian', label: 'Humanitarian',
-    url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+    // Replaces the Humanitarian style, which came from tile.openstreetmap.fr
+    // -- volunteer-run under the same policy as the main servers, and so the
+    // same thing waiting to happen. This is a quiet grey map with nothing on
+    // it but roads and names, which is what you want underneath a layer that
+    // is itself the subject: fires, vessels, cloud.
+    key: 'plain', label: 'Plain',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png',
     options: {
-      subdomains: 'abc', maxNativeZoom: 19, maxZoom: 19,
-      attribution: '© OpenStreetMap contributors · Humanitarian OSM Team',
+      subdomains: 'abcd', maxNativeZoom: 20, maxZoom: 20,
+      attribution: '© OpenStreetMap contributors © CARTO',
     },
   },
   {
+    // Also moved off Esri, whose dark canvas is really a mid grey and had to be
+    // darkened in CSS to read as a background. This one is dark to begin with,
+    // and its labels are current.
     key: 'dark', label: 'Dark',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png',
     options: {
-      maxNativeZoom: 16, maxZoom: 19,
-      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
-      // Esri's dark canvas is really a mid grey. Deepened here so it reads as
-      // a background rather than as the subject.
-      className: 'tiles-dark',
+      subdomains: 'abcd', maxNativeZoom: 20, maxZoom: 20,
+      attribution: '© OpenStreetMap contributors © CARTO',
     },
   },
   {
@@ -136,14 +155,45 @@ let basemapLayers = null;
 // Falling through several basemaps in a row -- which is what happens with no
 // connection at all -- should say one thing, not one thing per hop.
 let fallbackReported = false;
+// Probed once each. A basemap the user switches back to should not re-ask.
+const probed = new Set();
+
+/**
+ * Take a basemap off the screen and put the next usable one up instead.
+ *
+ * Skips to a different provider rather than to the next entry. Several of
+ * these share a host, and falling from one CARTO style to another when CARTO
+ * itself is the thing refusing just fails again before landing anywhere
+ * useful.
+ */
+function fallBack(spec, why) {
+  const current = basemapLayers.get(spec.key);
+  if (!map.hasLayer(current)) return;
+  const host = new URL(spec.url).host;
+  const next = BASEMAPS.slice(BASEMAPS.indexOf(spec) + 1)
+    .find((other) => new URL(other.url).host !== host)
+    ?? BASEMAPS[BASEMAPS.indexOf(spec) + 1];
+  if (!next) return;
+  map.removeLayer(current);
+  basemapLayers.get(next.key).addTo(map);
+  if (fallbackReported) return;
+  fallbackReported = true;
+  // Held for the longer time: this explains why the map is not the one the
+  // user picked, and four seconds is not long enough to read and act on that.
+  toast(`${spec.label} tiles: ${why}. Showing ${next.label.toLowerCase()} instead.`,
+        'err');
+}
 
 /**
  * Put the basemaps on the map, and move on from one that stops working.
  *
- * A tile service that starts refusing usually does it by degrees -- a
- * watermark, a placeholder, an error -- so the fallback watches for outright
- * failures and takes the next one down the list. Whichever ends up on screen,
- * the layer control still offers all of them.
+ * A tile service that stops working does it in one of two ways, and they need
+ * catching differently. It can fail to answer, which the browser reports as a
+ * tile error and which is counted below. Or it can answer, with a refusal
+ * drawn as a picture -- see refusal() -- which the browser reports as a
+ * perfectly good tile, and which is caught by asking once and reading the
+ * status. Whichever ends up on screen, the layer control still offers all of
+ * them.
  */
 function buildBasemaps() {
   basemapLayers = new Map();
@@ -161,22 +211,16 @@ function buildBasemaps() {
     layer.on('tileerror', () => {
       failures += 1;
       if (failures !== DEAD_TILES) return;
-      const current = basemapLayers.get(spec.key);
-      if (!map.hasLayer(current)) return;
-      // Skip to a different provider. Most of this list is Esri, so falling to
-      // the next entry when Esri itself is unreachable just fails again three
-      // more times before landing anywhere useful.
-      const host = new URL(spec.url).host;
-      const next = BASEMAPS.slice(BASEMAPS.indexOf(spec) + 1)
-        .find((other) => new URL(other.url).host !== host)
-        ?? BASEMAPS[BASEMAPS.indexOf(spec) + 1];
-      if (!next) return;
-      map.removeLayer(current);
-      basemapLayers.get(next.key).addTo(map);
-      if (!fallbackReported) {
-        fallbackReported = true;
-        toast(`The ${spec.label.toLowerCase()} basemap is not answering — falling back`);
-      }
+      fallBack(spec, 'not answering');
+    });
+
+    // Asked the first time this basemap is actually shown, so a service is
+    // only ever bothered about a map somebody is looking at.
+    layer.on('add', async () => {
+      if (probed.has(spec.key)) return;
+      probed.add(spec.key);
+      const status = await refusal(spec);
+      if (status !== null) fallBack(spec, saidNo(status));
     });
   }
 

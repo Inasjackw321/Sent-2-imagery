@@ -285,9 +285,6 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
    overlays, pins and drawn shapes have to stay the brightest things on the
    map, and a tile service tuned for a white page is never that by default. */
 .tiles-imagery { filter: brightness(.78) saturate(.85) contrast(1.05); }
-/* Esri's "dark" canvas is really a mid grey -- the flat, washed-out look this
-   replaces. Deepened until it reads as background. */
-.tiles-dark { filter: brightness(.6) contrast(1.25) saturate(.9); }
 .leaflet-control-attribution { background: rgba(13,16,21,.78) !important; color: var(--ink-faint) !important; }
 .leaflet-control-attribution a { color: var(--ink-dim) !important; }
 .leaflet-bar a { background: var(--bg-2); color: var(--ink); border-color: var(--line); }
