@@ -15,8 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, copernicus, fires, gazetteer, mtg, passes,
-    seismic, service, stac, version, vessels, weather,
+    aisstream, composite, config, copernicus, fires, gazetteer, mtg, ollama,
+    passes, seismic, service, stac, tracker, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -304,6 +304,40 @@ def ships(
         raise _fail(exc)
 
 
+@app.get("/api/tracker")
+def tracker_events() -> dict:
+    """Air-threat reports from public Telegram channels, as map events.
+
+    Every part of this stays on the server: Telegram is read here and the
+    model runs here, so the browser never talks to either. What comes back is
+    positions, areas and masses, already placed and already checked.
+    """
+    if config.DEMO_MODE:
+        return tracker.demo()
+    try:
+        return tracker.refresh()
+    except tracker.TrackerError as exc:
+        # Not a failure of the endpoint: Ollama not running, a model not
+        # pulled, a channel that would not answer. The map wants to keep
+        # drawing what it already has and say why nothing new arrived, rather
+        # than go blank on a 502.
+        answer = tracker.current()
+        answer["state"] = str(exc)
+        return answer
+
+
+@app.post("/api/tracker/model")
+def tracker_model(body: dict = Body(...)) -> dict:
+    """Name the Ollama model to read with, or clear it to choose one.
+
+    What replaced the key endpoint. Held in memory only, exactly as the key
+    was, and never written to disk -- though unlike a key there is nothing
+    secret about it.
+    """
+    tracker.use_model(body.get("model"))
+    return ollama.status()
+
+
 @app.get("/api/quakes")
 def earthquakes(
     west: float = Query(..., ge=-180, le=180),
@@ -377,6 +411,8 @@ def selftest() -> dict:
         ("lightning", "EUMETSAT View", mtg.WMS + "?service=WMS&request=GetCapabilities"),
         ("places", "Nominatim", config.NOMINATIM_URL + "?q=Kyiv&format=jsonv2&limit=1"),
         ("imagery", "Copernicus STAC", config.STAC_URL),
+        ("reports", "Telegram preview",
+         tracker.PREVIEW.format(channel=tracker.CHANNELS[0]["name"])),
         ("basemap", "Esri basemap tiles",
          "https://server.arcgisonline.com/ArcGIS/rest/services"
          "/World_Street_Map/MapServer/tile/3/2/4"),
