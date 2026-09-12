@@ -47,6 +47,22 @@ class Reply:
         return self._payload
 
 
+class PhotoReply:
+    """A streaming response, for the photo proxy's tests."""
+
+    def __init__(self, status, body, kind, redirect=False):
+        self.status_code = status
+        self.ok = 200 <= status < 300
+        self.headers = {"Content-Type": kind}
+        self.is_redirect = redirect
+        self.is_permanent_redirect = False
+        self._body = body
+
+    def iter_content(self, size):
+        for at in range(0, len(self._body), size):
+            yield self._body[at:at + size]
+
+
 def fake_find(name, countries=""):
     """A gazetteer that knows a handful of places and nothing else."""
     known = {
@@ -1120,6 +1136,237 @@ class TestChoosingAModel:
         for junk in ("no idea", "", "[1,2,3]", "null"):
             with pytest.raises(ollama.OllamaError):
                 ollama.read_json(junk)
+
+
+class TestPictures:
+    """The pictures a report came with, and the proxy that fetches them.
+
+    The proxy is the part that matters. It fetches a URL its caller supplies,
+    which is a way into everything this process can reach and the caller
+    cannot -- a metadata service, a container on the same network, a database
+    on loopback. The allowlist is the whole of its security, so most of these
+    tests are attempts to get past it.
+    """
+
+    def page(self, *styles, post="war_monitor/1", text="Вибухи у Харкові"):
+        wraps = "".join(f'<a class="tgme_widget_message_photo_wrap" {s}></a>'
+                        for s in styles)
+        return (f'<div class="tgme_widget_message " data-post="{post}">{wraps}'
+                f'<time datetime="2026-09-12T10:00:00+00:00"></time>'
+                f'<div class="tgme_widget_message_text">{text}</div></div>')
+
+    def test_a_photo_is_found_however_the_style_is_quoted(self):
+        # Single, double, HTML-escaped double, and with a space after url(.
+        # The first version accepted literal quotes only and silently missed
+        # every &quot; one, which would have read as the channels having
+        # stopped posting pictures.
+        for style in (
+            "style=\"background-image:url('https://cdn4.cdn-telegram.org/file/a.jpg')\"",
+            'style="background-image:url(&quot;https://cdn1.cdn-telegram.org/file/b.jpg&quot;)"',
+            "style='background-image:url(https://cdn2.cdn-telegram.org/file/c.jpg)'",
+            "style=\"background-image: url('https://cdn3.cdn-telegram.org/file/d.jpg')\"",
+        ):
+            got = tracker.parse_preview(self.page(style), "war_monitor")
+            assert len(got[0]["photos"]) == 1, style
+
+    def test_a_picture_from_anywhere_else_is_not_taken_from_the_page(self):
+        # Checked when read as well as when fetched. A rewritten page must not
+        # be able to get an arbitrary URL into a stored event in the first
+        # place.
+        got = tracker.parse_preview(self.page(
+            'style="background-image:url(https://evil.example/x.jpg)"',
+            'style="background-image:url(https://cdn4.cdn-telegram.org/file/ok.jpg)"',
+        ), "war_monitor")
+        assert got[0]["photos"] == ["https://cdn4.cdn-telegram.org/file/ok.jpg"]
+
+    def test_a_post_with_no_pictures_says_so_plainly(self):
+        got = tracker.parse_preview(self.page(), "war_monitor")
+        assert got[0]["photos"] == []
+
+    def test_only_a_few_are_kept(self):
+        many = [f'style="background-image:url(https://cdn4.cdn-telegram.org/f/{i}.jpg)"'
+                for i in range(12)]
+        got = tracker.parse_preview(self.page(*many), "war_monitor")
+        assert len(got[0]["photos"]) == tracker.MOST_PHOTOS
+
+    def test_the_post_is_linked_so_the_source_can_be_checked(self):
+        got = tracker.parse_preview(self.page(post="kpszsu/99"), "kpszsu")
+        assert got[0]["link"] == "https://t.me/kpszsu/99"
+
+    def test_the_page_never_gets_a_telegram_url(self):
+        # The browser talks to Telegram nowhere in this layer and must not
+        # start for a thumbnail: an <img> at their CDN hands them the viewer's
+        # address every time a popup opens.
+        paths = tracker.photo_paths(["https://cdn4.cdn-telegram.org/file/a.jpg"])
+        assert len(paths) == 1
+        assert paths[0].startswith("/api/tracker/photo?u=")
+        assert "cdn-telegram.org" not in paths[0].split("?u=")[0]
+
+    def test_the_url_survives_being_put_in_a_query_string(self):
+        from urllib.parse import parse_qs, urlparse
+        url = "https://cdn4.cdn-telegram.org/file/a b.jpg?x=1&y=2"
+        path = tracker.photo_paths([url])[0]
+        assert parse_qs(urlparse(path).query)["u"] == [url]
+
+    def test_rubbish_in_the_photo_list_is_dropped_rather_than_carried(self):
+        assert tracker.photo_paths(None) == []
+        assert tracker.photo_paths("not a list") == []
+        assert tracker.photo_paths([None, 42, {}, "http://x", ""]) == []
+
+    def test_the_proxy_refuses_everything_but_telegrams_own_cdn(self, monkeypatch):
+        def must_not_fetch(*a, **k):
+            raise AssertionError("the proxy opened a connection it should have refused")
+        monkeypatch.setattr(tracker.requests, "get", must_not_fetch)
+        for bad in [
+            # Another host entirely.
+            "https://evil.example/x.jpg",
+            # The allowed name as a PREFIX of another domain, which is the
+            # attack a naive startswith() check lets straight through.
+            "https://cdn4.cdn-telegram.org.evil.example/x.jpg",
+            # As a path or userinfo rather than the host.
+            "https://evil.example/cdn4.cdn-telegram.org/x.jpg",
+            "https://cdn4.cdn-telegram.org@evil.example/x.jpg",
+            # Plain http, so it could be intercepted.
+            "http://cdn4.cdn-telegram.org/x.jpg",
+            # Schemes that reach things HTTP cannot.
+            "file:///etc/passwd",
+            "gopher://cdn4.cdn-telegram.org/x",
+            # The classic targets of a URL-fetching endpoint.
+            "https://169.254.169.254/latest/meta-data/",
+            "https://127.0.0.1:11434/api/tags",
+            "https://[::1]/x",
+            # Not a string at all.
+            None, 42, [],
+        ]:
+            with pytest.raises(tracker.TrackerError):
+                tracker.fetch_photo(bad)
+
+    def test_the_proxy_fetches_a_real_one(self, monkeypatch):
+        monkeypatch.setattr(tracker.requests, "get", lambda *a, **k: PhotoReply(
+            200, b"\x89PNG\r\n", "image/png"))
+        body, kind = tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+        assert body == b"\x89PNG\r\n"
+        assert kind == "image/png"
+
+    def test_it_does_not_follow_a_redirect_off_the_allowed_host(self, monkeypatch):
+        # A permitted host answering with a redirect elsewhere would otherwise
+        # walk straight past the check that was the whole point.
+        monkeypatch.setattr(tracker.requests, "get", lambda *a, **k: PhotoReply(
+            302, b"", "text/html", redirect=True))
+        with pytest.raises(tracker.TrackerError, match="redirect"):
+            tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+
+    def test_it_asks_not_to_be_redirected_at_all(self, monkeypatch):
+        seen = {}
+        def record(url, **kw):
+            seen.update(kw)
+            return PhotoReply(200, b"x", "image/png")
+        monkeypatch.setattr(tracker.requests, "get", record)
+        tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+        assert seen.get("allow_redirects") is False
+
+    def test_something_that_is_not_an_image_is_refused(self, monkeypatch):
+        for kind in ("text/html", "application/json", "", "text/plain"):
+            monkeypatch.setattr(tracker.requests, "get", lambda *a, **k: PhotoReply(
+                200, b"<html>", kind))
+            with pytest.raises(tracker.TrackerError, match="not an image"):
+                tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+
+    def test_an_enormous_picture_is_cut_off_rather_than_read(self, monkeypatch):
+        # Measured rather than trusted: Content-Length is a claim.
+        huge = b"x" * (tracker.PHOTO_BYTES + 1024)
+        monkeypatch.setattr(tracker.requests, "get", lambda *a, **k: PhotoReply(
+            200, huge, "image/png"))
+        with pytest.raises(tracker.TrackerError, match="too large"):
+            tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+
+    def test_a_refusal_from_telegram_is_passed_on_as_one(self, monkeypatch):
+        monkeypatch.setattr(tracker.requests, "get", lambda *a, **k: PhotoReply(
+            404, b"", "text/html"))
+        with pytest.raises(tracker.TrackerError, match="404"):
+            tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+
+    def test_a_network_failure_is_a_tracker_error_not_a_crash(self, monkeypatch):
+        def boom(*a, **k):
+            raise tracker.requests.RequestException("down")
+        monkeypatch.setattr(tracker.requests, "get", boom)
+        with pytest.raises(tracker.TrackerError):
+            tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
+
+    def test_the_demo_has_pictures_on_its_strikes(self):
+        # A feature whose only demonstration needs a network is a feature
+        # nobody checks.
+        strikes = [e for e in tracker.demo()["events"] if e["kind"] == "explosion"]
+        assert strikes
+        for strike in strikes:
+            assert strike["photos"], strike["place"]
+
+    def test_the_demo_pictures_are_obviously_not_photographs(self):
+        # The single worst thing in this app to get wrong would be a
+        # convincing invented picture of a strike.
+        for event in tracker.demo()["events"]:
+            for shot in event.get("photos") or []:
+                assert shot.startswith("data:image/svg+xml"), shot
+                assert "demo" in shot
+
+
+class TestHowLongAStrikeStays:
+    """A day, not an evening."""
+
+    def test_a_strike_is_held_for_at_least_a_day(self):
+        assert tracker.KEEP["explosion"] >= 24 * 60
+
+    def test_and_a_little_more_than_a_day(self):
+        # Exactly twenty-four hours means a strike reported at nine in the
+        # morning disappears at nine the next morning, while somebody is
+        # looking at it and just as they go to compare it with today.
+        assert tracker.KEEP["explosion"] > 24 * 60
+
+    def test_a_strike_from_yesterday_evening_is_still_drawn(self):
+        now = time.time()
+        strike = {"kind": "explosion", "seen": now - 20 * 3600}
+        assert tracker._alive(strike, now)
+
+    def test_a_strike_from_two_days_ago_is_not(self):
+        now = time.time()
+        assert not tracker._alive({"kind": "explosion", "seen": now - 48 * 3600}, now)
+
+    def test_the_report_outlives_its_own_marker_never_the_other_way(self):
+        # A marker on the map with no row in the panel to explain it is worse
+        # than either problem alone.
+        for kind in tracker.KINDS:
+            held = max(tracker.ALERT_MINUTES, tracker.keep_minutes(kind))
+            assert held >= tracker.keep_minutes(kind), kind
+
+    def test_the_cap_has_room_for_a_day_of_them(self):
+        # The cap drops the oldest, so one sized for an evening would quietly
+        # stop being a day for anybody having a bad week -- and the map would
+        # look complete while missing the beginning of it.
+        assert tracker.MAX_EVENTS >= 1000
+        assert tracker.MAX_ALERTS >= 500
+
+    def test_nothing_in_flight_is_held_anywhere_near_as_long(self):
+        for kind, motion in tracker.MOTION.items():
+            if motion == "still":
+                continue
+            assert tracker.keep_minutes(kind) <= 60, kind
+
+
+class TestHowFarBackItReads:
+    def test_it_catches_up_on_twenty_minutes(self):
+        assert tracker.LOOKBACK_MINUTES == 20
+
+    def test_which_is_less_than_a_strike_is_kept_for(self):
+        # Not a contradiction, and worth pinning so nobody "fixes" one to
+        # match the other. The lookback bounds the catch-up read; each poll
+        # after it reads whatever is new, so a day of strikes accumulates as
+        # the app runs rather than being fetched on start.
+        assert tracker.LOOKBACK_MINUTES < tracker.KEEP["explosion"]
+
+    def test_it_is_at_least_as_long_as_the_gap_between_polls(self):
+        # A lookback shorter than the poll interval would drop posts in the
+        # gap between two reads.
+        assert tracker.LOOKBACK_MINUTES * 60 >= tracker.MIN_POLL_SECONDS
 
 
 class TestConcentrateMode:

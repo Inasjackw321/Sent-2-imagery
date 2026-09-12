@@ -326,6 +326,42 @@ def tracker_events() -> dict:
         return answer
 
 
+@app.get("/api/tracker/photo")
+def tracker_photo(u: str = Query(..., max_length=600)):
+    """One picture from a Telegram post, fetched here rather than by the page.
+
+    The browser never talks to Telegram anywhere else in this layer, and it
+    should not start for pictures: an <img> pointed straight at their CDN
+    hands them the viewer's address every time a popup opens, which is a lot
+    to give away for a thumbnail.
+
+    Everything that makes this safe is in tracker.fetch_photo -- an allowlist
+    of Telegram's own CDN, no redirects, an image content type and a size
+    ceiling. An endpoint that fetches a URL from its caller is otherwise a way
+    into whatever this process can reach and the caller cannot.
+    """
+    try:
+        body, kind = tracker.fetch_photo(u)
+    except tracker.TrackerError as exc:
+        raise _fail(exc, status=400)
+    return Response(content=body, media_type=kind, headers={
+        # The files are immutable at their URL, so let the browser keep them:
+        # a popup reopened should not refetch.
+        "Cache-Control": "private, max-age=3600",
+    })
+
+
+@app.get("/api/ollama")
+def ollama_status() -> dict:
+    """Whether the local model is there, which one, and how to fix it.
+
+    Its own endpoint, and a GET, because the page asks this on its own -- the
+    daemon can be started after the page is open, and a panel that said "not
+    connected" until a reload would be wrong more often than right.
+    """
+    return ollama.status()
+
+
 @app.post("/api/tracker/model")
 def tracker_model(body: dict = Body(...)) -> dict:
     """Name the Ollama model to read with, or clear it to choose one.

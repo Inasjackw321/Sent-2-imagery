@@ -58,6 +58,7 @@ import math
 import re
 import threading
 import time
+from urllib.parse import quote
 from typing import Any
 
 import requests
@@ -113,8 +114,20 @@ KEEP_MINUTES = 20
 # reported in Kharkiv an hour ago" is still true an hour later.
 ALERT_MINUTES = 90
 
-# Nothing older than this is worth reading on start-up.
-LOOKBACK_MINUTES = 45
+# How far back to read when the app starts, or after it has been idle.
+#
+# Twenty minutes: what is happening now rather than what happened this
+# afternoon. Worth knowing what this does and does not mean. Each poll after
+# the first reads whatever is new since the last one, so nothing is missed
+# while the app is running -- this only bounds the catch-up read.
+#
+# Which has a consequence for strikes, and it is not a bug. They are held for
+# a day now, but a freshly started app has only ever read twenty minutes, so
+# it shows the strikes of the last twenty minutes and fills in towards a full
+# day as it runs. There is no way round that short of reading hours of history
+# on every start, which is a lot of somebody else's bandwidth for a page that
+# may be closed in a minute.
+LOOKBACK_MINUTES = 20
 
 # The floor between two reads of the channels. The map asks once a minute, but
 # it may be open in three tabs, and every read that finds something new costs a
@@ -174,11 +187,18 @@ KINDS = {
                   "motion": "track", "rank": 2},
     "explosion": {"colour": "#b06bff", "label": "Explosion",
                   "motion": "still", "rank": 7,
-                  # Six hours. A strike is a fact about a place rather than a
-                  # guess about one, so nothing about it decays -- and the
-                  # night's damage read together is most of why anyone opens
-                  # this layer. Long enough to hold an evening's worth.
-                  "keep": 360},
+                  # Twenty-five hours. A strike is a fact about a place
+                  # rather than a guess about one, so nothing about it decays,
+                  # and a night's damage read together is most of why anyone
+                  # opens this layer.
+                  #
+                  # Twenty-five rather than twenty-four on purpose. Exactly a
+                  # day means a strike reported at nine in the morning
+                  # disappears at nine the next morning -- while somebody is
+                  # looking at it, and just as they go to compare it with
+                  # today. The extra hour is the overlap that makes "the last
+                  # day" mean the whole of the last day.
+                  "keep": 1500},
     "alert":     {"colour": "#ffb020", "label": "Air alert",
                   "motion": "still", "rank": 1},
     "unknown":   {"colour": "#ff8a3b", "label": "Unidentified",
@@ -196,8 +216,18 @@ KEEP = {name: look.get("keep", KEEP_MINUTES) for name, look in KINDS.items()}
 NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "still")
 
 
-MAX_EVENTS = 400
-MAX_ALERTS = 200
+# How many marks and reports to hold at once.
+#
+# Raised with the strike retention. A day of strikes is a great many more marks
+# than an evening of them, and the cap drops the oldest -- so a cap sized for
+# six hours would quietly stop being a day for anybody having a bad week, and
+# the map would look complete while missing the beginning of it.
+#
+# Cheap to raise: strikes are excluded from the clustering, which is the only
+# thing here that is worse than linear, and six hundred marks measured a 16.7
+# ms median frame with concentrate mode on.
+MAX_EVENTS = 1200
+MAX_ALERTS = 600
 
 _lock = threading.Lock()
 _seen: set[str] = set()
@@ -255,6 +285,27 @@ _TEXT = re.compile(
     r'<div class="tgme_widget_message_text[^"]*"[^>]*>(?P<body>.*?)</div>', re.S)
 _TAGS = re.compile(r"<[^>]+>")
 
+# The pictures. Telegram's preview does not use <img> for them: a photo is a
+# div whose CSS background-image is the file on their CDN, and a video is the
+# same thing holding its thumbnail. So this reads the style attribute.
+#
+# The quoting varies -- single, double, and HTML-escaped double -- so the
+# chunk is unescaped before this runs and the quote is optional. Found the hard
+# way: the first version took literal quotes only and silently missed every
+# photo whose attribute used &quot;, which would have read as the channels
+# having stopped posting pictures rather than as this regex being wrong.
+_PHOTO = re.compile(
+    r"""background-image:\s*url\(\s*['"]?(?P<url>https://[^'")\s]+)""")
+
+# Where a Telegram picture may come from. Checked twice: here, so a rewritten
+# page cannot put an arbitrary URL into an event, and again in the proxy that
+# fetches it, so a stored event cannot either.
+_CDN = re.compile(r"^https://cdn\d+\.cdn-telegram\.org/", re.I)
+
+# How many to keep per post. A strike report carries two or three; a summary
+# post can carry ten, and a popup is not a gallery.
+MOST_PHOTOS = 4
+
 
 def parse_preview(page: str, channel: str) -> list[dict[str, Any]]:
     """Pull the posts out of a channel's public preview page.
@@ -278,11 +329,20 @@ def parse_preview(page: str, channel: str) -> list[dict[str, Any]]:
         text = re.sub(r"[ \t]+", " ", text).strip()
         if not text:
             continue
+        # Only from Telegram's own CDN. The URL comes out of a page, so it is
+        # somebody else's string until it has been checked against a pattern.
+        photos = [found.group("url")
+                  for found in _PHOTO.finditer(html.unescape(chunk))
+                  if _CDN.match(found.group("url"))][:MOST_PHOTOS]
         posts.append({
             "id": head.group("post"),
             "channel": channel,
             "when": head.group("when"),
             "text": text[:1200],
+            "photos": photos,
+            # The post itself, so a popup can offer the source rather than
+            # asking anyone to take its word for it.
+            "link": f"https://t.me/{head.group('post')}",
         })
     return posts
 
@@ -894,6 +954,61 @@ def _when(message: dict[str, Any]) -> float:
         return time.time()
 
 
+# The largest picture to pass through. Telegram's preview images are a few
+# hundred kilobytes; a ceiling stops a rewritten page, or a changed CDN, from
+# being able to stream something enormous through this process.
+PHOTO_BYTES = 8 * 1024 * 1024
+
+
+def fetch_photo(url: str) -> tuple[bytes, str]:
+    """One Telegram picture, fetched here rather than by the browser.
+
+    The host is checked against _CDN before anything is opened, and that check
+    is the whole security of this function. An endpoint that fetches a URL a
+    caller supplies is a way into everything this process can reach that the
+    caller cannot -- a metadata service, another container, a database on
+    loopback -- so the allowlist is a pattern match against Telegram's own CDN
+    and there is no configuration to widen it.
+
+    Redirects are refused rather than followed. A permitted host that answers
+    with a redirect elsewhere would otherwise walk straight past the check
+    that was the point of it.
+    """
+    if not isinstance(url, str) or not _CDN.match(url):
+        raise TrackerError("that is not a Telegram picture")
+    try:
+        resp = requests.get(url, timeout=20, stream=True, allow_redirects=False,
+                            headers={"User-Agent": config.USER_AGENT})
+    except requests.RequestException as exc:
+        raise TrackerError(f"the picture could not be fetched: {exc}") from exc
+    if resp.is_redirect or resp.is_permanent_redirect:
+        raise TrackerError("the picture redirected somewhere else")
+    if not resp.ok:
+        raise TrackerError(f"Telegram answered {resp.status_code} for that picture")
+
+    kind = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if not kind.startswith("image/"):
+        raise TrackerError(f"that is not an image ({kind or 'no type given'})")
+
+    # Read to the ceiling and no further, rather than trusting Content-Length,
+    # which is a claim and not a measurement.
+    body = bytearray()
+    for piece in resp.iter_content(64 * 1024):
+        body += piece
+        if len(body) > PHOTO_BYTES:
+            raise TrackerError("that picture is too large")
+    return bytes(body), kind
+
+
+def photo_paths(urls: Any) -> list[str]:
+    """Telegram CDN URLs as paths through this app's own proxy."""
+    if not isinstance(urls, list):
+        return []
+    return [f"/api/tracker/photo?u={quote(url, safe='')}"
+            for url in urls[:MOST_PHOTOS]
+            if isinstance(url, str) and _CDN.match(url)]
+
+
 def _record(item: dict[str, Any], message: dict[str, Any],
             countries: str) -> bool:
     """One classified report: an alert always, a track only if it placed."""
@@ -916,6 +1031,13 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         "region": message.get("region"),
         "seen": seen,
         "text": message.get("text", "")[:300],
+        # The pictures, as proxy paths rather than CDN URLs. See
+        # /api/tracker/photo: the browser never talks to Telegram, which is
+        # the same promise the rest of this layer makes, and it is worth more
+        # for pictures than for text -- an <img> straight to their CDN would
+        # hand them the viewer's address on every popup.
+        "photos": photo_paths(message.get("photos")),
+        "link": message.get("link"),
     })
 
     if not placed["placed"]:
@@ -931,6 +1053,13 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         "region": message.get("region"),
         "source": message.get("id"),
         "text": message.get("text", "")[:300],
+        # The pictures, as proxy paths rather than CDN URLs. See
+        # /api/tracker/photo: the browser never talks to Telegram, which is
+        # the same promise the rest of this layer makes, and it is worth more
+        # for pictures than for text -- an <img> straight to their CDN would
+        # hand them the viewer's address on every popup.
+        "photos": photo_paths(message.get("photos")),
+        "link": message.get("link"),
     })
     return True
 
@@ -1239,12 +1368,15 @@ DEMO_SEED = [
     # twenty minutes -- which is what makes its own drawing checkable at all.
     ("cruise", "Nikopol", None, "W", 2, "Two cruise missiles past Nikopol, heading west"),
     ("explosion", "Kherson", None, None, 1, "Explosions reported in Kherson"),
-    # Four hours old: two thirds of the way through a strike's six, so the
-    # demo shows a faded one beside a fresh one. Without it the build with no
-    # network only ever draws markers at full strength, and whether an old
-    # strike reads as old could not be checked at all.
+    # Twenty hours old: four fifths of the way through a strike's
+    # twenty-five, so the demo shows a faded one beside a fresh one and the
+    # long retention is visible rather than only asserted. Four hours -- what
+    # this was when a strike lasted six -- now looks brand new.
     ("explosion", "Zaporizhzhia", None, None, 1,
-     "Earlier strike reported in Zaporizhzhia", 240),
+     "Strike reported in Zaporizhzhia yesterday evening", 1200),
+    # And one in between, so the fade has three points on it rather than two.
+    ("explosion", "Kharkiv", None, None, 1,
+     "Strike reported in Kharkiv overnight", 660),
     ("alert", "Kharkiv", None, None, 1, "Air raid warning for Kharkiv"),
     # A warning covering a whole region rather than a town, so the demo shows
     # the boundary being drawn instead of a circle over the middle of it.
@@ -1323,6 +1455,31 @@ DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Kharkiv": 0.12, "Kyiv oblast": 1.3,
                "Белгородская область": 1.1}
 
 
+def _demo_photo(label: str, tint: str) -> str:
+    """A stand-in picture, as a data URL.
+
+    Drawn rather than fetched, for the obvious reason -- the build with no
+    network has no network -- and drawn as an obvious placeholder rather than
+    as anything photographic. A demo that showed a convincing picture of a
+    strike would be the single worst thing in this app to get wrong.
+
+    It exists because the popup's picture layout is otherwise unreachable
+    offline, and a feature whose only demonstration needs a network is a
+    feature nobody checks.
+    """
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200">'
+        f'<rect width="320" height="200" fill="{tint}"/>'
+        f'<rect x="8" y="8" width="304" height="184" fill="none" '
+        f'stroke="#ffffff" stroke-opacity="0.35" stroke-dasharray="6 6"/>'
+        f'<text x="160" y="96" text-anchor="middle" fill="#ffffff" '
+        f'font-family="system-ui,sans-serif" font-size="17">{label}</text>'
+        f'<text x="160" y="122" text-anchor="middle" fill="#ffffff" '
+        f'fill-opacity="0.7" font-family="system-ui,sans-serif" '
+        f'font-size="12">demo — not a photograph</text></svg>')
+    return "data:image/svg+xml;utf8," + quote(svg, safe="")
+
+
 def _demo_ring(lat: float, lon: float, half: float) -> dict[str, Any]:
     """A rough outline for a demo region: a lumpy ring, not a rectangle.
 
@@ -1394,10 +1551,16 @@ def demo() -> dict[str, Any]:
         })
         if not placed["placed"]:
             continue
+        # Pictures on the strikes, because that is where they matter and
+        # where a real feed has them.
+        shots = ([_demo_photo(f"{place} · 1", "#5a3550"),
+                  _demo_photo(f"{place} · 2", "#3a4a62")]
+                 if kind == "explosion" else [])
         event = {**placed, "id": ident,
                  "origin_lat": placed["lat"], "origin_lon": placed["lon"],
                  "seen": seen, "channel": "demo", "region": "Ukraine",
-                 "source": f"demo/{i}", "text": f"Demo report — {summary}."}
+                 "source": f"demo/{i}", "text": f"Demo report — {summary}.",
+                 "photos": shots, "link": None}
         if not _alive(event, now):
             continue
         events.append(project(event, now))

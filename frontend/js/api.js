@@ -36,6 +36,9 @@ export const api = {
     })}`, { method: 'GET' }),
   mtg: () => request('/api/mtg', { method: 'GET' }),
   tracker: () => request('/api/tracker', { method: 'GET' }),
+  // Asked on its own, because the daemon can be started while the page is
+  // open and the panel should be able to notice without a reload.
+  ollama: () => request('/api/ollama', { method: 'GET' }),
   // Names the Ollama model to read with; null lets the backend choose from
   // whatever is installed.
   trackerModel: (model) => request('/api/tracker/model', { body: { model } }),

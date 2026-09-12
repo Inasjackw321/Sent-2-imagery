@@ -82,6 +82,9 @@ export function initTracker(leafletMap) {
   // -- hundreds of vectors -- does not arise.
   areaInk = L.svg({ pane: 'trackerArea' });
   layer = L.layerGroup([], { pane: 'tracker' });
+  // Popup content is built on demand, so the pictures only exist once one is
+  // open -- which is also the only moment their loading can be watched.
+  map.on('popupopen', (e) => tidyPictures(e.popup.getElement()));
   areas = L.layerGroup([], { pane: 'trackerArea' });
   buildDock();
 }
@@ -346,8 +349,62 @@ function popup(event) {
     ${rows.map((r) => `<p>${r}</p>`).join('')}
     ${event.summary ? `<p class="ao-sum">${escapeHtml(event.summary)}</p>` : ''}
     ${event.text ? `<blockquote>${escapeHtml(event.text)}</blockquote>` : ''}
-    <p class="ao-src">${escapeHtml(event.channel ?? '')}</p>
+    ${pictures(event)}
+    <p class="ao-src">${escapeHtml(event.channel ?? '')}${event.link
+      ? ` · <a href="${escapeHtml(event.link)}" target="_blank" rel="noopener noreferrer">the post</a>` : ''}</p>
   </div>`;
+}
+
+/**
+ * The pictures a report came with, for a popup.
+ *
+ * Loaded lazily, and only once a popup is actually opened -- Leaflet builds
+ * popup content on demand, so nothing here is fetched for a marker nobody has
+ * clicked. On a busy night that is the difference between three pictures and
+ * three hundred.
+ *
+ * Every src is a path through this app, never a Telegram URL. The browser
+ * talks to Telegram nowhere else in this layer and should not start for a
+ * thumbnail: an <img> pointed at their CDN hands them the viewer's address
+ * every time a popup opens.
+ */
+function pictures(event) {
+  const shots = Array.isArray(event.photos) ? event.photos.slice(0, 4) : [];
+  if (!shots.length) return '';
+  // No inline onerror handler, however convenient: script-src is 'self', so
+  // the browser refuses inline handlers and the attribute would be silently
+  // dead. Broken pictures are hidden by tidyPictures below instead.
+  const frames = shots.map((src) => `<a class="ao-shot"`
+    + ` href="${escapeHtml(src)}" target="_blank" rel="noopener noreferrer">`
+    + `<img src="${escapeHtml(src)}" alt="" loading="lazy" decoding="async">`
+    + `</a>`).join('');
+  return `<div class="ao-shots">${frames}</div>`
+    + '<p class="ao-shots-note">From the post. Fetched through this app, not '
+    + 'from your browser.</p>';
+}
+
+/**
+ * Hide the pictures that did not arrive.
+ *
+ * Telegram expires preview files, and a strike held for a day will outlive
+ * some of its own. A broken-image icon in a popup reads as this app being
+ * broken, where the honest reading is "that picture is no longer there" -- so
+ * the frame goes and the rest of the popup stands.
+ *
+ * Called on popupopen because that is when the pictures first exist: Leaflet
+ * builds popup content on demand, which is also why a busy night costs three
+ * thumbnails rather than three hundred.
+ */
+function tidyPictures(popupNode) {
+  if (!popupNode) return;
+  for (const img of popupNode.querySelectorAll('.ao-shot img')) {
+    if (img.complete && img.naturalWidth === 0) {
+      img.closest('.ao-shot')?.classList.add('is-gone');
+      continue;
+    }
+    img.addEventListener('error',
+      () => img.closest('.ao-shot')?.classList.add('is-gone'), { once: true });
+  }
 }
 
 /** A compact age for the list: minutes, then hours. */
@@ -678,6 +735,17 @@ function buildDock() {
           },
         }),
         'Concentrate'),
+      // Whether the model is there, said as a state rather than buried in a
+      // paragraph. It was a sentence at the end of the note before, which is
+      // the last place anyone looks when the layer is not behaving.
+      el('div', { class: 'ao-ollama', id: 'trackerOllama' },
+        el('i', { class: 'ao-led' }),
+        el('span', { class: 'ao-ollama-what' }, 'Checking Ollama…'),
+        el('button', {
+          class: 'ao-recheck', type: 'button',
+          title: 'Ask again — the daemon can be started while this is open',
+          onclick: recheck,
+        }, 'Check')),
       el('div', { class: 'ao-count', id: 'trackerCount' }, 'Loading…'),
       // The reports, whether or not they could be put on the map. This list is
       // the fix for the complaint that the layer "does not work": a night when
@@ -724,11 +792,71 @@ function tally() {
   return { ...got, total: (got.placed ?? 0) + (got.unplaced ?? 0) };
 }
 
+/**
+ * Ask again whether Ollama is there.
+ *
+ * Its own request rather than a whole feed refresh, because the answer this
+ * gives changes on a different timescale from the reports: somebody starts the
+ * daemon, or pulls a model, and wants to see that land now without waiting for
+ * the next poll or reloading the page.
+ */
+async function recheck() {
+  const led = $('#trackerOllama');
+  led?.classList.add('is-asking');
+  try {
+    const got = await api.ollama();
+    if (feed) feed.ollama = got;
+    ready = Boolean(got.ready);
+    paintOllama(got);
+    // A model that has just appeared should read the backlog, not wait a
+    // minute for the next tick.
+    if (ready && enabled) await load();
+  } catch (err) {
+    paintOllama({ ready: false, problem: err.message });
+  } finally {
+    led?.classList.remove('is-asking');
+  }
+}
+
+/** The connected/not line. */
+function paintOllama(status) {
+  const host = $('#trackerOllama');
+  if (!host) return;
+  const what = host.querySelector('.ao-ollama-what');
+  const led = host.querySelector('.ao-led');
+  if (!what || !led) return;
+
+  if (!status) {
+    host.classList.remove('is-on', 'is-off');
+    what.textContent = 'Checking Ollama…';
+    what.title = '';
+    return;
+  }
+  const on = Boolean(status.ready);
+  host.classList.toggle('is-on', on);
+  host.classList.toggle('is-off', !on);
+  led.title = on ? 'connected' : 'not connected';
+  if (on) {
+    what.textContent = `Ollama · ${status.model}`;
+    what.title = `${status.installed?.length ?? 0} model`
+      + `${status.installed?.length === 1 ? '' : 's'} installed: `
+      + `${(status.installed ?? []).join(', ')}`;
+  } else {
+    // The kind of problem decides the wording, because the two have different
+    // fixes and "not connected" would be wrong for a model that is missing
+    // from a daemon that is running perfectly well.
+    what.textContent = status.kind === 'ModelMissing'
+      ? 'Ollama connected · no model' : 'Ollama not connected';
+    what.title = status.problem ?? '';
+  }
+}
+
 function paintDock() {
   const count = $('#trackerCount');
   const note = $('#trackerNote');
   const list = $('#trackerList');
   if (!count || !note || !enabled) return;
+  paintOllama(feed?.ollama);
 
   // Objects, not reports: each mark is one drone or one missile, so this is
   // the number in the air, which is what the line is read for.
@@ -816,16 +944,15 @@ function paintDock() {
       + 'Grouped by real distance, so a mass means the same at every zoom. '
       + 'Anything not in a group still shows on its own.');
   }
-  // The model, and what to do when there is not one. Said here rather than as
-  // a red banner, because a layer reading by pattern is working -- less well,
-  // but working -- and the previous version's blank map with an explanation
-  // was the worse of the two failures.
+  // Whether the model is connected is its own line at the top of the panel
+  // now, so this only says what to DO about it -- which is the part that
+  // needs the room, and the part a status light cannot carry.
   const oll = feed?.ollama;
-  if (!demo && oll && !oll.ready) {
-    lines.push(oll.problem ?? 'No local model available.');
-  } else if (!demo && oll?.model) {
-    lines.push(`Reading with ${oll.model} on this machine — no key, no quota, `
-      + 'nothing sent anywhere.');
+  if (!demo && oll && !oll.ready && oll.problem) {
+    lines.push(oll.problem);
+  } else if (!demo && oll?.ready) {
+    lines.push('The model runs on this machine — no key, no quota, and none of '
+      + 'these reports leave it.');
   }
   if (problem) lines.push(problem);
   else if (!demo && feed?.state && feed.state !== 'nothing new') lines.push(feed.state);
