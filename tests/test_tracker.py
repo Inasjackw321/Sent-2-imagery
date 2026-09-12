@@ -1621,6 +1621,197 @@ class TestWarningsLastAnHour:
         assert not tracker._alive({"kind": "alert", "seen": now - 7200}, now)
 
 
+class TestLoadingQuickly:
+    """Two different speeds, and they were both being got wrong.
+
+    How long the work takes, and how long a request waits for it. Those are
+    separable and only the second is what "slow to load" means: a page that
+    gets an empty answer in five milliseconds and fills in a second later feels
+    immediate, and one that waits two seconds for a complete answer does not,
+    even though the second is doing less total work.
+    """
+
+    def test_the_channels_are_read_all_at_once(self, monkeypatch):
+        """Measured, not asserted from reading the code.
+
+        Four fetches of 120 ms each: sequentially that is at least 480 ms, in
+        parallel a little over 120. The gap is large enough that this cannot
+        pass by accident on a slow machine.
+        """
+        order = []
+
+        def slow(channel):
+            order.append(("start", channel, time.time()))
+            time.sleep(0.12)
+            order.append(("done", channel, time.time()))
+            return []
+
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel", slow)
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        began = time.time()
+        tracker.poll()
+        took = time.time() - began
+
+        assert took < 0.35, f"took {took:.2f}s -- the fetches are sequential"
+        # And they really did overlap, rather than one being fast.
+        starts = [when for what, _, when in order if what == "start"]
+        assert max(starts) - min(starts) < 0.1, "the fetches did not overlap"
+
+    def test_one_channel_failing_does_not_lose_the_others(self, monkeypatch):
+        # In a thread pool a fetch raising something unexpected surfaces at the
+        # point the result is collected, and it must not take the other three
+        # with it.
+        def mixed(channel):
+            if channel == "kpszsu":
+                raise RuntimeError("something nobody thought of")
+            if channel == "war_monitor":
+                raise tracker.TrackerError("war_monitor answered 500")
+            return []
+
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel", mixed)
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        got = tracker.poll()
+        rows = {r["channel"]: r for r in got["sources"]}
+        assert rows["kpszsu"]["problem"]
+        assert "500" in rows["war_monitor"]["problem"]
+        # The two that worked are still accounted for, not missing.
+        assert rows["eRadarrua"]["problem"] is None
+        assert rows["lpr1_treugolnik"]["problem"] is None
+
+    def test_a_request_does_not_wait_for_the_channels(self, monkeypatch):
+        # The first-paint measurement. The work takes the better part of a
+        # second; the request must not.
+        def slow(channel):
+            time.sleep(0.4)
+            return []
+
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel", slow)
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        began = time.time()
+        got = tracker.refresh()
+        waited = time.time() - began
+        assert waited < 0.1, f"the request waited {waited:.2f}s"
+        assert got["polling"] is True, "and it should say a read is in flight"
+        # Let the thread finish so it does not run into the next test.
+        for _ in range(60):
+            if not tracker._polling:
+                break
+            time.sleep(0.05)
+
+    def test_two_requests_together_start_only_one_read(self, monkeypatch):
+        reads = []
+
+        def counted(channel):
+            reads.append(channel)
+            time.sleep(0.15)
+            return []
+
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel", counted)
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        for _ in range(5):
+            tracker.refresh()
+        for _ in range(60):
+            if not tracker._polling:
+                break
+            time.sleep(0.05)
+        # Four channels, once each -- not five times over.
+        assert len(reads) == len(tracker.CHANNELS), reads
+
+    def test_a_read_slower_than_the_floor_still_does_not_double_up(
+            self, monkeypatch):
+        """The case the in-flight check exists for, and the only one.
+
+        When the floor has not passed, the floor stops a second read on its
+        own -- so a test that only checks rapid requests passes with the
+        in-flight check deleted. What it cannot cover is a read that takes
+        longer than the floor, which is exactly when two would overlap: four
+        page fetches and a model call can easily outlast thirty seconds on a
+        slow machine, and two overlapping reads would double every request to
+        Telegram and race each other writing the event list.
+        """
+        reads = []
+
+        def slow(channel):
+            reads.append(channel)
+            time.sleep(0.4)
+            return []
+
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel", slow)
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        assert tracker.start_poll() is True
+        # Pretend the floor has elapsed while the read is still running.
+        time.sleep(0.1)
+        with tracker._lock:
+            tracker._last_poll = time.time() - tracker.MIN_POLL_SECONDS - 1
+        assert tracker.start_poll() is False, "a second read started mid-read"
+        for _ in range(80):
+            if not tracker._polling:
+                break
+            time.sleep(0.05)
+        assert len(reads) == len(tracker.CHANNELS), reads
+
+    def test_the_floor_is_claimed_when_a_read_starts_not_when_it_ends(
+            self, monkeypatch):
+        # Setting it at the end meant a slow read let the next request
+        # straight through, which is how a rate limit used to keep itself
+        # alive on the hosted model.
+        tracker.reset()
+        monkeypatch.setattr(tracker, "_fetch_channel",
+                            lambda channel: (time.sleep(0.3), [])[1])
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        assert tracker.start_poll() is True
+        assert tracker._last_poll > 0, "the floor was not claimed up front"
+        assert tracker.start_poll() is False, "a second read started anyway"
+        for _ in range(60):
+            if not tracker._polling:
+                break
+            time.sleep(0.05)
+
+    def test_a_background_read_that_blows_up_does_not_wedge_the_next_one(
+            self, monkeypatch):
+        # The flag must be cleared whatever happens, or one bad poll stops
+        # every poll after it for the life of the process -- a map that goes
+        # permanently stale with nothing in the panel to say why.
+        tracker.reset()
+        monkeypatch.setattr(tracker, "poll",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert tracker.start_poll() is True
+        for _ in range(60):
+            if not tracker._polling:
+                break
+            time.sleep(0.05)
+        assert tracker._polling is False
+
+        # And the next one actually runs, which is the thing that matters and
+        # which checking the flag alone does not prove.
+        reads = []
+        monkeypatch.undo()
+        monkeypatch.setattr(tracker, "_fetch_channel",
+                            lambda channel: (reads.append(channel), [])[1])
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        with tracker._lock:
+            tracker._last_poll = 0.0
+        assert tracker.start_poll() is True
+        for _ in range(60):
+            if not tracker._polling:
+                break
+            time.sleep(0.05)
+        assert len(reads) == len(tracker.CHANNELS), reads
+
+    def test_the_floor_is_polite_to_telegram(self):
+        # Faster to load is not the same as asking more often. Four channels
+        # at this floor is about five hundred page fetches an hour, and there
+        # is no version of this feature that justifies more.
+        per_hour = 3600 / tracker.MIN_POLL_SECONDS * len(tracker.CHANNELS)
+        assert per_hour <= 600, f"{per_hour:.0f} fetches an hour is too many"
+        assert tracker.MIN_POLL_SECONDS >= 20
+
+
 class TestConcentrateMode:
     """Grouping marks into a mass.
 

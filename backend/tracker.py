@@ -53,17 +53,21 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import logging
 import json
 import math
 import re
 import threading
 import time
+from concurrent import futures
 from urllib.parse import quote
 from typing import Any
 
 import requests
 
 from . import config, gazetteer, ollama, reports
+
+log = logging.getLogger("sent2.tracker")
 
 # The channels, and what each one is about.
 #
@@ -129,12 +133,29 @@ ALERT_MINUTES = 90
 # may be closed in a minute.
 LOOKBACK_MINUTES = 20
 
-# The floor between two reads of the channels. The map asks once a minute, but
-# it may be open in three tabs, and every read that finds something new costs a
-# model call against a free-tier ceiling.
-MIN_POLL_SECONDS = 55
+# The floor between two reads of the channels.
+#
+# Halved, because the two reasons it was fifty-five are both gone: a read is no
+# longer blocking anybody's request, and the model call it guarded no longer
+# costs anything against a quota. What is left is politeness to Telegram, which
+# is why this is thirty and not three -- four channels every thirty seconds is
+# about five hundred page fetches an hour, and there is no version of this
+# feature that justifies more.
+#
+# The map still asks every sixty seconds and may be open in several tabs; this
+# is what makes that cost one read between them.
+MIN_POLL_SECONDS = 30
 
-# What each kind is, how fast it goes and how it moves.
+# What each kind is, what colour it is drawn in, and how it behaves.
+#
+# The colours follow the published Ukrainian air-situation maps rather than
+# being chosen here, because somebody who has looked at one of those already
+# knows what a yellow triangle over Chernihiv means. Shahed traffic is yellow
+# on them; this makes drones yellow too, and moves what used to be yellow
+# (aircraft) somewhere else.
+#
+# Since the silhouettes went, colour is most of what tells one kind from
+# another, so the gaps between these are checked by a test rather than eyed.
 #
 #   speed   km/h. A rough figure for the type, never a measurement of the
 #           object. A Shahed is a propeller aircraft at a couple of hundred; a
@@ -173,17 +194,17 @@ MIN_POLL_SECONDS = 55
 KINDS = {
     "recon":     {"colour": "#4cc2ff", "label": "Recon drone",
                   "motion": "orbit", "rank": 2},
-    "drone":     {"colour": "#ff3b30", "label": "Drone",
+    "drone":     {"colour": "#ffd400", "label": "Drone",
                   "motion": "track", "rank": 3},
-    "jet_drone": {"colour": "#ff3b30", "label": "Jet drone",
+    "jet_drone": {"colour": "#ffd400", "label": "Jet drone",
                   "motion": "track", "rank": 4},
-    "cruise":    {"colour": "#ff6a3b", "label": "Cruise missile",
+    "cruise":    {"colour": "#ff6a00", "label": "Cruise missile",
                   "motion": "track", "rank": 5},
     "ballistic": {"colour": "#ff2d6f", "label": "Ballistic missile",
                   "motion": "track", "rank": 6},
-    "aircraft":  {"colour": "#ffd23b", "label": "Aircraft",
+    "aircraft":  {"colour": "#7dffcf", "label": "Aircraft",
                   "motion": "track", "rank": 3},
-    "helicopter": {"colour": "#ffd23b", "label": "Helicopter",
+    "helicopter": {"colour": "#7dffcf", "label": "Helicopter",
                   "motion": "track", "rank": 2},
     "explosion": {"colour": "#b06bff", "label": "Explosion",
                   "motion": "still", "rank": 7,
@@ -208,7 +229,7 @@ KINDS = {
                   # long enough that one declared while you were looking
                   # elsewhere is still there when you come back.
                   "keep": 60},
-    "unknown":   {"colour": "#ff8a3b", "label": "Unidentified",
+    "unknown":   {"colour": "#9aa4b2", "label": "Unidentified",
                   "motion": "track", "rank": 2},
 }
 
@@ -243,6 +264,8 @@ _alerts: list[dict[str, Any]] = []
 _counter = 0
 _state = "not started"
 _last_poll = 0.0
+# Whether a background read is in flight, so two requests cannot start two.
+_polling = False
 # What each channel gave on the last read: how many posts it had, how many of
 # them were read as events, and how many of those could be placed.
 #
@@ -1181,7 +1204,7 @@ def _expire(now: float) -> None:
 
 def reset() -> None:
     """Forget everything read so far. For tests and for starting over."""
-    global _counter, _state, _last_poll
+    global _counter, _state, _last_poll, _polling
     with _lock:
         _seen.clear()
         _events.clear()
@@ -1212,21 +1235,49 @@ def _remember_sources(seen_now: dict[str, dict[str, Any]]) -> None:
 
 
 def poll() -> dict[str, Any]:
-    """Read the channels once, and turn anything new into events."""
+    """Read the channels once, and turn anything new into events.
+
+    Called on a background thread by start_poll(), and directly by the tests,
+    which want it synchronous.
+    """
     global _state, _last_poll
     fresh: list[dict[str, Any]] = []
     trouble: list[str] = []
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=LOOKBACK_MINUTES)
     seen_now: dict[str, dict[str, Any]] = {}
+    # All four channels at once, not one after another.
+    #
+    # They were sequential, which meant a poll took the sum of four page
+    # fetches -- measured at 1.4 s against a 350 ms floor, so three quarters of
+    # it was waiting for one server while three others sat idle. They are four
+    # unrelated GETs to the same host with no ordering between them, which is
+    # the textbook case for doing them together.
+    #
+    # Threads rather than async because everything around this is synchronous
+    # and requests is blocking: four threads that spend their whole lives in a
+    # socket read cost nothing, and making the whole module async to save them
+    # would be a rewrite for no gain.
+    with futures.ThreadPoolExecutor(max_workers=len(CHANNELS)) as pool:
+        got = {channel["name"]: pool.submit(_fetch_channel, channel["name"])
+               for channel in CHANNELS}
+
     for channel in CHANNELS:
         tally = seen_now[channel["name"]] = {
             "region": channel["region"], "posts": 0, "fresh": 0,
             "read": 0, "placed": 0, "problem": None,
         }
         try:
-            posts = _fetch_channel(channel["name"])
+            posts = got[channel["name"]].result()
         except TrackerError as exc:
             trouble.append(str(exc))
+            tally["problem"] = str(exc)[:120]
+            continue
+        except Exception as exc:  # noqa: BLE001 - a thread must not take the poll down
+            # A fetch raising something unexpected used to be impossible
+            # because it ran inline and the caller's handler caught it. In a
+            # pool it would surface here as whatever it is, and one bad
+            # channel must not lose the other three.
+            trouble.append(f"{channel['name']}: {exc}")
             tally["problem"] = str(exc)[:120]
             continue
         tally["posts"] = len(posts)
@@ -1336,18 +1387,49 @@ def poll() -> dict[str, Any]:
 
 
 def refresh() -> dict[str, Any]:
-    """What is in the air, reading the channels again if it is time to.
+    """What is in the air. Answers now; reads the channels in the background.
 
-    Every open tab asks once a minute; only the first one through the door in
-    any given minute actually goes to Telegram and to the model. The rest get
-    the same events carried forward to their own instant, which is what they
-    wanted anyway -- the markers move continuously, the reports do not.
+    This used to poll inline, so the request that happened to be first in a
+    given minute waited for the whole thing -- four page fetches and a model
+    call -- before the map got anything. Opening the panel could sit there for
+    seconds and it looked like the layer was broken rather than busy.
     """
+    start_poll()
+    return current()
+
+
+def start_poll() -> bool:
+    """Begin a read of the channels if one is due and none is running.
+
+    Returns whether it started one. The lock is held only long enough to
+    decide and to claim the job, so two requests arriving together cannot both
+    start a poll and the second does not wait for the first.
+
+    _last_poll is set when the poll STARTS rather than when it finishes, which
+    is the thing that keeps the floor honest: setting it at the end meant a
+    slow read let the next request straight through, which is how a rate limit
+    used to keep itself alive on the hosted model.
+    """
+    global _polling, _last_poll
     with _lock:
-        due = time.time() - _last_poll >= MIN_POLL_SECONDS
-    if not due:
-        return current()
-    return poll()
+        if _polling or time.time() - _last_poll < MIN_POLL_SECONDS:
+            return False
+        _polling = True
+        _last_poll = time.time()
+
+    def work() -> None:
+        global _polling
+        try:
+            poll()
+        except Exception:  # noqa: BLE001 - a background thread must not die silently
+            log.exception("background poll failed")
+        finally:
+            with _lock:
+                _polling = False
+
+    # Daemon, so a poll in flight never holds the process open at shutdown.
+    threading.Thread(target=work, name="tracker-poll", daemon=True).start()
+    return True
 
 
 def current() -> dict[str, Any]:
@@ -1391,6 +1473,11 @@ def current() -> dict[str, Any]:
             "model": sum(1 for a in alerts if a.get("by") == "model"),
             "rules": sum(1 for a in alerts if a.get("by") == "rules"),
         },
+        # Whether a read of the channels is happening right now. The page uses
+        # it to ask again in a couple of seconds instead of waiting out its
+        # whole minute, which is what makes a first open feel immediate: the
+        # empty answer arrives at once and fills in as the poll lands.
+        "polling": _polling,
         "last_poll": _last_poll or None,
         # Said out loud, because an empty map with a healthy feed behind it is
         # the failure the previous version hid.

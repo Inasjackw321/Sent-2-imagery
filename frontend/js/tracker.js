@@ -37,6 +37,15 @@ import { $, el } from './ui.js';
 // this, so several open tabs cost one read of the channels between them.
 const POLL_MS = 60000;
 
+// How soon to ask again while the backend says a read is in flight.
+//
+// The backend answers instantly now and reads the channels on its own thread,
+// so a first open gets an empty answer in a few milliseconds and the reports
+// land a second or two later. Without this the page would sit empty for a
+// whole minute waiting for its next tick -- which would make an immediate
+// backend feel slower than the blocking one it replaced.
+const CATCHUP_MS = 1200;
+
 // How many reports the panel lists before saying how many more there are.
 // Generous because strikes are held for hours and the list scrolls.
 const LIST_ROWS = 20;
@@ -62,6 +71,8 @@ let masses = null;
 let feed = null;
 let problem = '';
 let poller = null;
+// A short follow-up while the backend is still reading.
+let catchup = null;
 
 // id -> { event, marker }. Kept across polls so a marker that is still being
 // reported is moved rather than destroyed and rebuilt, which would flicker and
@@ -210,7 +221,15 @@ function label(event) {
 // comes from the colour, which is per kind and defined once on the server, and
 // from the label under it. The arrow is the one thing the drawing can honestly
 // claim -- something was reported here, going that way.
-const ARROW = (c) => `<path d="M9 0.8 L15.2 16.2 L9 12.6 L2.8 16.2 Z" fill="${c}"/>`;
+// A plain filled triangle, point forward. The shape the published Ukrainian
+// air-situation maps use for a Shahed, and deliberately the same: somebody who
+// has looked at one of those already knows what it means, and there is nothing
+// to gain by inventing a different glyph for the same thing.
+//
+// No notch at the back. The notched version read as a stylised aircraft at
+// small sizes, which is the airframe-identification claim the silhouettes were
+// removed for.
+const ARROW = (c) => `<path d="M9 1.4 L15.6 15.6 L2.4 15.6 Z" fill="${c}"/>`;
 
 // The same arrow, narrower and longer, for the things that are not drones.
 //
@@ -220,7 +239,7 @@ const ARROW = (c) => `<path d="M9 0.8 L15.2 16.2 L9 12.6 L2.8 16.2 Z" fill="${c}
 // guess at. Colour alone was carrying it and was not carrying it well enough:
 // red and orange-red are 58 apart out of 765, which is fine beside each other
 // and not fine across a map.
-const SLIM = (c) => `<path d="M9 0.4 L13.2 17 L9 13.6 L4.8 17 Z" fill="${c}"/>`;
+const SLIM = (c) => `<path d="M9 0.6 L13 16.8 L5 16.8 Z" fill="${c}"/>`;
 
 // Which kinds get the slim arrow. Missiles, and nothing else.
 const SLIM_KINDS = new Set(['cruise', 'ballistic']);
@@ -229,8 +248,8 @@ const SLIM_KINDS = new Set(['cruise', 'ballistic']);
 // rather than stated for that mark. Hollow because the difference is worth
 // seeing on the map and not only in a popup: a solid arrow is what a report
 // said, an outlined one is an inference from its neighbours.
-const BORROWED = (c) => `<path d="M9 1.6 L14.3 15.3 L9 12.2 L3.7 15.3 Z"
-  fill="none" stroke="${c}" stroke-width="1.6" stroke-linejoin="round"/>`;
+const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
+  fill="none" stroke="${c}" stroke-width="1.7" stroke-linejoin="round"/>`;
 
 function glyph(event, colour, facing) {
   const motion = motionOf(event);
@@ -243,11 +262,20 @@ function glyph(event, colour, facing) {
     + `${body}</svg>`;
 
   if (event.kind === 'alert') {
-    return svg('chevron',
-      `<path d="M9 1.5 L17 15.5 H1 Z" fill="none" stroke="${colour}"
-             stroke-width="2" stroke-linejoin="round"/>
-       <path d="M9 6.5 v3.6" stroke="${colour}" stroke-width="2" stroke-linecap="round"/>
-       <circle cx="9" cy="12.8" r="1.1" fill="${colour}"/>`);
+    // A filled warning triangle with a glow behind it, sitting in the middle
+    // of the area it applies to, with the words under it. The reference maps
+    // put the label on rather than behind a hover, and they are right to: on
+    // a screen nobody is standing at, a mark that has to be pointed at to be
+    // understood is a mark that is not understood.
+    return svg('warning',
+      `<circle cx="9" cy="9.4" r="8.6" fill="${colour}" opacity="0.18"/>
+       <circle cx="9" cy="9.4" r="5.6" fill="${colour}" opacity="0.22"/>
+       <path d="M9 2.6 L16.4 15.6 H1.6 Z" fill="${colour}"
+             stroke="rgba(13,16,21,.85)" stroke-width="1"
+             stroke-linejoin="round"/>
+       <path d="M9 6.6 v4.2" stroke="rgba(13,16,21,.9)" stroke-width="1.7"
+             stroke-linecap="round"/>
+       <circle cx="9" cy="13.2" r="1.05" fill="rgba(13,16,21,.9)"/>`);
   }
   if (motion === 'still') {
     return svg('burst',
@@ -478,13 +506,22 @@ function areaFor(event) {
     // one-pixel stroke was simply not visible.
     weight: event.region_wide ? 3 : 1.5,
     opacity: event.region_scope === 'located' ? 0.4
-      : event.region_wide ? 0.85 : 0.6,
+      : event.region_wide ? 0.95 : 0.6,
+    // The dash pattern is NOT set here. It lives in the stylesheet, on
+    // .ao-area-alert, and a CSS stroke-dasharray overrides the presentation
+    // attribute Leaflet would write -- so setting it in both places would
+    // leave a dead value here that looks like it is doing something.
     fillColor: colour,
     // A region that merely says how precisely something was located is barely
     // filled. Filling it like a warning would say the whole province is under
     // attack, when all the report said was which province it was over.
     fillOpacity: event.region_scope === 'located' ? 0.04
-      : event.region_wide ? 0.16 : 0.18,
+      // Heavier than it was. On the reference maps an oblast under warning is
+      // filled enough to read as a state of that province at a glance from
+      // across a room, which is most of what this layer is for, and 0.16 was
+      // barely a tint.
+      : event.kind === 'alert' ? 0.3
+        : event.region_wide ? 0.2 : 0.18,
   };
 
   // A warning covering a whole region gets that region's actual outline. A
@@ -641,27 +678,41 @@ const MASS_GLYPH = 46;
  */
 function massGlyph(mass, colour) {
   const n = mass.count;
-  const text = `<text x="23" y="23" text-anchor="middle"
-      dominant-baseline="central" fill="${colour}"
-      style="font: 700 ${n > 99 ? 13 : 15}px system-ui, sans-serif"
-      >${n > 999 ? '999+' : n}</text>`;
+  // Two overlapping triangles, which is how the published maps distinguish a
+  // group from a single Shahed -- and it reads as "several" instantly, in a
+  // way a number alone does not.
+  const pair = `<path d="M23 4 L33 26 L13 26 Z" fill="${colour}"
+      opacity="0.55"/>
+    <path d="M23 12 L34 35 L12 35 Z" fill="${colour}"
+      stroke="rgba(13,16,21,.8)" stroke-width="1.2"/>`;
+  // The count beside the pair rather than inside it: a triangle has no middle
+  // wide enough for two digits, and the reference maps put nothing inside
+  // theirs either.
+  const tag = `<g class="ao-mass-count">
+      <rect x="28" y="1" rx="6" ry="6" width="${n > 99 ? 17 : 14}" height="13"
+            fill="rgba(13,16,21,.9)" stroke="${colour}" stroke-width="1.1"/>
+      <text x="${28 + (n > 99 ? 8.5 : 7)}" y="7.8" text-anchor="middle"
+            dominant-baseline="central" fill="${colour}"
+            style="font: 700 9.5px system-ui, sans-serif"
+            >${n > 999 ? '999' : n}</text></g>`;
+
   if (mass.course == null) {
+    // No agreed trajectory, so nothing may point anywhere -- same refusal as
+    // a single mark with no course. A ring with the pair inside it says
+    // "several, here" and claims no direction.
     return `<svg class="ao-glyph" data-shape="mass-ring" width="${MASS_GLYPH}"
         height="${MASS_GLYPH}" viewBox="0 0 46 46">
-      <circle cx="23" cy="23" r="15" fill="rgba(13,16,21,.82)"
-              stroke="${colour}" stroke-width="2.4"/>${text}</svg>`;
+      <circle cx="23" cy="23" r="17" fill="none" stroke="${colour}"
+              stroke-width="1.6" opacity="0.65"/>
+      <g transform="translate(23 23) scale(0.62) translate(-23 -23)"
+        >${pair}</g>${tag}</svg>`;
   }
-  // The arrow rotates; the number must not, or half of them would be upside
-  // down. So the rotation is on a group and the text sits outside it.
+  // The triangles rotate; the count must not, or half of them would be upside
+  // down. So the rotation is on a group of its own and the badge sits outside.
   return `<svg class="ao-glyph" data-shape="mass-arrow" width="${MASS_GLYPH}"
       height="${MASS_GLYPH}" viewBox="0 0 46 46">
     <g style="transform: rotate(${mass.course.toFixed(1)}deg);
-              transform-origin: 23px 23px">
-      <path d="M23 1.5 L36 30 L23 24 L10 30 Z" fill="${colour}"
-            stroke="rgba(13,16,21,.85)" stroke-width="1.5"/>
-    </g>
-    <circle cx="23" cy="23" r="11.5" fill="rgba(13,16,21,.86)"
-            stroke="${colour}" stroke-width="1.4"/>${text}</svg>`;
+              transform-origin: 23px 23px">${pair}</g>${tag}</svg>`;
 }
 
 /** What a mass says when clicked. */
@@ -784,6 +835,11 @@ async function load() {
   const before = ready;
   try {
     feed = await api.tracker();
+    // The backend reads the channels in the background, so an answer that
+    // says a read is in flight is an answer that is about to be superseded.
+    // Ask again shortly rather than waiting out the minute.
+    clearTimeout(catchup);
+    if (feed.polling && enabled) catchup = setTimeout(load, CATCHUP_MS);
     ready = Boolean(feed.ollama?.ready);
     problem = '';
     reconcile(feed.events ?? []);
@@ -880,6 +936,8 @@ function toggle() {
   } else {
     clearInterval(poller);
     poller = null;
+    clearTimeout(catchup);
+    catchup = null;
     layer.remove();
     layer.clearLayers();
     areas.remove();

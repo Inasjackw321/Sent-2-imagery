@@ -1531,6 +1531,15 @@ body.is-walled { overflow: hidden; }
   text-shadow: 0 0 3px #000, 0 0 5px #000;
   pointer-events: none;
 }
+/* A warning's label is boxed rather than floated over the map, as on the
+   reference maps. Over a filled oblast a text shadow is not enough separation
+   -- the label sits on its own colour -- so it gets a plate to stand on. */
+.ao-pin.is-alert .ao-tag {
+  top: 27px;
+  padding: 2px 6px; border-radius: 5px;
+  background: rgba(13,16,21,.9); border: 1px solid currentColor;
+  text-shadow: none;
+}
 
 .ao-pop { max-width: 240px; }
 .ao-pop h4 { margin: 0 0 5px; font-size: 12px; color: var(--ink); }
@@ -1575,15 +1584,30 @@ body.is-walled { overflow: hidden; }
 @keyframes ao-breathe {
   50% { fill-opacity: .22; stroke-opacity: .85; }
 }
-/* An air-raid warning is a boundary you want to read the edge of; a strike is
-   a point you want to find. So the warning is drawn as an outline and the
-   strike as a filled mark. */
-.ao-area-alert { stroke-dasharray: 7 5; }
-/* A whole region under a warning. Drawn as its own boundary rather than a
-   circle, so the edge is the thing worth seeing and gets a longer dash and a
-   fainter wash -- a province filled at the same strength as a town would
-   swamp everything inside it. */
-.ao-area.is-region { stroke-dasharray: 12 7; }
+/* An oblast under an air-raid warning.
+
+   Filled and dashed, following the published alert maps -- and for their
+   reason rather than to copy them. A dashed edge reads as a declared
+   administrative boundary: the warning applies to this province, all of it, by
+   decree. A solid edge reads as the edge of a measured thing. These are
+   decrees.
+ 
+   Filled heavily enough to read as a state of that province from across a
+   room, which is most of what this layer is for. The old wash was 0.16 and was
+   barely a tint. Its own breathe, so the pulse moves around the heavier value
+   instead of dropping back to the general one. */
+.ao-area-alert {
+  stroke-dasharray: 11 8;
+  stroke-linecap: round;
+  animation: ao-breathe-alert 4.5s ease-in-out infinite;
+}
+@keyframes ao-breathe-alert {
+  50% { fill-opacity: .36; stroke-opacity: 1; }
+}
+/* A whole region under a warning gets a longer dash still: at the zoom a
+   country fits in, a short dash closes up into a solid line. */
+.ao-area.is-region { stroke-dasharray: 16 10; }
+.ao-area-alert.is-region { stroke-dasharray: 14 9; }
 
 @media (prefers-reduced-motion: reduce) {
   .ao-area { animation: none; }
