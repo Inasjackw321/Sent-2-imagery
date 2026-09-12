@@ -200,7 +200,14 @@ KINDS = {
                   # day" mean the whole of the last day.
                   "keep": 1500},
     "alert":     {"colour": "#ffb020", "label": "Air alert",
-                  "motion": "still", "rank": 1},
+                  "motion": "still", "rank": 1,
+                  # An hour. A warning is not a position that decays, so the
+                  # twenty-minute default was wrong for it in the same way it
+                  # was wrong for a strike -- just less dramatically. An hour
+                  # is roughly how long an alert for a city actually runs, and
+                  # long enough that one declared while you were looking
+                  # elsewhere is still there when you come back.
+                  "keep": 60},
     "unknown":   {"colour": "#ff8a3b", "label": "Unidentified",
                   "motion": "track", "rank": 2},
 }
@@ -663,6 +670,69 @@ def masses_now(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _mass_was
 
 
+def mean_bearing(headings: list[float]) -> float | None:
+    """The average of several compass bearings.
+
+    Not the arithmetic mean, which is wrong in a way that only shows up
+    sometimes: 350 degrees and 10 degrees average to 180 -- due south for two
+    things both flying very nearly due north. Averaged as unit vectors
+    instead, which is the only answer that does not depend on where the
+    numbers happen to wrap.
+
+    None when the headings cancel out, which is the honest answer for a group
+    flying in opposite directions: there is no general trajectory, and drawing
+    one would be inventing agreement that is not there.
+    """
+    if not headings:
+        return None
+    east = sum(math.sin(math.radians(h)) for h in headings)
+    north = sum(math.cos(math.radians(h)) for h in headings)
+    # How much they agree, from 0 (evenly opposed) to 1 (identical).
+    together = math.hypot(east, north) / len(headings)
+    if together < 0.25:
+        return None
+    # Normalised after rounding, not before: a hair under due north comes out
+    # of atan2 as -0.03, which % 360 makes 359.97 and round() then makes
+    # 360.0 -- a bearing outside the range every consumer of this expects.
+    return round(math.degrees(math.atan2(east, north)) % 360, 1) % 360
+
+
+def borrow_course(events: list[dict[str, Any]],
+                  masses: list[dict[str, Any]]) -> int:
+    """Give a course to marks in a group that has one and they do not.
+
+    The honest middle of a real problem. Most of these reports state a
+    direction -- "курсом на північ", "у напрямку Києва" -- but plenty do not,
+    and a drone with no course is drawn as a ring rather than an arrow,
+    because an arrow pointing north would be a claim nobody made.
+
+    What can legitimately be said about such a mark is this: several other
+    things were reported within sixty kilometres of it, in the same few
+    minutes, and those had a course. Things reported together like that are
+    usually one group going one way. So the group's trajectory is lent to the
+    ones that lack their own, and marked as borrowed -- course_from is
+    "group", the popup says so, and the arrow is drawn hollow.
+
+    It is an inference and it is labelled as one. What it is not is invented:
+    every degree of it came from a report, just not from that mark's own.
+    """
+    by_id = {str(e.get("id")): e for e in events}
+    lent = 0
+    for mass in masses:
+        course = mass.get("course")
+        if course is None:
+            continue
+        for ident in mass.get("ids", ()):
+            event = by_id.get(str(ident))
+            if event is None or event.get("heading") is not None:
+                continue
+            event["heading"] = course
+            event["course_from"] = "group"
+            event["course_from_count"] = mass.get("course_from_count")
+            lent += 1
+    return lent
+
+
 def massed(events: list[dict[str, Any]], within_km: float = MASS_WITHIN_KM,
            least: int = MASS_LEAST) -> list[dict[str, Any]]:
     """Group nearby airborne marks into masses.
@@ -718,6 +788,14 @@ def massed(events: list[dict[str, Any]], within_km: float = MASS_WITHIN_KM,
         tally: dict[str, int] = {}
         for m in members:
             tally[m["kind"]] = tally.get(m["kind"], 0) + 1
+        # The general trajectory: the average of whatever courses the members
+        # actually have. Only from the ones that have one -- a group of six
+        # where two were reported with a course has a trajectory worth
+        # drawing, and it is those two's, not a guess on behalf of the other
+        # four.
+        courses = [m["heading"] for m in members
+                   if isinstance(m.get("heading"), (int, float))]
+        course = mean_bearing(courses)
         out.append({
             "lat": round(lat, 4),
             "lon": round(lon, 4),
@@ -729,6 +807,12 @@ def massed(events: list[dict[str, Any]], within_km: float = MASS_WITHIN_KM,
             "bbox": [round(min(lons), 4), round(min(lats), 4),
                      round(max(lons), 4), round(max(lats), 4)],
             "count": len(members),
+            # The trajectory to draw the mass's arrow along, and how much of
+            # the group it was worked out from -- so a mass can say "six
+            # tracks, course from two of them" rather than implying all six
+            # were reported heading that way.
+            "course": course,
+            "course_from_count": len(courses),
             "kinds": dict(sorted(tally.items(), key=lambda kv: -kv[1])),
             # What to write on it: the commonest kind, and how many in all.
             "label": f"{len(members)} × {KINDS[max(tally, key=tally.get)]['label'].lower()}"
@@ -834,6 +918,7 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
 
     out = dict(item)
     out["lat"] = out["lon"] = out["heading"] = None
+    out["course_from"] = None
     out["dest_lat"] = out["dest_lon"] = out["dest_km"] = None
     out["motion"] = "still"
     out["placed"] = False
@@ -894,7 +979,14 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
 
     # A compass course is a real answer and is used when no destination was
     # named. A destination is better, so it wins where there is one.
+    #
+    # Where each heading came from is recorded rather than left implicit. The
+    # three sources are not equally good -- a bearing computed between two
+    # named places is worth more than "north", and both are worth more than a
+    # direction borrowed from the group around it -- and a map that draws all
+    # three as the same arrow should at least be able to say which it is.
     out["heading"] = item.get("course")
+    out["course_from"] = "stated" if out["heading"] is not None else None
 
     if not item.get("toward"):
         return out
@@ -912,6 +1004,7 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     out["dest_lat"], out["dest_lon"] = there["lat"], there["lon"]
     out["dest_km"] = round(km, 1)
     out["heading"] = bearing(here["lat"], here["lon"], there["lat"], there["lon"])
+    out["course_from"] = "destination"
     return out
 
 
@@ -1272,6 +1365,7 @@ def current() -> dict[str, Any]:
         # Inside the lock, because it reads the event list. Cached, so this is
         # a tuple comparison on all but the first call after a change.
         masses = masses_now(events)
+        borrow_course(events, masses)
     return {
         "events": events,
         # Sent whether or not concentrate mode is on, so switching it is
@@ -1397,19 +1491,26 @@ DEMO_SEED = [
     # Five towns around Kyiv: one mass in concentrate mode, five separate
     # glyphs without it. Both readings are true, and the point of the mode is
     # that the first is the one you want first.
-    ("drone", "Brovary", None, None, 1, "Drone over Brovary", 3),
-    ("drone", "Boryspil", None, None, 1, "Drone over Boryspil", 4),
+    # Two with a stated course and three without, so the group's trajectory
+    # is averaged from the two and lent to the three -- which draws two solid
+    # arrows and three hollow ones, and is the case the borrowing exists for.
+    # Real reports from these channels almost always give a direction, so a
+    # demo where none of a group did would not be representative either.
+    ("drone", "Brovary", None, "W", 1, "Drone over Brovary heading west", 3),
+    ("drone", "Boryspil", None, "W", 1, "Drone over Boryspil heading west", 4),
     ("drone", "Vyshhorod", None, None, 1, "Drone over Vyshhorod", 4),
     ("drone", "Obukhiv", None, None, 1, "Drone over Obukhiv", 5),
     ("drone", "Fastiv", None, None, 1, "Drone over Fastiv", 6),
     # A corridor, Sumy to Konotop: every hop under sixty kilometres, the two
     # ends a hundred and eighty apart. The case single-link clustering gets
     # right and nearest-centre does not.
-    ("drone", "Sumy", None, None, 1, "Drone over Sumy", 7),
-    ("drone", "Lebedyn", None, None, 1, "Drone over Lebedyn", 7),
-    ("drone", "Nedryhailiv", None, None, 1, "Drone over Nedryhailiv", 8),
-    ("drone", "Romny", None, None, 1, "Drone over Romny", 8),
-    ("drone", "Konotop", None, None, 1, "Drone over Konotop", 9),
+    # The corridor, all stated, all heading the same way -- so its arrow is
+    # averaged from five of five and nothing is borrowed.
+    ("drone", "Sumy", None, "SW", 1, "Drone over Sumy heading south-west", 7),
+    ("drone", "Lebedyn", None, "SW", 1, "Drone over Lebedyn", 7),
+    ("drone", "Nedryhailiv", None, "W", 1, "Drone over Nedryhailiv", 8),
+    ("drone", "Romny", None, "W", 1, "Drone over Romny", 8),
+    ("drone", "Konotop", None, "W", 1, "Drone over Konotop", 9),
     ("drone", "Somewhere unnamed", None, None, 1,
      "Drone activity reported, no location given"),
 ]
@@ -1419,9 +1520,9 @@ DEMO_SEED = [
 #
 # Long enough for everything in flight to expire on age, so a cycle shows
 # every ending a track has: arriving, and timing out. Deliberately NOT long
-# enough to outlive a strike -- that would mean six hours of demo with nothing
-# moving on it after the first twenty minutes. The strikes simply carry over
-# from one cycle to the next, which is what they do in the real thing too.
+# enough to outlive a strike or a warning -- that would mean a day of demo with
+# nothing in the air on it after the first twenty minutes. Those simply carry
+# over from one cycle to the next, which is what they do in the real thing too.
 DEMO_CYCLE = (KEEP_MINUTES + 4) * 60
 
 _demo_epoch = 0.0
@@ -1513,6 +1614,16 @@ def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
     }
 
 
+def _demo_masses(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The demo's masses, with the group course lent out as it is live."""
+    found = massed(events)
+    borrow_course(events, found)
+    # Recomputed, because lending a course to a mark changes what the group's
+    # own average is worked out from -- and the number the popup quotes has to
+    # be the one it was actually averaged from, not the one after.
+    return found
+
+
 def demo() -> dict[str, Any]:
     """Synthetic reports, for the build with no network.
 
@@ -1576,7 +1687,9 @@ def demo() -> dict[str, Any]:
         "kinds": KINDS,
         # Two of them, one tight and one a corridor, so concentrate mode can
         # be seen and checked without a network.
-        "masses": massed(events),
+        # Through the same borrow_course the live path runs, or the demo would
+        # be the one place hollow arrows never appear.
+        "masses": _demo_masses(events),
         "mass_within_km": MASS_WITHIN_KM, "mass_least": MASS_LEAST,
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),

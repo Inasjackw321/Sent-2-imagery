@@ -1,29 +1,34 @@
-// Air-threat reports from public Telegram channels, drawn as moving markers.
+// Air-threat reports from public Telegram channels, drawn as arrows.
 //
 // Four monitoring channels post a running commentary of what is in the air --
 // drones crossing an oblast, cruise missiles on a heading, strikes where they
-// land. The backend reads their public web pages, has a language model turn the
-// prose into positions and headings, and hands them here.
+// land. The backend reads their public web pages, has a local model turn the
+// prose into a kind and a place name, a gazetteer turn the name into
+// coordinates, and hands them here.
 //
-// Two different things are drawn, and the difference is the whole reason this
-// file is careful:
+// One mark per object, at the place its report named, and it does not move.
+// Markers used to slide along their reported heading at a typical speed for
+// their kind -- dead reckoning, labelled as an estimate. It is gone. A map
+// where everything drifts is hard to read, the marks wander off the places the
+// reports actually named, and a mark sliding across a province looks tracked
+// whatever the panel says.
 //
-//   the report    a place a channel actually named. That is an observation,
-//                 and it is where the marker starts.
+// What is drawn instead is an arrow pointing along the reported course, which
+// is a direction somebody stated rather than a path anybody watched. Three
+// things follow from that and they are most of the care in this file:
 //
-//   the drift     the marker slides along the reported heading at a typical
-//                 speed for its kind. That is dead reckoning -- arithmetic, not
-//                 tracking -- and it is wrong by more every second that passes.
+//   solid arrow    the course came from the report -- a compass bearing in the
+//                  text, or the bearing between two places it named.
 //
-// So the sliding is done here rather than fetched: the browser has the origin,
-// the heading and the timestamp, which is everything the arithmetic needs, and
-// re-deriving it locally means the markers move smoothly at one frame a second
-// instead of jumping once a minute when the network answers. The backend is
-// asked for new reports every minute and nothing more.
+//   hollow arrow   the course was borrowed from the group around it. An
+//                  inference, drawn differently so it can be seen as one.
 //
-// Because the drift is a guess, tracks expire twenty minutes after the report
-// that made them, the popup says how far a marker has been carried and from
-// where, and a marker with no heading in its report simply does not move.
+//   ring           nothing said which way, not even its neighbours. A ring
+//                  makes no claim about direction, which is the honest
+//                  drawing when there is nothing to claim.
+//
+// Concentrate mode replaces a group of arrows with one bigger arrow carrying
+// the count and the group's average trajectory.
 
 import { api } from './api.js';
 import { $, el } from './ui.js';
@@ -62,7 +67,7 @@ let poller = null;
 // reported is moved rather than destroyed and rebuilt, which would flicker and
 // would drop an open popup.
 const drawn = new Map();
-// The circles, boxes and labels of concentrate mode.
+// The mass arrows of concentrate mode.
 const massShapes = [];
 
 export function initTracker(leafletMap) {
@@ -94,10 +99,10 @@ export function initTracker(leafletMap) {
 /** Where you get to going `km` along a bearing, on a sphere.
  *
  * Nothing travels any more, so the only thing left that needs this is nudge():
- * spreading the several objects of one report into a ring around the place it
- * named. Still done on a great circle rather than by adding degrees, because
- * adding degrees makes the ring an ellipse that gets worse the further north
- * you are, and these reports are all from fifty degrees up.
+ * trailing the several objects of one report behind the place it named. Still
+ * done on a great circle rather than by adding degrees, because adding degrees
+ * puts the line at the wrong angle and gets worse the further north you are,
+ * and these reports are all from fifty degrees up.
  */
 function advance(lat, lon, heading, km) {
   if (!(km > 0)) return [lat, lon];
@@ -125,17 +130,7 @@ const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
 const keepOf = (event) => feed?.keep?.[event.kind] ?? look(event).keep
   ?? feed?.keep_minutes ?? 20;
 
-/**
- * Where a report goes: where it was reported, and nowhere else.
- *
- * Markers used to be carried along their reported course between polls, at a
- * typical speed for their kind, and loitering drones flown in circles. Both
- * were labelled as estimates and both are gone. A map where everything drifts
- * is hard to read, the marks wander off the places the reports actually
- * named, and a mark sliding across a province looks tracked whatever the
- * panel says. The course is still known and still drawn -- the icon points
- * along it -- but nothing is carried anywhere on the strength of it.
- */
+/** Where a report goes: where it was reported, and nowhere else. */
 const positionOf = (event) => ({
   lat: event.origin_lat,
   lon: event.origin_lon,
@@ -147,9 +142,9 @@ const positionOf = (event) => ({
  * to go.
  *
  * Measured against the marker's OWN lifetime, because they differ by a factor
- * of eighteen: a drone is gone in twenty minutes and a strike stays six
- * hours. Against a fixed window every strike would sit at full strength for
- * its whole life and then vanish.
+ * of seventy-five: a drone is gone in twenty minutes, a warning lasts an hour
+ * and a strike stays twenty-five. Against a fixed window every strike would
+ * sit at full strength for its whole life and then vanish.
  */
 function freshness(event) {
   const minutes = event.age_minutes ?? 0;
@@ -198,40 +193,44 @@ function label(event) {
 // triangle in slightly different reds -- which on a map at a glance is no
 // information at all. These are silhouettes: the thing itself, pointed the
 // way it is going.
-const SILHOUETTE = {
-  // A delta wing. What a Shahed looks like from above, and unmistakably a
-  // one-way attack drone rather than a missile.
-  drone: (c) => `<path d="M9 1.2 L14.8 15.2 L9 12.2 L3.2 15.2 Z" fill="${c}"/>`,
+// One arrow, for everything in the air.
+//
+// There were seven silhouettes here: a delta wing for a Shahed, a swept wing
+// with an exhaust for a jet drone, a thin finned body for a cruise missile, a
+// dart for a ballistic one, wings and a tailplane for an aircraft. They were
+// careful drawings and they were the wrong idea.
+//
+// At twenty-odd pixels a delta wing and a swept delta wing are the same grey
+// triangle, so the detail cost legibility and bought nothing -- and worse, it
+// implied a precision the data does not have. These reports say "a Shahed" or
+// "a cruise missile"; drawing a recognisable airframe suggests somebody
+// identified a type, which nobody did.
+//
+// So: one arrow, pointed along the reported course. What kind of thing it is
+// comes from the colour, which is per kind and defined once on the server, and
+// from the label under it. The arrow is the one thing the drawing can honestly
+// claim -- something was reported here, going that way.
+const ARROW = (c) => `<path d="M9 0.8 L15.2 16.2 L9 12.6 L2.8 16.2 Z" fill="${c}"/>`;
 
-  // The same wing, swept back harder, with an exhaust behind it.
-  jet_drone: (c) => `<path d="M9 0.8 L15.4 14 L9 11 L2.6 14 Z" fill="${c}"/>
-                     <path d="M7.6 14.4 h2.8 v2.6 h-2.8 Z" fill="${c}"/>`,
+// The same arrow, narrower and longer, for the things that are not drones.
+//
+// Not a reinstated silhouette: it says nothing about an airframe, only that
+// this is a missile rather than a drone -- which is the one distinction in
+// these reports that always matters and that a viewer must never have to
+// guess at. Colour alone was carrying it and was not carrying it well enough:
+// red and orange-red are 58 apart out of 765, which is fine beside each other
+// and not fine across a map.
+const SLIM = (c) => `<path d="M9 0.4 L13.2 17 L9 13.6 L4.8 17 Z" fill="${c}"/>`;
 
-  // A body with stub wings and a tail: long and thin, which is the thing that
-  // reads as "missile" and not "aircraft" at this size.
-  cruise: (c) => `<path d="M9 0.6 L10.5 4.4 v8.6 h-3 V4.4 Z" fill="${c}"/>
-                  <path d="M7.5 7.4 L3.4 11 v1.6 l4.1 -1.8 Z" fill="${c}"/>
-                  <path d="M10.5 7.4 L14.6 11 v1.6 l-4.1 -1.8 Z" fill="${c}"/>
-                  <path d="M7.2 13.4 h3.6 l-1.8 3.6 Z" fill="${c}"/>`,
+// Which kinds get the slim arrow. Missiles, and nothing else.
+const SLIM_KINDS = new Set(['cruise', 'ballistic']);
 
-  // A dart: narrower still, with fins at the very back. Ballistic things are
-  // the fastest thing on this map and the shape says so.
-  ballistic: (c) => `<path d="M9 0.4 L10.4 5 v7.4 h-2.8 V5 Z" fill="${c}"/>
-                     <path d="M7.6 12 L5.4 16.6 h2.2 Z" fill="${c}"/>
-                     <path d="M10.4 12 L12.6 16.6 h-2.2 Z" fill="${c}"/>
-                     <path d="M8.2 12.4 h1.6 v4.4 h-1.6 Z" fill="${c}"/>`,
-
-  // Wings and a tailplane. A crewed aircraft, not a munition.
-  aircraft: (c) => `<path d="M9 0.8 c1 0 1.5 1.4 1.5 3.4 v3.2 l5.6 3.2 v2
-                             l-5.6 -1.8 v3.2 l2 1.6 v1.2 l-3.5 -1 l-3.5 1
-                             v-1.2 l2 -1.6 v-3.2 L1.9 12.6 v-2 l5.6 -3.2
-                             V4.2 c0 -2 0.5 -3.4 1.5 -3.4 Z" fill="${c}"/>`,
-
-  helicopter: (c) => `<path d="M1.5 3.2 h15 v1.4 h-15 Z" fill="${c}"/>
-                      <path d="M8.4 4.6 h1.2 v2.2 h-1.2 Z" fill="${c}"/>
-                      <ellipse cx="9" cy="10.2" rx="3.4" ry="3.4" fill="${c}"/>
-                      <path d="M11.8 12 L16 15.6 v1.2 l-4.8 -3.2 Z" fill="${c}"/>`,
-};
+// The same arrow as an outline, for a course borrowed from the group around it
+// rather than stated for that mark. Hollow because the difference is worth
+// seeing on the map and not only in a popup: a solid arrow is what a report
+// said, an outlined one is an inference from its neighbours.
+const BORROWED = (c) => `<path d="M9 1.6 L14.3 15.3 L9 12.2 L3.7 15.3 Z"
+  fill="none" stroke="${c}" stroke-width="1.6" stroke-linejoin="round"/>`;
 
 function glyph(event, colour, facing) {
   const motion = motionOf(event);
@@ -263,21 +262,25 @@ function glyph(event, colour, facing) {
        <circle cx="9" cy="9" r="1.6" fill="${colour}"/>`, facing ?? 0);
   }
 
-  const drawn = SILHOUETTE[event.kind];
   if (facing == null) {
-    // In the air, but the report said nothing about which way. A silhouette
-    // here would point north and mean it -- the same invention this whole
-    // layer exists to avoid, just with a nicer shape. So the thing is drawn
-    // inside a ring instead: what it is, with no claim about its course.
+    // In the air, and nothing anywhere said which way -- not the report, and
+    // not the group around it. An arrow here would point north and mean it,
+    // which is the invention this whole layer exists to avoid. So it is a
+    // ring: something is here, and its course is not known.
     return svg('dot',
-      `<circle cx="9" cy="9" r="7.6" fill="none" stroke="${colour}"
-               stroke-width="1.2" opacity="0.5"/>`
-      + `<g transform="translate(9 9) scale(0.62) translate(-9 -9)">`
-      + `${(drawn ?? SILHOUETTE.drone)(colour)}</g>`);
+      `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
+               stroke-width="1.6"/>`
+      + `<circle cx="9" cy="9" r="2" fill="${colour}"/>`);
   }
-  if (drawn) return svg(event.kind, drawn(colour), facing);
-  return svg('arrow',
-    `<path d="M9 1 L15.5 16 L9 12.4 L2.5 16 Z" fill="${colour}"/>`, facing);
+  // Solid when the course came from the report, hollow when it was borrowed
+  // from the group. Both are arrows and both point somewhere real; the weight
+  // is the difference between an observation and an inference, and it is on
+  // the map rather than only in the popup because that is where it is read.
+  const borrowed = event.course_from === 'group';
+  const slim = SLIM_KINDS.has(event.kind);
+  const shape = `${slim ? 'missile' : 'arrow'}${borrowed ? '-borrowed' : ''}`;
+  const draw = borrowed ? BORROWED : (slim ? SLIM : ARROW);
+  return svg(shape, draw(colour), facing);
 }
 
 /** One marker: its glyph, and its label underneath. */
@@ -331,8 +334,30 @@ function popup(event) {
       + `${shown} of them.`);
   }
   rows.push(`${since(event.age_minutes ?? 0)} since the report`);
-  if (event.toward) rows.push('Course shown, not followed — the mark stays '
-    + 'where the report put it.');
+  // Where the arrow's direction came from. Three different claims, and the
+  // map draws the first two as arrows, so the popup is where they are told
+  // apart properly.
+  if (event.heading != null) {
+    const deg = `${Math.round(event.heading)}° ${compass(event.heading)}`;
+    if (event.course_from === 'group') {
+      rows.push(`Heading <b>${deg}</b> — <b>borrowed from the group</b>. This `
+        + 'report gave no course; the arrow is the average of the '
+        + `${event.course_from_count ?? 'other'} nearby marks that did, and is `
+        + 'drawn hollow because it is an inference rather than something '
+        + 'anybody said about this one.');
+    } else if (event.course_from === 'destination') {
+      rows.push(`Heading <b>${deg}</b> — the bearing to the place the report `
+        + 'named as its destination.');
+    } else {
+      rows.push(`Heading <b>${deg}</b> — as the report stated it.`);
+    }
+    rows.push('Course shown, not followed — the mark stays where the report '
+      + 'put it.');
+  } else {
+    rows.push('<b>No course reported</b>, and none of the marks near it had '
+      + 'one either — so it is drawn as a ring. An arrow would have to point '
+      + 'somewhere, and nothing here knows where.');
+  }
   if (event.region_wide) {
     rows.push('<b>Region-wide</b> — the report names the whole area, and the '
       + 'outline is that area\u2019s own boundary.');
@@ -572,38 +597,71 @@ function drawMasses() {
 
   for (const mass of masses) {
     const colour = feed?.kinds?.[Object.keys(mass.kinds)[0]]?.colour ?? '#ff3b30';
-    const circle = L.circle([mass.lat, mass.lon], {
-      radius: mass.radius_km * 1000,
-      renderer: areaInk, pane: 'trackerArea',
-      color: colour, weight: 1.5, opacity: 0.85,
-      fillColor: colour, fillOpacity: 0.12,
-      className: 'ao-mass',
-      interactive: false,
-    });
-    const [west, south, east, north] = mass.bbox;
-    const box = L.rectangle([[south, west], [north, east]], {
-      renderer: areaInk, pane: 'trackerArea',
-      color: colour, weight: 1, opacity: 0.5,
-      fill: false, dashArray: '5 5',
-      className: 'ao-mass-box',
-      interactive: false,
-    });
-    // The label is a marker rather than a tooltip so it is always visible
-    // rather than waiting for a hover -- on a wall display nobody hovers.
-    const tag = L.marker([mass.lat, mass.lon], {
+    // One arrow, big, pointed along the group's own trajectory, with the
+    // count on it. That is the whole of concentrate mode now.
+    //
+    // It used to draw three things per mass -- a filled circle, a dashed
+    // bounding box and a separate label -- which was three ways of saying
+    // "roughly here" and none of saying which way the group was going. The
+    // arrow says both: where the middle of it is, and where it is heading.
+    // The extent went with them, because a radius drawn over a corridor is a
+    // disc of mostly empty ground and the number is the part anybody reads.
+    const arrow = L.marker([mass.lat, mass.lon], {
       pane: 'tracker', keyboard: false, interactive: true,
       icon: L.divIcon({
-        className: 'ao-mass-tag',
-        html: `<b>${mass.count}</b><span>${escapeHtml(mass.label)}</span>`,
-        iconSize: [null, null],
+        className: 'ao-mass-mark',
+        html: massGlyph(mass, colour),
+        iconSize: [MASS_GLYPH, MASS_GLYPH],
+        // Centred on the mass, so the arrow's own middle is the point rather
+        // than its top-left corner being it.
+        iconAnchor: [MASS_GLYPH / 2, MASS_GLYPH / 2],
       }),
     });
-    tag.bindPopup(() => massPopup(mass));
-    circle.addTo(areas);
-    box.addTo(areas);
-    tag.addTo(layer);
-    massShapes.push(circle, box, tag);
+    arrow.bindPopup(() => massPopup(mass));
+    arrow.addTo(layer);
+    massShapes.push(arrow);
   }
+}
+
+// How big a mass arrow is. Bigger than a single mark, because it stands for
+// several and should read as the more important thing on the map.
+const MASS_GLYPH = 46;
+
+/**
+ * A mass, drawn as one arrow with its count.
+ *
+ * The count is inside the arrow rather than beside it, so the two cannot be
+ * read apart or drift over each other at low zoom -- and so that one glance
+ * gives both numbers that matter: how many, and which way.
+ *
+ * With no agreed trajectory the arrow becomes a ring, for exactly the reason a
+ * single mark with no course does: the backend returns no course for a group
+ * flying in opposite directions, and an arrow would be inventing an agreement
+ * that is not there.
+ */
+function massGlyph(mass, colour) {
+  const n = mass.count;
+  const text = `<text x="23" y="23" text-anchor="middle"
+      dominant-baseline="central" fill="${colour}"
+      style="font: 700 ${n > 99 ? 13 : 15}px system-ui, sans-serif"
+      >${n > 999 ? '999+' : n}</text>`;
+  if (mass.course == null) {
+    return `<svg class="ao-glyph" data-shape="mass-ring" width="${MASS_GLYPH}"
+        height="${MASS_GLYPH}" viewBox="0 0 46 46">
+      <circle cx="23" cy="23" r="15" fill="rgba(13,16,21,.82)"
+              stroke="${colour}" stroke-width="2.4"/>${text}</svg>`;
+  }
+  // The arrow rotates; the number must not, or half of them would be upside
+  // down. So the rotation is on a group and the text sits outside it.
+  return `<svg class="ao-glyph" data-shape="mass-arrow" width="${MASS_GLYPH}"
+      height="${MASS_GLYPH}" viewBox="0 0 46 46">
+    <g style="transform: rotate(${mass.course.toFixed(1)}deg);
+              transform-origin: 23px 23px">
+      <path d="M23 1.5 L36 30 L23 24 L10 30 Z" fill="${colour}"
+            stroke="rgba(13,16,21,.85)" stroke-width="1.5"/>
+    </g>
+    <circle cx="23" cy="23" r="11.5" fill="rgba(13,16,21,.86)"
+            stroke="${colour}" stroke-width="1.4"/>${text}</svg>`;
 }
 
 /** What a mass says when clicked. */
@@ -612,13 +670,33 @@ function massPopup(mass) {
     .map(([kind, n]) => `${n} × ${escapeHtml(feed?.kinds?.[kind]?.label ?? kind)}`)
     .join(', ');
   const across = Math.round(mass.radius_km);
+  const known = mass.course_from_count ?? 0;
+  // How the trajectory was arrived at, said plainly: it is the average of the
+  // courses that exist, not a course reported for the group as a whole.
+  const where = mass.course == null
+    ? `<p><b>No general trajectory.</b> ${known
+      ? 'The courses in this group do not agree well enough to average — '
+        + 'they point different ways, so one arrow would be inventing an '
+        + 'agreement that is not there.'
+      : 'None of these reports gave a course.'} Drawn as a ring instead.</p>`
+    : `<p>Heading <b>${Math.round(mass.course)}° ${compass(mass.course)}</b> — `
+      + `averaged from the ${known} of ${mass.count} that were reported with a `
+      + `course${known < mass.count ? ', and lent to the rest' : ''}.</p>`;
   return `<div class="ao-pop"><h4>${mass.count} tracks together</h4>`
-    + `<p>${kinds}</p>`
-    + `<p>Within ${across} km of ${mass.lat.toFixed(2)}, ${mass.lon.toFixed(2)}.</p>`
+    + `<p>${kinds}</p>${where}`
+    + `<p>Spread over about ${across} km, centred on `
+    + `${mass.lat.toFixed(2)}, ${mass.lon.toFixed(2)}.</p>`
     + `<p class="ao-pop-note">Grouped because each is within `
     + `${feed?.mass_within_km ?? 60} km of another in the group — real `
     + `distance, not screen distance, so this means the same at every zoom. `
     + `Turn off Concentrate to see them one by one.</p></div>`;
+}
+
+/** A bearing as a compass point, for people who do not read degrees. */
+function compass(deg) {
+  const points = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+    'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  return points[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
 }
 
 // The most objects one report will be drawn as. A channel occasionally
@@ -637,20 +715,45 @@ const drawnCount = (event) =>
 // couple of kilometres apart adds nothing to the error that was already
 // there. It is a way of making them countable, not a claim that anybody knows
 // they are three kilometres apart.
-const APART_KM = 2.2;
+const APART_KM = 1.2;
 
-/** Where the nth object of a group is drawn. */
+/**
+ * Where the nth object of a group is drawn.
+ *
+ * In a line along the reported course, not a ring around the point.
+ *
+ * A ring was the first version and it was wrong twice over. It put marks
+ * upwind of the position as often as downwind, so half of a group of six sat
+ * on the far side of the place they were reported over; and a rosette is a
+ * shape nothing in the air makes. Six drones reported together over one town
+ * are a stream, and drawn as a short line along their own course they read as
+ * one -- which is both the truer picture and the easier one to count.
+ *
+ * The line runs backwards from the reported point rather than forwards. The
+ * report is the front of what was seen, so extrapolating ahead of it would be
+ * putting marks where nothing has been reported at all; trailing them behind
+ * says "these came through here", which is what was actually said.
+ *
+ * Spacing halved as well, to 1.2 km, which is comfortably inside the accuracy
+ * of a position given as a town name. It makes them countable without
+ * claiming anybody knows the interval.
+ */
 function nudge(at, event, index) {
   if (index === 0 || drawnCount(event) < 2) return [at.lat, at.lon];
-  // A ring, expanding by a row every eight, so a dozen do not end up on one
-  // circle at the spacing of a wedding cake.
-  const ring = Math.floor((index - 1) / 8) + 1;
-  const step = (2 * Math.PI * ((index - 1) % 8)) / 8;
-  // Rotated by the object's own course, where it has one, so a group reads as
-  // travelling together rather than as a fixed rosette pinned to north.
-  const turn = ((event.heading ?? 0) * Math.PI) / 180;
-  return advance(at.lat, at.lon,
-    ((step + turn) * 180) / Math.PI, APART_KM * ring);
+  const course = event.heading;
+  if (course == null) {
+    // No course to trail along, so a tight ring is all that is left -- and
+    // with no direction claimed, a ring makes no claim either.
+    const step = (360 * ((index - 1) % 8)) / 8;
+    const ring = Math.floor((index - 1) / 8) + 1;
+    return advance(at.lat, at.lon, step, APART_KM * ring);
+  }
+  // Behind, in a line, with a slight stagger so a long stream does not become
+  // one arrow drawn twelve times in the same pixels at low zoom.
+  const back = (course + 180) % 360;
+  const along = advance(at.lat, at.lon, back, APART_KM * index);
+  const side = (index % 2 ? 1 : -1) * Math.ceil(index / 6) * APART_KM * 0.45;
+  return side ? advance(along[0], along[1], (course + 90) % 360, side) : along;
 }
 
 /**
@@ -929,20 +1032,49 @@ function paintDock() {
   }
   if (n) {
     // No claim of tracking. Each mark sits where a report put it and does not
-    // move; the glyph points along the reported course where there is one,
-    // which is a direction somebody said, not a path anybody watched.
-    lines.push('One mark per drone or missile, at the place the report named. '
-      + 'Nothing moves — the glyph points along the reported course, which is '
-      + 'a direction that was stated, not a track. Strikes are held for '
-      + `${Math.round((feed?.keep?.explosion ?? 360) / 60)} hours and fade as `
+    // move; the arrow points along the reported course, which is a direction
+    // somebody said, not a path anybody watched.
+    lines.push('One arrow per drone or missile, at the place the report named. '
+      + 'Nothing moves — the arrow points along the reported course, which is '
+      + 'a direction that was stated, not a track.');
+    // How many of them actually have a direction, and where from. The honest
+    // number, because the arrows themselves cannot carry it: a solid and a
+    // hollow arrow are distinguishable side by side and not across a map.
+    // Counted over the things that GO somewhere. A loitering recon drone has
+    // no course because it is not travelling, which is a different thing from
+    // a course nobody reported -- and calling it unknown would make the
+    // gazetteer and the channels look worse than they are.
+    const flying = [...drawn.values()].map((h) => h.event)
+      .filter((e) => motionOf(e) === 'track');
+    const loitering = [...drawn.values()]
+      .filter((h) => motionOf(h.event) === 'orbit').length;
+    const said = flying.filter((e) => e.course_from === 'stated'
+      || e.course_from === 'destination').length;
+    const lent = flying.filter((e) => e.course_from === 'group').length;
+    const none = flying.length - said - lent;
+    if (flying.length) {
+      lines.push(`Direction: ${said} of ${flying.length} reported`
+        + (lent ? `, ${lent} borrowed from the group (hollow arrows)` : '')
+        + (none ? `, ${none} not known (rings)` : '')
+        + '.');
+    }
+    if (loitering) {
+      lines.push(`${loitering} loitering — drawn as a circling mark, which is `
+        + 'not the same as an unknown direction: something on station is not '
+        + 'going anywhere.');
+    }
+    lines.push(`Strikes are held for `
+      + `${Math.round((feed?.keep?.explosion ?? 1500) / 60)} hours and warnings `
+      + `for ${Math.round((feed?.keep?.alert ?? 60))} minutes, both fading as `
       + `they age; things in flight go after ${feed?.keep_minutes ?? 20} `
       + 'minutes, when the report has stopped describing anything current.');
   }
   if (concentrated) {
     lines.push(`Concentrate: groups within ${feed?.mass_within_km ?? 60} km of `
-      + `one another, ${feed?.mass_least ?? 3} or more, drawn as one shape. `
-      + 'Grouped by real distance, so a mass means the same at every zoom. '
-      + 'Anything not in a group still shows on its own.');
+      + `one another, ${feed?.mass_least ?? 3} or more, drawn as one arrow `
+      + 'carrying the count and the group\u2019s average trajectory. Grouped '
+      + 'by real distance, so a mass means the same at every zoom. Anything '
+      + 'not in a group still shows on its own.');
   }
   // Whether the model is connected is its own line at the top of the panel
   // now, so this only says what to DO about it -- which is the part that

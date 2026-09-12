@@ -648,37 +648,102 @@ class TestRegionWideAlerts:
 class TestEveryKindIsDrawable:
     """The map has a drawing per kind, and it lives in the browser.
 
-    Two files that must agree and cannot import each other, so the agreement
-    is checked here rather than hoped for. A kind added to the table below
-    with no silhouette beside it falls back to a plain arrow and is silently
-    indistinguishable from a drone, which is the thing having per-kind icons
-    was meant to fix.
+    This class used to enforce a silhouette table: a delta wing for a Shahed, a
+    swept wing for a jet drone, a finned body for a cruise missile, a dart for
+    a ballistic one. They are gone, and the tests with them, because the idea
+    was wrong rather than the drawings.
+
+    At twenty pixels a delta wing and a swept delta wing are the same grey
+    triangle, so the detail cost legibility and bought nothing. Worse, it
+    implied a precision the data does not have: these reports say "a Shahed",
+    and drawing a recognisable airframe suggests somebody identified a type.
+
+    So everything in the air is one arrow and the kind is carried by colour.
+    Which moves the burden here: the colours are now the only thing telling a
+    drone from a cruise missile, and they have to actually do it.
     """
 
-    def silhouettes(self):
+    def source(self):
         import pathlib
-        import re as regex
-        source = (pathlib.Path(__file__).resolve().parent.parent
-                  / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
-        block = source[source.index("const SILHOUETTE = {"):]
-        block = block[:block.index("\n};")]
-        return set(regex.findall(r"^  (\w+):", block, regex.M))
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
 
-    def test_everything_that_flies_in_a_line_has_its_own_drawing(self):
-        drawn = self.silhouettes()
+    def test_there_is_one_arrow_and_no_silhouette_table(self):
+        # Guarding against the per-airframe drawings coming back, along with
+        # the precision they implied.
+        text = self.source()
+        assert "const SILHOUETTE" not in text
+        assert "const ARROW =" in text
+        assert "const BORROWED =" in text
+
+    def test_every_kind_has_a_colour_to_be_told_apart_by(self):
         for name, look in tracker.KINDS.items():
-            if look["motion"] != "track" or name == "unknown":
-                continue
-            assert name in drawn, f"{name} would fall back to a generic arrow"
+            assert look["colour"].startswith("#") and len(look["colour"]) == 7, name
 
-    def test_nothing_is_drawn_that_the_backend_does_not_offer(self):
-        assert self.silhouettes() <= set(tracker.KINDS)
+    def test_a_drone_and_a_missile_are_not_the_same_colour(self):
+        # The whole weight of distinguishing them rests here now.
+        drone = tracker.KINDS["drone"]["colour"]
+        for kind in ("cruise", "ballistic", "aircraft", "recon", "explosion",
+                     "alert"):
+            assert tracker.KINDS[kind]["colour"] != drone, kind
 
-    def test_the_kinds_drawn_by_behaviour_are_not_also_given_silhouettes(self):
+    def test_a_missile_is_not_drawn_like_a_drone(self):
+        """The one distinction nobody may have to guess at.
+
+        Colour alone was carrying it and was not carrying it well enough: a
+        drone is #ff3b30 and a cruise missile #ff6a3b, which is 58 apart out
+        of a possible 765 -- fine side by side in a key, not fine across a
+        map. So missiles get a narrower arrow as well.
+
+        Found by the test below when the silhouettes came out, which is the
+        whole reason that test exists: removing the shapes moved the entire
+        burden onto the palette, and the palette was not ready for it.
+        """
+        text = self.source()
+        assert "const SLIM =" in text
+        assert "SLIM_KINDS" in text
+        block = text[text.index("const SLIM_KINDS"):]
+        named = block[:block.index("]")]
+        for kind in ("cruise", "ballistic"):
+            assert kind in named, kind
+        for kind in ("drone", "jet_drone"):
+            assert kind not in named, f"{kind} is not a missile"
+
+    def test_the_colours_within_one_shape_are_far_enough_apart(self):
+        # Distinct strings are not enough: two near-identical reds would pass
+        # the test above and be indistinguishable. Checked within each group
+        # that SHARES a drawing, because across groups the shape already tells
+        # them apart and demanding colour distance too would be forcing an
+        # amber warning to stop being amber.
+        def rgb(hexed):
+            return tuple(int(hexed[at:at + 2], 16) for at in (1, 3, 5))
+
+        def apart(one, other):
+            return sum(abs(x - y) for x, y in
+                       zip(rgb(tracker.KINDS[one]["colour"]),
+                           rgb(tracker.KINDS[other]["colour"])))
+
+        # Everything drawn as a wide arrow, and everything drawn as a slim one.
+        wide = ("drone", "aircraft", "unknown")
+        slim = ("cruise", "ballistic")
+        for family in (wide, slim):
+            for i, one in enumerate(family):
+                for other in family[i + 1:]:
+                    assert apart(one, other) >= 60, \
+                        f"{one} and {other} share a shape and are too close"
+        # And a drone against a missile, which is the pairing that matters
+        # most: different shape AND a usable colour gap.
+        assert apart("drone", "ballistic") >= 60
+
+    def test_the_kinds_drawn_by_behaviour_are_still_drawn_that_way(self):
         # Recon circles, strikes burst, warnings are a triangle. Those read by
-        # what they do, not by what they look like.
-        for name in ("recon", "explosion", "alert"):
-            assert name not in self.silhouettes(), name
+        # what they do rather than by a direction, and none of them is an
+        # arrow: an arrow on a loitering drone or a strike would be pointing
+        # somewhere for no reason.
+        for name in ("recon",):
+            assert tracker.MOTION[name] == "orbit", name
+        for name in ("explosion", "alert"):
+            assert tracker.MOTION[name] == "still", name
 
 
 class TestSayingWhichChannelGaveWhat:
@@ -1369,6 +1434,193 @@ class TestHowFarBackItReads:
         assert tracker.LOOKBACK_MINUTES * 60 >= tracker.MIN_POLL_SECONDS
 
 
+class TestGivingEachMarkADirection:
+    """Where an arrow's direction comes from, and where it must not.
+
+    Every mark in the air is drawn as an arrow now, which makes the direction
+    load-bearing: an arrow points somewhere whether or not anybody said so.
+    There are three legitimate sources and one honest absence, and these tests
+    are about not quietly turning the absence into the fourth source.
+    """
+
+    def test_a_stated_compass_course_is_used_and_recorded_as_stated(self):
+        got = tracker.place_event(
+            {"kind": "drone", "place": "Nikopol", "course": 270.0,
+             "count": 1, "summary": ""}, "ua", lookup=fake_find)
+        assert got["heading"] == 270.0
+        assert got["course_from"] == "stated"
+
+    def test_a_destination_beats_a_compass_course(self):
+        # A bearing between two named places is a better answer than "north",
+        # so it wins where both are present.
+        got = tracker.place_event(
+            {"kind": "drone", "place": "Kyiv", "toward": "Kharkiv",
+             "course": 0.0, "count": 1, "summary": ""}, "ua", lookup=fake_find)
+        assert got["course_from"] == "destination"
+        # Kyiv to Kharkiv is roughly east-south-east, certainly not north.
+        assert 80 < got["heading"] < 130, got["heading"]
+
+    def test_no_course_anywhere_stays_none_rather_than_becoming_north(self):
+        got = tracker.place_event(
+            {"kind": "drone", "place": "Nikopol", "count": 1, "summary": ""},
+            "ua", lookup=fake_find)
+        assert got["heading"] is None
+        assert got["course_from"] is None
+
+    def test_something_loitering_is_given_no_course_at_all(self):
+        # A recon drone on station is not going anywhere, so a course would be
+        # a claim the report did not make.
+        got = tracker.place_event(
+            {"kind": "recon", "place": "Nikopol", "course": 90.0,
+             "count": 1, "summary": ""}, "ua", lookup=fake_find)
+        assert got["heading"] is None
+
+    def test_a_group_lends_its_course_to_the_marks_without_one(self):
+        marks = [
+            {"id": "a", "kind": "drone", "lat": 50.40, "lon": 30.50,
+             "seen": 1, "heading": 270.0, "course_from": "stated"},
+            {"id": "b", "kind": "drone", "lat": 50.45, "lon": 30.55,
+             "seen": 2, "heading": 280.0, "course_from": "stated"},
+            {"id": "c", "kind": "drone", "lat": 50.50, "lon": 30.60,
+             "seen": 3, "heading": None, "course_from": None},
+        ]
+        masses = tracker.massed(marks)
+        assert tracker.borrow_course(marks, masses) == 1
+        borrowed = [m for m in marks if m["id"] == "c"][0]
+        assert borrowed["heading"] == masses[0]["course"]
+        assert borrowed["course_from"] == "group"
+
+    def test_borrowing_never_overwrites_a_mark_with_its_own_course(self):
+        marks = [
+            {"id": "a", "kind": "drone", "lat": 50.40, "lon": 30.50,
+             "seen": 1, "heading": 270.0, "course_from": "stated"},
+            {"id": "b", "kind": "drone", "lat": 50.45, "lon": 30.55,
+             "seen": 2, "heading": 275.0, "course_from": "stated"},
+            {"id": "c", "kind": "drone", "lat": 50.50, "lon": 30.60,
+             "seen": 3, "heading": 90.0, "course_from": "stated"},
+        ]
+        masses = tracker.massed(marks)
+        assert tracker.borrow_course(marks, masses) == 0
+        assert [m["heading"] for m in marks] == [270.0, 275.0, 90.0]
+        assert all(m["course_from"] == "stated" for m in marks)
+
+    def test_a_group_with_no_course_lends_nothing(self):
+        marks = [{"id": f"m{i}", "kind": "drone", "lat": 50.4 + i * 0.05,
+                  "lon": 30.5 + i * 0.05, "seen": i, "heading": None,
+                  "course_from": None} for i in range(4)]
+        masses = tracker.massed(marks)
+        assert masses[0]["course"] is None
+        assert tracker.borrow_course(marks, masses) == 0
+        assert all(m["heading"] is None for m in marks)
+
+    def test_a_group_pulling_in_opposite_directions_lends_nothing(self):
+        # The important refusal. Averaging a group flying two ways gives a
+        # direction neither of them is going, and lending that out would put
+        # arrows on the map that contradict the reports they came from.
+        marks = [
+            {"id": "a", "kind": "drone", "lat": 50.40, "lon": 30.50,
+             "seen": 1, "heading": 0.0, "course_from": "stated"},
+            {"id": "b", "kind": "drone", "lat": 50.45, "lon": 30.55,
+             "seen": 2, "heading": 180.0, "course_from": "stated"},
+            {"id": "c", "kind": "drone", "lat": 50.50, "lon": 30.60,
+             "seen": 3, "heading": None, "course_from": None},
+        ]
+        masses = tracker.massed(marks)
+        assert masses[0]["course"] is None
+        assert tracker.borrow_course(marks, masses) == 0
+        assert marks[2]["heading"] is None
+
+    def test_a_borrowed_course_says_how_many_it_came_from(self):
+        # So the popup can say "averaged from two of six" rather than
+        # implying all six were reported heading that way.
+        marks = [
+            {"id": "a", "kind": "drone", "lat": 50.40, "lon": 30.50,
+             "seen": 1, "heading": 270.0, "course_from": "stated"},
+            {"id": "b", "kind": "drone", "lat": 50.45, "lon": 30.55,
+             "seen": 2, "heading": None, "course_from": None},
+            {"id": "c", "kind": "drone", "lat": 50.50, "lon": 30.60,
+             "seen": 3, "heading": None, "course_from": None},
+        ]
+        masses = tracker.massed(marks)
+        assert masses[0]["course_from_count"] == 1
+        tracker.borrow_course(marks, masses)
+        assert marks[1]["course_from_count"] == 1
+
+    def test_the_demo_shows_all_four_drawings(self):
+        # Solid arrow from a report, solid from a destination, hollow from a
+        # group, and a ring for no direction at all. If the demo cannot show
+        # one of them, that drawing is unreachable without a network.
+        got = {e.get("course_from") for e in tracker.demo()["events"]
+               if e["kind"] not in tracker.NOT_AIRBORNE}
+        assert got == {"stated", "destination", "group", None}, got
+
+
+class TestAveragingBearings:
+    """The general trajectory of a group.
+
+    Bearings are circular, and the arithmetic mean of a circle is wrong in a
+    way that only shows up sometimes -- which is the worst way for arithmetic
+    to be wrong.
+    """
+
+    def test_the_wrap_at_north_does_not_break_it(self):
+        # 350 and 10 average to due north. The arithmetic mean says 180:
+        # due south, for two things both flying very nearly due north.
+        assert tracker.mean_bearing([350.0, 10.0]) == 0.0
+
+    def test_a_plain_average_still_works_where_there_is_no_wrap(self):
+        assert tracker.mean_bearing([80.0, 100.0]) == 90.0
+        assert tracker.mean_bearing([265.0, 275.0]) == 270.0
+
+    def test_one_bearing_averages_to_itself(self):
+        assert tracker.mean_bearing([47.0]) == 47.0
+
+    def test_opposed_bearings_have_no_average(self):
+        # And saying so is the point: there is no general trajectory for a
+        # group flying two ways, and drawing one would invent an agreement.
+        assert tracker.mean_bearing([0.0, 180.0]) is None
+        assert tracker.mean_bearing([90.0, 270.0]) is None
+        assert tracker.mean_bearing([0.0, 120.0, 240.0]) is None
+
+    def test_a_mostly_agreed_group_still_averages(self):
+        # One dissenter should not silence four that agree.
+        got = tracker.mean_bearing([270.0, 275.0, 265.0, 272.0, 30.0])
+        assert got is not None
+        assert 240 < got < 300, got
+
+    def test_nothing_averages_to_nothing(self):
+        assert tracker.mean_bearing([]) is None
+
+    def test_every_answer_is_a_bearing_a_map_can_use(self):
+        import random
+        rand = random.Random(11)
+        for _ in range(400):
+            some = [rand.uniform(0, 360) for _ in range(rand.randint(1, 6))]
+            got = tracker.mean_bearing(some)
+            assert got is None or 0 <= got < 360, (some, got)
+
+
+class TestWarningsLastAnHour:
+    def test_an_alert_is_kept_for_an_hour(self):
+        assert tracker.KEEP["alert"] == 60
+
+    def test_which_is_longer_than_something_in_flight(self):
+        # A warning is not a position that decays, so the twenty-minute
+        # default was wrong for it -- just less dramatically than for a strike.
+        assert tracker.KEEP["alert"] > tracker.KEEP["drone"]
+
+    def test_and_shorter_than_a_strike(self):
+        assert tracker.KEEP["alert"] < tracker.KEEP["explosion"]
+
+    def test_an_alert_from_fifty_minutes_ago_is_still_drawn(self):
+        now = time.time()
+        assert tracker._alive({"kind": "alert", "seen": now - 50 * 60}, now)
+
+    def test_an_alert_from_two_hours_ago_is_not(self):
+        now = time.time()
+        assert not tracker._alive({"kind": "alert", "seen": now - 7200}, now)
+
+
 class TestConcentrateMode:
     """Grouping marks into a mass.
 
@@ -1603,14 +1855,18 @@ class TestDemo:
 
     def test_it_lets_things_arrive_and_expire_and_then_starts_again(self):
         # One cycle outlives everything in flight. It does not outlive a
-        # strike, which is held for six hours by design -- so what must be
-        # empty at the end of a cycle is the flying things, not the map.
+        # strike (twenty-five hours) or a warning (an hour), both by design --
+        # so what must be empty at the end of a cycle is the flying things,
+        # not the map. The test named only strikes until warnings were given
+        # their own hour, at which point it started failing for a correct
+        # reason, which is what it is for.
         tracker._demo_epoch = 0.0
         try:
             tracker.demo()
             tracker._demo_epoch -= tracker.DEMO_CYCLE - 1
             late = tracker.demo()["events"]
-            assert [e for e in late if e["kind"] != "explosion"] == []
+            still = [e for e in late if e["kind"] not in tracker.NOT_AIRBORNE]
+            assert still == [], [e["kind"] for e in still]
             tracker._demo_epoch -= 10
             assert tracker.demo()["events"]
         finally:
