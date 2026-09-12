@@ -75,8 +75,8 @@ CSP = "; ".join([
     # Map tiles come from several providers, and a rendered scene arrives as a
     # data: URL. blob: is the decoded seismogram.
     "img-src 'self' data: blob: "
-    "https://*.basemaps.cartocdn.com https://*.tile.opentopomap.org "
-    "https://server.arcgisonline.com https://*.rainviewer.com "
+    "https://*.tile.opentopomap.org https://server.arcgisonline.com "
+    "https://*.rainviewer.com "
     "https://gibs.earthdata.nasa.gov "
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
     "https://airtw.moenv.gov.tw https://ristmikud.tallinn.ee "
@@ -94,8 +94,7 @@ CSP = "; ".join([
     # with a 403 on it. This allows a GET of a URL already permitted as an
     # image, which widens nothing.
     "connect-src 'self' https://api.rainviewer.com "
-    "https://*.basemaps.cartocdn.com https://*.tile.opentopomap.org "
-    "https://server.arcgisonline.com "
+    "https://*.tile.opentopomap.org https://server.arcgisonline.com "
     "https://*.streamlock.net https://*.vdotcameras.com "
     "https://*.earthcam.com https://cdn.jsdelivr.net",
     "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
@@ -379,8 +378,9 @@ def selftest() -> dict:
         ("lightning", "EUMETSAT View", mtg.WMS + "?service=WMS&request=GetCapabilities"),
         ("places", "Nominatim", config.NOMINATIM_URL + "?q=Kyiv&format=jsonv2&limit=1"),
         ("imagery", "Copernicus STAC", config.STAC_URL),
-        ("basemap", "CARTO basemap tiles",
-         "https://a.basemaps.cartocdn.com/rastertiles/voyager/3/4/2.png"),
+        ("basemap", "Esri basemap tiles",
+         "https://server.arcgisonline.com/ArcGIS/rest/services"
+         "/World_Street_Map/MapServer/tile/3/2/4"),
     ]
 
     out = []

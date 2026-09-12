@@ -19,7 +19,7 @@ import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
 import { initDayNight, sunBlock } from './daynight.js';
-import { refusal, saidNo } from './tiles.js';
+import { BASEMAPS, DEFAULT_BASEMAP, refusal, saidNo } from './tiles.js';
 
 let map;
 let aoiLayer = null;
@@ -52,99 +52,6 @@ const HINTS = {
   capture: `Drag over the part you want — it is copied marked ${WATERMARK} — Esc to cancel`,
 };
 
-// Basemaps that need no key.
-//
-// The dark one used to come from CARTO, which started requiring an API key and
-// stamped "API KEY REQUIRED" across every tile -- the map still drew, so
-// nothing failed, it just went wrong in public. Everything here is keyless,
-// and if one of them goes the same way the next in the list takes over rather
-// than leaving a watermarked map on screen.
-// The default draws OpenStreetMap's data, but not from OpenStreetMap's own
-// servers.
-//
-// tile.openstreetmap.org is run by volunteers and paid for by donations, and
-// its usage policy says plainly that it is not there to be the basemap of an
-// application. This app was using it as exactly that, and it was blocked: every
-// tile came back 403 with a picture of a warning sign in it. That is the
-// project being treated as it asked to be treated, not an outage, so the fix
-// is to stop asking rather than to retry more politely.
-//
-// CARTO serve the same OpenStreetMap data, rendered from their own hardware
-// and offered for this. The names are still the ones edited by the people who
-// live there, still baked into the tile rather than stacked on top from a
-// separate gazetteer that can disagree with the map underneath -- which is why
-// there is no label overlay anywhere in this list. Esri's was the one
-// captioning cities with names decades out of date.
-const BASEMAPS = [
-  {
-    key: 'streets', label: 'Streets',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-    options: {
-      subdomains: 'abcd', maxNativeZoom: 20, maxZoom: 20,
-      attribution: '© OpenStreetMap contributors © CARTO',
-    },
-  },
-  {
-    key: 'satellite', label: 'Satellite',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    options: {
-      maxNativeZoom: 19, maxZoom: 19,
-      attribution: 'Esri, Maxar, Earthstar Geographics',
-      // Taken down a little so the app's own overlays, markers and pins stay
-      // the brightest thing on screen instead of competing with the backdrop.
-      className: 'tiles-imagery',
-    },
-    // No label layer. Esri's is the one that was captioning cities with names
-    // decades out of date -- Kiev, Kishinev -- and there is no keyless
-    // alternative to draw over imagery. Imagery with no names beats imagery
-    // with wrong ones, and every other basemap here carries correct ones.
-  },
-  {
-    // Replaces a "Terrain" layer that did not work. It was Esri's hillshade,
-    // which is relief drawn dark-on-white for a white page; inverted to suit a
-    // dark interface, everything flat -- which is most of the world -- came out
-    // black, so the map was a black rectangle with borders on it. OpenTopoMap
-    // is a real topographic map with contours and its own correct labels.
-    key: 'topo', label: 'Topographic',
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    options: {
-      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 19,
-      attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)',
-    },
-  },
-  {
-    // Replaces the Humanitarian style, which came from tile.openstreetmap.fr
-    // -- volunteer-run under the same policy as the main servers, and so the
-    // same thing waiting to happen. This is a quiet grey map with nothing on
-    // it but roads and names, which is what you want underneath a layer that
-    // is itself the subject: fires, vessels, cloud.
-    key: 'plain', label: 'Plain',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png',
-    options: {
-      subdomains: 'abcd', maxNativeZoom: 20, maxZoom: 20,
-      attribution: '© OpenStreetMap contributors © CARTO',
-    },
-  },
-  {
-    // Also moved off Esri, whose dark canvas is really a mid grey and had to be
-    // darkened in CSS to read as a background. This one is dark to begin with,
-    // and its labels are current.
-    key: 'dark', label: 'Dark',
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png',
-    options: {
-      subdomains: 'abcd', maxNativeZoom: 20, maxZoom: 20,
-      attribution: '© OpenStreetMap contributors © CARTO',
-    },
-  },
-  {
-    key: 'ocean', label: 'Ocean',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-    options: { maxNativeZoom: 13, maxZoom: 19, attribution: 'Esri, GEBCO, NOAA, National Geographic' },
-  },
-];
-
-// Which one is on screen at the start.
-const DEFAULT_BASEMAP = 'streets';
 
 // How many tiles have to fail before a basemap is judged unusable. One is
 // noise -- a tile at the edge of the world, a dropped connection. A dozen in a
@@ -162,7 +69,7 @@ const probed = new Set();
  * Take a basemap off the screen and put the next usable one up instead.
  *
  * Skips to a different provider rather than to the next entry. Several of
- * these share a host, and falling from one CARTO style to another when CARTO
+ * these share a host, and falling from one Esri style to another when Esri
  * itself is the thing refusing just fails again before landing anywhere
  * useful.
  */

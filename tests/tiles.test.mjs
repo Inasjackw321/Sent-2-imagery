@@ -18,7 +18,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { PROBE, probeUrl, refusal, saidNo } from '../frontend/js/tiles.js';
+import {
+  BASEMAPS, DEFAULT_BASEMAP, KEYLESS_HOSTS, PROBE,
+  hostsUsed, probeUrl, refusal, saidNo,
+} from '../frontend/js/tiles.js';
 
 const answers = (status) => async () => ({ ok: status >= 200 && status < 300, status });
 const throws = (why) => async () => { throw new Error(why); };
@@ -112,4 +115,71 @@ test('the probe asks for one cheap tile, not a detailed one', () => {
   // It is a question put to somebody else's server, and it should cost them
   // as close to nothing as possible.
   assert.ok(PROBE.z <= 4, `zoom ${PROBE.z}`);
+});
+
+// ── The keyless rule ───────────────────────────────────────────
+//
+// These are the tests that exist because comments did not work.
+//
+// A basemap that needs an API key does not fail. It draws, with "API KEY
+// REQUIRED" stamped diagonally across every tile, and the app reports nothing
+// wrong because as far as any code can tell nothing is. That happened with
+// CARTO; the comment recording it sat four lines above the basemap list; the
+// list was later edited back onto CARTO without the comment being read.
+//
+// So the rule is enforced here instead. If you are reading this because a test
+// failed: the host you added is not known to serve anonymous clients without a
+// key. Confirm that it does, then add it to KEYLESS_HOSTS with the reason.
+// Do not add it to make the test pass.
+
+test('every basemap comes from a host known to need no key', () => {
+  for (const host of hostsUsed(BASEMAPS)) {
+    const known = Object.keys(KEYLESS_HOSTS).some(
+      (allowed) => host === allowed || host.endsWith(`.${allowed}`));
+    assert.ok(known,
+      `${host} is not in KEYLESS_HOSTS. A host that requires a key does not `
+      + 'fail, it watermarks — read the note above this test before adding it.');
+  }
+});
+
+test('no basemap URL carries a key, or a place to put one', () => {
+  for (const spec of BASEMAPS) {
+    const url = probeUrl(spec).toLowerCase();
+    for (const smell of ['apikey', 'api_key', 'access_token', 'accesstoken',
+                         'key=', 'token=', 'appid=', '{key}', '{token}']) {
+      assert.ok(!url.includes(smell), `${spec.key}: ${url} contains ${smell}`);
+    }
+  }
+});
+
+test('every basemap is served over https', () => {
+  // The page is https, so an http tile is a tile that never arrives.
+  for (const spec of BASEMAPS) assert.ok(spec.url.startsWith('https://'), spec.key);
+});
+
+test('the basemaps are not all on one host', () => {
+  // The fallback skips to a different provider rather than the next line,
+  // which only means anything if there is a different provider to skip to.
+  assert.ok(hostsUsed(BASEMAPS).length > 1, 'one host means no fallback');
+});
+
+test('every basemap carries an attribution', () => {
+  // These are other people's tiles and every one of these providers asks for
+  // credit as the price of serving them.
+  for (const spec of BASEMAPS) {
+    assert.ok(spec.options.attribution?.length > 5, spec.key);
+  }
+});
+
+test('the basemaps have distinct keys and labels', () => {
+  assert.equal(new Set(BASEMAPS.map((s) => s.key)).size, BASEMAPS.length);
+  assert.equal(new Set(BASEMAPS.map((s) => s.label)).size, BASEMAPS.length);
+});
+
+test('the default basemap is one that exists', () => {
+  assert.ok(BASEMAPS.some((s) => s.key === DEFAULT_BASEMAP), DEFAULT_BASEMAP);
+});
+
+test('the default is not the last one, so it has somewhere to fall to', () => {
+  assert.notEqual(BASEMAPS.at(-1).key, DEFAULT_BASEMAP);
 });

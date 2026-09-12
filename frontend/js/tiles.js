@@ -1,4 +1,29 @@
-// Asking a tile service whether it is willing to serve us.
+// Which tile services this app uses, and whether they are serving us.
+//
+// ── Which ─────────────────────────────────────────────────────
+//
+// Everything here is keyless, and that is a hard rule rather than a
+// preference, because breaking it has now gone wrong twice in a row and both
+// times it went wrong quietly.
+//
+// CARTO started requiring an API key and stamped "API KEY REQUIRED" diagonally
+// across every tile. The map still drew. Nothing errored, nothing fell back,
+// no message appeared -- it simply went wrong in public, on a map with city
+// names on it, looking for all the world like a finished product that had not
+// paid its bill.
+//
+// Then the default moved to OpenStreetMap's own servers, which are volunteer-
+// run and donation-funded and whose usage policy says plainly that they are
+// not there to be an application's basemap. They blocked the app and served a
+// warning sign as the tile.
+//
+// Then -- and this is the one worth writing down -- the fix for the second
+// went back to the first. The comment saying CARTO needed a key was four lines
+// above the list being edited and was not read. Hence KEYLESS_HOSTS below and
+// a test that fails on anything else: the rule is now enforced by something
+// that does not rely on anybody reading a comment.
+//
+// ── Whether ───────────────────────────────────────────────────
 //
 // This module exists because of a failure that looked nothing like a failure.
 //
@@ -14,6 +39,35 @@
 //
 // fetch is the only way from a page to see the status a tile came with, so
 // that is what this does: one tile, one status, read honestly.
+//
+// It does not catch everything, and it is worth being straight about the gap.
+// A watermarked tile -- CARTO's "API KEY REQUIRED" -- comes back 200 with a
+// perfectly valid picture in it. No status code is wrong, nothing is missing,
+// and short of reading the pixels and guessing at diagonal grey text there is
+// nothing here to detect. That failure is prevented rather than detected, by
+// the keyless rule above and the test that enforces it.
+
+// The tile hosts this app is allowed to use, and why each one is here.
+//
+// A host earns a place by serving tiles to anonymous clients as a stated
+// offer, not by happening to work today. Anything not on this list is refused
+// by a test, which is the only mechanism that has actually held.
+export const KEYLESS_HOSTS = {
+  // Esri's public ArcGIS Online basemaps: no key, no sign-up, served to
+  // anonymous clients, and already relied on by this app's imagery and ocean
+  // layers for long enough to be worth trusting for the rest.
+  'server.arcgisonline.com': 'Esri public ArcGIS Online basemaps',
+  // Volunteer-run like OpenStreetMap's own, but with a usage policy that
+  // permits modest embedded use rather than forbidding it. It is not the
+  // default, and if it is ever blocked the probe below will catch it, because
+  // OpenTopoMap refuses with a status rather than with a picture.
+  'tile.opentopomap.org': 'OpenTopoMap, CC-BY-SA, modest use permitted',
+};
+
+/** Every host a basemap URL would actually contact, {s} expanded away. */
+export function hostsUsed(specs) {
+  return [...new Set(specs.map((spec) => new URL(probeUrl(spec)).host))];
+}
 
 // One tile, at a zoom every provider certainly has cached, over land in the
 // northern mid-latitudes so that no service can reasonably be missing it.
@@ -61,6 +115,89 @@ export async function refusal(spec, fetcher = fetch) {
     return null;
   }
 }
+
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+
+/**
+ * The basemaps on offer, in the order they are fallen back through.
+ *
+ * No label overlays anywhere: every one of these has its place names drawn
+ * into the tile by whoever made it, rather than stacked on afterwards from a
+ * separate gazetteer that can disagree with the map underneath. Esri's
+ * reference overlay was the one captioning cities with names decades out of
+ * date -- Kiev, Kishinev -- which is worse than a plain map, because a name
+ * you cannot trust makes the whole map suspect.
+ */
+export const BASEMAPS = [
+  {
+    key: 'streets', label: 'Streets',
+    url: `${ESRI}/World_Street_Map/MapServer/tile/{z}/{y}/{x}`,
+    options: {
+      maxNativeZoom: 19, maxZoom: 19,
+      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+    },
+  },
+  {
+    key: 'satellite', label: 'Satellite',
+    url: `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
+    options: {
+      maxNativeZoom: 19, maxZoom: 19,
+      attribution: 'Esri, Maxar, Earthstar Geographics',
+      // Taken down a little so the app's own overlays, markers and pins stay
+      // the brightest thing on screen instead of competing with the backdrop.
+      className: 'tiles-imagery',
+    },
+  },
+  {
+    // The one non-Esri entry, deliberately. Five of these six share a host, so
+    // if that host ever refuses there has to be somewhere else to land -- and
+    // the fallback skips to a different provider rather than to the next line
+    // for exactly this reason.
+    //
+    // It also replaces a "Terrain" layer that did not work: Esri's hillshade
+    // is relief drawn dark-on-white for a white page, and inverted to suit a
+    // dark interface everything flat -- which is most of the world -- came out
+    // black. This is a real topographic map with contours and correct labels.
+    key: 'topo', label: 'Topographic',
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    options: {
+      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 19,
+      attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)',
+    },
+  },
+  {
+    // A quiet grey map with nothing on it but roads and names, for when the
+    // layer on top is itself the subject: fires, vessels, cloud.
+    key: 'plain', label: 'Plain',
+    url: `${ESRI}/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+    options: {
+      maxNativeZoom: 16, maxZoom: 19,
+      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+    },
+  },
+  {
+    key: 'dark', label: 'Dark',
+    url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+    options: {
+      maxNativeZoom: 16, maxZoom: 19,
+      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+      // Esri's dark canvas is really a mid grey. Deepened here so it reads as
+      // a background rather than as the subject.
+      className: 'tiles-dark',
+    },
+  },
+  {
+    key: 'ocean', label: 'Ocean',
+    url: `${ESRI}/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}`,
+    options: {
+      maxNativeZoom: 13, maxZoom: 19,
+      attribution: 'Esri, GEBCO, NOAA, National Geographic',
+    },
+  },
+];
+
+/** Which one is on screen at the start. */
+export const DEFAULT_BASEMAP = 'streets';
 
 /** How to put a refusal to somebody looking at a map that just changed. */
 export function saidNo(status) {
