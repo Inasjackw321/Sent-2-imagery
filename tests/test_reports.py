@@ -1,9 +1,11 @@
 """Tests for reading air-threat reports without a language model.
 
-This exists because the model is a free tier with a daily ceiling, and when
-that ceiling was reached the whole layer went dark: an empty map and a line
-saying OpenRouter was rate limiting, which from the outside is exactly what a
-broken feature looks like.
+This exists because the model can be absent. It was a free tier with a daily
+ceiling, and when that ceiling was reached the whole layer went dark -- an
+empty map and a line about rate limiting, which from the outside is exactly
+what a broken feature looks like. The model is local now and has no ceiling,
+but it can equally be a daemon that is not running or one with nothing pulled,
+and the answer to all three is the same: read the reports by rule instead.
 
 These reports barely need a model. They are written to be scanned during an
 air raid and they are formulaic to the point of being a grammar. So the tests
@@ -54,6 +56,121 @@ class TestWhatKindOfThing:
 
     def test_a_post_about_nothing_is_nothing(self):
         assert reports.find_kind("Підписуйтесь на наш канал") == "unknown"
+
+
+class TestNamesAsTheMapHoldsThem:
+    """The lookup misses that the live run showed.
+
+    The model was being told to transliterate place names to Latin, and it
+    was: "Любешів" came back as "Lubeshiv". OpenStreetMap holds the Cyrillic,
+    so a Latin spelling the model invented is one the map has never heard of,
+    and three of eight reports in a live run were "named nowhere a map knows".
+
+    It is asked for the original script now, which means the names arrive in
+    whatever case the sentence used -- so the de-inflection here has to earn
+    its keep. Every variant costs a Nominatim request and Nominatim is asked
+    at most once a second, so a wrong guess is a second a report spends
+    unplaced.
+    """
+
+    def test_an_oblast_in_the_genitive_becomes_the_nominative(self):
+        # The commonest names in these reports by a distance.
+        for asked, wanted in (
+            ("Волинської області", "Волинська область"),
+            ("Київської області", "Київська область"),
+            ("Сумській області", "Сумська область"),
+            ("Белгородской области", "Белгородская область"),
+        ):
+            assert wanted in reports.variants(asked), asked
+
+    def test_the_one_word_oblast_form_too(self):
+        # "Харківщина" and "Харківщини" both mean Kharkiv oblast, and neither
+        # is what the map calls it.
+        for asked, wanted in (("Харківщини", "Харківська область"),
+                              ("Харківщина", "Харківська область"),
+                              ("Сумщини", "Сумська область")):
+            assert wanted in reports.variants(asked), asked
+
+    def test_the_instrumental_a_report_produces_with_nad(self):
+        # "над Нікополем" is how these posts say it, and the nominative is
+        # Нікополь. This was missing entirely.
+        assert "Нікополь" in reports.variants("Нікополем")
+        assert "Харков" in reports.variants("Харковом")
+
+    def test_the_ukrainian_vowel_alternation(self):
+        # Stripping the case ending alone gives "Харков", which is not a
+        # place; the name is "Харків".
+        assert "Харків" in reports.variants("Харкові")
+        assert "Львів" in reports.variants("Львові")
+        assert "Тернопіль" in reports.variants("Тернополі")
+
+    def test_the_alternation_does_not_fire_where_it_does_not_apply(self):
+        # A rule that fires on names it does not apply to is worse than no
+        # rule: it costs a second each. Ужгород and Белгород keep their о, and
+        # a wider version of this produced "Ужгорід" and "Белгорід".
+        for asked, junk in (("Ужгороді", "Ужгорід"), ("Белгороде", "Белгорід")):
+            assert junk not in reports.variants(asked), asked
+        assert "Ужгород" in reports.variants("Ужгороді")
+        assert "Белгород" in reports.variants("Белгороде")
+
+    def test_a_leading_preposition_is_dropped(self):
+        assert "Харків" in reports.variants("у Харкові")
+        assert "Нікополь" in reports.variants("над Нікополем")
+        for asked in ("у Харкові", "в Белгороде", "над Нікополем"):
+            assert not reports.variants(asked)[0].startswith(("у ", "в ", "над ")), asked
+
+    def test_a_name_already_nominative_is_asked_for_once_and_no_more(self):
+        # Nothing to de-inflect, so nothing should be guessed at: a lookup
+        # that succeeds first time must not pay for three more.
+        for plain in ("Харків", "Волинська область", "Бахів", "Nikopol"):
+            assert reports.variants(plain) == [plain], plain
+
+    def test_a_recognised_oblast_stops_the_letter_stripping(self):
+        # "Волинської області" used to also produce "Волинської област" -- a
+        # form no map has ever held, charged at a second.
+        got = reports.variants("Волинської області")
+        assert got == ["Волинської області", "Волинська область"], got
+
+    def test_no_name_costs_more_than_four_lookups(self):
+        """Swept rather than sampled, because the first version was vacuous.
+
+        It checked four hand-picked names against a cap of four, all of which
+        produced two or three -- so it passed with the cap deleted and proved
+        nothing. The property worth holding is about every name, not four of
+        them: whatever endings combine, the rules above must not produce a
+        fifth lookup, because each one is a second the report spends unplaced.
+
+        The cap in variants() does not currently fire -- the maximum is
+        exactly four -- so this is what guards the cost, and it fails the
+        moment a fifth rule is added.
+        """
+        import itertools
+        stems = ("Харк", "Льв", "Тернопол", "Белгород", "Одесс", "Нікопол",
+                 "Сум", "Київ", "Абракадабр", "Миколаїв")
+        endings = ("", "е", "і", "и", "а", "ем", "ом", "ове", "ові", "щини",
+                   "щина", "щину", " області", "ої області", "ой области",
+                   " области", "ій області")
+        worst = 0
+        for stem, ending in itertools.product(stems, endings):
+            got = reports.variants(stem + ending)
+            worst = max(worst, len(got))
+            assert len(got) <= 4, f"{stem}{ending} -> {got}"
+            # And no duplicates, which would waste a lookup on a repeat.
+            assert len(got) == len(set(got)), f"{stem}{ending} -> {got}"
+        # The sweep has to actually exercise the rules, or it is the same
+        # vacuous test with more inputs.
+        assert worst == 4, f"the sweep only ever reached {worst} variants"
+
+    def test_the_name_as_written_is_always_tried_first(self):
+        # What the report said is the best thing to ask for. A guess at its
+        # nominative is only worth trying once that has failed.
+        for asked in ("Харкові", "Волинської області", "Нікополем", "Харківщини"):
+            assert reports.variants(asked)[0] == asked, asked
+
+    def test_rubbish_does_not_produce_rubbish_lookups(self):
+        for junk in ("", "   ", None, "a"):
+            got = reports.variants(junk)
+            assert got == [] or all(len(v.strip()) >= 1 for v in got), junk
 
 
 class TestWhichWay:
@@ -243,15 +360,24 @@ class TestRussia:
 
     def test_the_guesses_do_not_mangle_a_name_that_needs_nothing(self):
         assert reports.variants("Київ") == ["Київ"]
-        assert reports.variants("") == [""]
+
+    def test_nothing_to_look_up_is_no_lookups(self):
+        # This asserted [""] until the cost of a variant was noticed. A caller
+        # loops over these and asks the gazetteer for each at one request a
+        # second, so an empty string is a request that can only fail.
+        assert reports.variants("") == []
+        assert reports.variants("   ") == []
+        assert reports.variants(None) == []
 
 
 class TestTheOtherScripts:
-    """Arabic, Hebrew and Farsi, for the Lebanon and Middle East channels.
+    """Arabic, Hebrew and Farsi.
 
-    Their posts were going entirely unread, which is why nothing from those
-    countries ever reached the map. Only the kind is read: place names in a
-    script with no capital letters are a different problem from the one these
+    No channel in the current four posts in these, so nothing here is on the
+    live path -- it is kept because the cost is a few regexes and the reader
+    should not silently fail to recognise a report it could read. Only the
+    kind is read: place names in a script with no capital letters are a
+    different problem from the one these
     patterns solve, and guessing at them would be exactly the invention this
     module refuses to make everywhere else.
     """

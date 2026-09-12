@@ -328,9 +328,22 @@ function icon(event, facing) {
     //
     // No speed: the speed is a table lookup for the type, not a measurement
     // of the object, and printing it would dress an assumption up as telemetry.
+    // A label only on the things that are a place rather than a direction.
+    //
+    // Every mark used to carry one, and on a busy map they collided: two
+    // drones reported over the same town drew their labels on top of each
+    // other and read as "D(o)ne". The reference maps put no text on their
+    // triangles either, and they are right -- a triangle's colour and shape
+    // already say what it is, and where several are close together the words
+    // are the first thing to become unreadable.
+    //
+    // Warnings and strikes keep theirs, because those ARE a statement about a
+    // place and the words are the statement.
     html: (loud ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
       + `${glyph(event, colour, facing)}`
-      + `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`,
+      + (loud
+        ? `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`
+        : ''),
     // The anchor is the middle of the glyph, which is the reported position.
     // Derived from the size rather than written out, so the two cannot drift
     // apart and quietly offset every marker on the map.
@@ -549,6 +562,38 @@ const hasArea = (event) => event.placed !== false
   // Either it covers ground, or the report only located it to a region --
   // both are worth drawing, and they are drawn differently.
   && (motionOf(event) === 'still' || Boolean(event.shape));
+
+/**
+ * Move the map so that everything drawn is on screen.
+ *
+ * Includes the areas as well as the marks: a warning covering an oblast is one
+ * of the things you are looking for, and fitting only the points would put its
+ * outline half off the edge.
+ *
+ * Does nothing rather than guessing when there is nothing drawn -- the panel
+ * already says so, and flying to a default place would imply there was
+ * something there.
+ */
+function fitToMarks() {
+  const points = [];
+  for (const held of drawn.values()) {
+    const at = held.marker.getLatLng();
+    points.push([at.lat, at.lng]);
+  }
+  for (const mass of (concentrated ? masses ?? [] : [])) {
+    const [west, south, east, north] = mass.bbox;
+    points.push([south, west], [north, east]);
+  }
+  if (!points.length) return;
+  const bounds = L.latLngBounds(points);
+  for (const held of drawn.values()) {
+    if (held.area?.getBounds) bounds.extend(held.area.getBounds());
+  }
+  // A single mark has zero-sized bounds, which fitBounds answers by zooming to
+  // the maximum. Padded so one drone lands at a zoom where the surrounding
+  // country is still legible.
+  map.flyToBounds(bounds.pad(0.25), { maxZoom: 9, duration: 0.6 });
+}
 
 /** Bring the drawn markers into line with the events just fetched. */
 function reconcile(events) {
@@ -905,7 +950,17 @@ function buildDock() {
           title: 'Ask again — the daemon can be started while this is open',
           onclick: recheck,
         }, 'Check')),
-      el('div', { class: 'ao-count', id: 'trackerCount' }, 'Loading…'),
+      el('div', { class: 'ao-head' },
+        el('div', { class: 'ao-count', id: 'trackerCount' }, 'Loading…'),
+        // Because "not placed" and "placed somewhere I am not looking" are
+        // indistinguishable on a country-sized map. Four marks on Ukraine at
+        // the zoom the app opens at is four marks you will not find, and the
+        // honest answer to that is a button rather than a paragraph.
+        el('button', {
+          class: 'ao-find', id: 'trackerFind', type: 'button',
+          title: 'Move the map to fit everything currently drawn',
+          onclick: fitToMarks,
+        }, 'Find')),
       // The reports, whether or not they could be put on the map. This list is
       // the fix for the complaint that the layer "does not work": a night when
       // the gazetteer cannot place the names still shows six reports here,
@@ -1024,13 +1079,21 @@ function paintDock() {
   const n = drawn.size;
   const strikes = [...drawn.values()].filter((h) => h.event.kind === 'explosion').length;
   const grouped = concentrated ? (masses?.length ?? 0) : 0;
+  const missed = (feed?.reports?.unplaced ?? 0);
   count.textContent = n || grouped
     ? [
       grouped ? `${grouped} mass${grouped === 1 ? '' : 'es'}` : null,
       `${n} on the map`,
       strikes ? `${strikes} struck` : null,
+      // Said here rather than three paragraphs down in the note. "Four on the
+      // map" beside a list of eight reports reads as the map being broken;
+      // "four on the map, 3 unplaced" says what actually happened.
+      missed ? `${missed} unplaced` : null,
     ].filter(Boolean).join(' · ')
-    : 'Nothing on the map';
+    : missed ? `Nothing on the map · ${missed} unplaced`
+      : 'Nothing on the map';
+  const find = $('#trackerFind');
+  if (find) find.disabled = !(n || grouped);
 
   // The recent reports, newest first, the mapped ones clickable.
   //

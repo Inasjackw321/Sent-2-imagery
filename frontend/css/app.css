@@ -383,6 +383,13 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   /* Wide enough for the panels the docks have grown: a segmented control and
      a key field both need more room than a row of toggles did. */
   display: grid; gap: 8px; width: 208px; align-content: start;
+  /* Every panel in here is a grid item, and a grid item's min-width defaults
+     to auto -- meaning it refuses to shrink below its content's own minimum.
+     One long unbreakable line in a list therefore widened the whole column
+     past this 208px and gave the dock a horizontal scrollbar, with the text
+     cut off at the window edge. Stated once here and once per panel body,
+     because the constraint has to hold down the whole chain to work. */
+  grid-template-columns: minmax(0, 1fr);
   /* Four panels, all of which can be open at once, and a short window: the
      column has to be able to scroll or the last one is simply unreachable. */
   max-height: calc(100% - 88px); overflow-y: auto; overscroll-behavior: contain;
@@ -1488,7 +1495,7 @@ body.is-walled { overflow: hidden; }
 
 /* ── Air threats, from public Telegram channels ──────────────── */
 
-.ao-dock { display: grid; gap: 8px; }
+.ao-dock { display: grid; gap: 8px; min-width: 0; }
 .ao-toggle {
   display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
@@ -1505,10 +1512,22 @@ body.is-walled { overflow: hidden; }
 
 .ao-body {
   display: grid; gap: 7px; padding: 9px 11px;
+  min-width: 0; grid-template-columns: minmax(0, 1fr);
   border-radius: 9px; background: rgba(13,16,21,.9);
   border: 1px solid var(--line); backdrop-filter: blur(6px);
 }
-.ao-count { font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.ao-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ao-count {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 11.5px; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.ao-find {
+  flex: none; padding: 2px 8px; border-radius: 5px; cursor: pointer;
+  font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-dim); border: 1px solid var(--line);
+}
+.ao-find:hover { color: var(--ink); border-color: rgba(255,255,255,.3); }
+.ao-find:disabled { opacity: .35; cursor: default; }
 .ao-note, .ao-hint { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
 .ao-hint a { color: #7cc4ff; }
 
@@ -1552,9 +1571,16 @@ body.is-walled { overflow: hidden; }
 
 /* ── Air threats: the report list in the side panel ──────────── */
 
-.ao-list { display: grid; gap: 2px; max-height: 168px; overflow-y: auto; }
+.ao-list {
+  display: grid; gap: 2px; max-height: 168px;
+  overflow-y: auto;
+  /* And never sideways. A row that cannot fit is elided, not scrolled to:
+     a horizontal scrollbar in a 208px panel is not a way anybody reads. */
+  overflow-x: hidden;
+  min-width: 0; grid-template-columns: minmax(0, 1fr);
+}
 .ao-row {
-  display: flex; align-items: center; gap: 7px; width: 100%;
+  display: flex; align-items: center; gap: 7px; width: 100%; min-width: 0;
   padding: 4px 5px; cursor: pointer; font: inherit; font-size: 10.5px;
   text-align: left; background: transparent; color: var(--ink-dim);
   border: 0; border-radius: 5px;

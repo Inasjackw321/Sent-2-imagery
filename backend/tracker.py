@@ -411,16 +411,20 @@ Each event:
               drone      any other one-way attack UAV: "Shahed", "Geran"
               alert      an air-raid warning or an all-clear
               explosion  a strike, an interception, or something brought down
-  "place"   the NAME of the place the report is about, as a plain place name
-            a map would recognise: "Nikopol", "Kharkiv oblast", "Белгородская область".
-            Transliterate to Latin script, and use the standard English
-            spelling of the town: "Кагарлик" is "Kaharlyk". Put the place in
-            the nominative, not the genitive: "Харківщини" -> "Kharkiv
-            oblast". Null if the report names no place.
+  "place"   the NAME of the place the report is about, COPIED IN THE SAME
+            SCRIPT THE POST USED. Do not transliterate and do not translate:
+            "Любешів" stays "Любешів", "Белгородская область" stays
+            "Белгородская область". This is looked up in OpenStreetMap, whose
+            names for these places ARE the Cyrillic ones, so a Latin spelling
+            you produce is a spelling the map has never heard of.
+            Do put it in the nominative rather than the case the sentence
+            used: "у Харкові" -> "Харків", "Волинської області" ->
+            "Волинська область", "Харківщини" -> "Харківська область".
+            Null if the report names no place.
   "region"  the oblast, governorate or province the place is in, if the
-            report says or if you know it: "Kyiv oblast". Null otherwise.
-            This is used to tell places with similar names apart, so it
-            matters more than it looks.
+            report says or if you know it, in the same script: "Київська
+            область". Null otherwise. This is used to tell places with similar
+            names apart, so it matters more than it looks.
   "toward"  the NAME of the place it is travelling TO, or null.
   "course"  the compass direction it is travelling, when the report gives one
             and names no destination. One of: N, NE, E, SE, S, SW, W, NW,
@@ -444,6 +448,10 @@ Rules:
         That is "place": "Kharkiv oblast", "toward" and "course" both null.
   - "повз X курсом на північ" means it is passing X and heading north:
         "place": "X", "course": "N", "toward": null.
+  - The course matters and is usually there. These posts state a direction far
+    more often than not -- "курсом на", "у напрямку", "рухається на", "в
+    напрямку" -- and a report whose direction is dropped is drawn as a mark
+    with no heading at all. Read it whenever it is stated.
   - If the report names no place at all, still return the event with "place"
     null. It will be listed rather than mapped. Do not invent a place.
   - Appeals for donations, channel promotion, and general commentary are not

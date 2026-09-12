@@ -58,6 +58,63 @@ class TestReadingAnAnswer:
         assert gazetteer.read_place(answer(lon="-500")) is None
 
 
+class TestWhatSortOfPlace:
+    """A drone was drawn in the middle of the Sea of Azov.
+
+    "place" in OpenStreetMap is not only settlements: it also covers seas,
+    oceans, straits, bays, islands, islets and peninsulas, all of which passed
+    the category check. A report says a drone is over somewhere; the Sea of
+    Azov is a somewhere, it is not what the report meant, and nothing about
+    the coordinates afterwards says so.
+    """
+
+    def answer(self, category="place", kind="town", lat="46.2", lon="36.5"):
+        return [{"lat": lat, "lon": lon, "display_name": "somewhere",
+                 "category": category, "type": kind,
+                 "boundingbox": ["46.0", "46.4", "36.3", "36.7"]}]
+
+    def test_water_is_refused(self):
+        for kind in ("sea", "ocean", "strait", "bay", "lake", "reservoir",
+                     "river", "lagoon"):
+            assert gazetteer.read_place(self.answer(kind=kind)) is None, kind
+
+    def test_so_is_land_that_is_not_a_settlement(self):
+        for kind in ("island", "islet", "archipelago", "peninsula", "desert",
+                     "plain", "cape", "mountain_range"):
+            assert gazetteer.read_place(self.answer(kind=kind)) is None, kind
+
+    def test_settlements_are_taken(self):
+        for kind in ("city", "town", "village", "hamlet", "borough", "suburb",
+                     "municipality", "quarter", "neighbourhood"):
+            assert gazetteer.read_place(self.answer(kind=kind)), kind
+
+    def test_administrative_areas_are_taken(self):
+        for kind in ("administrative", "region", "province", "district"):
+            got = gazetteer.read_place(self.answer(category="boundary", kind=kind))
+            assert got, kind
+
+    def test_a_type_nobody_thought_of_is_refused_rather_than_accepted(self):
+        # The list is an allowlist for a reason: an unexpected type refused is
+        # one report in the panel instead of on the map, which is visible and
+        # recoverable. An unexpected type accepted is a confident marker in
+        # the wrong place.
+        for kind in ("brewery", "quarry", "something_new", "farmyard"):
+            assert gazetteer.read_place(self.answer(kind=kind)) is None, kind
+
+    def test_a_result_with_no_type_at_all_is_still_taken(self):
+        # Nominatim does not always send one, and refusing on its absence
+        # would throw away good answers to guard against a bad one.
+        got = gazetteer.read_place(self.answer(kind=""))
+        assert got
+
+    def test_the_first_settlement_is_used_even_behind_a_sea(self):
+        # The whole point of asking for several candidates.
+        found = (self.answer(kind="sea")
+                 + self.answer(kind="town", lat="49.9", lon="36.2"))
+        got = gazetteer.read_place(found)
+        assert got and got["lat"] == 49.9
+
+
 class TestRefusingThingsThatAreNotPlaces:
     """The Kaharlyk failure.
 

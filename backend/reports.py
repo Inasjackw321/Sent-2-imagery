@@ -2,7 +2,7 @@
 
 The model is the better reader and it is not a dependable one. It is a free
 tier with a daily ceiling, and when that ceiling is reached the whole layer
-went dark -- an empty map and a line saying OpenRouter was rate limiting,
+went dark -- an empty map and a line saying the model was rate limiting,
 which from the outside is indistinguishable from the feature being broken.
 
 But these reports barely need a model. They are written to be scanned at a
@@ -310,27 +310,95 @@ def variants(name: str) -> list[str]:
     """A place name, and the de-inflected forms worth trying if it misses.
 
     Slavic place names arrive in whatever case the sentence put them in --
-    "в Белгороде", "у Харкові" -- and a gazetteer may or may not match that.
-    Rather than guess at one transformation and send it instead of what was
-    written, the name as written goes first and these follow only if it comes
-    back unknown. Guessing wrong then costs a cached miss rather than a marker
-    in the wrong place.
+    "в Белгороде", "над Нікополем", "Волинської області" -- and OpenStreetMap
+    holds the nominative. Rather than guess at one transformation and send it
+    instead of what was written, the name as written goes first and these
+    follow only if it comes back unknown.
+
+    Ordered best-first and capped, and that is not tidiness. Every variant is
+    a Nominatim request, and Nominatim is asked at most once a second, so four
+    junk guesses are four seconds a report spends unplaced. An earlier version
+    of this produced "Волинської област" for "Волинської області" -- a form no
+    map has ever held -- and charged a second for it.
+
+    Which is why a recognised pattern stops the generic guessing: a name
+    ending in "ої області" is an oblast in the genitive and there is exactly
+    one thing worth trying, so the letter-stripping rules below are not also
+    applied to it.
     """
     name = " ".join(str(name or "").split())
+    # Nothing to look up. Returned as no variants rather than as one empty
+    # one: a caller loops over these and asks the gazetteer for each, and an
+    # empty string is a request that can only fail.
+    if len(name) < 2:
+        return []
     out = [name]
     low = name.lower()
+
+    # A leading preposition, in case the model leaves one on. Cheap insurance:
+    # "у Харкові" as a whole is not a place and never will be.
+    for lead in ("у ", "в ", "на ", "над ", "під ", "біля ", "поблизу ",
+                 "около ", "возле ", "по "):
+        if low.startswith(lead):
+            return variants(name[len(lead):])
+
+    # ── Oblasts, which are most of what these reports name ───────
+    #
+    # A match here is conclusive, so nothing further is guessed at.
+    for tail, becomes in (("ої області", "а область"),
+                          ("ой области", "ая область"),
+                          ("ій області", "а область"),
+                          (" області", " область"),
+                          (" области", " область")):
+        if low.endswith(tail):
+            out.append(name[:-len(tail)] + becomes)
+            return list(dict.fromkeys(out))
+
+    # The one-word form: "Харківщини" and "Харківщина" both mean Kharkiv
+    # oblast, and neither is what the map calls it.
+    for tail in ("щини", "щину", "щина", "щине"):
+        if low.endswith(tail) and len(low) - len(tail) >= 3:
+            out.append(f"{name[:-len(tail)]}ська область")
+            return list(dict.fromkeys(out))
+
+    # ── Towns ────────────────────────────────────────────────────
     if len(low) > 4:
-        # Locative of a masculine name: "Белгороде" -> "Белгород",
-        # "Харкові" -> "Харків".
+        # Instrumental, which is what "над X" produces and which was missing:
+        # "над Нікополем" -> "Нікополь", "над Харковом" -> "Харков".
+        if low.endswith("ем"):
+            out.append(f"{name[:-2]}ь")
+        if low.endswith("ом"):
+            out.append(name[:-2])
+        # Locative of a masculine name: "Белгороде" -> "Белгород".
         if low.endswith(("е", "і", "и")):
-            out.append(name[:-1])
+            stem = name[:-1]
+            out.append(stem)
+            # Ukrainian alternates the vowel in a closed syllable, which the
+            # plain strip above gets wrong for a large family of names:
+            # "Харкові" -> "Харков" is not a place, "Харків" is. Same for
+            # Львові and Тернополі.
+            #
+            # Only these two. A wider set was tried and produced junk that
+            # each cost a second against the rate limit: "-од" gave "Ужгорід"
+            # and "Белгорід" for two names that keep their о, and "-ор" had no
+            # real cases at all. A rule that fires on names it does not apply
+            # to is worse than no rule.
+            for was, becomes in (("ов", "ів"), ("ол", "іль")):
+                if stem.lower().endswith(was):
+                    out.append(stem[:-2] + becomes)
         # Locative of a feminine one: "Одессе" -> "Одесса".
         if low.endswith("е"):
             out.append(f"{name[:-1]}а")
         # Genitive after "в районе X".
         if low.endswith("а"):
             out.append(name[:-1])
-    return list(dict.fromkeys(out))
+
+    # A ceiling, not a filter. Nothing above currently reaches it -- the most
+    # any name produces is exactly four, for a form like "Харкове" -- so this
+    # slice never fires today and is here to stop a fifth rule being added
+    # without somebody noticing the cost. Four tries is four seconds against
+    # the rate limit, and a report is unplaced for every one of them.
+    return list(dict.fromkeys(out))[:4]
 
 
 def find_region(text: str) -> str | None:

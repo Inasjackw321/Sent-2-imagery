@@ -10,15 +10,25 @@ from rather than one best answer, but it takes its turn through wait_turn()
 here: the policy is about this process, not about which of its functions is
 asking.
 
-The other half -- find(), and the reading it does in read_place() -- is not
-currently called by anything. It was written for the air-threat reports, which
-have been removed. It is kept rather than deleted because what it knows is not
-obvious and was not cheap to learn: that a place named in a report may only be
-a settlement or an administrative area, that Nominatim will otherwise answer a
-mangled town name with a lake four hundred kilometres away and sound just as
-certain, and that the answer has to be checked against the country it was
-supposed to be in. Anything that needs to put a marker where a piece of prose
-says it should go wants this, and wants it exactly as tested.
+The other half -- find(), and the reading it does in read_place() -- is what
+turns a place named in a Telegram report into a marker on the map. It is the
+half that refuses, and most of what it knows is a refusal:
+
+  a place named in a report may only be a settlement or an administrative
+  area, and only certain KINDS of those -- "place" in OpenStreetMap covers
+  seas and islets as well as towns, and one of those put a drone in the middle
+  of the Sea of Azov;
+
+  a mangled town name gets answered with a lake four hundred kilometres away,
+  with perfect confidence;
+
+  and the answer has to be constrained to the country the report is about, or
+  "Sumy" is as likely to be a street in another hemisphere.
+
+None of that was cheap to learn and all of it is a wrong marker prevented. A
+report whose place cannot be found is listed in the panel and not drawn, which
+is a visible outcome somebody can act on. A report drawn in the wrong oblast is
+not.
 """
 
 from __future__ import annotations
@@ -85,6 +95,35 @@ def wait_turn() -> None:
 # no report has ever meant one -- and turns a wrong answer into no answer,
 # which is the trade this module exists to make.
 ACCEPTED = ("place", "boundary")
+
+# And which KINDS of those, which the category alone does not settle.
+#
+# "place" in OpenStreetMap is not only settlements. It also covers seas,
+# oceans, straits, bays, islands, islets, peninsulas, deserts and plains --
+# all of which passed the category check above, and one of which put a drone
+# in the middle of the Sea of Azov on a live map. A report says a drone is
+# over somewhere; "the Sea of Azov" is a somewhere, and it is not what the
+# report meant, and there is no way to tell from the coordinates afterwards.
+#
+# An allowlist rather than a list of things to refuse, because the failure is
+# asymmetric. An unexpected type refused is one report in the panel instead of
+# on the map, which is visible and recoverable. An unexpected type accepted is
+# a confident marker in the wrong place, which is the thing this whole module
+# exists to prevent.
+SETTLEMENTS = frozenset((
+    "city", "town", "village", "hamlet", "borough", "suburb", "quarter",
+    "neighbourhood", "municipality", "isolated_dwelling", "allotments",
+    "locality", "square", "city_block",
+))
+
+# Administrative areas: an oblast, a raion, a district. A report located to
+# one of these is located to a region, which the caller draws differently.
+AREAS = frozenset((
+    "administrative", "region", "province", "state", "county", "district",
+    "political", "census",
+))
+
+ACCEPTED_TYPES = SETTLEMENTS | AREAS
 
 # Asked for a few rather than one, because the first hit is often a street or
 # a business that happens to share the name and the settlement is behind it.
@@ -208,6 +247,12 @@ def read_place(found: Any) -> dict[str, Any] | None:
             continue
         category = str(candidate.get("category") or candidate.get("class") or "")[:40]
         if category and category not in ACCEPTED:
+            continue
+        # And what sort of place. See ACCEPTED_TYPES: "place" covers seas and
+        # islets as well as towns, and a drone reported over a town does not
+        # belong in the middle of the Sea of Azov.
+        kind = str(candidate.get("type") or "")[:40].lower()
+        if kind and kind not in ACCEPTED_TYPES:
             continue
         return {
             "lat": lat,
