@@ -118,27 +118,62 @@ export async function refusal(spec, fetcher = fetch) {
 
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
 
+// Where a basemap's place names come from. This is a field rather than a
+// comment because getting it wrong is the one basemap fault that does not
+// look like a fault.
+//
+// Esri's World Street Map was the default until it was found captioning the
+// capital of Ukraine "Kiev" -- the Soviet-era transliteration, not the name
+// the country uses or the one the rest of the map's labels are in. It draws
+// beautifully. Roads, borders, rivers, shading, all correct. Only the names
+// are from some years ago, and a name you cannot trust makes the whole map
+// suspect: if that one is stale, which of the others are?
+//
+// Nothing automatic can catch that -- the tile is valid, the service is
+// healthy, the label is simply out of date -- so it is recorded per basemap
+// and the default is held to it by a test.
+export const NAMES = {
+  // Rendered from OpenStreetMap, whose names are edited by the people who live
+  // there and corrected within days.
+  OSM: 'openstreetmap',
+  // No place names at all. Cannot be wrong, and for a backdrop under fires or
+  // vessels that is often what you want.
+  NONE: 'none',
+  // The provider's own cartography, which may lag. Fine for a layer nobody
+  // reads names off; never the default.
+  VENDOR: 'vendor',
+};
+
 /**
  * The basemaps on offer, in the order they are fallen back through.
  *
- * No label overlays anywhere: every one of these has its place names drawn
- * into the tile by whoever made it, rather than stacked on afterwards from a
- * separate gazetteer that can disagree with the map underneath. Esri's
- * reference overlay was the one captioning cities with names decades out of
- * date -- Kiev, Kishinev -- which is worse than a plain map, because a name
- * you cannot trust makes the whole map suspect.
+ * No label overlays anywhere: a basemap's names are either drawn into the tile
+ * by whoever made it or absent. Stacking a separate label layer on top is how
+ * you get names that disagree with the map underneath, and Esri's reference
+ * overlay is the same stale cartography as its street map.
  */
 export const BASEMAPS = [
   {
-    key: 'streets', label: 'Streets',
-    url: `${ESRI}/World_Street_Map/MapServer/tile/{z}/{y}/{x}`,
+    // Default, and the only one here with current place names on it.
+    //
+    // It is a topographic map, which is more ink than a plain street map --
+    // contours, relief, paths -- but it is rendered from OpenStreetMap, so
+    // Kyiv is Kyiv, and it is the one keyless raster service left that renders
+    // OSM and permits this use. That is a thin field, and it is thin because
+    // OpenStreetMap's own servers forbid it and every commercial renderer of
+    // OSM data now wants an API key.
+    key: 'topo', label: 'Topographic',
+    names: NAMES.OSM,
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
     options: {
-      maxNativeZoom: 19, maxZoom: 19,
-      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 19,
+      attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)',
     },
   },
   {
     key: 'satellite', label: 'Satellite',
+    // Photographs. The only names on it are the ones painted on the ground.
+    names: NAMES.NONE,
     url: `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
     options: {
       maxNativeZoom: 19, maxZoom: 19,
@@ -149,26 +184,13 @@ export const BASEMAPS = [
     },
   },
   {
-    // The one non-Esri entry, deliberately. Five of these six share a host, so
-    // if that host ever refuses there has to be somewhere else to land -- and
-    // the fallback skips to a different provider rather than to the next line
-    // for exactly this reason.
-    //
-    // It also replaces a "Terrain" layer that did not work: Esri's hillshade
-    // is relief drawn dark-on-white for a white page, and inverted to suit a
-    // dark interface everything flat -- which is most of the world -- came out
-    // black. This is a real topographic map with contours and correct labels.
-    key: 'topo', label: 'Topographic',
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    options: {
-      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 19,
-      attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)',
-    },
-  },
-  {
-    // A quiet grey map with nothing on it but roads and names, for when the
-    // layer on top is itself the subject: fires, vessels, cloud.
+    // Esri's canvas "Base" layers carry no labels -- that is the whole point of
+    // Esri splitting them from the matching "Reference" layers, which this app
+    // deliberately never loads. So they cannot caption anything wrongly, and
+    // they are the quiet grey backdrop you want under a layer that is itself
+    // the subject: fires, vessels, cloud.
     key: 'plain', label: 'Plain',
+    names: NAMES.NONE,
     url: `${ESRI}/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
     options: {
       maxNativeZoom: 16, maxZoom: 19,
@@ -177,6 +199,7 @@ export const BASEMAPS = [
   },
   {
     key: 'dark', label: 'Dark',
+    names: NAMES.NONE,
     url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
     options: {
       maxNativeZoom: 16, maxZoom: 19,
@@ -187,7 +210,10 @@ export const BASEMAPS = [
     },
   },
   {
+    // Bathymetry, which is what it is for. Its few labels are ocean features
+    // and Esri's own, so it is not somewhere to read a city name off.
     key: 'ocean', label: 'Ocean',
+    names: NAMES.VENDOR,
     url: `${ESRI}/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}`,
     options: {
       maxNativeZoom: 13, maxZoom: 19,
@@ -197,7 +223,7 @@ export const BASEMAPS = [
 ];
 
 /** Which one is on screen at the start. */
-export const DEFAULT_BASEMAP = 'streets';
+export const DEFAULT_BASEMAP = 'topo';
 
 /** How to put a refusal to somebody looking at a map that just changed. */
 export function saidNo(status) {

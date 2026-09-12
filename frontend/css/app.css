@@ -1424,6 +1424,9 @@ body.is-walled { overflow: hidden; }
   display: grid; gap: 8px; padding: 9px 11px;
   border-radius: 9px; background: rgba(13,16,21,.9);
   border: 1px solid var(--line); backdrop-filter: blur(6px);
+  /* Four satellites with every product each, rather than the first six of
+     two, so the panel has to be allowed to end somewhere. */
+  max-height: min(62vh, 560px); overflow-y: auto;
 }
 .cop-family { display: grid; gap: 4px; }
 .cop-name {
@@ -1432,6 +1435,9 @@ body.is-walled { overflow: hidden; }
 }
 .cop-name i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .cop-name small { margin-left: auto; color: var(--ink-faint); font-size: 9.5px; }
+/* The product count sits after the resolution, so only the first small gets
+   pushed to the right or they would both claim the same edge. */
+.cop-name small + small { margin-left: 6px; opacity: .75; }
 .cop-layers { display: flex; gap: 4px; flex-wrap: wrap; }
 .cop-layer {
   flex: 1 1 auto; min-width: 0; max-width: 100%;

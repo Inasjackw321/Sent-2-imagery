@@ -1,21 +1,21 @@
-// Sentinel-3 and Sentinel-5P, as live layers rather than as imagery.
+// The satellites that cannot be imagery, as live layers.
 //
-// The other two Sentinels are in the imagery flow: draw an area, pick a date,
-// get a rendered scene. These two cannot join them, and the reason is worth
-// saying rather than leaving as a gap in the picker.
+// The imagery flow is: draw an area, pick a date, get a rendered scene.
+// Sentinel-1, Sentinel-2 and Landsat live there. These cannot join them, and
+// the reason is worth saying rather than leaving as a gap in the picker.
 //
-// They are published as NetCDF granules -- a whole swath in one file, not
-// tiled and not cloud-optimised. Pulling a hundred-kilometre box out of one
-// means downloading the entire granule, and this app's pipeline is built on
-// windowed reads of COGs. Different data, different pipeline.
+// Sentinel-3 and Sentinel-5P are published as NetCDF granules -- a whole swath
+// in one file, not tiled and not cloud-optimised. Pulling a hundred-kilometre
+// box out of one means downloading the entire granule, and this app's pipeline
+// is built on windowed reads of COGs. Different data, different pipeline. The
+// weather satellites are further from it still: a geostationary full disc is
+// not a scene over your area at all.
 //
-// EUMETSAT serves them as ordinary WMS with no account and no key, which is
-// how they arrive here instead: the current picture, drawn under the imagery.
-// Coarse on purpose -- three hundred metres for Sentinel-3 and seven
-// kilometres for Sentinel-5P -- and that coarseness is the point of them.
-// Sentinel-2 sees a field once every five days; these see the whole planet
-// every day.
-
+// EUMETSAT serves all of them as ordinary WMS with no account and no key,
+// which is how they arrive here: the current picture, drawn under the imagery.
+// Coarse on purpose, and the coarseness is the point. Sentinel-2 sees a field
+// once every five days; Sentinel-3 sees the whole planet every day; Meteosat
+// sees Europe every ten minutes, including at night.
 import { api } from './api.js';
 import { $, el } from './ui.js';
 
@@ -126,10 +126,10 @@ function nothingLive(got) {
   const stale = (got.families ?? []).reduce((n, f) => n + (f.stale ?? 0), 0);
   const hours = Math.round(got.live_within_hours ?? 36);
   if (stale) {
-    return `EUMETSAT has ${stale} Sentinel-3 and Sentinel-5P layers but none `
-      + `from the last ${hours} h. Shown only when current.`;
+    return `EUMETSAT has ${stale} matching layers but none from the last `
+      + `${hours} h. Shown only when current.`;
   }
-  return 'No Sentinel-3 or Sentinel-5P layers at EUMETSAT'
+  return 'No Sentinel, Meteosat or Metop layers at EUMETSAT'
     + `${got.catalogue_size ? ` among ${got.catalogue_size} layers` : ''}.`;
 }
 
@@ -142,15 +142,22 @@ function buildDock() {
   dock.innerHTML = '';
   dock.append(
     el('button', { class: 'cop-toggle', id: 'copToggle', onclick: toggle },
-      el('span', { class: 'cop-mark' }, '🛰'), 'Sentinel-3 / 5P'),
+      el('span', { class: 'cop-mark' }, '🛰'), 'Live satellites'),
     el('div', { class: 'cop-body', id: 'copBody', hidden: !enabled },
       ...families.map((family) => el('div', { class: 'cop-family' },
         el('div', { class: 'cop-name' },
           el('i', { style: `background:${family.colour}` }),
           family.short,
-          el('small', {}, family.resolution)),
+          el('small', {}, family.resolution),
+          // Said out loud now the list is long enough to scroll.
+          el('small', { class: 'cop-many' },
+            `${family.layers.length} product${family.layers.length === 1 ? '' : 's'}`)),
+        // All of them, not the first six. EUMETSAT serves a dozen or more
+        // products per satellite and the cap was hiding most of them behind
+        // nothing -- no count, no "more", just a list that stopped. The panel
+        // scrolls instead.
         el('div', { class: 'cop-layers' },
-          ...family.layers.slice(0, 6).map((layer) => el('button', {
+          ...family.layers.map((layer) => el('button', {
             class: `cop-layer${layer.id === chosen?.layer?.id ? ' is-on' : ''}`,
             title: `${layer.title} — ${layer.id}`,
             onclick: () => { chosen = { family, layer }; buildDock(); show(); },
@@ -203,7 +210,9 @@ function buildDock() {
 /** A label that fits, from a title that does not. */
 function shortName(layer) {
   return layer.title
-    .replace(/sentinel[-\s]?[35]p?\s*/i, '')
+    // The satellite's name is already the heading above the list, so it is
+    // only taking room away from the part that says which product this is.
+    .replace(/^(sentinel[-\s]?[35]p?|metop[-\s]?[abc]?|meteosat|msg|mtg|fci|seviri|avhrr)\s*/i, '')
     .replace(/\s*\(.*\)\s*$/, '')
     .trim()
     .slice(0, 18) || layer.id.split(':').pop().slice(0, 18);
@@ -241,12 +250,18 @@ function paint() {
     age == null ? 'live' : age < 60 ? `${age} min ago`
       : `${Math.round(age / 60)} h ago`}`;
 
+  const spans = chosen.layer.days?.length > 0;
   const lines = [
-    dayAt < 0
-      ? `Every pass in the last ${chosen.layer.days?.length ?? 7} days drawn `
-        + 'together, which is the whole Earth. One instant would be a single '
-        + 'orbit strip.'
-      : 'One whole day: every pass that day.',
+    // A geostationary satellite has no week to offer: every frame is already
+    // the whole disc, so it says what it is instead of what it is composited
+    // from.
+    !spans
+      ? 'The latest full disc, as it was taken.'
+      : dayAt < 0
+        ? `Every pass in the last ${chosen.layer.days.length} days drawn `
+          + 'together, which is the whole Earth. One instant would be a single '
+          + 'orbit strip.'
+        : 'One whole day: every pass that day.',
     chosen.family.about,
   ];
   if (catalogue.attribution === 'synthetic') {

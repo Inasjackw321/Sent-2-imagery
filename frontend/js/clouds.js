@@ -52,6 +52,15 @@ const SOURCES = {
   },
 
   // ── Polar: one pass a day, but everywhere ─────────────────────
+  //
+  // Three VIIRS instruments and two MODIS, which is more redundancy than it
+  // looks. They cross at two different local times, so Terra is a morning
+  // picture and the rest an early-afternoon one, and when one satellite has a
+  // bad day the others have not.
+  'viirs-noaa21': {
+    layer: 'VIIRS_NOAA21_CorrectedReflectance_TrueColor',
+    label: 'VIIRS · NOAA-21', when: 'about 13:30 local', metres: 250,
+  },
   'viirs-noaa20': {
     layer: 'VIIRS_NOAA20_CorrectedReflectance_TrueColor',
     label: 'VIIRS · NOAA-20', when: 'about 13:30 local', metres: 250,
@@ -67,6 +76,32 @@ const SOURCES = {
   'modis-aqua': {
     layer: 'MODIS_Aqua_CorrectedReflectance_TrueColor',
     label: 'MODIS · Aqua', when: 'about 13:30 local', metres: 250,
+  },
+
+  // ── The same satellites, looking at something else ────────────
+  //
+  // True colour is what the eye would see, which means it stops working at
+  // sunset and cannot tell cloud from snow. These two are the same instruments
+  // read differently, and each answers a question true colour cannot.
+  'viirs-night': {
+    // Moonlight and firelight. City lights, gas flares, fishing fleets, and
+    // the burning edge of a wildfire -- on the half of the planet where every
+    // other layer here has nothing at all.
+    layer: 'VIIRS_SNPP_DayNightBand_At_Sensor_Radiance',
+    label: 'VIIRS · night lights', when: 'about 01:30 local', metres: 500,
+    fmt: 'png',
+    // It is a picture of light in the dark, so the cloud mask -- which keeps
+    // what is bright and colourless -- would keep the cities and throw away
+    // the cloud. Shown as it comes.
+    raw: true,
+  },
+  'modis-bands721': {
+    // Short-wave infrared in the red channel: burn scars go red, active fire
+    // glows, cloud stays white and snow turns blue -- the one thing true
+    // colour cannot do, since snow and cloud are both just white to it.
+    layer: 'MODIS_Terra_CorrectedReflectance_Bands721',
+    label: 'MODIS · fire and snow', when: 'about 10:30 local', metres: 250,
+    raw: true,
   },
 };
 
@@ -272,7 +307,11 @@ function buildDock() {
             layer?.setOpacity(opacity);
           },
         })),
-      el('label', { class: 'cloud-fade' }, 'Catch',
+      // "Catch" slides how much haze counts as cloud, so it means nothing for
+      // a source that is not being masked at all. Hidden rather than left
+      // sitting there doing nothing when you drag it.
+      el('label', { class: 'cloud-fade', id: 'cloudCatch',
+                    hidden: !!SOURCES[source].raw }, 'Catch',
         el('input', {
           type: 'range', min: 0, max: 100, value: Math.round(sensitivity * 100),
           oninput: (e) => {
@@ -307,11 +346,29 @@ function rebuild() {
   } else {
     when.textContent = day === today() ? `${day} · today` : day;
     lines.push(`Crosses ${spec.when}, published within about three hours.`);
-    lines.push('One pass a day, and none of the night side.');
+    lines.push(spec.raw && source === 'viirs-night'
+      ? 'One pass a night — this is the half of the planet the others cannot see.'
+      : 'One pass a day, and none of the night side.');
   }
-  lines.push('<b>Cloud only</b> — the ground is cut out. Snow reads as cloud.');
+  // Say which of the two things is on screen. A layer drawn whole and a layer
+  // with everything but the cloud cut out of it look nothing alike, and the
+  // panel is the only place that can tell you which you are looking at.
+  if (!spec.raw) {
+    lines.push('<b>Cloud only</b> — the ground is cut out. Snow reads as cloud.');
+  } else if (source === 'viirs-night') {
+    lines.push('<b>Drawn whole</b> — light at night: cities, gas flares, '
+      + 'fishing fleets, and the burning edge of a wildfire. Moonlit cloud '
+      + 'shows as haze.');
+  } else {
+    lines.push('<b>Drawn whole</b> — short-wave infrared: burn scars red, '
+      + 'active fire glowing, cloud white, snow and ice blue. The one view '
+      + 'here that tells snow from cloud.');
+  }
   if (problem) lines.push(`<b>${problem}</b>`);
   $('#cloudNote').innerHTML = lines.join('<br>');
+
+  const catcher = $('#cloudCatch');
+  if (catcher) catcher.hidden = !!spec.raw;
 
   // The day controls mean nothing for a source that publishes every ten
   // minutes, so they go rather than sitting there doing nothing.
@@ -421,13 +478,21 @@ function paint() {
   }
   const spec = SOURCES[source];
   const live = isLive(source);
-  layer = new CloudTiles(TILES, {
+  // Most of these are pictures of the whole Earth with the cloud cut out of
+  // them. Two are not: night lights and the fire-and-snow band are the point
+  // of themselves rather than a way of seeing the sky, and the mask -- which
+  // keeps what is bright and colourless -- would keep the cities and throw
+  // away everything else. Those are drawn as they come, by a plain tile layer
+  // that never touches a canvas.
+  const Tiles = spec.raw ? L.TileLayer : CloudTiles;
+  layer = new Tiles(TILES, {
     layer: spec.layer,
     matrix: live ? spec.matrix : MATRIX,
     // A geostationary source is asked for an instant; a polar mosaic for a
     // day. Same URL shape, and GIBS accepts either in the same slot.
     date: live ? liveStamp(spec, stepsBack) : day,
-    fmt: 'jpg',
+    // The day-night band is published as PNG; the reflectance mosaics as JPEG.
+    fmt: spec.fmt ?? 'jpg',
     sensitivity,
     opacity,
     maxNativeZoom: live ? spec.native : NATIVE_ZOOM,

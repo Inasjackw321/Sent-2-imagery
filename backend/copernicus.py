@@ -1,19 +1,20 @@
-"""The rest of the Sentinel family, as live map layers.
+"""Satellites that cannot go through the imagery pipeline, as live map layers.
 
-Sentinel-1 and Sentinel-2 are in the imagery flow: you draw an area, pick a
-date, and a scene is rendered from cloud-optimised GeoTIFFs read a window at a
-time. Sentinel-3 and Sentinel-5P cannot join them, and the reason is worth
-stating rather than leaving as an unexplained gap.
+The imagery flow is: draw an area, pick a date, and a scene is rendered from
+cloud-optimised GeoTIFFs read a window at a time. Sentinel-1, Sentinel-2 and
+Landsat live there. Everything in this module cannot, and the reason is worth
+stating rather than leaving as an unexplained gap in the picker.
 
-Those two are published as NetCDF granules -- whole swaths in one file, not
-tiled, not cloud-optimised. Reading a hundred-kilometre box out of one means
-downloading the entire granule, and the pipeline here is built on windowed
-reads of COGs. It is not a small change; it is a different pipeline.
+Sentinel-3 and Sentinel-5P are published as NetCDF granules -- whole swaths in
+one file, not tiled, not cloud-optimised. Reading a hundred-kilometre box out
+of one means downloading the entire granule, and the pipeline here is built on
+windowed reads of COGs. It is not a small change; it is a different pipeline.
+The weather satellites are further still from it: a geostationary full disc is
+not a scene over your area at all.
 
-But they are served as ordinary WMS by EUMETSAT View, the same service the
-lightning layer already uses, with no account and no key. So they arrive here
-as live map layers instead: a picture of the whole disc or swath, current,
-drawn under the imagery.
+But EUMETSAT View serves all of them as ordinary WMS, with no account and no
+key -- the same service the lightning layer already uses. So they arrive here
+as live map layers instead: the current picture, drawn under the imagery.
 
 What each one is for:
 
@@ -28,11 +29,22 @@ What each one is for:
                carbon monoxide from fires, sulphur dioxide from volcanoes. Not
                a picture of the ground at all -- a picture of the air above it.
 
+  Meteosat     MSG and MTG, parked over the meridian. Not a Sentinel, and here
+               because it answers what the Sentinels cannot: what is happening
+               right now. The whole disc every ten minutes, day and night,
+               which is weather moving rather than weather on one morning.
+
+  Metop        Europe's polar weather satellites, crossing at dawn and dusk
+               where the Sentinels cross at midday -- the same ground, lit from
+               the other side. AVHRR, IASI and ASCAT.
+
 As with the lightning, nothing here names a layer. EUMETSAT publishes what it
 serves and for when; this reads that and offers what is actually there, and a
 layer reaches the live list only by declaring a recent frame. A product whose
-name says "Sentinel-3" and whose contents are a 2019 reprocessing is refused
-by arithmetic rather than by vocabulary.
+name says "Sentinel-3" and whose contents are a 2019 reprocessing is refused by
+arithmetic rather than by vocabulary -- and how recent is recent depends on the
+orbit, so a geostationary satellite is held to hours where a polar one is held
+to a day and a half.
 """
 
 from __future__ import annotations
@@ -56,6 +68,9 @@ FAMILIES: tuple[dict[str, Any], ...] = (
         "words": ("sentinel-5p", "sentinel_5p", "s5p", "tropomi"),
         "colour": "#c58cff",
         "resolution": "≈7 km",
+        # A polar orbiter: passes over at a fixed local time, so one instant is
+        # one strip and a whole day of strips is the planet.
+        "spans_days": True,
         "about": "TROPOMI measures the air rather than the ground: nitrogen "
                  "dioxide over cities and shipping lanes, methane, carbon "
                  "monoxide from fires, sulphur dioxide from volcanoes. Daily, "
@@ -68,10 +83,58 @@ FAMILIES: tuple[dict[str, Any], ...] = (
         "words": ("sentinel-3", "sentinel_3", "olci", "slstr", "s3a", "s3b"),
         "colour": "#4ce0b3",
         "resolution": "300 m – 1 km",
+        "spans_days": True,
         "about": "Three hundred metres and the whole planet every day or two. "
                  "Coarse next to Sentinel-2's ten, and the only Sentinel that "
                  "sees everywhere every day — a weather system rather than a "
                  "field.",
+    },
+    # Not Sentinels, and offered anyway, because they answer the question the
+    # Sentinels cannot: what is happening right now.
+    #
+    # A polar orbiter passes over at a fixed local time and is gone. These two
+    # families are the alternative -- one parked over a fixed longitude
+    # photographing its whole disc every few minutes, one crossing at dawn and
+    # dusk where the Sentinels cross at midday. Same service, same discovery,
+    # same refusal to trust a name over a timestamp.
+    {
+        "key": "mtg",
+        "short": "Meteosat",
+        "label": "Meteosat · Europe and Africa, every few minutes",
+        # MTG is the new generation, MSG the one it is replacing; both are
+        # flying and EUMETSAT serves both. SEVIRI and FCI are their imagers.
+        "words": ("meteosat", "seviri", "_fci", "fci_", "msg_", "mtg_fd",
+                  "mtg_"),
+        # The lightning imager rides on the same spacecraft and is already its
+        # own layer. See family_of().
+        "avoid": ("li_", "lightning", "flash", "_afa", "accumulated flash"),
+        "colour": "#ffb74d",
+        "resolution": "500 m – 3 km",
+        # Geostationary. One instant is already the whole disc, so compositing
+        # a day would blend a hundred and forty frames of a moving sky into
+        # mud. And ten-minute imagery that is six hours old is broken, not
+        # normal -- the polar orbiters' day-and-a-half window would call a dead
+        # service healthy.
+        "spans_days": False,
+        "live_within_hours": 6,
+        "about": "Parked over the Greenwich meridian, photographing the whole "
+                 "disc every ten minutes — Europe, Africa and the Atlantic, "
+                 "day and night. Coarse, but the only thing here that shows "
+                 "weather moving rather than weather on one particular "
+                 "morning.",
+    },
+    {
+        "key": "metop",
+        "short": "Metop",
+        "label": "Metop · dawn and dusk, pole to pole",
+        "words": ("metop", "avhrr", "iasi", "ascat"),
+        "colour": "#7fc4ff",
+        "resolution": "1 km – 25 km",
+        "spans_days": True,
+        "about": "Europe's polar weather satellites, crossing at dawn and "
+                 "dusk rather than midday — the same ground the Sentinels see, "
+                 "lit from the other side. AVHRR for cloud and land, ASCAT for "
+                 "wind over the sea.",
     },
 )
 
@@ -92,7 +155,7 @@ DAYS_OFFERED = 7
 # working perfectly.
 LIVE_WITHIN = dt.timedelta(hours=36)
 
-ATTRIBUTION = "Contains modified Copernicus Sentinel data · EUMETSAT View"
+ATTRIBUTION = "Contains modified Copernicus data · EUMETSAT View"
 
 
 class CopernicusError(RuntimeError):
@@ -100,12 +163,34 @@ class CopernicusError(RuntimeError):
 
 
 def family_of(name: str, title: str) -> str | None:
-    """Which Sentinel this layer belongs to, if any."""
+    """Which family this layer belongs to, if any.
+
+    A family may also name words that disqualify a layer. That exists for one
+    real case: the lightning imager flies on Meteosat, so every pattern broad
+    enough to catch Meteosat's pictures also catches it -- and lightning is
+    already its own layer, with its own panel, its own six-hour freshness rule
+    and its own way of drawing. Offering it here as well would be two different
+    answers to the same question, which is the same reason Sentinel-2 is kept
+    out of this module entirely.
+    """
     low = f"{name} {title}".lower()
     for family in FAMILIES:
+        if any(word in low for word in family.get("avoid", ())):
+            continue
         if any(word in low for word in family["words"]):
             return family["key"]
     return None
+
+
+def live_within(family: dict[str, Any]) -> dt.timedelta:
+    """How old the newest frame may be before this family counts as stale.
+
+    A day and a half suits a polar orbiter, which only passes over a given
+    place every day or two. It would call a dead geostationary service healthy,
+    so Meteosat sets its own and gets the lightning layer's six hours.
+    """
+    hours = family.get("live_within_hours")
+    return dt.timedelta(hours=hours) if hours else LIVE_WITHIN
 
 
 def days_offered(newest: dt.datetime | None) -> list[str]:
@@ -139,6 +224,7 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
         raise CopernicusError(
             f"EUMETSAT sent a catalogue that would not parse: {exc}") from exc
 
+    by_key = {f["key"]: f for f in FAMILIES}
     found: dict[str, list[dict[str, Any]]] = {f["key"]: [] for f in FAMILIES}
     stale: dict[str, int] = {f["key"]: 0 for f in FAMILIES}
 
@@ -152,14 +238,19 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
         if key is None:
             continue
 
+        family = by_key[key]
         newest, entry = mtg._entry(node, name, title)
         # A day at a time, and the whole week as one composite. What a WMS
         # does with a TIME range is draw everything in it, so a day of orbit
         # strips comes back as a covered globe rather than as one pass.
-        entry["days"] = days_offered(newest)
+        #
+        # Only for the satellites that fly over. A geostationary one already
+        # has the whole disc in every frame, and compositing a day of those
+        # would blend a moving sky into mud.
+        entry["days"] = days_offered(newest) if family.get("spans_days") else []
         entry["whole_week"] = (
             f"{entry['days'][0]}/{entry['days'][-1]}" if entry["days"] else None)
-        fresh = newest is not None and now - newest <= LIVE_WITHIN
+        fresh = newest is not None and now - newest <= live_within(family)
         entry["live"] = fresh
         entry["age_minutes"] = (
             round((now - newest).total_seconds() / 60) if newest else None)
@@ -176,7 +267,8 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
         "families": [
             {**family,
              "layers": found[family["key"]],
-             "stale": stale[family["key"]]}
+             "stale": stale[family["key"]],
+             "live_within_hours": live_within(family).total_seconds() / 3600}
             for family in FAMILIES
         ],
         "wms": mtg.WMS,
@@ -187,7 +279,7 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
 
 
 def layers(refresh: bool = False) -> dict[str, Any]:
-    """What EUMETSAT is serving from Sentinel-3 and Sentinel-5P right now."""
+    """What EUMETSAT is serving from each of these families right now."""
     try:
         xml = mtg.capabilities(refresh=refresh)
     except mtg.MTGError as exc:
@@ -205,14 +297,18 @@ def layers(refresh: bool = False) -> dict[str, Any]:
 def demo() -> dict[str, Any]:
     """The same shape as a live answer, for the build with no network."""
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    recent = mtg._stamp(now - dt.timedelta(hours=3))
-
     days = days_offered(now)
 
-    def entry(ident: str, title: str) -> dict[str, Any]:
-        return {"id": ident, "title": title, "time_default": recent,
-                "newest": recent, "age_minutes": 180, "live": True,
-                "days": days, "whole_week": f"{days[0]}/{days[-1]}"}
+    def entry(ident: str, title: str, *, spans: bool = True,
+              minutes: int = 180) -> dict[str, Any]:
+        stamp = mtg._stamp(now - dt.timedelta(minutes=minutes))
+        return {"id": ident, "title": title, "time_default": stamp,
+                "newest": stamp, "age_minutes": minutes, "live": True,
+                # A geostationary layer carries no week, exactly as it would
+                # not live -- otherwise the demo grows a day stepper that the
+                # real thing never shows.
+                "days": days if spans else [],
+                "whole_week": f"{days[0]}/{days[-1]}" if spans else None}
 
     seeded = {
         "sentinel-3": [entry("copernicus:s3_olci_truecolour",
@@ -220,16 +316,30 @@ def demo() -> dict[str, Any]:
                        entry("copernicus:s3_slstr_lst",
                              "Sentinel-3 SLSTR land surface temperature (demo)")],
         "sentinel-5p": [entry("copernicus:s5p_no2",
-                              "Sentinel-5P nitrogen dioxide (demo)")],
+                              "Sentinel-5P nitrogen dioxide (demo)"),
+                        entry("copernicus:s5p_ch4",
+                              "Sentinel-5P methane (demo)")],
+        # Minutes rather than hours old, because six hours would be stale for
+        # a satellite that publishes every ten minutes -- and the demo should
+        # not show a state the live service would refuse.
+        "mtg": [entry("mtg_fd:rgb_truecolour", "MTG FCI true colour (demo)",
+                      spans=False, minutes=20),
+                entry("msg_fes:rgb_naturalcolour",
+                      "MSG SEVIRI natural colour (demo)",
+                      spans=False, minutes=25)],
+        "metop": [entry("metop:avhrr_truecolour",
+                        "Metop AVHRR true colour (demo)"),
+                  entry("metop:ascat_winds", "Metop ASCAT ocean winds (demo)")],
     }
     return {
         "families": [
-            {**family, "layers": seeded[family["key"]], "stale": 0}
+            {**family, "layers": seeded[family["key"]], "stale": 0,
+             "live_within_hours": live_within(family).total_seconds() / 3600}
             for family in FAMILIES
         ],
         "wms": mtg.WMS,
         "attribution": "synthetic",
         "live_within_hours": LIVE_WITHIN.total_seconds() / 3600,
         "days_offered": DAYS_OFFERED,
-        "catalogue_size": 3,
+        "catalogue_size": sum(len(v) for v in seeded.values()),
     }

@@ -173,8 +173,32 @@ class TestAWeekOfWholeEarth:
 
     def test_the_demo_carries_it_too(self):
         for family in copernicus.demo()["families"]:
+            if not family.get("spans_days"):
+                continue
             for entry in family["layers"]:
-                assert entry["days"] and entry["whole_week"]
+                assert entry["days"] and entry["whole_week"], family["key"]
+
+    def test_a_geostationary_satellite_is_offered_no_week(self):
+        # It photographs the whole disc every ten minutes, so one frame is
+        # already the whole picture. Compositing a day of them would blend a
+        # hundred and forty frames of a moving sky into mud, and a day stepper
+        # would be offering something meaningless.
+        got = copernicus.sort_layers(capabilities(
+            layer("mtg_fd:rgb_truecolour", title="MTG FCI True Colour",
+                  extent=iso(0.5))), now=NOW)
+        entry = [f for f in got["families"] if f["key"] == "mtg"][0]["layers"][0]
+        assert entry["days"] == []
+        assert entry["whole_week"] is None
+
+    def test_the_demo_agrees_with_that(self):
+        # Otherwise the offline build grows a day stepper the live one never
+        # shows, which is the kind of difference nobody finds until a
+        # screenshot from the demo is used to explain the real thing.
+        for family in copernicus.demo()["families"]:
+            if family.get("spans_days"):
+                continue
+            for entry in family["layers"]:
+                assert entry["days"] == [] and entry["whole_week"] is None
 
 
 class TestTheAnswer:
@@ -204,10 +228,48 @@ class TestTheAnswer:
         assert got["sentinel-3"]["layers"]
         assert got["sentinel-5p"]["layers"]
 
-    def test_the_families_offered_are_the_ones_that_cannot_be_imagery(self):
-        # Sentinel-1 and Sentinel-2 belong in the date-search flow and are
-        # deliberately not here; these two cannot go there at all.
+    def test_nothing_here_is_also_in_the_imagery_flow(self):
+        # This is the rule that matters, rather than the exact list: anything
+        # you can draw a box around and pick a date for belongs there, and
+        # offering it here as well would be two different answers to the same
+        # question. Sentinel-1, Sentinel-2 and Landsat are all in that flow.
         from backend import config
         keys = {f["key"] for f in copernicus.FAMILIES}
-        assert keys == {"sentinel-3", "sentinel-5p"}
         assert not (keys & set(config.SATELLITES))
+
+    def test_every_family_says_how_its_orbit_behaves(self):
+        # Both of these change what the panel offers and what counts as live,
+        # and a family that forgot to say would silently get the polar
+        # orbiter's answers.
+        for family in copernicus.FAMILIES:
+            assert isinstance(family["spans_days"], bool), family["key"]
+            assert copernicus.live_within(family) > dt.timedelta(0)
+
+    def test_a_geostationary_family_is_held_to_a_tighter_clock(self):
+        # A satellite publishing every ten minutes is broken long before a
+        # polar orbiter's day and a half is up.
+        by_key = {f["key"]: f for f in copernicus.FAMILIES}
+        assert copernicus.live_within(by_key["mtg"]) < copernicus.LIVE_WITHIN
+        assert copernicus.live_within(by_key["sentinel-3"]) == copernicus.LIVE_WITHIN
+
+    def test_the_lightning_layer_is_not_offered_twice(self):
+        # It flies on Meteosat, so every pattern broad enough to catch
+        # Meteosat's pictures also catches it -- and it already has its own
+        # panel, its own freshness rule and its own way of drawing.
+        for name, title in [("mtg_fd:li_afa", "Accumulated Flash Area"),
+                            ("mtg_fd:li_aff", "Accumulated Flash Fraction"),
+                            ("x:lightning_density", "Lightning"),
+                            ("msg_fes:li_flash", "SEVIRI flash")]:
+            assert copernicus.family_of(name, title) is None, name
+
+    def test_but_meteosat_pictures_still_are(self):
+        # The exclusion has to be narrow enough to leave the imagery behind.
+        for name, title in [("mtg_fd:rgb_truecolour", "MTG FCI True Colour"),
+                            ("msg_fes:rgb_naturalcolour", "MSG SEVIRI Natural"),
+                            ("x:meteosat_ir108", "Meteosat infrared")]:
+            assert copernicus.family_of(name, title) == "mtg", name
+
+    def test_metop_is_found_by_each_of_its_instruments(self):
+        for name in ("metop:avhrr_ndvi", "x:ASCAT_winds", "eo:iasi_ozone",
+                     "metop-b_something"):
+            assert copernicus.family_of(name, "") == "metop", name

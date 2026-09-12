@@ -19,7 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  BASEMAPS, DEFAULT_BASEMAP, KEYLESS_HOSTS, PROBE,
+  BASEMAPS, DEFAULT_BASEMAP, KEYLESS_HOSTS, NAMES, PROBE,
   hostsUsed, probeUrl, refusal, saidNo,
 } from '../frontend/js/tiles.js';
 
@@ -182,4 +182,33 @@ test('the default basemap is one that exists', () => {
 
 test('the default is not the last one, so it has somewhere to fall to', () => {
   assert.notEqual(BASEMAPS.at(-1).key, DEFAULT_BASEMAP);
+});
+
+// ── Place names ────────────────────────────────────────────────
+//
+// The other basemap fault that does not look like a fault. Esri's World Street
+// Map drew Ukraine perfectly and captioned its capital "Kiev" -- roads,
+// borders and rivers all correct, only the names years out of date. Nothing
+// automatic catches that: the tile is valid, the service is healthy, the
+// label is simply wrong. So each basemap declares where its names come from
+// and the default is held to it here.
+
+test('every basemap says where its place names come from', () => {
+  for (const spec of BASEMAPS) {
+    assert.ok(Object.values(NAMES).includes(spec.names),
+              `${spec.key}: names is ${spec.names}`);
+  }
+});
+
+test('the default basemap does not use a vendor\'s own place names', () => {
+  const spec = BASEMAPS.find((s) => s.key === DEFAULT_BASEMAP);
+  assert.notEqual(spec.names, NAMES.VENDOR,
+    `${spec.key} is the default and uses vendor cartography — this is exactly `
+    + 'how "Kiev" ended up on screen. The default must render OpenStreetMap '
+    + 'names or carry none at all.');
+});
+
+test('at least one basemap has current place names on it', () => {
+  // A map with no names anywhere is not a map you can find anything on.
+  assert.ok(BASEMAPS.some((s) => s.names === NAMES.OSM));
 });
