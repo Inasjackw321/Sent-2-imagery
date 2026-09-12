@@ -57,10 +57,12 @@ export const KEYLESS_HOSTS = {
   // anonymous clients, and already relied on by this app's imagery and ocean
   // layers for long enough to be worth trusting for the rest.
   'server.arcgisonline.com': 'Esri public ArcGIS Online basemaps',
-  // Volunteer-run like OpenStreetMap's own, but with a usage policy that
-  // permits modest embedded use rather than forbidding it. It is not the
-  // default, and if it is ever blocked the probe below will catch it, because
-  // OpenTopoMap refuses with a status rather than with a picture.
+  // Vetted and permitted, but not currently offered: the topographic basemap
+  // was removed on request. Kept here because the vetting is the expensive
+  // part and it is the only keyless raster service left that renders
+  // OpenStreetMap. Putting it back needs a BASEMAPS entry *and* a line in the
+  // backend's img-src and connect-src policy, or its tiles are blocked by the
+  // page rather than by the service.
   'tile.opentopomap.org': 'OpenTopoMap, CC-BY-SA, modest use permitted',
 };
 
@@ -147,27 +149,40 @@ export const NAMES = {
 /**
  * The basemaps on offer, in the order they are fallen back through.
  *
- * No label overlays anywhere: a basemap's names are either drawn into the tile
- * by whoever made it or absent. Stacking a separate label layer on top is how
- * you get names that disagree with the map underneath, and Esri's reference
- * overlay is the same stale cartography as its street map.
+ * Dark first, because it is the default and the fallback walks forward from
+ * whatever failed: a default in the middle of the list would leave everything
+ * above it untried.
+ *
+ * Two things about this list are deliberate choices with costs, and both were
+ * previously held by tests that had to be rewritten to let them through. They
+ * are recorded here so neither looks like an oversight later.
+ *
+ * No place names. Every basemap here is either photographs or one of Esri's
+ * canvas "Base" layers, which carry no labels at all -- that is the point of
+ * Esri splitting them from the matching "Reference" layers, which this app
+ * deliberately never loads. Nothing can therefore caption a city wrongly,
+ * which is what went wrong before. The cost is that you cannot read a place
+ * name off the map, so finding somewhere means the search box rather than the
+ * eye. The Ocean layer is the one exception and is marked as such.
+ *
+ * One provider. Every entry is Esri, so if Esri refuses there is nowhere to
+ * fall back to and the backdrop goes entirely -- the app's own layers would
+ * still draw, on nothing. The only keyless raster service left that renders
+ * OpenStreetMap was OpenTopoMap, which was removed on request; the durable
+ * answer is a vector basemap, which needs a library this app would have to
+ * vendor.
  */
 export const BASEMAPS = [
   {
-    // Default, and the only one here with current place names on it.
-    //
-    // It is a topographic map, which is more ink than a plain street map --
-    // contours, relief, paths -- but it is rendered from OpenStreetMap, so
-    // Kyiv is Kyiv, and it is the one keyless raster service left that renders
-    // OSM and permits this use. That is a thin field, and it is thin because
-    // OpenStreetMap's own servers forbid it and every commercial renderer of
-    // OSM data now wants an API key.
-    key: 'topo', label: 'Topographic',
-    names: NAMES.OSM,
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    key: 'dark', label: 'Dark',
+    names: NAMES.NONE,
+    url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
     options: {
-      subdomains: 'abc', maxNativeZoom: 17, maxZoom: 19,
-      attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)',
+      maxNativeZoom: 16, maxZoom: 19,
+      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
+      // Esri's dark canvas is really a mid grey. Deepened here so it reads as
+      // a background rather than as the subject.
+      className: 'tiles-dark',
     },
   },
   {
@@ -198,18 +213,6 @@ export const BASEMAPS = [
     },
   },
   {
-    key: 'dark', label: 'Dark',
-    names: NAMES.NONE,
-    url: `${ESRI}/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
-    options: {
-      maxNativeZoom: 16, maxZoom: 19,
-      attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors',
-      // Esri's dark canvas is really a mid grey. Deepened here so it reads as
-      // a background rather than as the subject.
-      className: 'tiles-dark',
-    },
-  },
-  {
     // Bathymetry, which is what it is for. Its few labels are ocean features
     // and Esri's own, so it is not somewhere to read a city name off.
     key: 'ocean', label: 'Ocean',
@@ -223,7 +226,7 @@ export const BASEMAPS = [
 ];
 
 /** Which one is on screen at the start. */
-export const DEFAULT_BASEMAP = 'topo';
+export const DEFAULT_BASEMAP = 'dark';
 
 /** How to put a refusal to somebody looking at a map that just changed. */
 export function saidNo(status) {

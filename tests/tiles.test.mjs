@@ -157,10 +157,30 @@ test('every basemap is served over https', () => {
   for (const spec of BASEMAPS) assert.ok(spec.url.startsWith('https://'), spec.key);
 });
 
-test('the basemaps are not all on one host', () => {
-  // The fallback skips to a different provider rather than the next line,
-  // which only means anything if there is a different provider to skip to.
-  assert.ok(hostsUsed(BASEMAPS).length > 1, 'one host means no fallback');
+test('the fallback always terminates, even with one provider', () => {
+  // Every basemap is now Esri, by choice: the topographic map was the only
+  // non-Esri entry and was removed. So the fallback has nowhere different to
+  // go, and what matters instead is that walking it cannot loop or run off the
+  // end. Asserted by walking it from every starting point.
+  for (const spec of BASEMAPS) {
+    const seen = new Set();
+    let at = spec;
+    while (at) {
+      assert.ok(!seen.has(at.key), `fallback loops at ${at.key}`);
+      seen.add(at.key);
+      const host = new URL(probeUrl(at)).host;
+      const rest = BASEMAPS.slice(BASEMAPS.indexOf(at) + 1);
+      at = rest.find((other) => new URL(probeUrl(other)).host !== host)
+        ?? rest[0];
+    }
+    assert.ok(seen.size >= 1);
+  }
+});
+
+test('the default is first, so the fallback can reach the rest', () => {
+  // The fallback walks forward from whatever failed. A default in the middle
+  // of the list would leave every entry above it unreachable.
+  assert.equal(BASEMAPS[0].key, DEFAULT_BASEMAP);
 });
 
 test('every basemap carries an attribution', () => {
@@ -208,7 +228,18 @@ test('the default basemap does not use a vendor\'s own place names', () => {
     + 'names or carry none at all.');
 });
 
-test('at least one basemap has current place names on it', () => {
-  // A map with no names anywhere is not a map you can find anything on.
-  assert.ok(BASEMAPS.some((s) => s.names === NAMES.OSM));
+test('no basemap can caption a city wrongly', () => {
+  // This replaces a test that required at least one basemap to carry current
+  // place names. That is no longer true and is no longer the goal: the
+  // topographic map was the only one rendering OpenStreetMap and was removed,
+  // so what is left is photographs and Esri's label-free canvas layers.
+  //
+  // The property that survives is the one the "Kiev" bug was about. Nothing
+  // offered may present the provider's own place names, because those are the
+  // ones that lag — except the Ocean layer, which is bathymetry and is marked
+  // as such. Finding a place is the search box's job now, not the map's.
+  for (const spec of BASEMAPS) {
+    if (spec.key === 'ocean') continue;
+    assert.notEqual(spec.names, NAMES.VENDOR, spec.key);
+  }
 });

@@ -75,8 +75,7 @@ CSP = "; ".join([
     # Map tiles come from several providers, and a rendered scene arrives as a
     # data: URL. blob: is the decoded seismogram.
     "img-src 'self' data: blob: "
-    "https://*.tile.opentopomap.org https://server.arcgisonline.com "
-    "https://*.rainviewer.com "
+    "https://server.arcgisonline.com https://*.rainviewer.com "
     "https://gibs.earthdata.nasa.gov "
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
     "https://airtw.moenv.gov.tw https://ristmikud.tallinn.ee "
@@ -94,7 +93,7 @@ CSP = "; ".join([
     # with a 403 on it. This allows a GET of a URL already permitted as an
     # image, which widens nothing.
     "connect-src 'self' https://api.rainviewer.com "
-    "https://*.tile.opentopomap.org https://server.arcgisonline.com "
+    "https://server.arcgisonline.com "
     "https://*.streamlock.net https://*.vdotcameras.com "
     "https://*.earthcam.com https://cdn.jsdelivr.net",
     "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
