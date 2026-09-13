@@ -363,6 +363,28 @@ def ollama_status() -> dict:
     return ollama.status()
 
 
+@app.post("/api/tracker/dismiss")
+def tracker_dismiss(body: dict = Body(...)) -> dict:
+    """Take one mark off the map, or put it back.
+
+    A POST rather than a DELETE because it is reversible and because the
+    restore is the same operation with a flag -- two verbs for one toggle
+    would be tidier REST and a worse thing to use.
+
+    It hides a mark; it does not edit the record. The report stays in the
+    stream, marked, so what a channel actually said is not something a browser
+    can change.
+    """
+    ident = str(body.get("id") or "")[:160]
+    if not ident:
+        raise HTTPException(status_code=400, detail="no id given")
+    if body.get("restore"):
+        return {"restored": tracker.restore(ident),
+                "dismissed": tracker.dismissed_now()}
+    return {"removed": tracker.dismiss(ident),
+            "dismissed": tracker.dismissed_now()}
+
+
 @app.get("/api/quakes")
 def earthquakes(
     west: float = Query(..., ge=-180, le=180),

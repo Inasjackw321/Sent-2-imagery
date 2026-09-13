@@ -115,6 +115,11 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      r"|\bballistic\b|\biskander\b|\bkinzhal\b"
      r"|بالستي|בליסטי|بالستیک"),
     ("cruise",
+     # The bare word, which was in no pattern at all: "Ракети на Львівщину"
+     # was read as nothing and produced no mark. Safe below "alert", which
+     # catches "ракетна небезпека" and "ракетная опасность" first -- those are
+     # warnings ABOUT missiles rather than reports of them.
+     r"ракет\w*|ракети|"
      r"крилат|крылат|калібр|калибр|х-101|x-101|х-555|онікс|оникс"
      r"|\bcruise missiles?\b|\bkalibr\b|\bonyx\b"
      r"|صاروخ|صواريخ|טיל|טילים|موشک"),
@@ -215,8 +220,17 @@ RU_REGIONS: dict[str, str] = {
 # обл.", "Белгородская область", "Брянской области". The stem differs by a
 # single letter between the two -- Ukrainian "ськ", Russian "ск" -- so one
 # pattern covers both and the soft sign is optional.
+# The consonant before "-ька" is CAPTURED rather than assumed to be "с".
+#
+# It was hardcoded, and four oblasts do not have an "с" there: Запорізька,
+# Донецька, Вінницька and Хмельницька. So "Повітряна тривога у Запорізькій
+# області" came back as the place "Запорізькій" -- the adjective on its own,
+# with "області" lost -- which no gazetteer holds. That is a warning for a
+# whole province going unplaced, and because the declared one never landed, a
+# DERIVED warning was raised beside it from the drones underneath: two
+# triangles over one oblast, which is what the screenshot showed.
 OBLAST_FULL = re.compile(
-    r"([А-ЯІЇЄҐЁ][а-яіїєґёʼ'’\-]+?)с[ьк]?к\w*\s+"
+    r"([А-ЯІЇЄҐЁ][а-яіїєґёʼ'’\-]+?)([сцз])ь?к\w*\s+"
     r"(обл|кра|окру|республик)", re.I)
 
 # The prepositions that introduce the place a report is about. Anything after
@@ -540,6 +554,11 @@ def variants(name: str) -> list[str]:
             out.append(f"{name[:-3]}и")
         elif low.endswith("ями"):
             out.append(f"{name[:-3]}і")
+        # Masculine instrumental of an adjectival name: "над Кропивницьким"
+        # -> Кропивницький. A whole class of Ukrainian city names is
+        # adjectival and every one of them arrived in this form unplaced.
+        elif low.endswith("им") and len(low) > 5:
+            out.append(f"{name[:-2]}ий")
         # Feminine accusative, which is what "курсом на X" produces:
         # "курсом на Одесу" -> Одеса, "на Вінницю" -> Вінниця. Only for a
         # name that is not already known, since the table check in
@@ -568,15 +587,22 @@ def find_region(text: str) -> str | None:
     if full:
         # Rebuilt in the nominative, in whichever language it was written, so
         # the gazetteer gets a name it knows rather than an inflected one.
-        head, tail = full.group(1), full.group(2).lower()
+        head, hiss, tail = full.group(1), full.group(2), full.group(3).lower()
         # Which language, decided by the letters Ukrainian has and Russian
         # does not. Looking for Russian-only letters instead was the wrong way
         # round: "Воронежской области" contains none of them, so it came back
         # as "Воронежська область" -- a Russian region with a Ukrainian ending,
         # which no gazetteer knows.
         ukrainian = re.search(r"[іїєґ]", text.lower())
-        stem = f"{head}ська" if ukrainian else f"{head}ская"
-        return f"{stem} {'область' if tail == 'обл' else RU_TAIL[tail]}"
+        word = "область" if tail == "обл" else RU_TAIL[tail]
+        # And the gender has to agree with the noun. "край" and "округ" are
+        # masculine, so "Краснодарская край" is not a thing anybody writes and
+        # not a thing any gazetteer holds -- it wants "Краснодарский край".
+        if word in ("край", "округ"):
+            ending = "ький" if ukrainian else "кий"
+        else:
+            ending = "ька" if ukrainian else "кая"
+        return f"{head}{hiss}{ending} {word}"
     english = REGION_EN.search(text)
     if english:
         name = _trim_en(_tidy(english.group(1)))

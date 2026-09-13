@@ -925,3 +925,113 @@ class TestTheCasesThatWereLeavingReportsUnplaced:
         assert got["toward"] == "Одесу"
         # Named properly in the line a person reads, even so.
         assert "Одеса" in got["summary"]
+
+
+# Every shape these five channels actually post, in both languages and both
+# scripts. Kept as one list because the property worth holding is about the
+# WHOLE set: a rule added for one form that breaks another would still pass
+# every individual case written separately.
+EVERY_SHAPE = (
+    "Шахед над Нікополем курсом на північ", "БпЛА повз Кагарлик",
+    "Вибухи в Одесі", "Тривога у Харківській області", "БпЛА на Полтавщині",
+    "Група БпЛА над Сумщиною", "Балістика на Дніпропетровщину",
+    "БпЛА в районі Кременчука", "Шахед над Житомиром", "Вибух у Запоріжжі",
+    "БпЛА біля Ізмаїла", "Шахед над Чернігівщиною", "Ракети на Львівщину",
+    "БпЛА над Вінниччиною", "Тривога на Рівненщині", "Вибухи у Миколаєві",
+    "Шахед над Хмельниччиною", "БпЛА над Тернопільщиною", "Вибухи на Одещині",
+    "Шахед над Кропивницьким", "БпЛА над Ужгородом", "Вибух у Чернівцях",
+    "Тривога у Закарпатській області", "Шахед над Луцьком", "БпЛА над Рівним",
+    "Вибухи у Дніпрі", "Шахед над Херсонщиною", "БпЛА над Донеччиною",
+    "Тривога на Луганщині", "Шахед над Кривим Рогом", "БпЛА над Білою Церквою",
+    "Вибухи у Броварах", "БпЛА над Бориспілем", "Шахед над Фастовом",
+    "Вибух у Павлограді", "Повітряна тривога у Запорізькій області",
+    "Тривога у Донецькій області", "Тривога у Вінницькій області",
+    "БпЛА над Белгородской областью", "Взрыв в Курске",
+    "БпЛА над Воронежской областью", "Взрывы в Брянске",
+    "БпЛА над Ростовской областью", "Отбой угрозы БпЛА в Липецкой области",
+    "Lipetsk Oblast Drone Alert", "Voronezh Oblast Missile Alert",
+    "Republic of Tatarstan, Republic of Bashkortostan – UAV alert cleared.",
+    "Explosions reported in Kharkiv", "UAV heading west past Kaharlyk",
+    "Drone over Sumy Oblast", "Drone over Kyiv Oblast",
+    "Nizhnekamsk, Republic of Tatarstan, was the target of a massive drone strike.",
+    "Explosions in Zaporizhzhia", "Air alert in Lviv Oblast",
+)
+
+
+class TestNothingInTheSweepGoesUnplaced:
+    """The whole sweep, as one number, because the number is the point.
+
+    It started at eleven of fifteen unplaceable and every fix since has been
+    found by widening this rather than by guessing. What it holds now is that
+    every shape these channels post is both READ and PLACEABLE -- the second
+    being the one that failed silently, as a row in the panel nobody could act
+    on.
+    """
+
+    def test_every_shape_is_read(self):
+        unread = [t for t in EVERY_SHAPE if not reports.read_all(t)]
+        assert not unread, unread
+
+    def test_every_shape_names_a_place(self):
+        nameless = [t for t in EVERY_SHAPE
+                    if any(not g.get("place") for g in reports.read_all(t))]
+        assert not nameless, nameless
+
+    def test_every_place_it_names_can_be_found(self):
+        lost = []
+        for text in EVERY_SHAPE:
+            for got in reports.read_all(text):
+                name = got["place"]
+                if not any(places.lookup(v) for v in reports.variants(name)):
+                    lost.append((text, name))
+        assert not lost, lost
+
+    def test_and_found_without_a_request(self):
+        # Not just placeable but placeable for nothing. Every one of these is
+        # a name these channels write nightly; a lookup for one is a second of
+        # Nominatim's rate limit spent on an answer that has not changed.
+        wired = []
+        for text in EVERY_SHAPE:
+            for got in reports.read_all(text):
+                if not any(places.lookup(v)
+                           for v in [got["place"], *reports.variants(got["place"])]):
+                    wired.append((text, got["place"]))
+        assert not wired, wired
+
+    def test_the_oblast_adjectives_that_are_not_spelled_with_s(self):
+        """Four oblasts, and they were all silently failing.
+
+        The pattern hardcoded an "с" before "-ька", and Запорізька, Донецька,
+        Вінницька and Хмельницька do not have one. So "Повітряна тривога у
+        Запорізькій області" came back as the place "Запорізькій" -- the
+        adjective alone, with "області" lost -- which no gazetteer holds.
+
+        That is a warning for a whole province going unplaced, and because the
+        declared warning never landed, a DERIVED one was raised beside it from
+        the drones underneath: two triangles over one oblast.
+        """
+        for written, wanted in (
+            ("Повітряна тривога у Запорізькій області", "Запорізька область"),
+            ("Тривога у Донецькій області", "Донецька область"),
+            ("Тривога у Вінницькій області", "Вінницька область"),
+            ("Тривога у Хмельницькій області", "Хмельницька область"),
+        ):
+            assert reports.read(written)["place"] == wanted, written
+
+    def test_a_masculine_region_word_keeps_its_masculine_ending(self):
+        # "Краснодарская край" is not a thing anybody writes and not a thing
+        # any gazetteer holds. The rebuild always produced the feminine.
+        assert reports.read("БпЛА над Краснодарским краем")["place"] \
+            == "Краснодарский край"
+
+    def test_a_bare_plural_of_missile_is_a_report_of_missiles(self):
+        # "Ракети на Львівщину" was in no pattern at all and was read as
+        # nothing, so it produced no mark of any kind.
+        assert reports.find_kind("Ракети на Львівщину") == "cruise"
+        assert reports.read("Ракети на Львівщину")["place"] == "Львівська область"
+
+    def test_a_missile_warning_is_still_a_warning_not_a_missile(self):
+        # The risk of widening the missile pattern: "alert" is tried first, so
+        # a warning ABOUT missiles stays a warning.
+        assert reports.find_kind("Ракетна небезпека для Харківщини") == "alert"
+        assert reports.find_kind("Ракетная опасность") == "alert"

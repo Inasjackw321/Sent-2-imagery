@@ -22,6 +22,7 @@ those silently and made a patchy night look like a broken feature.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 import math
 import time
 
@@ -72,7 +73,7 @@ def knows_cyrillic(name, countries=""):
     known = {
         "Нікопол": (47.5665, 34.4053), "Харк": (49.9935, 36.2304),
         "Київ": (50.4501, 30.5234), "Кагарлик": (49.8556, 30.8125),
-        "Волин": (51.2, 25.3), "Kyiv": (50.4501, 30.5234),
+        "Волин": (51.2, 25.3), "Kyivia": (50.4501, 30.5234),
     }
     for stem, (lat, lon) in known.items():
         if stem.lower() in name.lower():
@@ -86,8 +87,8 @@ def knows_cyrillic(name, countries=""):
 def fake_find(name, countries=""):
     """A gazetteer that knows a handful of places and nothing else."""
     known = {
-        "Нікополь": (47.5665, 34.4053), "Нікополем": (47.5665, 34.4053), "Nikopol": (47.5665, 34.4053),
-        "Kharkiv": (49.9935, 36.2304), "Kyiv": (50.4501, 30.5234),
+        "Нікополь": (47.5665, 34.4053), "Нікополем": (47.5665, 34.4053), "Nikopolia": (47.5665, 34.4053),
+        "Kharkiv": (49.9935, 36.2304), "Kyivia": (50.4501, 30.5234),
     }
     for key, (lat, lon) in known.items():
         if key.lower() in name.lower() or name.lower() in key.lower():
@@ -113,11 +114,19 @@ PAGE = """
 </div>
 """
 
+# Invented names, on purpose.
+#
+# These were real Latin spellings -- Nikopol, Kherson, Kyiv -- used as
+# stand-ins for a gazetteer the tests inject. Once those spellings went into
+# the built-in table (the English-posting channel names Ukrainian places in
+# Latin), the table answered first and the injected gazetteer was never
+# reached: every test here would have passed with its stub deleted. A name
+# nothing holds cannot be short-circuited.
 PLACES = {
-    "Nikopol": (47.5665, 34.4053),
-    "Kherson": (46.6354, 32.6169),
-    "Kharkiv oblast": (49.7, 36.3),
-    "Kyiv": (50.4501, 30.5234),
+    "Nikopolia": (47.5665, 34.4053),
+    "Khersonia": (46.6354, 32.6169),
+    "Kharkivia oblast": (49.7, 36.3),
+    "Kyivia": (50.4501, 30.5234),
 }
 
 
@@ -130,8 +139,8 @@ def gazetteer(name, countries=""):
 
 
 def one(**over):
-    return {"kind": "drone", "place": "Nikopol", "region": None, "toward": None,
-            "course": None, "count": 1, "summary": "Drone over Nikopol", **over}
+    return {"kind": "drone", "place": "Nikopolia", "region": None, "toward": None,
+            "course": None, "count": 1, "summary": "Drone over Nikopolia", **over}
 
 
 class TestReadingTheChannel:
@@ -189,7 +198,7 @@ class TestCompassCourses:
             assert tracker.read_course(junk) is None, junk
 
     def test_a_course_becomes_a_heading_with_no_destination_needed(self):
-        got = tracker.place_event(one(place="Nikopol", course=0.0), "ua", lookup=gazetteer)
+        got = tracker.place_event(one(place="Nikopolia", course=0.0), "ua", lookup=gazetteer)
         assert got["placed"] is True
         assert got["heading"] == 0.0
         assert got["motion"] == "track"
@@ -197,7 +206,7 @@ class TestCompassCourses:
     def test_a_named_destination_still_beats_a_compass_course(self):
         # The course is a direction; a destination is a direction AND a place
         # to stop. Where a report gives both, the one with more in it wins.
-        got = tracker.place_event(one(place="Nikopol", toward="Kherson", course=0.0),
+        got = tracker.place_event(one(place="Nikopolia", toward="Khersonia", course=0.0),
                                 "ua", lookup=gazetteer)
         assert got["heading"] != 0.0
         assert got["dest_km"] is not None
@@ -206,7 +215,7 @@ class TestCompassCourses:
         # A strike happened where it happened. "Вибух у Києві, БпЛА курсом на
         # Львів" is two facts, and carrying the drone's bearing onto the
         # explosion would draw an arrow for something on the ground.
-        got = tracker._clean({"kind": "explosion", "place": "Kyiv",
+        got = tracker._clean({"kind": "explosion", "place": "Kyivia",
                               "course": "N", "toward": "Lviv", "count": 1,
                               "summary": "boom", "region": None})
         assert got["course"] is None and got["toward"] is None
@@ -333,9 +342,9 @@ class TestTellingSimilarPlacesApart:
             asked.append(name)
             return {"lat": 49.85, "lon": 30.81, "name": name, "kind": "town"}
 
-        tracker.place_event(one(place="Kaharlyk", region="Kyiv oblast"),
+        tracker.place_event(one(place="Kaharlykia", region="Kyivia oblast"),
                           "ua", lookup=watching)
-        assert asked[0] == "Kaharlyk, Kyiv oblast"
+        assert asked[0] == "Kaharlykia, Kyivia oblast"
 
     def test_the_bare_name_is_tried_when_the_region_finds_nothing(self):
         # The gazetteer may spell the oblast differently, and a right town
@@ -348,9 +357,9 @@ class TestTellingSimilarPlacesApart:
                 return None
             return {"lat": 49.85, "lon": 30.81, "name": name, "kind": "town"}
 
-        got = tracker.place_event(one(place="Kaharlyk", region="Kyivshchyna"),
+        got = tracker.place_event(one(place="Kaharlykia", region="Kyivshchyna"),
                                 "ua", lookup=only_bare)
-        assert asked == ["Kaharlyk, Kyivshchyna", "Kaharlyk"]
+        assert asked == ["Kaharlykia, Kyivshchyna", "Kaharlykia"]
         assert got["placed"] is True
 
     def test_a_region_already_in_the_name_is_not_repeated(self):
@@ -360,17 +369,17 @@ class TestTellingSimilarPlacesApart:
             asked.append(name)
             return {"lat": 49.7, "lon": 36.3, "name": name, "kind": "state"}
 
-        tracker.place_event(one(place="Kharkiv oblast", region="Kharkiv oblast"),
+        tracker.place_event(one(place="Kharkivia oblast", region="Kharkivia oblast"),
                           "ua", lookup=watching)
-        assert asked == ["Kharkiv oblast"]
+        assert asked == ["Kharkivia oblast"]
 
 
 class TestPlacing:
     def test_a_known_place_gets_the_gazetteer_position(self):
         got = tracker.place_event(one(), "ua", lookup=gazetteer)
         assert got["placed"] is True
-        assert (got["lat"], got["lon"]) == PLACES["Nikopol"]
-        assert got["place_match"] == "Nikopol, Ukraine"
+        assert (got["lat"], got["lon"]) == PLACES["Nikopolia"]
+        assert got["place_match"] == "Nikopolia, Ukraine"
 
     def test_an_unknown_place_is_not_placed_and_says_why(self):
         got = tracker.place_event(one(place="Nowheresville"), "ua", lookup=gazetteer)
@@ -391,17 +400,17 @@ class TestPlacing:
         assert "rate limiting" in got["why_unplaced"]
 
     def test_a_destination_gives_a_course_and_a_distance(self):
-        got = tracker.place_event(one(toward="Kherson"), "ua", lookup=gazetteer)
-        # Kherson is south-west of Nikopol.
+        got = tracker.place_event(one(toward="Khersonia"), "ua", lookup=gazetteer)
+        # Khersonia is south-west of Nikopolia.
         assert 220 < got["heading"] < 245
         assert got["dest_km"] == pytest.approx(174, abs=10)
 
     def test_the_course_is_computed_not_taken_on_trust(self):
         # Whatever the model thought the bearing was never reaches here: the
         # only source of a heading is the two gazetteer positions.
-        got = tracker.place_event(one(toward="Kherson"), "ua", lookup=gazetteer)
+        got = tracker.place_event(one(toward="Khersonia"), "ua", lookup=gazetteer)
         assert got["heading"] == pytest.approx(
-            tracker.bearing(*PLACES["Nikopol"], *PLACES["Kherson"]), abs=0.01)
+            tracker.bearing(*PLACES["Nikopolia"], *PLACES["Khersonia"]), abs=0.01)
 
     def test_a_destination_the_gazetteer_does_not_know_leaves_it_still(self):
         # Placed, because the report's own location is known -- but with no
@@ -413,21 +422,21 @@ class TestPlacing:
     def test_a_destination_that_resolves_to_the_same_point_is_not_a_journey(self):
         def same(name, countries):
             return {"lat": 50.0, "lon": 30.0, "name": name, "kind": "city"}
-        got = tracker.place_event(one(toward="Kyiv"), "ua", lookup=same)
+        got = tracker.place_event(one(toward="Kyivia"), "ua", lookup=same)
         assert got["heading"] is None and got["dest_km"] is None
 
     def test_a_strike_does_not_travel_however_the_report_reads(self):
         # "Explosions in Kherson, drones heading for Mykolaiv" is one message.
         # The strike is where it is; only the airborne thing has a course.
         got = tracker.place_event(
-            one(kind="explosion", place="Nikopol", toward="Kherson"),
+            one(kind="explosion", place="Nikopolia", toward="Khersonia"),
             "ua", lookup=gazetteer)
         assert got["placed"] is True
         assert got["heading"] is None
 
     def test_an_air_alert_does_not_travel_either(self):
         got = tracker.place_event(
-            one(kind="alert", place="Nikopol", toward="Kherson"), "ua", lookup=gazetteer)
+            one(kind="alert", place="Nikopolia", toward="Khersonia"), "ua", lookup=gazetteer)
         assert got["heading"] is None
 
 
@@ -576,7 +585,7 @@ class TestRegionWideAlerts:
         return found
 
     def test_a_warning_over_a_region_gets_its_outline(self):
-        got = tracker.place_event(one(kind="alert", place="Kyiv oblast"),
+        got = tracker.place_event(one(kind="alert", place="Kyivia oblast"),
                                 "ua", lookup=self.looks_up())
         assert got["region_wide"] is True
         assert got["shape"] == self.RING
@@ -596,7 +605,7 @@ class TestRegionWideAlerts:
         # that is all anyone knows about where the drone is. Drawn as a marker
         # on the oblast's centroid, it claimed a position good to a few
         # kilometres from a report that gave one good to a couple of hundred.
-        got = tracker.place_event(one(kind="drone", place="Kyiv oblast"),
+        got = tracker.place_event(one(kind="drone", place="Kyivia oblast"),
                                 "ua", lookup=self.looks_up())
         assert got["region_scope"] == "located"
         assert got["shape"] is not None
@@ -604,9 +613,9 @@ class TestRegionWideAlerts:
         assert got["region_wide"] is False
 
     def test_the_two_reasons_for_an_outline_are_kept_apart(self):
-        covers = tracker.place_event(one(kind="alert", place="Kyiv oblast"),
+        covers = tracker.place_event(one(kind="alert", place="Kyivia oblast"),
                                    "ua", lookup=self.looks_up())
-        located = tracker.place_event(one(kind="drone", place="Kyiv oblast"),
+        located = tracker.place_event(one(kind="drone", place="Kyivia oblast"),
                                     "ua", lookup=self.looks_up())
         assert covers["region_scope"] == "covers"
         assert located["region_scope"] == "located"
@@ -620,12 +629,12 @@ class TestRegionWideAlerts:
     def test_a_strike_reported_across_a_region_does_shade_it(self):
         # "вибухи на Київщині" says explosions somewhere in the oblast and
         # does not say where. The region is the honest extent of that.
-        got = tracker.place_event(one(kind="explosion", place="Kyiv oblast"),
+        got = tracker.place_event(one(kind="explosion", place="Kyivia oblast"),
                                 "ua", lookup=self.looks_up())
         assert got["region_wide"] is True
 
     def test_a_region_with_no_outline_falls_back_to_a_circle(self):
-        got = tracker.place_event(one(kind="alert", place="Kyiv oblast"), "ua",
+        got = tracker.place_event(one(kind="alert", place="Kyivia oblast"), "ua",
                                 lookup=self.looks_up(shape=None))
         assert got["region_wide"] is False
         assert got["shape"] is None
@@ -888,16 +897,26 @@ class TestBothSidesOfTheBorder:
         reports took eleven seconds to place. Every form the reader can derive
         is checked against the table too, not just the name as written.
         """
+        # Through the real gazetteer, with the network step under it made to
+        # explode. Injecting a lookup would not do: an injected one is now
+        # honoured instead of the table, on purpose, so this would be testing
+        # the stub rather than the fast path it is about.
         asked = []
 
-        def counted(name, countries=""):
+        def exploding(name, countries=""):
             asked.append(name)
-            return None
+            raise AssertionError(f"reached the network for {name}")
 
-        for name in ("Белгород", "Київ", "Сумська область", "Кременчуці",
-                     "Харкові", "Одесі"):
-            got = tracker.place_event(one(place=name), "ua,ru", lookup=counted)
-            assert got["placed"] is True, name
+        book = tracker.gazetteer
+        book.forget()
+        was, book._ask = book._ask, exploding
+        try:
+            for name in ("Белгород", "Київ", "Сумська область", "Кременчуці",
+                         "Харкові", "Одесі"):
+                got = tracker.place_event(one(place=name), "ua,ru")
+                assert got["placed"] is True, name
+        finally:
+            book._ask = was
         assert asked == [], asked
 
     def test_the_demo_reports_from_russia_too(self):
@@ -1474,7 +1493,7 @@ class TestGivingEachMarkADirection:
 
     def test_a_stated_compass_course_is_used_and_recorded_as_stated(self):
         got = tracker.place_event(
-            {"kind": "drone", "place": "Nikopol", "course": 270.0,
+            {"kind": "drone", "place": "Nikopolia", "course": 270.0,
              "count": 1, "summary": ""}, "ua", lookup=fake_find)
         assert got["heading"] == 270.0
         assert got["course_from"] == "stated"
@@ -1483,7 +1502,7 @@ class TestGivingEachMarkADirection:
         # A bearing between two named places is a better answer than "north",
         # so it wins where both are present.
         got = tracker.place_event(
-            {"kind": "drone", "place": "Kyiv", "toward": "Kharkiv",
+            {"kind": "drone", "place": "Kyivia", "toward": "Kharkiv",
              "course": 0.0, "count": 1, "summary": ""}, "ua", lookup=fake_find)
         assert got["course_from"] == "destination"
         # Kyiv to Kharkiv is roughly east-south-east, certainly not north.
@@ -1491,7 +1510,7 @@ class TestGivingEachMarkADirection:
 
     def test_no_course_anywhere_stays_none_rather_than_becoming_north(self):
         got = tracker.place_event(
-            {"kind": "drone", "place": "Nikopol", "count": 1, "summary": ""},
+            {"kind": "drone", "place": "Nikopolia", "count": 1, "summary": ""},
             "ua", lookup=fake_find)
         assert got["heading"] is None
         assert got["course_from"] is None
@@ -1501,7 +1520,7 @@ class TestGivingEachMarkADirection:
         # motion rather than about the kind: something that is not travelling
         # has no course, and a strike is a place rather than a direction.
         got = tracker.place_event(
-            {"kind": "explosion", "place": "Nikopol", "course": 90.0,
+            {"kind": "explosion", "place": "Nikopolia", "course": 90.0,
              "count": 1, "summary": ""}, "ua", lookup=fake_find)
         assert got["heading"] is None
 
@@ -2946,3 +2965,257 @@ class TestADerivedWarningExplainsItself:
         for event in marks:
             assert "age_minutes" in event, event["id"]
             assert "region_wide" in event
+
+
+class TestTakingAMarkOffByHand:
+    """Somebody watching this knows things the feed does not.
+
+    A drone was shot down and the channel has not said so; a warning is stale;
+    a report was plainly a duplicate. Until now the only answer was to wait
+    out the keep time, which for a strike is twenty-five hours.
+
+    The care here is all about what a dismissal is NOT. It hides a mark; it
+    does not edit what a channel said. The report stays in the stream, marked,
+    so the record is not something a browser can rewrite and so somebody who
+    dismissed the wrong thing can see it and put it back.
+    """
+
+    def some(self, monkeypatch):
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        for i, (kind, place) in enumerate([("drone", "Суми"),
+                                           ("explosion", "Харків"),
+                                           ("alert", "Сумська область")]):
+            item = tracker._clean({
+                "kind": kind, "place": place, "id": f"p/{i}", "count": 1,
+                "summary": f"{kind} over {place}", "region": None,
+                "toward": None, "course": None, "cause": None})
+            tracker._record(item, {"id": f"p/{i}", "channel": "x",
+                                   "region": "Ukraine"}, "ua")
+        return tracker.current()
+
+    def test_a_drone_can_be_taken_off(self, monkeypatch):
+        got = self.some(monkeypatch)
+        drone = next(e for e in got["events"] if e["kind"] == "drone")
+        assert tracker.dismiss(drone["id"]) == 1
+        left = tracker.current()["events"]
+        assert not [e for e in left if e["kind"] == "drone"]
+        assert len(left) == 2
+
+    def test_a_strike_can_be_taken_off(self, monkeypatch):
+        got = self.some(monkeypatch)
+        strike = next(e for e in got["events"] if e["kind"] == "explosion")
+        tracker.dismiss(strike["id"])
+        assert not [e for e in tracker.current()["events"]
+                    if e["kind"] == "explosion"]
+
+    def test_a_warning_can_be_cancelled(self, monkeypatch):
+        got = self.some(monkeypatch)
+        warning = next(e for e in got["events"] if e["kind"] == "alert")
+        tracker.dismiss(warning["id"])
+        assert not [e for e in tracker.current()["events"]
+                    if e["kind"] == "alert"]
+
+    def test_the_report_stays_in_the_stream_marked(self, monkeypatch):
+        got = self.some(monkeypatch)
+        drone = next(e for e in got["events"] if e["kind"] == "drone")
+        tracker.dismiss(drone["id"])
+        rows = tracker.current()["alerts"]
+        dropped = [a for a in rows if a.get("dismissed")]
+        assert dropped, "the report vanished with its mark"
+        assert len(rows) == 3, "a dismissal must not delete the record"
+
+    def test_it_stays_dismissed_when_the_post_is_read_again(self, monkeypatch):
+        """The thing that makes it look broken if it is missed.
+
+        A mark is rebuilt on every poll with a fresh identifier, so keying the
+        dismissal on the mark alone means it returns a minute later as a
+        different id. It is keyed on the POST too, which is stable.
+        """
+        got = self.some(monkeypatch)
+        drone = next(e for e in got["events"] if e["kind"] == "drone")
+        tracker.dismiss(drone["id"])
+
+        item = tracker._clean({
+            "kind": "drone", "place": "Суми", "id": "p/0", "count": 1,
+            "summary": "drone over Суми", "region": None, "toward": None,
+            "course": None, "cause": None})
+        tracker._record(item, {"id": "p/0", "channel": "x",
+                               "region": "Ukraine"}, "ua")
+        assert not [e for e in tracker.current()["events"]
+                    if e["kind"] == "drone"]
+
+    def test_it_can_be_put_back(self, monkeypatch):
+        got = self.some(monkeypatch)
+        drone = next(e for e in got["events"] if e["kind"] == "drone")
+        tracker.dismiss(drone["id"])
+        assert tracker.restore(drone["id"]) is True
+
+        item = tracker._clean({
+            "kind": "drone", "place": "Суми", "id": "p/0", "count": 1,
+            "summary": "drone over Суми", "region": None, "toward": None,
+            "course": None, "cause": None})
+        tracker._record(item, {"id": "p/0", "channel": "x",
+                               "region": "Ukraine"}, "ua")
+        assert [e for e in tracker.current()["events"] if e["kind"] == "drone"]
+
+    def test_a_derived_warning_can_be_cancelled_and_stays_cancelled(
+            self, monkeypatch):
+        # These are rebuilt from scratch on every read, so nothing but the
+        # dismissal itself can keep one off.
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        for plain in reports.read_all("БпЛА над Житомирщиною"):
+            plain["kind"] = tracker.fold_kind(plain["kind"])
+            tracker._record(tracker._clean({**plain, "id": "c/1"}),
+                            {"id": "c/1", "channel": "x",
+                             "region": "Ukraine"}, "ua")
+        made = [e for e in tracker.current()["events"] if e.get("derived")]
+        assert made
+        tracker.dismiss(made[0]["id"])
+        assert not [e for e in tracker.current()["events"] if e.get("derived")]
+        assert not [e for e in tracker.current()["events"] if e.get("derived")]
+
+    def test_the_count_is_said_out_loud(self, monkeypatch):
+        # "The map is missing things" and "I hid those" look identical from
+        # across a room, and only one of them is a bug.
+        got = self.some(monkeypatch)
+        assert got["dismissed"] == 0
+        tracker.dismiss(got["events"][0]["id"])
+        assert tracker.current()["dismissed"] >= 1
+
+    def test_nonsense_is_refused_quietly(self, monkeypatch):
+        self.some(monkeypatch)
+        before = len(tracker.current()["events"])
+        assert tracker.dismiss("") == 0
+        assert tracker.dismiss(None) == 0
+        assert tracker.dismiss("no-such-mark") == 0
+        assert len(tracker.current()["events"]) == before
+
+    def test_it_cannot_be_grown_without_bound(self, monkeypatch):
+        self.some(monkeypatch)
+        for i in range(tracker.MAX_DISMISSED + 50):
+            tracker.dismiss(f"junk-{i}")
+        assert tracker.dismissed_now() <= tracker.MAX_DISMISSED + 2
+
+
+class TestWarningsAreOutlinesOfRegions:
+    def test_a_warning_carries_the_regions_extent(self, monkeypatch):
+        # So one whose real boundary has not arrived can be drawn as that
+        # rectangle rather than as a circle. A disc centred on an oblast is
+        # not the shape of any province and reads as a blast radius.
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        item = tracker._clean({
+            "kind": "alert", "place": "Сумська область", "id": "a/1",
+            "count": 1, "summary": "alert", "region": None, "toward": None,
+            "course": None, "cause": "drone"})
+        tracker._record(item, {"id": "a/1", "channel": "x",
+                               "region": "Ukraine"}, "ua")
+        # Selected rather than indexed. current() can carry a derived warning
+        # alongside the declared one, so events[0] is not reliably the mark
+        # this test is about -- and when it is not, the failure is a TypeError
+        # about None rather than anything that names the real problem.
+        got = next(e for e in tracker.current()["events"]
+                   if e["place"] == "Сумська область" and not e.get("derived"))
+        south, north, west, east = got["bbox"]
+        assert north > south and east > west
+        assert south < places.REGIONS["Сумська область"][0] < north
+
+    def test_a_town_carries_none(self, monkeypatch):
+        # A strike in a town is a point in it. A rectangle round one would
+        # claim the damage followed the municipal border.
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        item = tracker._clean({
+            "kind": "explosion", "place": "Харків", "id": "e/1", "count": 1,
+            "summary": "boom", "region": None, "toward": None,
+            "course": None, "cause": None})
+        tracker._record(item, {"id": "e/1", "channel": "x",
+                               "region": "Ukraine"}, "ua")
+        got = next(e for e in tracker.current()["events"]
+                   if e["place"] == "Харків")
+        assert got["bbox"] is None
+
+    def test_a_warnings_outline_is_fetched_ahead_of_everything_else(self):
+        """It is the only mark drawn AS its region rather than at a point.
+
+        Everything else in that queue is already drawn correctly and merely
+        gains detail, so a warning waiting behind a dozen of them is the one
+        case where the queue order is visible to a reader.
+
+        The drainer is held off rather than raced. The first version read the
+        queue a moment after filling it and the background worker had usually
+        emptied it -- so the assertion was guarded with an "if it is still
+        there", which made it pass by not looking most of the time.
+        """
+        # tracker.gazetteer rather than a bare import: this file already has
+        # a test helper of that name.
+        book = tracker.gazetteer
+        book.forget()
+
+        # A worker that is alive but does nothing, so improve_later() sees one
+        # running and does not start the real one.
+        holding = threading.Event()
+        idle = threading.Thread(target=holding.wait, daemon=True)
+        idle.start()
+        was, book._improver = book._improver, idle
+        try:
+            book.improve_later("Сумська область", "ua")
+            book.improve_later("Полтавська область", "ua")
+            book.improve_later("Харківська область", "ua", urgent=True)
+            with book._lock:
+                queued = [name for name, _ in book._wanted]
+        finally:
+            book._improver = was
+            holding.set()
+
+        assert queued == ["Харківська область", "Сумська область",
+                          "Полтавська область"], queued
+
+
+class TestTheDemoHonoursADismissal:
+    """Or the button is inert offline, which looks exactly like it not working.
+
+    The demo rebuilds its events from a seed on every call, so it had no
+    memory of a dismissal at all: pressing × removed nothing and the mark was
+    back before the next paint. Fifth time the offline build has been unable
+    to reach a state the live path has.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+
+    def teardown_method(self):
+        tracker.reset()
+
+    def test_a_demo_mark_can_be_taken_off_and_stays_off(self):
+        before = tracker.demo()["events"]
+        assert tracker.dismiss(before[0]["id"]) >= 0
+        after = tracker.demo()["events"]
+        assert len(after) == len(before) - 1
+        # Twice, because the demo rebuilds from the seed each call and a
+        # dismissal that only survives one call is not a dismissal.
+        assert len(tracker.demo()["events"]) == len(before) - 1
+
+    def test_its_report_is_marked_rather_than_deleted(self):
+        got = tracker.demo()
+        tracker.dismiss(got["events"][0]["id"])
+        again = tracker.demo()
+        assert len(again["alerts"]) == len(got["alerts"])
+        assert any(a.get("dismissed") for a in again["alerts"])
+
+    def test_it_can_be_put_back(self):
+        before = tracker.demo()["events"]
+        tracker.dismiss(before[0]["id"])
+        tracker.restore(before[0]["id"])
+        assert len(tracker.demo()["events"]) == len(before)
+
+    def test_the_demo_says_how_many_are_hidden(self):
+        assert tracker.demo()["dismissed"] == 0
+        tracker.dismiss(tracker.demo()["events"][0]["id"])
+        assert tracker.demo()["dismissed"] >= 1

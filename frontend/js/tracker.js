@@ -98,6 +98,10 @@ export function initTracker(leafletMap) {
   // Popup content is built on demand, so the pictures only exist once one is
   // open -- which is also the only moment their loading can be watched.
   map.on('popupopen', (e) => tidyPictures(e.popup.getElement()));
+  // One delegated listener for every dismiss button there will ever be --
+  // in a popup Leaflet rebuilds on each open, or in the panel list which is
+  // repainted on every poll.
+  map.getContainer().addEventListener('click', onDismissClick);
   areas = L.layerGroup([], { pane: 'trackerArea' });
   buildDock();
 }
@@ -464,6 +468,11 @@ function popup(event) {
       + 'be anywhere in, not an area under attack.');
   }
 
+  if (event.derived) {
+    rows.push('<b>Not reported as a warning.</b> Derived from the '
+      + `${event.from_marks ?? 0} report(s) placed inside this region.`);
+  }
+
   return `<div class="ao-pop">
     <h4>${label(event)}</h4>
     ${rows.map((r) => `<p>${r}</p>`).join('')}
@@ -472,7 +481,46 @@ function popup(event) {
     ${pictures(event)}
     <p class="ao-src">${escapeHtml(event.channel ?? '')}${event.link
       ? ` · <a href="${escapeHtml(event.link)}" target="_blank" rel="noopener noreferrer">the post</a>` : ''}</p>
+    <p class="ao-act"><button type="button" class="ao-dismiss"
+      data-id="${escapeHtml(event.id)}">${event.kind === 'alert'
+        ? 'Cancel this warning' : 'Remove from map'}</button></p>
   </div>`;
+}
+
+/**
+ * Take a mark off the map by hand.
+ *
+ * Somebody watching this knows things the feed does not: a drone was shot
+ * down and the channel has not said so yet, a warning is stale, a report was
+ * plainly a duplicate. Until now the only answer was to wait out the keep
+ * time -- twenty-five hours, for a strike.
+ *
+ * It hides a mark; it does not edit the record. The report stays in the panel
+ * marked "removed", so what a channel actually said is not something a browser
+ * can change, and so somebody who dismissed the wrong thing can see that they
+ * did and put it back.
+ *
+ * Delegated from the map container rather than bound per popup: script-src is
+ * 'self', inline handlers are dead, and Leaflet rebuilds popup content on
+ * every open -- so a listener attached at build time would be attached to an
+ * element that is thrown away.
+ */
+async function onDismissClick(ev) {
+  const button = ev.target.closest('.ao-dismiss, .ao-restore');
+  if (!button) return;
+  const restore = button.classList.contains('ao-restore');
+  const id = button.dataset.id;
+  if (!id) return;
+  button.disabled = true;
+  try {
+    await api.trackerDismiss(id, restore);
+    map.closePopup();
+    await load();
+  } catch (err) {
+    problem = err.message;
+    button.disabled = false;
+    paintDock();
+  }
 }
 
 /**
@@ -581,15 +629,19 @@ function areaFor(event) {
     // attribute Leaflet would write -- so setting it in both places would
     // leave a dead value here that looks like it is doing something.
     fillColor: colour,
-    // A region that merely says how precisely something was located is barely
-    // filled. Filling it like a warning would say the whole province is under
-    // attack, when all the report said was which province it was over.
-    fillOpacity: event.region_scope === 'located' ? 0.04
-      // Heavier than it was. On the reference maps an oblast under warning is
-      // filled enough to read as a state of that province at a glance from
-      // across a room, which is most of what this layer is for, and 0.16 was
-      // barely a tint.
-      : event.kind === 'alert' ? 0.3
+    // Warnings are an OUTLINE, not a wash.
+    //
+    // They were filled at 0.3, and at the size of an oblast that is a solid
+    // slab of colour over a tenth of the country -- it hid the basemap under
+    // it, it hid the marks inside it, and where two overlapped the map turned
+    // to mud. The dashed border already says "this province is under a
+    // warning" and says it without covering up the thing a reader is looking
+    // at, which is what is actually flying over that province.
+    //
+    // Strikes keep their fill: those are small and the fill is what makes them
+    // findable.
+    fillOpacity: event.kind === 'alert' ? 0
+      : event.region_scope === 'located' ? 0.04
         : event.region_wide ? 0.2 : 0.18,
   };
 
@@ -603,6 +655,24 @@ function areaFor(event) {
       renderer: areaInk,
       interactive: false,
       style,
+    });
+  }
+
+  // No outline yet, and a warning does not get a circle instead.
+  //
+  // The real boundary arrives from the gazetteer a moment later; until it
+  // does, the honest stand-in is the region's EXTENT as a rectangle, drawn
+  // dotted so it reads as provisional. A disc centred on an oblast is not
+  // shaped like any province and was the thing that read as wrong: a smooth
+  // circle in a country made of jagged borders looks like a blast radius,
+  // which is a claim about ground nobody made.
+  if (event.kind === 'alert') {
+    const [south, north, west, east] = event.bbox
+      ?? [event.origin_lat, event.origin_lat, event.origin_lon, event.origin_lon];
+    return L.rectangle([[south, west], [north, east]], {
+      ...style,
+      className: `${style.className} is-provisional`,
+      fillOpacity: 0,
     });
   }
 
@@ -1115,30 +1185,56 @@ function paintDock() {
   list?.replaceChildren(...alerts.map((item) => {
     const kind = feed?.kinds?.[item.kind] ?? {};
     const mins = Math.max(0, Math.round(Date.now() / 1000 - item.seen) / 60);
-    const row = el('button', {
+    // A warning takes its cause's colour here too, so the row and the mark
+    // it points at agree about what is being warned against.
+    const dot = (item.kind === 'alert' && item.cause
+      && feed?.kinds?.[item.cause]) ? WARNING_COLOURS[item.cause] : kind.colour;
+    const row = el('div', {
       // A warning that was lifted, and the all-clear that lifted it, are
       // both worth keeping in the stream and neither is on the map. Marked
       // rather than removed: "the warning over Kyiv oblast ended" is a thing
-      // that happened and reads as news.
+      // that happened and reads as news. Same for one a person dismissed.
       class: `ao-row${item.lifts ? ' is-lifts' : ''}`
         + `${item.lifted ? ' is-over' : ''}`
+        + `${item.dismissed ? ' is-dropped' : ''}`
         + `${item.placed ? '' : ' is-unplaced'}`,
-      type: 'button',
-      title: item.text ?? '',
+    },
+    el('button', {
+      class: 'ao-row-go', type: 'button', title: item.text ?? '',
       onclick: () => goTo(item),
     },
-    el('i', { style: kind.colour ? `background:${kind.colour}` : '' }),
+    el('i', { style: dot ? `background:${dot}` : '' }),
     el('span', {
       class: `ao-row-what${item.by === 'rules' ? ' is-plain' : ''}`,
-      title: item.by === 'rules' ? 'Read without the model' : '',
+      title: item.by === 'derived'
+        ? 'Not reported — derived from the marks in this region'
+        : item.by === 'rules' ? 'Read by pattern' : '',
     }, item.summary || kind.label || item.kind),
-    el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : ago(mins)));
+    el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : ago(mins))),
+    // Removing a mark from the panel rather than only from its popup,
+    // because on a busy map finding the one drone you want to take off is
+    // the hard part and the list is already sorted the way you are reading.
+    el('button', {
+      class: item.dismissed ? 'ao-restore' : 'ao-dismiss',
+      type: 'button',
+      'data-id': item.id,
+      title: item.dismissed ? 'Put this back on the map'
+        : item.kind === 'alert' ? 'Cancel this warning'
+          : 'Remove this from the map',
+    }, item.dismissed ? '↺' : '×'));
     return row;
   }), ...(hidden > 0
     ? [el('div', { class: 'ao-row-more' }, `+${hidden} older`)]
     : []));
 
   paintSources();
+
+  // One delegated listener for the whole list, rebound each paint because
+  // replaceChildren has just thrown the old rows away.
+  if (list && !list.dataset.wired) {
+    list.addEventListener('click', onDismissClick);
+    list.dataset.wired = '1';
+  }
 
   const lines = [];
   const demo = feed?.state?.startsWith('demo');
@@ -1200,6 +1296,13 @@ function paintDock() {
       + 'carrying the count and the group\u2019s average trajectory. Grouped '
       + 'by real distance, so a mass means the same at every zoom. Anything '
       + 'not in a group still shows on its own.');
+  }
+  // Never a silent state. "The map is missing things" and "I hid those" look
+  // identical from across a room, and only one of them is a bug.
+  const hiddenByHand = feed?.dismissed ?? 0;
+  if (hiddenByHand) {
+    lines.push(`${hiddenByHand} taken off by hand — the reports are still `
+      + 'listed, marked, with ↺ to put them back.');
   }
   if (problem) lines.push(problem);
   else if (!demo && feed?.state && feed.state !== 'nothing new') lines.push(feed.state);

@@ -18,6 +18,15 @@ import pytest
 
 from backend import gazetteer
 
+# A name no table and no gazetteer will ever hold.
+#
+# These tests are about the plumbing around a lookup -- the rate limit, the
+# cache, the country filter -- and they used real Latin place names as
+# stand-ins. Once those names went into the built-in table, it answered first
+# and the stub gazetteer underneath was never reached, so every one of these
+# passed while testing nothing. An invented name cannot be short-circuited.
+NOWHERE = "Zzyzxgrad"
+
 
 @pytest.fixture(autouse=True)
 def clean():
@@ -181,7 +190,7 @@ class TestRefusingThingsThatAreNotPlaces:
         monkeypatch.setattr(gazetteer.requests, "get",
                             lambda url, params=None, **kw: (seen.update(params), Reply())[1])
         gazetteer._last_call = time.time() - 99
-        gazetteer.find("Kaharlyk", "ua")
+        gazetteer.find("Zzyzxgrad", "ua")
         assert seen["limit"] > 1
 
 
@@ -255,7 +264,7 @@ class TestOutlines:
         monkeypatch.setattr(gazetteer.requests, "get",
                             lambda url, params=None, **kw: (seen.update(params), Reply())[1])
         gazetteer._last_call = time.time() - 99
-        gazetteer.find("Kyiv oblast", "ua")
+        gazetteer.find("Zzyzxgrad oblast", "ua")
         assert seen.get("polygon_geojson") == 1
         assert 0 < float(seen.get("polygon_threshold", 0)) < 1
 
@@ -280,7 +289,7 @@ class TestNotKnowing:
             raise gazetteer.GazetteerError("the gazetteer could not be reached: down")
         monkeypatch.setattr(gazetteer, "_ask", boom)
         with pytest.raises(gazetteer.GazetteerError):
-            gazetteer.find("Nikopol", "ua")
+            gazetteer.find("Zzyzxgrad", "ua")
 
 
 class TestRemembering:
@@ -289,15 +298,15 @@ class TestRemembering:
         monkeypatch.setattr(gazetteer, "_ask", lambda name, countries: (
             calls.append(name), {"lat": 1.0, "lon": 2.0, "name": name, "kind": "town"})[1])
         for _ in range(5):
-            gazetteer.find("Nikopol", "ua")
-        assert calls == ["Nikopol"]
+            gazetteer.find("Zzyzxgrad", "ua")
+        assert calls == ["Zzyzxgrad"]
 
     def test_the_name_is_matched_regardless_of_case_and_spacing(self, monkeypatch):
         calls = []
         monkeypatch.setattr(gazetteer, "_ask", lambda name, countries: (
             calls.append(name), {"lat": 1.0, "lon": 2.0, "name": name, "kind": "town"})[1])
-        gazetteer.find("Kharkiv oblast", "ua")
-        gazetteer.find("  kharkiv   OBLAST ", "ua")
+        gazetteer.find(f"{NOWHERE} oblast", "ua")
+        gazetteer.find(f"  {NOWHERE.lower()}   OBLAST ", "ua")
         assert len(calls) == 1
 
     def test_two_countries_are_two_different_questions(self, monkeypatch):
@@ -326,16 +335,16 @@ class TestRemembering:
     def test_a_remembered_answer_cannot_be_mutated_by_its_caller(self, monkeypatch):
         monkeypatch.setattr(gazetteer, "_ask", lambda name, countries: {
             "lat": 1.0, "lon": 2.0, "name": name, "kind": "town"})
-        first = gazetteer.find("Nikopol", "ua")
+        first = gazetteer.find("Zzyzxgrad", "ua")
         first["lat"] = 99.0
-        assert gazetteer.find("Nikopol", "ua")["lat"] == 1.0
+        assert gazetteer.find("Zzyzxgrad", "ua")["lat"] == 1.0
 
     def test_seeding_works_and_avoids_the_network(self, monkeypatch):
         monkeypatch.setattr(gazetteer, "_ask", lambda name, countries: pytest.fail(
             "the gazetteer went to the network for a place it had been given"))
-        gazetteer.remember("Nikopol", "ua", {"lat": 1.0, "lon": 2.0,
-                                             "name": "Nikopol", "kind": "town"})
-        assert gazetteer.find("Nikopol", "ua")["lon"] == 2.0
+        gazetteer.remember("Zzyzxgrad", "ua", {"lat": 1.0, "lon": 2.0,
+                                             "name": "Zzyzxgrad", "kind": "town"})
+        assert gazetteer.find("Zzyzxgrad", "ua")["lon"] == 2.0
 
 
 class TestPoliteness:
@@ -365,8 +374,8 @@ class TestPoliteness:
 
         monkeypatch.setattr(gazetteer.requests, "get", fake_get)
         gazetteer._last_call = time.time() - 99
-        gazetteer.find("Sumy", "ua")
-        # Without this, "Sumy" is as likely to match a street in another
+        gazetteer.find("Zzyzxgrad", "ua")
+        # Without this, "Zzyzxgrad" is as likely to match a street in another
         # hemisphere, and half the point is that reports land in the right
         # country.
         assert seen.get("countrycodes") == "ua"
@@ -379,7 +388,7 @@ class TestPoliteness:
         monkeypatch.setattr(gazetteer.requests, "get", lambda *a, **k: Reply())
         gazetteer._last_call = time.time() - 99
         with pytest.raises(gazetteer.GazetteerError, match="rate limiting"):
-            gazetteer.find("Sumy", "ua")
+            gazetteer.find("Zzyzxgrad", "ua")
 
 
 class TestTheBuiltInTableComesFirst:

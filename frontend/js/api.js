@@ -39,6 +39,8 @@ export const api = {
   // Asked on its own, because the daemon can be started while the page is
   // open and the panel should be able to notice without a reload.
   ollama: () => request('/api/ollama', { method: 'GET' }),
+  trackerDismiss: (id, restore = false) =>
+    request('/api/tracker/dismiss', { body: { id, restore } }),
   // Names the Ollama model to read with; null lets the backend choose from
   // whatever is installed.
   copernicus: () => request('/api/copernicus', { method: 'GET' }),

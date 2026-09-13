@@ -1797,3 +1797,69 @@ body.is-walled { overflow: hidden; }
   color: var(--ink);
   border-color: rgba(255, 255, 255, .32);
 }
+
+/* A row is a target and a dismiss button, not one button. */
+.ao-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+.ao-row-go {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 2px 4px 6px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.ao-row-go:hover { background: rgba(255, 255, 255, .05); }
+.ao-dismiss,
+.ao-restore {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: .45;
+}
+.ao-row:hover .ao-dismiss,
+.ao-row:hover .ao-restore { opacity: 1; }
+.ao-dismiss:hover { color: #ff8f8f; border-color: rgba(255, 143, 143, .4); }
+.ao-restore:hover { color: var(--ink); border-color: rgba(255, 255, 255, .3); }
+.ao-dismiss[disabled],
+.ao-restore[disabled] { opacity: .25; cursor: default; }
+/* A report whose mark was taken off by hand. */
+.ao-row.is-dropped .ao-row-go { opacity: .4; text-decoration: line-through; }
+
+/* The dismiss button inside a popup. */
+.ao-pop .ao-act { margin: 8px 0 0; }
+.ao-pop .ao-dismiss {
+  width: auto;
+  height: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  opacity: 1;
+  border-color: rgba(255, 255, 255, .2);
+}
+
+/* A warning whose real boundary has not arrived yet: the region's extent,
+   dotted, so it reads as provisional rather than as a shape anybody drew. */
+.ao-area.is-provisional {
+  stroke-dasharray: 2 5;
+  opacity: .5;
+}

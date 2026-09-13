@@ -351,11 +351,18 @@ _asked_for_shapes: set[str] = set()
 _improver: threading.Thread | None = None
 
 
-def improve_later(name: str, countries: str) -> bool:
+def improve_later(name: str, countries: str, urgent: bool = False) -> bool:
     """Ask for a region's real outline in the background. Never blocks.
 
     Returns whether it was queued -- False if it is already queued, already
     fetched, or already known with a shape.
+
+    `urgent` jumps the queue, and exactly one thing uses it: a WARNING over a
+    region. Until its outline arrives that warning is drawn as the region's
+    extent, which is a rectangle and is honest about being provisional but is
+    not the shape of any province. Everything else in this queue is a mark
+    that is already drawn correctly and merely gains detail, so a warning
+    waiting behind a dozen of those is the one case where the order matters.
     """
     global _improver
     key = _key(name, countries)
@@ -366,7 +373,10 @@ def improve_later(name: str, countries: str) -> bool:
         if learned and learned.get("shape"):
             return False
         _asked_for_shapes.add(key)
-        _wanted.append((name, countries))
+        if urgent:
+            _wanted.insert(0, (name, countries))
+        else:
+            _wanted.append((name, countries))
         running = _improver is not None and _improver.is_alive()
     if not running:
         _improver = threading.Thread(target=_improve, name="gazetteer-shapes",

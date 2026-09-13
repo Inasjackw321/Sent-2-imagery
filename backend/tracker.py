@@ -858,7 +858,8 @@ def area_km(place: dict[str, Any]) -> float:
     return AREA_FALLBACK_KM.get(str(place.get("kind") or "").lower(), AREA_DEFAULT_KM)
 
 
-def _look(lookup, name: str, region: str | None, countries: str):
+def _look(lookup, name: str, region: str | None, countries: str,
+          kind: str = "", built_in: bool = True):
     """Find a place, using the region the report gave to tell it apart.
 
     This is the other half of the Kaharlyk failure. "Kaharlyk" on its own is a
@@ -888,12 +889,25 @@ def _look(lookup, name: str, region: str | None, countries: str):
     # than a microsecond -- and each one that hits is a second of Nominatim
     # rate limit not spent. "Кременчуці" is in the table; the spellings the
     # reader derives from it are not, and without this they went to the wire.
-    for attempt in (name, *reports.variants(name)):
-        built_in = places.lookup(attempt)
-        if built_in:
-            if built_in.get("category") == "boundary":
-                gazetteer.improve_later(attempt, countries)
-            return built_in
+    # Only when nobody handed us a gazetteer.
+    #
+    # An injected lookup means "use this one", and the table was winning over
+    # it -- so the demo, which injects a small offline gazetteer, was getting
+    # built-in answers with no boundary instead of its own shaped ones, and
+    # every test that injected a stub was testing the table instead of the
+    # thing it meant to. Nothing is lost on the live path: gazetteer.find()
+    # consults the same table as its own first step.
+    for attempt in (name, *reports.variants(name)) if built_in else ():
+        found = places.lookup(attempt)
+        if found:
+            if found.get("category") == "boundary":
+                # A warning gets its outline first. It is the only thing here
+                # drawn AS the region rather than at a point in it, so it is
+                # the only one whose look depends on the boundary arriving.
+                gazetteer.improve_later(
+                    attempt, countries,
+                    urgent=fold_kind(kind) in ("alert", LIFTED))
+            return found
 
     if region and region.lower() not in name.lower():
         found = lookup(f"{name}, {region}", countries)
@@ -921,6 +935,7 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     # once, when the function is defined, so a gazetteer swapped out later --
     # in a test, or for the demo -- was silently ignored and the real one
     # called instead.
+    injected = lookup is not None
     lookup = lookup or gazetteer.find
 
     out = dict(item)
@@ -935,7 +950,8 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
         return out
 
     try:
-        here = _look(lookup, item["place"], item.get("region"), countries)
+        here = _look(lookup, item["place"], item.get("region"), countries,
+                     item.get("kind", ""), built_in=not injected)
     except gazetteer.GazetteerError as exc:
         out["why_unplaced"] = str(exc)
         return out
@@ -970,6 +986,11 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     # is known to a few kilometres when the report located it to a couple of
     # hundred. Showing the region says what was actually known.
     out["shape"] = here.get("shape") if is_region(here) else None
+    # The region's extent, so a warning whose real boundary has not arrived
+    # yet can be drawn as that rectangle rather than as a circle. A disc
+    # centred on an oblast is not the shape of any province and reads as a
+    # blast radius -- a claim about ground nobody made.
+    out["bbox"] = list(here["bbox"]) if is_region(here) and here.get("bbox") else None
     out["region_scope"] = (
         "covers" if MOTION.get(item["kind"], "track") == "still" else "located"
     ) if out["shape"] else None
@@ -1179,6 +1200,11 @@ def _record(item: dict[str, Any], message: dict[str, Any],
 
     if not placed["placed"]:
         return False
+    # A post somebody dismissed stays dismissed when it is read again. Without
+    # this the mark returns on the next poll with a new identifier, which from
+    # the outside is the dismissal simply not working.
+    if str(message.get("id")) in _dismissed:
+        return False
     _events.append({
         **placed,
         # The oblast the READER found, kept under its own name.
@@ -1260,6 +1286,106 @@ def forget_source(post_id: Any) -> int:
     return before - len(_events) - len(_alerts)
 
 
+# ---------------------------------------------------------------------------
+# Dismissing things by hand
+# ---------------------------------------------------------------------------
+#
+# Somebody watching this map knows things it does not. A drone was shot down
+# and the channel has not said so yet; a warning is stale; a report was plainly
+# a duplicate. Until now the only answer was to wait out the keep time.
+#
+# What a dismissal is and is not:
+#
+#   It hides, it does not delete. The report stays in the stream, marked, so
+#   the record of what a channel said is not editable from a browser -- this
+#   removes a MARK from a MAP, which is a different thing from claiming the
+#   report was never made.
+#
+#   It is remembered by the post it came from, not by the mark's identifier.
+#   A mark dismissed and then re-read on the next poll would otherwise come
+#   straight back with a new id, which reads as the dismissal not working.
+#
+#   It is per-process and not per-viewer. Everyone looking at this instance
+#   sees the same map, which is the honest behaviour for a shared screen and
+#   is the only one this backend can offer without accounts.
+_dismissed: set[str] = set()
+
+# A ceiling, so a stuck client cannot grow this without bound.
+MAX_DISMISSED = 2000
+
+
+def dismiss(ident: Any) -> int:
+    """Take one mark off the map by hand. Returns how many were removed.
+
+    Accepts either the mark's own identifier or the id of the post it came
+    from, because the panel row and the map popup naturally have different
+    ones to hand.
+    """
+    ident = str(ident or "").strip()[:160]
+    if not ident:
+        return 0
+    with _lock:
+        sources = {e.get("source") for e in _events if e.get("id") == ident}
+        sources |= {a.get("source") for a in _alerts if a.get("id") == ident}
+        keys = {ident} | {str(s) for s in sources if s}
+        _dismissed.update(keys)
+        if len(_dismissed) > MAX_DISMISSED:
+            _dismissed.clear()
+            _dismissed.update(keys)
+        gone = [e for e in _events if _is_dismissed(e)]
+        _events[:] = [e for e in _events if not _is_dismissed(e)]
+        # The report stays, marked. A mark taken off the map is not a claim
+        # that the channel never said it, and the panel row is how somebody
+        # notices they dismissed something they should not have.
+        for alert in _alerts:
+            if alert.get("id") in keys or str(alert.get("source")) in keys:
+                alert["dismissed"] = True
+    return len(gone)
+
+
+def _is_dismissed(event: dict[str, Any]) -> bool:
+    return (event.get("id") in _dismissed
+            or str(event.get("source")) in _dismissed
+            # A derived warning is dismissed by its own id, which is stable
+            # across polls because it is built from the region name.
+            or str(event.get("place_match") or "") in _dismissed)
+
+
+def hide_dismissed(events: list[dict[str, Any]],
+                   alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop the marks somebody took off, and mark their rows. Returns events.
+
+    Shared by the live path and the demo, because the demo rebuilds its events
+    from a seed on every call and so had no memory of a dismissal at all --
+    pressing the button did nothing and looked exactly like the feature being
+    broken. Fifth time the offline build has been unable to reach a state.
+    """
+    for alert in alerts:
+        if _is_dismissed(alert):
+            alert["dismissed"] = True
+    return [e for e in events if not _is_dismissed(e)]
+
+
+def restore(ident: Any) -> bool:
+    """Undo a dismissal. The mark comes back on the next poll that reads it."""
+    ident = str(ident or "").strip()[:160]
+    with _lock:
+        found = ident in _dismissed
+        _dismissed.discard(ident)
+        for alert in _alerts:
+            if alert.get("id") == ident or str(alert.get("source")) == ident:
+                alert.pop("dismissed", None)
+                _dismissed.discard(str(alert.get("source")))
+                _dismissed.discard(str(alert.get("id")))
+                found = True
+    return found
+
+
+def dismissed_now() -> int:
+    with _lock:
+        return len(_dismissed)
+
+
 def keep_minutes(kind: str) -> int:
     """How long a marker of this kind stays on the map."""
     return KEEP.get(kind, KEEP_MINUTES)
@@ -1286,6 +1412,7 @@ def reset() -> None:
     """Forget everything read so far. For tests and for starting over."""
     global _counter, _state, _last_poll, _polling
     with _lock:
+        _dismissed.clear()
         _seen.clear()
         _events.clear()
         _alerts.clear()
@@ -1588,6 +1715,12 @@ def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for oblast, inside in sorted(grouped.items()):
         if oblast in declared:
             continue
+        # Derived warnings are rebuilt from scratch on every read, so the only
+        # thing that can keep one dismissed is the dismissal itself. Keyed on
+        # the identifier, which is built from the region name and is therefore
+        # the same one every time.
+        if f"DR-{oblast}" in _dismissed:
+            continue
         where = places.lookup(oblast)
         if not where:
             # Not in the built-in table, so placing it would mean a lookup on
@@ -1659,6 +1792,9 @@ def current() -> dict[str, Any]:
         events += made
         alerts = sorted([*_alerts, *(derived_row(e) for e in made)],
                         key=lambda a: a["seen"], reverse=True)
+        # Derived warnings are rebuilt each call, so their rows have to be
+        # re-marked each call too.
+        events = hide_dismissed(events, alerts)
         # Over the alert window, not since the process started. A running
         # total answers a question nobody asked -- what matters is whether
         # the names coming in tonight are being found.
@@ -1688,6 +1824,10 @@ def current() -> dict[str, Any]:
         # it to ask again in a couple of seconds instead of waiting out its
         # whole minute, which is what makes a first open feel immediate: the
         # empty answer arrives at once and fills in as the poll lands.
+        # How many marks a person has taken off by hand. Said out loud,
+        # because "the map is missing things" and "I hid those" look identical
+        # from across a room and only one of them is a bug.
+        "dismissed": len(_dismissed),
         "polling": _polling,
         "last_poll": _last_poll or None,
         # Said out loud, because an empty map with a healthy feed behind it is
@@ -2058,12 +2198,17 @@ def demo() -> dict[str, Any]:
     events += made
     alerts += [derived_row(e) for e in made]
 
+    # And the same dismissals. Without this the button was inert offline.
+    with _lock:
+        events = hide_dismissed(events, alerts)
+
     alerts = [a for a in alerts
               if now - a["seen"] <= max(ALERT_MINUTES, keep_minutes(a["kind"])) * 60]
     return {
         "events": events, "count": len(events),
         "alerts": sorted(alerts, key=lambda a: a["seen"], reverse=True),
         "state": "demo — synthetic reports",
+        "dismissed": len(_dismissed),
         "keep_minutes": KEEP_MINUTES, "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
         "kinds": KINDS,

@@ -231,6 +231,7 @@ CITIES: dict[str, tuple[float, float]] = {
     # Russian and Belarusian places these channels name, by their Russian
     # names -- the spelling the posts about them actually use.
     "Белгород": (50.5951, 36.5872),
+    "Нижнекамск": (55.6367, 51.8167),
     "Брянск": (53.2436, 34.3636),
     "Курск": (51.7304, 36.1926),
     "Воронеж": (51.6720, 39.1843),
@@ -448,6 +449,89 @@ ALIASES: dict[str, str] = {
     "Karelia": "Республика Карелия",
     "Adygea": "Республика Адыгея",
     "Dagestan": "Республика Дагестан",
+    # ── Latin spellings ──────────────────────────────────────────
+    #
+    # OpenStreetMap holds these in Cyrillic and one of these channels posts in
+    # English, so "Explosions reported in Kharkiv" and "Drone over Sumy
+    # Oblast" were unplaceable names -- the single largest remaining source of
+    # unplaced rows once the case endings were dealt with.
+    #
+    # Ukraine's official romanisation, which is what English-language posts
+    # about Ukraine use: Kyiv not Kiev, Odesa not Odessa, Kharkiv not Kharkov.
+    # The Russian-derived spellings are here too where a post might use one,
+    # because reading somebody else's spelling is not endorsing it.
+    "Kyiv": "Київ", "Kiev": "Київ",
+    "Kharkiv": "Харків", "Kharkov": "Харків",
+    "Odesa": "Одеса", "Odessa": "Одеса",
+    "Dnipro": "Дніпро", "Dnepr": "Дніпро", "Dnipropetrovsk": "Дніпро",
+    "Donetsk": "Донецьк", "Zaporizhzhia": "Запоріжжя", "Zaporozhye": "Запоріжжя",
+    "Lviv": "Львів", "Lvov": "Львів",
+    "Kryvyi Rih": "Кривий Ріг", "Krivoy Rog": "Кривий Ріг",
+    "Mykolaiv": "Миколаїв", "Nikolaev": "Миколаїв",
+    "Mariupol": "Маріуполь", "Luhansk": "Луганськ",
+    "Vinnytsia": "Вінниця", "Kherson": "Херсон", "Poltava": "Полтава",
+    "Chernihiv": "Чернігів", "Cherkasy": "Черкаси", "Zhytomyr": "Житомир",
+    "Sumy": "Суми", "Khmelnytskyi": "Хмельницький", "Chernivtsi": "Чернівці",
+    "Rivne": "Рівне", "Kropyvnytskyi": "Кропивницький",
+    "Ivano-Frankivsk": "Івано-Франківськ", "Kremenchuk": "Кременчук",
+    "Ternopil": "Тернопіль", "Lutsk": "Луцьк",
+    "Bila Tserkva": "Біла Церква", "Uzhhorod": "Ужгород",
+    "Nikopol": "Нікополь", "Berdiansk": "Бердянськ", "Melitopol": "Мелітополь",
+    "Kramatorsk": "Краматорськ", "Sloviansk": "Слов'янськ",
+    "Bakhmut": "Бахмут", "Pokrovsk": "Покровськ", "Izmail": "Ізмаїл",
+    "Kovel": "Ковель", "Uman": "Умань", "Konotop": "Конотоп",
+    "Okhtyrka": "Охтирка", "Shostka": "Шостка", "Nizhyn": "Ніжин",
+    "Pryluky": "Прилуки", "Lubny": "Лубни", "Kamianske": "Кам'янське",
+    "Pavlohrad": "Павлоград", "Fastiv": "Фастів", "Brovary": "Бровари",
+    "Boryspil": "Бориспіль", "Vyshhorod": "Вишгород", "Obukhiv": "Обухів",
+    "Kaharlyk": "Кагарлик", "Romny": "Ромни", "Lebedyn": "Лебедин",
+    "Enerhodar": "Енергодар", "Kupiansk": "Куп'янськ", "Chuhuiv": "Чугуїв",
+    "Izium": "Ізюм", "Drohobych": "Дрогобич", "Stryi": "Стрий",
+    "Kalush": "Калуш", "Kolomyia": "Коломия", "Mukachevo": "Мукачево",
+    "Shepetivka": "Шепетівка", "Zhmerynka": "Жмеринка", "Smila": "Сміла",
+    "Kaniv": "Канів", "Oleksandriia": "Олександрія", "Korosten": "Коростень",
+    "Malyn": "Малин", "Putyvl": "Путивль", "Hlukhiv": "Глухів",
+    "Krolevets": "Кролевець", "Baturyn": "Батурин", "Kozelets": "Козелець",
+    "Korets": "Корець", "Zdolbuniv": "Здолбунів", "Dubno": "Дубно",
+    "Sarny": "Сарни", "Berdychiv": "Бердичів", "Myrhorod": "Миргород",
+    "Slavutych": "Славутич", "Irpin": "Ірпінь", "Bucha": "Буча",
+    "Vasylkiv": "Васильків", "Pereiaslav": "Переяслав",
+    # And the oblasts. The reader lower-cases the type word, so "Sumy Oblast"
+    # arrives here as "Sumy oblast".
+    "Kyiv oblast": "Київська область",
+    "Kharkiv oblast": "Харківська область",
+    "Sumy oblast": "Сумська область",
+    "Lviv oblast": "Львівська область",
+    "Odesa oblast": "Одеська область",
+    "Poltava oblast": "Полтавська область",
+    "Chernihiv oblast": "Чернігівська область",
+    "Zhytomyr oblast": "Житомирська область",
+    "Vinnytsia oblast": "Вінницька область",
+    "Rivne oblast": "Рівненська область",
+    "Volyn oblast": "Волинська область",
+    "Ternopil oblast": "Тернопільська область",
+    "Khmelnytskyi oblast": "Хмельницька область",
+    "Cherkasy oblast": "Черкаська область",
+    "Kirovohrad oblast": "Кіровоградська область",
+    "Dnipropetrovsk oblast": "Дніпропетровська область",
+    "Zaporizhzhia oblast": "Запорізька область",
+    "Kherson oblast": "Херсонська область",
+    "Mykolaiv oblast": "Миколаївська область",
+    "Donetsk oblast": "Донецька область",
+    "Luhansk oblast": "Луганська область",
+    "Chernivtsi oblast": "Чернівецька область",
+    "Zakarpattia oblast": "Закарпатська область",
+    "Transcarpathia oblast": "Закарпатська область",
+    "Ivano-Frankivsk oblast": "Івано-Франківська область",
+    # Russian cities in Latin, for the same channel.
+    "Belgorod": "Белгород", "Kursk": "Курск", "Bryansk": "Брянск",
+    "Voronezh": "Воронеж", "Rostov-on-Don": "Ростов-на-Дону",
+    "Moscow": "Москва", "Saint Petersburg": "Санкт-Петербург",
+    "St Petersburg": "Санкт-Петербург", "Krasnodar": "Краснодар",
+    "Taganrog": "Таганрог", "Novorossiysk": "Новороссийск",
+    "Ryazan": "Рязань", "Tula": "Тула", "Oryol": "Орел", "Orel": "Орел",
+    "Nizhnekamsk": "Нижнекамск",
+
     # Two-word city names in their oblique cases.
     #
     # The letter-stripping rules work a word at a time and these inflect both
