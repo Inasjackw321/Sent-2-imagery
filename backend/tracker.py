@@ -838,6 +838,26 @@ REGION_KINDS = ("administrative", "state", "region", "province", "county",
                 "district", "governorate", "emirate", "country")
 
 
+def ahead(lat: float, lon: float, bearing: float, km: float) -> tuple[float, float]:
+    """The point km away on a bearing. The inverse of bearing(), on a sphere.
+
+    Used by the DEMO only, to walk a track backwards along its own course so
+    the offline build has a trail to draw. Nothing on the live path invents a
+    position: a trail there is only ever the positions a feed actually gave.
+    """
+    angle = km / EARTH_KM
+    course = math.radians(bearing)
+    was = math.radians(lat)
+    sin_lat = (math.sin(was) * math.cos(angle)
+               + math.cos(was) * math.sin(angle) * math.cos(course))
+    now_lat = math.asin(max(-1.0, min(1.0, sin_lat)))
+    now_lon = math.radians(lon) + math.atan2(
+        math.sin(course) * math.sin(angle) * math.cos(was),
+        math.cos(angle) - math.sin(was) * math.sin(now_lat))
+    return (round(math.degrees(now_lat), 4),
+            round((math.degrees(now_lon) + 540) % 360 - 180, 4))
+
+
 def is_region(place: dict[str, Any]) -> bool:
     """Whether a match is an area in its own right rather than a spot in one."""
     if place.get("category") == "boundary":
@@ -994,7 +1014,23 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     # was drawn as a marker on the oblast's centroid, which says its position
     # is known to a few kilometres when the report located it to a couple of
     # hundred. Showing the region says what was actually known.
-    out["shape"] = here.get("shape") if is_region(here) else None
+    # The region's real outline, from whichever source has one.
+    #
+    # NEPTUN publish the oblast and raion boundaries their own alert keys
+    # index into, and they are the answer to "make warnings actually cover
+    # regions": a warning drawn from a bounding box is a rectangle over a
+    # province, which no province is shaped like. Tried FIRST, because a real
+    # boundary beats a learned one and beats an extent, and because it costs
+    # nothing -- the file is fetched once and kept.
+    #
+    # This applies to warnings read from the Telegram channels too, not only
+    # to NEPTUN's own. The shape of Sumy oblast does not depend on who
+    # mentioned it.
+    out["shape"] = None
+    if is_region(here):
+        out["shape"] = (neptun.shape_for(here.get("name"))
+                        or neptun.shape_for(item.get("place"))
+                        or here.get("shape"))
     # The region's extent, so a warning whose real boundary has not arrived
     # yet can be drawn as that rectangle rather than as a circle. A disc
     # centred on an oblast is not the shape of any province and reads as a
@@ -1165,6 +1201,10 @@ def _record(item: dict[str, Any], message: dict[str, Any],
             "kind": "alert",
             "rank": 0,
             "lifts": True,
+            # What the warning was about, so a stand-down row is coloured the
+            # same way the warning it lifts was. Without it a lifted missile
+            # warning and a lifted drone warning read identically.
+            "cause": placed.get("cause"),
             "summary": placed["summary"] or "All clear",
             "place": placed.get("place"),
             "placed": placed["placed"],
@@ -1419,8 +1459,10 @@ def _expire(now: float) -> None:
 
 def reset() -> None:
     """Forget everything read so far. For tests and for starting over."""
-    global _counter, _state, _last_poll, _polling
+    global _counter, _state, _last_poll, _polling, _caught_up
+    _caught_up = False
     with _lock:
+        _trails.clear()
         _dismissed.clear()
         _seen.clear()
         _events.clear()
@@ -1455,6 +1497,106 @@ def _remember_sources(seen_now: dict[str, dict[str, Any]]) -> None:
 # ATTRIBUTION below carries the link itself.
 NEPTUN_SOURCE = "neptun.in.ua"
 
+# Where each NEPTUN track has been REPORTED, oldest first: [lat, lon, when].
+#
+# Every point in here is a position their feed gave for that track at a time
+# it gave it. Nothing is interpolated between them and nothing is extended
+# past the last one -- a trail is a record of where a thing was said to be,
+# which is a different claim from a predicted path and the only one this app
+# is in a position to make.
+#
+# Kept here rather than on the event because the events are rebuilt from the
+# snapshot on every poll: the track is the same track, and its history has to
+# outlive the mark that represents it.
+_trails: dict[str, list[list[float]]] = {}
+
+# Whether the one-off catch-up has run this session.
+_caught_up = False
+
+# How long a trail is. Their snapshot updates every few seconds and this app
+# polls every thirty, so twenty points is about ten minutes of flight -- long
+# enough to read the direction of travel off the shape, short enough that a
+# busy night is not a plate of spaghetti.
+TRAIL_POINTS = 20
+
+# And how old a point may be before it is dropped, whatever the count. A trail
+# that outlives its own mark is a line to nowhere.
+TRAIL_MINUTES = 30.0
+
+
+def remember_where(ident: str, lat: float, lon: float, when: float) -> list[list[float]]:
+    """Add a reported position to a track's trail and return the whole of it."""
+    path = _trails.setdefault(ident, [])
+    # The same position reported again is not a new point. Their snapshot is
+    # polled far more often than a track actually moves, so without this a
+    # stationary track accumulates twenty identical points and draws nothing.
+    if path and abs(path[-1][0] - lat) < 1e-4 and abs(path[-1][1] - lon) < 1e-4:
+        path[-1][2] = when
+        return path
+    path.append([lat, lon, when])
+    oldest = when - TRAIL_MINUTES * 60
+    path[:] = [point for point in path if point[2] >= oldest][-TRAIL_POINTS:]
+    return path
+
+
+def forget_trails(keep: set[str] | None = None) -> int:
+    """Drop the trails of tracks that are no longer in the snapshot."""
+    if keep is None:
+        gone = len(_trails)
+        _trails.clear()
+        return gone
+    stale = [ident for ident in _trails if ident not in keep]
+    for ident in stale:
+        del _trails[ident]
+    return len(stale)
+
+
+# How far back the catch-up reads on a cold start.
+#
+# Their threat snapshot is the state NOW: open the app at four in the morning
+# and it shows what is in the air at four in the morning and nothing about the
+# hour before it. Their message feed carries times, so it can be read for the
+# recent past exactly as the channels are -- and that is where a first open
+# gets its strikes and its lifted warnings from.
+CATCH_UP_MINUTES = 30
+
+
+def catch_up() -> int:
+    """Read NEPTUN's recent messages, once, for what happened before now.
+
+    Returns how many reports it produced. Their messages go through the same
+    reader the Telegram channels do, because they are the same kind of thing:
+    prose from the same channels. What this adds is that they arrive with
+    times attached and in one request.
+    """
+    posts = neptun.messages()
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=CATCH_UP_MINUTES)
+    made = 0
+    for post in posts:
+        if post["id"] in _seen:
+            continue
+        try:
+            when = dt.datetime.fromisoformat(post["when"].replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if when < cutoff:
+            _seen.add(post["id"])
+            continue
+        _seen.add(post["id"])
+        for plain in reports.read_all(post["text"]):
+            plain["kind"] = fold_kind(plain.get("kind"))
+            item = _clean({**plain, "id": post["id"]})
+            if not item:
+                continue
+            item["by"] = "rules"
+            # Their feed carries the channel's own name, so a report caught up
+            # this way is credited to the channel that wrote it rather than to
+            # the aggregator that relayed it.
+            if _record(item, {**post, "countries": "ua,ru",
+                              "region": "Ukraine"}, "ua,ru"):
+                made += 1
+    return made
+
 
 def take_neptun() -> tuple[int, int]:
     """Read NEPTUN once, and record what it has. Returns (tracks, alerts).
@@ -1480,11 +1622,16 @@ def take_neptun() -> tuple[int, int]:
         _alerts[:] = [a for a in _alerts if a.get("by") != "neptun"]
 
     drawn = 0
+    alive: set[str] = set()
     for track in tracks:
-        if _is_dismissed({"id": f"NP-{track['id']}", "source": track["id"]}):
+        ident = f"NP-{track['id']}"
+        alive.add(ident)
+        if _is_dismissed({"id": ident, "source": track["id"]}):
             continue
         drawn += 1
         _record_neptun(track, now)
+    # A track gone from the snapshot has ended, and its trail goes with it.
+    forget_trails(alive)
 
     raised = 0
     for alert in declared:
@@ -1554,6 +1701,14 @@ def _record_neptun(track: dict[str, Any], now: float) -> None:
         "confidence": track["confidence"],
         "uncertainty_km": track["uncertainty_km"],
         "summary": track["summary"] or track["title"] or track["kind"],
+        # Their speed, credited to them. See neptun.read_threat.
+        "speed_kmh": track["speed_kmh"],
+        # Where this track has been reported, oldest first. An areaOnly track
+        # gets none: its positions are province centroids, so a line joining
+        # them would be a path between two middles-of-nowhere drawn as though
+        # something had flown it.
+        "trail": ([] if area_only
+                  else remember_where(ident, track["lat"], track["lon"], now)),
         "seen": now,
         "channel": NEPTUN_SOURCE,
         "text": track["summary"] or "",
@@ -1728,11 +1883,26 @@ def poll() -> dict[str, Any]:
     # this still has the track -- and vice versa, since they carry different
     # things. That independence is the whole reason to have two.
     feed_state = ""
+    caught = 0
+    try:
+        # Once, on the first poll of a run. A cold start is the only time
+        # there is a gap to fill; after that the channels and the snapshot
+        # between them have everything.
+        global _caught_up
+        if not _caught_up:
+            _caught_up = True
+            caught = catch_up()
+    except neptun.NeptunError:
+        # Not worth a word in the panel. The catch-up is a convenience on
+        # start and the live sources are what matter; failing it silently is
+        # right where failing the snapshot is not.
+        _caught_up = True
     try:
         drawn, declared = take_neptun()
         seen_now[NEPTUN_SOURCE] = {
             "region": "Ukraine", "posts": drawn + declared, "fresh": drawn + declared,
-            "read": drawn + declared, "placed": drawn + declared, "problem": None,
+            "read": drawn + declared + caught,
+            "placed": drawn + declared + caught, "problem": None,
         }
     except neptun.TooSoon:
         # Asked again inside their interval. Their snapshot is CDN-cached and
@@ -1984,7 +2154,13 @@ def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "place_category": "boundary",
             "lat": where["lat"], "lon": where["lon"],
             "origin_lat": where["lat"], "origin_lon": where["lon"],
-            "bbox": where["bbox"], "shape": where["shape"],
+            "bbox": where["bbox"],
+            # The real boundary, the same way a declared warning gets one. It
+            # was taking the built-in entry's shape, which is always None --
+            # so every derived warning was a rectangle however many outlines
+            # had been fetched.
+            "shape": (neptun.shape_for(where["name"])
+                      or neptun.shape_for(oblast) or where["shape"]),
             "area_km": area_km(where),
             # Set here because these are built by hand rather than by
             # place_event(), and set the SAME way it sets them: only where
@@ -1992,8 +2168,12 @@ def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # a warning is a claim about the whole province -- but claiming it
             # without a shape leaves a mark that says it covers a region and
             # has no region to draw, which every other path avoids.
-            "region_scope": "covers" if where["shape"] else None,
-            "region_wide": bool(where["shape"]),
+            "region_scope": "covers" if (neptun.shape_for(where["name"])
+                                         or neptun.shape_for(oblast)
+                                         or where["shape"]) else None,
+            "region_wide": bool(neptun.shape_for(where["name"])
+                                or neptun.shape_for(oblast)
+                                or where["shape"]),
             "placed": True,
             "motion": "still",
             "heading": None, "course": None, "course_from": None,
@@ -2151,6 +2331,7 @@ DEMO_NEPTUN = (
     {"id": "demo_np_1", "type": "uav", "title": "Шахед",
      "region": "Полтавська область", "locality": "Миргород",
      "lat": 49.9667, "lon": 33.6083, "heading": 300, "count": 3,
+     "velocity": {"bearingDeg": 300, "speedKmh": 189},
      "status": "active", "confidenceLevel": "high", "uncertaintyKm": 5,
      "explanationShort": "БпЛА курсом на північний захід", "advisory": False,
      "areaOnly": False},
@@ -2165,6 +2346,7 @@ DEMO_NEPTUN = (
     {"id": "demo_np_4", "type": "kab", "title": "КАБ",
      "region": "Харківська область", "locality": "Вовчанськ",
      "lat": 50.2894, "lon": 36.9436, "heading": 200, "status": "active",
+     "velocity": {"bearingDeg": 200, "speedKmh": 208},
      "explanationShort": "КАБ у напрямку Вовчанська"},
 )
 
@@ -2346,6 +2528,21 @@ def _demo_ring(lat: float, lon: float, half: float) -> dict[str, Any]:
     return {"type": "Polygon", "coordinates": [ring]}
 
 
+def _demo_place(name: str, lat: float, lon: float, half: float) -> dict[str, Any]:
+    """One offline gazetteer answer, in the shape find() returns."""
+    region = half > 1
+    return {
+        "lat": lat, "lon": lon, "name": name,
+        "kind": "administrative" if region else "town",
+        "category": "boundary" if region else "place",
+        "bbox": [lat - half, lat + half, lon - half, lon + half],
+        # Through the same door the live boundaries come through, so the demo
+        # exercises that path rather than a copy of it.
+        "shape": (neptun.shape_for(name) or _demo_ring(lat, lon, half)
+                  if region else None),
+    }
+
+
 def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
     """A small gazetteer, for the build with no network."""
     found = DEMO_PLACES.get(name)
@@ -2358,6 +2555,13 @@ def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
         if not known:
             return None
         found = (known["lat"], known["lon"])
+        # And its own extent, so an oblast reached this way is treated as an
+        # oblast. Falling back to a town's radius made every region the demo
+        # did not list by hand into a point -- which is not what the live
+        # path does with the same name, so the demo disagreed with it.
+        lat, lon = found
+        half = (known["bbox"][1] - known["bbox"][0]) / 2
+        return _demo_place(name, lat, lon, half)
     lat, lon = found
     half = DEMO_EXTENT.get(name, 0.06)
     region = half > 1
@@ -2422,6 +2626,17 @@ def demo() -> dict[str, Any]:
         seed.append((got["kind"], got["place"], None, got["course"], 1,
                      got["summary"], 6, None, got.get("region")))
 
+    # Boundaries, so the offline build draws warnings as regions rather than
+    # as rectangles. Rings rather than real outlines -- an oblast border is
+    # thousands of points and this file is not the place for twenty-five of
+    # them -- but they go in through neptun.remember_shapes() and out through
+    # neptun.shape_for(), which is the same path the live boundaries take.
+    # The alternative was a demo in which the whole feature was invisible.
+    neptun.remember_shapes({
+        name.casefold(): _demo_ring(lat, lon, places.WIDE.get(name, 1.0))
+        for name, (lat, lon) in places.REGIONS.items()
+    })
+
     events, alerts = [], []
     for i, row in enumerate(seed, start=1):
         kind, place, toward, course, count, summary = row[:6]
@@ -2472,8 +2687,22 @@ def demo() -> dict[str, Any]:
     # alarm, and a region centroid drawn as a place.
     for raw in DEMO_NEPTUN:
         track = neptun.read_threat(raw)
-        if track:
-            _record_neptun(track, epoch - 240)
+        if not track:
+            continue
+        # A few earlier positions, so the demo can show a trail at all.
+        #
+        # Walked BACKWARDS along the track's own stated course from where it
+        # is now, which is the one place in this app that makes up a position
+        # -- and it is the demo, whose whole contract is that its reports are
+        # invented. The live path never does this: a trail there is only ever
+        # positions the feed actually gave.
+        if track["heading"] is not None and not track["area_only"]:
+            back = (track["heading"] + 180) % 360
+            for step in range(4, 0, -1):
+                was = ahead(track["lat"], track["lon"], back, step * 14.0)
+                remember_where(f"NP-{track['id']}", was[0], was[1],
+                               epoch - 240 - step * 90)
+        _record_neptun(track, epoch - 240)
     with _lock:
         # Aged like everything else in here. Without this they sat on the map
         # through the demo's whole cycle while the seeded marks came and went,

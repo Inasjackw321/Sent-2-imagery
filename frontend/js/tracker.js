@@ -489,6 +489,14 @@ function popup(event) {
       + 'region rather than anywhere anybody reported. No course, no '
       + 'distance, and nothing here is extrapolated from it.');
   }
+  if (event.speed_kmh) {
+    // Theirs, and said to be theirs. This map refuses to print a speed it
+    // worked out from "this is a Shahed and Shaheds do about 180" -- that
+    // dresses an assumption up as telemetry. A reported one is a different
+    // claim and is attributed.
+    rows.push(`Reported at <b>${Math.round(event.speed_kmh)} km/h</b>`
+      + (event.by === 'neptun' ? ' by NEPTUN' : '') + '.');
+  }
   if (event.by === 'neptun') {
     rows.push('From <b>NEPTUN</b>'
       + (event.confidence ? ` — confidence ${escapeHtml(event.confidence)}` : '')
@@ -709,6 +717,46 @@ function areaFor(event) {
   });
 }
 
+/**
+ * Where a track has been REPORTED, drawn as a line that fades into the past.
+ *
+ * Every point in it is a position the source gave at a time it gave it.
+ * Nothing is interpolated between them and nothing is extended past the last
+ * one -- which is the difference between a trail and a predicted path, and
+ * this map only has grounds to draw the first.
+ *
+ * Drawn as separate legs rather than one polyline because the whole point is
+ * that the old end is fainter than the new end, and a polyline takes one
+ * opacity. Twenty legs is cheap; the alternative is an SVG gradient per track,
+ * which is a lot of machinery for a line.
+ *
+ * Returns null where there is nothing to draw: one point is a position, not a
+ * path, and an areaOnly track has no positions at all -- only the middles of
+ * provinces, which a line between would be a flight nobody reported.
+ */
+function trailFor(event) {
+  const path = Array.isArray(event.trail) ? event.trail : [];
+  if (path.length < 2 || event.area_only) return null;
+  const colour = colourOf(event);
+  const legs = [];
+  for (let i = 1; i < path.length; i += 1) {
+    // Oldest leg faintest. The newest is still well under the mark's own
+    // weight, so the trail reads as history rather than as another object.
+    const through = i / (path.length - 1);
+    legs.push(L.polyline([[path[i - 1][0], path[i - 1][1]],
+                          [path[i][0], path[i][1]]], {
+      pane: 'trackerArea',
+      renderer: areaInk,
+      interactive: false,
+      className: 'ao-trail',
+      color: colour,
+      weight: 1 + through * 1.6,
+      opacity: 0.08 + through * 0.5,
+    }));
+  }
+  return legs;
+}
+
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
   && Number.isFinite(event.origin_lat)
@@ -828,7 +876,11 @@ function reconcile(events) {
       // not multiply with how many things caused it.
       const area = (n === 0 && hasArea(event)) ? areaFor(event) : null;
       area?.addTo(areas);
-      const made = { event, marker, area, index: n };
+      // The trail, on the first mark of a report only: a report drawn as
+      // three marks a couple of kilometres apart has one history, not three.
+      const trail = n === 0 ? trailFor(event) : null;
+      trail?.forEach((leg) => leg.addTo(areas));
+      const made = { event, marker, area, trail, index: n };
       drawn.set(id, made);
       age(made);
     }
@@ -837,6 +889,7 @@ function reconcile(events) {
     if (alive.has(id)) continue;
     layer.removeLayer(held.marker);
     if (held.area) areas.removeLayer(held.area);
+    held.trail?.forEach((leg) => areas.removeLayer(leg));
     drawn.delete(id);
   }
 }

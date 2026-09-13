@@ -1888,3 +1888,11 @@ body.is-walled { overflow: hidden; }
   opacity: .7;
   font-style: italic;
 }
+
+/* Where a track has been reported. Not a predicted path: every point is a
+   position a source gave, and the line stops at the last one. */
+.ao-trail {
+  fill: none;
+  stroke-linecap: round;
+  pointer-events: none;
+}

@@ -68,6 +68,14 @@ ALERTS = f"{BASE}/api/v1/alerts"
 # is what finally gives an oblast warning its real outline without a Nominatim
 # request per province.
 OBLAST_SHAPES = f"{BASE}/oblasts.geojson"
+RAION_SHAPES = f"{BASE}/raions.geojson"
+
+# Their message feed: the Telegram posts behind their map, with times. The
+# threat snapshot is current state and has no history in it, so this is the
+# only way to catch up on what happened before the app was opened -- and it
+# goes through the same reader the channels do, because it is the same kind of
+# thing. See catch_up() in the tracker.
+MESSAGES = f"{BASE}/api/v1/messages"
 
 # Their terms, in the only form that satisfies them: a visible link beside the
 # data. Carried in the feed payload so the page cannot show the marks without
@@ -263,6 +271,14 @@ def read_threat(raw: Any) -> dict[str, Any] | None:
         "status": status.lower(),
         "title": _text(raw.get("title"), 60),
         "summary": _text(raw.get("explanationShort"), 200),
+        # Their measurement, not a table lookup for the type.
+        #
+        # This map refuses to print a speed it worked out from "this is a
+        # Shahed, Shaheds do about 180" -- that dresses an assumption up as
+        # telemetry. A speed THEY report is a different claim, and it is on
+        # their own map beside the mark, so it is shown and credited to them.
+        "speed_kmh": (_number((raw.get("velocity") or {}).get("speedKmh"))
+                      if isinstance(raw.get("velocity"), dict) else None),
         "updated_at": _text(raw.get("updatedAt"), 40),
         # Their track id, which is stable across updates. Used as the source
         # id so an upserted track replaces its own mark instead of adding one.
@@ -354,7 +370,7 @@ SHAPES_FOR = 24 * 3600
 
 
 def shapes() -> dict[str, Any]:
-    """The oblast outlines, fetched once and kept. {} if they cannot be had.
+    """The region outlines, fetched once and kept. {} if they cannot be had.
 
     Never raises. A missing boundary means a warning is drawn from its extent
     instead, which is the behaviour without this module at all -- so the whole
@@ -368,7 +384,15 @@ def shapes() -> dict[str, Any]:
         # Not paced with the snapshot: this is a static file fetched about
         # once a day, and making it queue behind the threat poll would delay
         # the thing people are actually waiting for.
+        # Oblasts first, then raions, into one index. Their alert feed
+        # reports both and a warning for either has to be drawable; the
+        # raion file is the larger of the two and is fetched second so a
+        # failure there still leaves the provinces.
         found = index_shapes(_get(OBLAST_SHAPES, paced=False))
+        try:
+            found.update(index_shapes(_get(RAION_SHAPES, paced=False)))
+        except NeptunError:
+            pass
     except NeptunError:
         found = {}
     with _lock:
@@ -386,11 +410,59 @@ def shape_for(name: str | None) -> Any:
     return shapes().get(str(name).casefold())
 
 
+def remember_shapes(index: dict[str, Any]) -> None:
+    """Put boundaries in without fetching them. For seeding and for the demo.
+
+    The offline build has no network and so no boundaries, which meant every
+    warning in it fell back to the region's extent -- a rectangle -- and the
+    thing this feed most improves could not be looked at without deploying.
+    """
+    global _shapes, _shapes_at
+    with _lock:
+        _shapes = dict(index)
+        _shapes_at = time.time()
+
+
 def forget() -> None:
     """Drop what is cached. For tests and for starting over."""
     global _shapes, _shapes_at, _last_call
     with _lock:
         _shapes, _shapes_at, _last_call = None, 0.0, 0.0
+
+
+def messages() -> list[dict[str, Any]]:
+    """The recent posts behind their map: {channel, text, when}.
+
+    Their /api/v1/messages, which is the only history any of this has. The
+    threat snapshot is the state NOW -- open the app at four in the morning
+    and it shows what is in the air at four in the morning and nothing about
+    the hour before it. This carries times, so it can be read for the last
+    half hour the same way the channels are.
+    """
+    payload = _get(MESSAGES)
+    raw = payload.get("messages") if isinstance(payload, dict) else payload
+    if not isinstance(raw, list):
+        raise NeptunError("NEPTUN's message feed had no messages list")
+    out = []
+    for i, item in enumerate(raw[:MOST_THREATS]):
+        if not isinstance(item, dict):
+            continue
+        said = _text(item.get("text"), 1200)
+        when = _text(item.get("date") or item.get("when"), 40)
+        if not said or not when:
+            continue
+        channel = _text(item.get("channel"), 60) or "neptun"
+        out.append({
+            # Stable enough to dedupe on across polls: the same post keeps its
+            # channel, its time and its text.
+            "id": f"np-msg/{channel}/{when}/{abs(hash(said)) % 10**8}",
+            "channel": channel,
+            "when": when,
+            "text": said,
+            "photos": [],
+            "link": BASE,
+        })
+    return out
 
 
 def status() -> dict[str, Any]:

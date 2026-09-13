@@ -542,7 +542,11 @@ class TestTheOutputFitsWhatConsumesIt:
             assert folded != "unknown" or kind == "unknown", \
                 f"{kind} was read and then discarded"
         for kind in reports.SAYS:
-            assert tracker.fold_kind(kind) in tracker.KINDS, kind
+            # LIFTED is the deliberate exception, the same one as above: an
+            # all-clear is drawn by REMOVING a warning rather than by adding
+            # a mark, so it has wording and no drawing.
+            assert (tracker.fold_kind(kind) in tracker.KINDS
+                    or tracker.fold_kind(kind) == tracker.LIFTED), kind
 
     def test_every_course_it_can_return_is_one_the_map_can_read(self):
         from backend import tracker
@@ -1035,3 +1039,56 @@ class TestNothingInTheSweepGoesUnplaced:
         # a warning ABOUT missiles stays a warning.
         assert reports.find_kind("Ракетна небезпека для Харківщини") == "alert"
         assert reports.find_kind("Ракетная опасность") == "alert"
+
+
+class TestTheLineAPersonActuallyReads:
+    """The summary is the row in the panel, and it was saying nothing.
+
+    "Report over Республика Башкортостан" is what a lifted warning read as --
+    the default wording, because all_clear had none. It is the commonest post
+    on the Russian radar channel, so the commonest row in the panel said
+    nothing about the one fact in it: that the warning ENDED.
+    """
+
+    def test_a_lifted_warning_says_it_is_over(self):
+        for text in ("Republic of Tatarstan – UAV alert cleared.",
+                     "Відбій тривоги у Сумській області",
+                     "Bryansk Oblast — missile threat lifted"):
+            said = reports.read(text)["summary"]
+            assert said.lower().startswith("all clear"), (text, said)
+            assert "report over" not in said.lower(), said
+
+    def test_it_names_the_region_without_pretending_to_be_an_event(self):
+        # "All clear — Sumy oblast", not "All clear in Sumy oblast". A
+        # stand-down is a statement ABOUT a region, not a thing happening
+        # inside one.
+        said = reports.read("Відбій тривоги у Сумській області")["summary"]
+        assert "All clear — Сумська область" == said
+
+    def test_a_warning_is_never_counted(self):
+        """"3 × air alert in Sumy oblast" is not a thing that can happen.
+
+        A province is under a warning or it is not. The count comes from a
+        phrase like "група БпЛА" elsewhere in the post and multiplying the
+        warning by it says something impossible.
+        """
+        # A number in the post, so the guard is actually reached. Written
+        # with "група БпЛА" first, which has no digit in it -- so find_count
+        # returned 1, the multiplication never happened, and the test passed
+        # with the guard deleted.
+        for text in ("Повітряна тривога у Сумській області — 12 БпЛА",
+                     "Відбій тривоги у Сумській області — 12 БпЛА"):
+            got = reports.read(text)
+            assert got["kind"] in ("alert", "all_clear"), (text, got["kind"])
+            assert got["count"] > 1, "the count never reached the summary"
+            assert "×" not in got["summary"], (text, got["summary"])
+
+    def test_things_in_the_air_are_still_counted(self):
+        # The other half: the count is worth saying where it means something.
+        assert "×" in reports.read("12 шахедів над Одещиною")["summary"]
+
+    def test_every_kind_it_can_produce_has_wording(self):
+        # A kind with no entry falls through to "Report", which is the bug
+        # this class is about -- and it fails silently, as a dull row.
+        for kind, _ in reports.KIND_WORDS:
+            assert kind in reports.SAYS, kind

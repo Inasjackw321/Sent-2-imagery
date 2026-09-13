@@ -766,6 +766,12 @@ SAYS = {
     "cruise": "Cruise missile", "ballistic": "Ballistic missile",
     "aircraft": "Aircraft", "helicopter": "Helicopter",
     "explosion": "Explosions reported", "alert": "Air alert",
+    # The all-clear had no wording at all, so it fell through to the default
+    # and a lifted warning read "Report over Республика Башкортостан" -- a
+    # line that says nothing about the one fact in it, which is that the
+    # warning ENDED. It is the commonest post on the Russian radar channel.
+    "all_clear": "All clear",
+    "bomb": "Guided bomb",
     "unknown": "Unidentified",
 }
 
@@ -776,10 +782,18 @@ WAYS = {"N": "north", "NE": "north-east", "E": "east", "SE": "south-east",
 def summarise(kind: str, place: str | None, toward: str | None,
               course: str | None, count: int) -> str:
     what = SAYS.get(kind, "Report")
-    if count > 1:
+    if count > 1 and kind not in ("alert", "all_clear"):
+        # Not for a warning. "3 × air alert in Sumy oblast" is not a thing
+        # that can happen: a province is under a warning or it is not.
         what = f"{count} × {what.lower()}"
-    where = f" over {place}" if place and kind not in ("explosion", "alert") else (
-        f" in {place}" if place else "")
+    if kind == "all_clear":
+        # "All clear — Sumy oblast", not "All clear in Sumy oblast". It reads
+        # as a statement about the region rather than as something happening
+        # inside it, which is what a stand-down is.
+        where = f" — {place}" if place else ""
+    else:
+        where = f" over {place}" if place and kind not in (
+            "explosion", "alert") else (f" in {place}" if place else "")
     going = ""
     if toward:
         going = f", heading for {toward}"

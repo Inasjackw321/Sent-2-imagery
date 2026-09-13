@@ -593,3 +593,296 @@ class TestTheDemoShowsTheFeed:
         drawn = {e["id"] for e in got["events"] if e.get("by") == "neptun"}
         rows = {a["id"] for a in got["alerts"] if a.get("by") == "neptun"}
         assert rows == drawn
+
+
+class TestTheTrail:
+    """Where a track has BEEN, which is not where it is going.
+
+    Every point is a position their feed gave at a time it gave it. Nothing is
+    interpolated between them and nothing is extended past the last one --
+    which is the whole difference between a trail and a predicted path, and
+    this app only has grounds to draw the first.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+
+    def teardown_method(self):
+        tracker.reset()
+
+    def fly(self, monkeypatch, *lons, ident="t1"):
+        for lon in lons:
+            track = neptun.read_threat({**ONE_THREAT, "id": ident, "lon": lon})
+            monkeypatch.setattr(neptun, "threats", lambda t=track: [t])
+            monkeypatch.setattr(neptun, "alerts", lambda: [])
+            tracker.take_neptun()
+        return tracker.current()["events"][0]
+
+    def test_it_collects_the_positions_that_were_reported(self, monkeypatch):
+        got = self.fly(monkeypatch, 30.0, 30.5, 31.0)
+        assert [round(p[1], 1) for p in got["trail"]] == [30.0, 30.5, 31.0]
+
+    def test_the_same_position_twice_is_not_two_points(self, monkeypatch):
+        # Their snapshot is polled far more often than a track actually moves,
+        # so without this a stationary track collects twenty identical points
+        # and draws nothing at all.
+        got = self.fly(monkeypatch, 30.0, 30.0, 30.0, 30.5)
+        assert len(got["trail"]) == 2
+
+    def test_it_is_bounded(self, monkeypatch):
+        got = self.fly(monkeypatch, *[30.0 + i * 0.2 for i in range(40)])
+        assert len(got["trail"]) <= tracker.TRAIL_POINTS
+
+    def test_an_area_only_track_gets_none(self, monkeypatch):
+        """Its positions are province centroids, not places.
+
+        A line joining two of those would be a flight between two
+        middles-of-nowhere, drawn as though something had flown it.
+        """
+        monkeypatch.setattr(neptun, "threats",
+                            lambda: [neptun.read_threat(area_only())])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        tracker.take_neptun()
+        tracker.take_neptun()
+        assert tracker.current()["events"][0]["trail"] == []
+
+    def test_a_track_that_ends_takes_its_trail_with_it(self, monkeypatch):
+        # Otherwise a line hangs on the map with nothing at the end of it.
+        self.fly(monkeypatch, 30.0, 30.5)
+        assert tracker._trails
+        monkeypatch.setattr(neptun, "threats", lambda: [])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        tracker.take_neptun()
+        assert not tracker._trails
+
+    def test_two_tracks_keep_their_own(self, monkeypatch):
+        first = neptun.read_threat({**ONE_THREAT, "id": "a", "lon": 30.0})
+        second = neptun.read_threat({**ONE_THREAT, "id": "b", "lon": 35.0})
+        monkeypatch.setattr(neptun, "threats", lambda: [first, second])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        tracker.take_neptun()
+        moved = neptun.read_threat({**ONE_THREAT, "id": "a", "lon": 30.5})
+        monkeypatch.setattr(neptun, "threats", lambda: [moved, second])
+        tracker.take_neptun()
+        # Keyed by id: both tracks are over the same town in their example,
+        # so keying by place collapsed them and the test compared one trail
+        # with itself.
+        trails = {e["id"]: e["trail"] for e in tracker.current()["events"]}
+        assert len(trails) == 2
+        assert sorted(len(v) for v in trails.values()) == [1, 2]
+
+    def test_the_demo_has_one_to_look_at(self):
+        # Walked backwards along the track's own stated course, which is the
+        # one place in this app that makes up a position -- and it is the
+        # demo, whose contract is that its reports are invented.
+        got = [e for e in tracker.demo()["events"]
+               if e.get("by") == "neptun" and len(e.get("trail") or []) > 1]
+        assert got, "the offline build cannot show a trail"
+
+    def test_the_live_path_never_invents_one(self, monkeypatch):
+        # ahead() exists for the demo. A trail on a real track is only ever
+        # the positions the feed gave, so one poll is one point.
+        monkeypatch.setattr(tracker, "ahead", lambda *a, **k: (
+            _ for _ in ()).throw(AssertionError("the live path must not")))
+        got = self.fly(monkeypatch, 30.0)
+        assert len(got["trail"]) == 1
+
+
+class TestTheirSpeed:
+    def test_it_is_carried_and_credited(self, monkeypatch):
+        # This map refuses to print a speed it worked out from "this is a
+        # Shahed and Shaheds do about 180" -- that dresses an assumption up as
+        # telemetry. A speed THEY report is a different claim.
+        monkeypatch.setattr(neptun, "threats",
+                            lambda: [neptun.read_threat(ONE_THREAT)])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        tracker.reset()
+        tracker.take_neptun()
+        assert tracker.current()["events"][0]["speed_kmh"] == 150.0
+
+    def test_a_track_with_no_speed_claims_none(self):
+        bare = {k: v for k, v in ONE_THREAT.items() if k != "velocity"}
+        assert neptun.read_threat(bare)["speed_kmh"] is None
+
+
+class TestCatchingUpOnTheLastHalfHour:
+    """Their snapshot is the state NOW and has no history in it.
+
+    Open the app at four in the morning and it shows what is in the air at
+    four in the morning and nothing about the hour before. Their message feed
+    carries times, so it is read once on a cold start for the recent past --
+    through the same reader the Telegram channels go through, because it is
+    the same kind of thing.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+
+    def teardown_method(self):
+        tracker.reset()
+
+    def said(self, monkeypatch, *posts):
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        monkeypatch.setattr(neptun, "_get", lambda url, **kw: {"messages": [
+            {"channel": "kpszsu", "text": text,
+             "date": (now - dt.timedelta(minutes=old)).isoformat()}
+            for text, old in posts]})
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        return tracker.catch_up()
+
+    def test_recent_messages_become_marks(self, monkeypatch):
+        made = self.said(monkeypatch, ("Вибухи у Харкові", 5),
+                         ("Шахед над Нікополем курсом на північ", 10))
+        assert made == 2
+        assert len(tracker.current()["events"]) == 2
+
+    def test_older_ones_are_left_alone(self, monkeypatch):
+        stale = tracker.CATCH_UP_MINUTES + 20
+        assert self.said(monkeypatch, ("Вибухи у Харкові", stale)) == 0
+
+    def test_the_window_is_about_half_an_hour(self):
+        assert 15 <= tracker.CATCH_UP_MINUTES <= 60
+
+    def test_a_message_is_read_once(self, monkeypatch):
+        self.said(monkeypatch, ("Вибухи у Харкові", 5))
+        before = len(tracker.current()["events"])
+        tracker.catch_up()
+        assert len(tracker.current()["events"]) == before
+
+    def test_it_is_credited_to_the_channel_that_wrote_it(self, monkeypatch):
+        # Their feed carries the channel's own name. Crediting the aggregator
+        # would lose which channel actually said it.
+        self.said(monkeypatch, ("Вибухи у Харкові", 5))
+        assert tracker.current()["alerts"][0]["channel"] == "kpszsu"
+
+    def test_a_message_feed_that_is_down_is_not_a_failure(self, monkeypatch):
+        # It is a convenience on start and the live sources are what matter.
+        monkeypatch.setattr(neptun, "_get", lambda url, **kw: (
+            _ for _ in ()).throw(neptun.NeptunError("down")))
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [])
+        got = tracker.poll()
+        assert got["events"] == []
+
+    def test_rubbish_in_the_feed_is_skipped(self, monkeypatch):
+        monkeypatch.setattr(neptun, "_get", lambda url, **kw: {"messages": [
+            "not an object", {}, {"text": "no date"}, None]})
+        assert tracker.catch_up() == 0
+
+
+class TestWarningsCoverRealRegions:
+    """A bounding box is a rectangle, and no province is shaped like one.
+
+    NEPTUN publish the oblast and raion boundaries their own alert keys index
+    into. Used for EVERY warning, not only their own: the shape of Sumy oblast
+    does not depend on who mentioned it.
+    """
+
+    SHAPE = {"type": "Polygon",
+             "coordinates": [[[33, 50], [35, 50], [35, 52], [33, 52], [33, 50]]]}
+
+    def setup_method(self):
+        tracker.reset()
+
+    def teardown_method(self):
+        tracker.reset()
+        neptun.forget()
+
+    def test_a_channel_read_warning_gets_their_outline(self, monkeypatch):
+        monkeypatch.setattr(neptun, "shape_for",
+                            lambda name: self.SHAPE if name and "Сумська" in str(name)
+                            else None)
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        item = tracker._clean({"kind": "alert", "place": "Сумська область",
+                               "id": "c/1", "count": 1, "summary": "alert",
+                               "region": None, "toward": None, "course": None,
+                               "cause": "drone"})
+        tracker._record(item, {"id": "c/1", "channel": "kpszsu",
+                               "region": "Ukraine"}, "ua")
+        got = tracker.current()["events"][0]
+        assert got["shape"] == self.SHAPE
+        assert got["region_wide"] is True
+
+    def test_raion_boundaries_are_indexed_too(self, monkeypatch):
+        # Their alert feed reports both raions and oblasts, so a warning for
+        # either has to be drawable.
+        asked = []
+        monkeypatch.setattr(neptun, "_get", lambda url, **kw: (
+            asked.append(url),
+            {"features": [{"type": "Feature",
+                           "properties": {"key": "k", "name": "n"},
+                           "geometry": TestWarningsCoverRealRegions.SHAPE}]})[1])
+        neptun.forget()
+        neptun.shapes()
+        assert any("oblasts" in url for url in asked)
+        assert any("raions" in url for url in asked)
+
+    def test_a_missing_raion_file_still_leaves_the_provinces(self, monkeypatch):
+        def maybe(url, **kw):
+            if "raions" in url:
+                raise neptun.NeptunError("no raions today")
+            return {"features": [{"type": "Feature",
+                                  "properties": {"name": "Сумська область"},
+                                  "geometry": TestWarningsCoverRealRegions.SHAPE}]}
+        monkeypatch.setattr(neptun, "_get", maybe)
+        neptun.forget()
+        assert neptun.shape_for("Сумська область") == self.SHAPE
+
+
+class TestEveryWarningGetsTheRealOutline:
+    """Not only the declared ones, and not only NEPTUN's own.
+
+    A bounding box is a rectangle and no province is shaped like one. Three
+    paths build a warning -- one read from a channel, one declared by NEPTUN,
+    and one derived from the marks in a region -- and each has to reach the
+    same boundaries or the map draws the same province two different shapes
+    depending on who mentioned it.
+    """
+
+    def test_all_three_kinds_of_warning_are_drawn_as_regions(self):
+        warnings = [e for e in tracker.demo()["events"] if e["kind"] == "alert"]
+        shaped = [e for e in warnings if e.get("shape")]
+        assert len(warnings) >= 5
+        # Every one that is about a REGION. A warning for a city is a point
+        # and is right not to have one.
+        regions = [e for e in warnings
+                   if e.get("place_category") == "boundary" or e.get("derived")]
+        assert regions
+        assert all(e.get("shape") for e in regions), [
+            e["place"] for e in regions if not e.get("shape")]
+        assert shaped
+
+    def test_a_derived_warning_gets_one(self):
+        """It was taking the built-in entry's shape, which is always None.
+
+        So every derived warning was a rectangle however many real outlines
+        had been fetched -- and derived warnings are most of them on a busy
+        night, since every region with drones in it raises one.
+        """
+        made = [e for e in tracker.demo()["events"] if e.get("derived")]
+        assert made
+        assert all(e.get("shape") for e in made), [
+            e["place"] for e in made if not e.get("shape")]
+        assert all(e["region_wide"] for e in made)
+
+    def test_a_city_warning_is_still_a_point(self):
+        # The other half. A warning for Kharkiv the city is not a claim about
+        # Kharkiv oblast, and giving it a province's outline would make it one.
+        city = [e for e in tracker.demo()["events"]
+                if e["kind"] == "alert" and e.get("place") == "Kharkiv"]
+        if city:
+            assert not city[0].get("shape")
+
+    def test_the_demo_reaches_them_through_the_real_door(self):
+        # Seeded via remember_shapes and read via shape_for, which is the path
+        # the live boundaries take. A demo that reimplemented this would prove
+        # nothing about it.
+        #
+        # demo() first, because the suite clears the cache between tests --
+        # the seeding is part of building the demo, not a fixture.
+        neptun.forget()
+        assert neptun.shape_for("Сумська область") is None
+        tracker.demo()
+        assert neptun.shape_for("Сумська область")
