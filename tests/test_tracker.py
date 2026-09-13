@@ -138,6 +138,12 @@ def gazetteer(name, countries=""):
     return {"lat": found[0], "lon": found[1], "name": f"{name}, Ukraine", "kind": "city"}
 
 
+# The channel the app is configured to read. One, now that NEPTUN covers
+# Ukraine -- and named through this rather than spelled out, because the list
+# has changed twice and every test that hard-coded a name broke both times.
+ONLY = tracker.CHANNELS[0]["name"]
+
+
 def one(**over):
     return {"kind": "drone", "place": "Nikopolia", "region": None, "toward": None,
             "course": None, "count": 1, "summary": "Drone over Nikopolia", **over}
@@ -800,12 +806,18 @@ class TestSayingWhichChannelGaveWhat:
         # The section that exists to answer "why can I not see anything" was
         # the one part of the panel the build with no network never drew.
         rows = tracker.demo()["sources"]
-        assert {r["channel"] for r in rows} == {c["name"] for c in tracker.CHANNELS}
-        # All four states a channel can be in, so each renders at least once.
-        assert any(r["problem"] for r in rows)
-        assert any(r["posts"] > 0 and r["fresh"] == 0 and not r["problem"]
-                   for r in rows)
-        assert any(r["read"] and not r["placed"] for r in rows)
+        # One row per source: the channel and the feed.
+        #
+        # It used to demand all four channel states at once, and that worked
+        # because there were five channels to put them in. With one channel
+        # there is one state to see, and inventing a second to show another
+        # would be the demo lying about which channels exist.
+        assert {r["channel"] for r in rows} == (
+            {c["name"] for c in tracker.CHANNELS} | {tracker.NEPTUN_SOURCE})
+        # And every row carries the four numbers the panel reads, whatever
+        # state it is in -- which is what this section is for.
+        for row in rows:
+            assert set(row) >= {"posts", "fresh", "read", "placed", "problem"}
         assert any(r["placed"] for r in rows)
 
     def test_every_channel_is_accounted_for(self, monkeypatch):
@@ -821,10 +833,15 @@ class TestSayingWhichChannelGaveWhat:
             tracker.reset()
 
     def test_a_channel_that_posted_nothing_says_so(self, monkeypatch):
+        # Quiet and reachable, which is a different thing from unreachable and
+        # needs a different fix. Written against whichever channel is
+        # configured rather than a name, because that list is now one entry
+        # and will change again.
+        quiet = tracker.CHANNELS[0]["name"]
         try:
             rows = self.read_one(monkeypatch, {})
-            assert rows["kpszsu"]["posts"] == 0
-            assert rows["kpszsu"]["problem"] is None
+            assert rows[quiet]["posts"] == 0
+            assert rows[quiet]["problem"] is None
         finally:
             tracker.reset()
 
@@ -848,29 +865,31 @@ class TestSayingWhichChannelGaveWhat:
         # channel names places the gazetteer does not know" -- which need
         # completely different fixes.
         try:
+            only = tracker.CHANNELS[0]["name"]
             rows = self.read_one(monkeypatch, {
-                "eRadarrua": "БпЛА повз Кагарлик курсом на північ",
-                # Readable as a drone, with no place name in it at all -- so
-                # there is nothing a gazetteer could be asked for. Not the
-                # same problem as an unreadable post, and it needs a different
-                # fix.
-                "war_monitor": "БпЛА курсом на північ",
-            })
-            assert rows["eRadarrua"]["read"] == 1
-            assert rows["eRadarrua"]["placed"] == 1
-            assert rows["war_monitor"]["read"] == 1
-            assert rows["war_monitor"]["placed"] == 0
+                only: "БпЛА повз Кагарлик курсом на північ"})
+            assert rows[only]["read"] == 1
+            assert rows[only]["placed"] == 1
+
+            # And the other half: readable as a drone, with no place name in
+            # it at all, so there is nothing a gazetteer could be asked for.
+            # Not the same problem as an unreadable post, and it needs a
+            # different fix.
+            rows = self.read_one(monkeypatch, {only: "БпЛА курсом на північ"})
+            assert rows[only]["read"] == 1
+            assert rows[only]["placed"] == 0
         finally:
             tracker.reset()
 
 
 class TestBothSidesOfTheBorder:
-    def test_the_monitoring_channels_may_place_in_russia(self):
-        # They report Belgorod and Bryansk as much as Sumy. Without the
-        # country in the list those names cannot resolve at all.
-        by_name = {c["name"]: c for c in tracker.CHANNELS}
-        assert "ru" in by_name["war_monitor"]["countries"].split(",")
-        assert "ru" in by_name["eRadarrua"]["countries"].split(",")
+    def test_every_channel_may_place_in_russia(self):
+        # The one that is left reports Belgorod and Bryansk as much as Sumy.
+        # Without the country in the list those names cannot resolve at all --
+        # and the Russian side is the whole reason this channel is kept, now
+        # that NEPTUN covers Ukraine.
+        for channel in tracker.CHANNELS:
+            assert "ru" in channel["countries"].split(","), channel["name"]
 
     def test_the_luhansk_channel_looks_in_russia_first(self):
         # Its place names are in Russia and the occupied east. Ukraine first
@@ -1729,25 +1748,36 @@ class TestLoadingQuickly:
         assert max(starts) - min(starts) < 0.1, "the fetches did not overlap"
 
     def test_one_channel_failing_does_not_lose_the_others(self, monkeypatch):
-        # In a thread pool a fetch raising something unexpected surfaces at the
-        # point the result is collected, and it must not take the other three
-        # with it.
+        """A fetch that blows up must not take the rest of the poll with it.
+
+        In a thread pool an unexpected exception surfaces where the result is
+        collected, not where it was raised. Run against a configured set of
+        three rather than the one the app currently has -- the property is
+        about the pool, and pinning it to today's channel list would mean this
+        stops testing anything the moment that list changes again, which it
+        has twice.
+        """
+        monkeypatch.setattr(tracker, "CHANNELS", (
+            {"name": "a", "region": "Ukraine", "countries": "ua"},
+            {"name": "b", "region": "Ukraine", "countries": "ua"},
+            {"name": "c", "region": "Ukraine", "countries": "ua"},
+        ))
+
         def mixed(channel):
-            if channel == "kpszsu":
+            if channel == "a":
                 raise RuntimeError("something nobody thought of")
-            if channel == "war_monitor":
-                raise tracker.TrackerError("war_monitor answered 500")
+            if channel == "b":
+                raise tracker.TrackerError("b answered 500")
             return []
 
         tracker.reset()
         monkeypatch.setattr(tracker, "_fetch_channel", mixed)
         got = tracker.poll()
         rows = {r["channel"]: r for r in got["sources"]}
-        assert rows["kpszsu"]["problem"]
-        assert "500" in rows["war_monitor"]["problem"]
-        # The two that worked are still accounted for, not missing.
-        assert rows["eRadarrua"]["problem"] is None
-        assert rows["lpr1_treugolnik"]["problem"] is None
+        assert rows["a"]["problem"]
+        assert "500" in rows["b"]["problem"]
+        # The one that worked is still accounted for, not missing.
+        assert rows["c"]["problem"] is None
 
     def test_a_request_does_not_wait_for_the_channels(self, monkeypatch):
         # The first-paint measurement. The work takes the better part of a
@@ -2002,9 +2032,9 @@ class TestWhatEachChannelActuallyDid:
 
     def test_a_post_inside_the_window_counts_as_fresh(self, monkeypatch):
         rows = self.read_one(monkeypatch,
-                             {"eRadarrua": "Шахед над Нікополем"}, {"eRadarrua": 5})
-        assert rows["eRadarrua"]["posts"] == 1
-        assert rows["eRadarrua"]["fresh"] == 1
+                             {ONLY: "Шахед над Нікополем"}, {ONLY: 5})
+        assert rows[ONLY]["posts"] == 1
+        assert rows[ONLY]["fresh"] == 1
 
     def test_a_post_older_than_the_window_is_seen_but_not_fresh(self, monkeypatch):
         # The exact case that read as "none readable". One post, read from the
@@ -2015,48 +2045,18 @@ class TestWhatEachChannelActuallyDid:
         # would still be drawn. Aged past that.
         stale = tracker.LOOKBACK_MINUTES + 60
         rows = self.read_one(monkeypatch,
-                             {"eRadarrua": "Шахед над Нікополем"},
-                             {"eRadarrua": stale})
-        assert rows["eRadarrua"]["posts"] == 1
-        assert rows["eRadarrua"]["fresh"] == 0
-        assert rows["eRadarrua"]["problem"] is None, \
+                             {ONLY: "Шахед над Нікополем"}, {ONLY: stale})
+        assert rows[ONLY]["posts"] == 1
+        assert rows[ONLY]["fresh"] == 0
+        assert rows[ONLY]["problem"] is None, \
             "nothing went wrong, so nothing should be reported as a problem"
 
     def test_the_tally_carries_the_four_numbers_the_panel_needs(self, monkeypatch):
         # posts, fresh, read, placed -- in the order the reading happens, so
         # the panel can say where it stopped.
-        rows = self.read_one(monkeypatch, {"kpszsu": "Вибухи у Харкові"})
+        rows = self.read_one(monkeypatch, {ONLY: "Вибухи у Харкові"})
         for row in rows.values():
             assert set(row) >= {"posts", "fresh", "read", "placed", "problem"}
-
-    def test_the_demo_shows_a_channel_with_posts_but_nothing_new(self):
-        """The state all four channels were in on a live start.
-
-        And the state the demo could not produce, which is why the wording
-        for it was never looked at -- it said "20 posts, none readable", which
-        claims the app cannot read the channel. Third time a drawing has gone
-        unexamined because the offline build could not reach it, so it is
-        pinned here.
-        """
-        rows = tracker.demo()["sources"]
-        quiet = [r for r in rows
-                 if r["posts"] > 0 and r["fresh"] == 0 and not r["problem"]]
-        assert quiet, [(r["channel"], r["posts"], r["fresh"]) for r in rows]
-
-    def test_the_demo_still_shows_the_other_three_states(self):
-        rows = tracker.demo()["sources"]
-        assert any(r["problem"] for r in rows), "unreachable"
-        assert any(r["fresh"] and not r["placed"] for r in rows), "none placeable"
-        assert any(r["placed"] for r in rows), "working"
-
-
-class TestWhatItGrabsOnStartUp:
-    """Twenty minutes, from a cold start.
-
-    Worth pinning because it is easy to believe it is broken: a channel that
-    has not posted for half an hour gives a cold start nothing at all, which
-    looks identical to a reader that cannot read.
-    """
 
     def posts_at(self, monkeypatch, *ages):
         tracker.reset()
@@ -2417,13 +2417,15 @@ class TestDemo:
         # than derived, because the point is that this list is a decision
         # somebody made and not whatever happens to be in the tuple.
         #
-        # @radarrussiia joined the original four when the Russian side's
-        # warnings were asked for. It is the only one that posts in English,
-        # and reading it needed both the English region spellings in
-        # backend/places.py and a reader that stops calling "Lipetsk Oblast
-        # Drone Alert" a drone.
-        assert names == {"eRadarrua", "kpszsu", "war_monitor",
-                         "lpr1_treugolnik", "radarrussiia"}
+        # One, now. NEPTUN is the source for Ukraine -- it carries these
+        # same channels' reports already read and already placed, with its
+        # own alert feed keyed to real boundaries, so reading them here as
+        # well was two paths to the same facts with only the worse one able
+        # to put a mark in the wrong province.
+        #
+        # @lpr1_treugolnik stays because NEPTUN does not cover the Russian
+        # side, which is the one thing this app would otherwise lose.
+        assert names == {"lpr1_treugolnik"}
 
     def test_every_channel_says_which_countries_to_look_in(self):
         # Without it "Sumy" is as likely to match a street in another
@@ -2643,346 +2645,6 @@ class TestWarningsAreColouredByWhatTheyWarnAbout:
             assert cause in tracker.KINDS, cause
 
 
-class TestTheRussianRadarChannelIsRead:
-    def test_it_is_one_of_the_channels(self):
-        named = [c["name"] for c in tracker.CHANNELS]
-        assert "radarrussiia" in named
-
-    def test_it_is_asked_for_russia_first(self):
-        # A gazetteer asked for a Russian region with Ukraine first answers
-        # with somewhere else confidently.
-        row = next(c for c in tracker.CHANNELS if c["name"] == "radarrussiia")
-        assert row["countries"].split(",")[0] == "ru"
-
-    def test_an_hour_of_its_warnings_lands_on_the_map(self, monkeypatch):
-        """What "alerts from the last hour on starting the app" needs.
-
-        Two things have to hold together: the read window must reach back far
-        enough to find them, and a warning must be kept long enough to still
-        be drawn once found. At a twenty-minute window and a sixty-minute
-        keep, a warning declared fifty minutes ago -- still running -- was
-        never read at all.
-        """
-        tracker.reset()
-        now = dt.datetime.now(dt.timezone.utc)
-        posts = [
-            ("Lipetsk Oblast Drone Alert", 5),
-            ("Voronezh Oblast Missile Alert", 25),
-            ("Kursk Oblast Drone Alert", 50),
-            ("Bryansk Oblast Drone Alert", 85),
-        ]
-        monkeypatch.setattr(tracker, "CHANNELS", (
-            {"name": "radarrussiia", "region": "Russia", "countries": "ru,ua"},))
-        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
-            {"id": f"{channel}/{i}", "channel": channel,
-             "when": (now - dt.timedelta(minutes=old)).isoformat(),
-             "text": text, "photos": [], "link": None}
-            for i, (text, old) in enumerate(posts)])
-        got = tracker.poll()
-        # The three inside ninety minutes. The eighty-five-minute one is read
-        # and kept; the ninety-minute keep is what decides the edge.
-        drawn = {e["place"]: e for e in got["events"]}
-        assert "Lipetsk oblast" in drawn
-        assert "Voronezh oblast" in drawn
-        assert "Kursk oblast" in drawn
-        assert drawn["Voronezh oblast"]["cause"] == "missile"
-        assert drawn["Kursk oblast"]["cause"] == "drone"
-
-    def test_a_stand_down_takes_its_regions_warnings_down(self, monkeypatch):
-        # The built-in table answers for these, so no network is reached --
-        # but pinned explicitly rather than relied on, because a test that
-        # quietly starts making requests is a test that starts being slow and
-        # then starts being flaky.
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        tracker.reset()
-        for i, text in enumerate([
-            "Republic of Tatarstan Drone Alert",
-            "Republic of Bashkortostan Drone Alert",
-        ]):
-            for plain in reports.read_all(text):
-                plain["kind"] = tracker.fold_kind(plain["kind"])
-                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
-                                {"id": f"c/{i}", "channel": "radarrussiia"}, "ru")
-        assert len(tracker.current()["events"]) == 2
-
-        # One post, both regions -- which is the shape that channel writes.
-        for plain in reports.read_all(
-                "Republic of Tatarstan, Republic of Bashkortostan – UAV alert cleared."):
-            plain["kind"] = tracker.fold_kind(plain["kind"])
-            tracker._record(tracker._clean({**plain, "id": "c/9"}),
-                            {"id": "c/9", "channel": "radarrussiia"}, "ru")
-        assert tracker.current()["events"] == []
-
-
-class TestAWarningWhereThereAreThingsInTheAir:
-    """The only mark on this map that nobody reported.
-
-    Asked for: drones in a region should mean a warning over that region. That
-    is a real convenience and a real hazard -- every other mark here exists
-    because somebody said so, and this one does not. So it is derived rather
-    than invented, it never displaces a declared warning, and it says which it
-    is.
-    """
-
-    def raise_some(self, text, channel_region="Ukraine"):
-        tracker.reset()
-        for plain in reports.read_all(text):
-            plain["kind"] = tracker.fold_kind(plain["kind"])
-            tracker._record(tracker._clean({**plain, "id": "c/1"}),
-                            {"id": "c/1", "channel": "x",
-                             "region": channel_region}, "ua")
-        return tracker.current()["events"]
-
-    def digest(self):
-        return ("🛸 Сумщина: 🛩 БпЛА в р-ні н.п. Путивль та Глухів рухаються "
-                "західним курсом; 🛸 Рівненщина: 🛩 БпЛА в р-ні н.п. Корець "
-                "рухаються західним курсом.")
-
-    def test_a_region_with_drones_in_it_gets_a_warning(self, monkeypatch):
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        got = self.raise_some(self.digest())
-        made = [e for e in got if e.get("derived")]
-        assert {e["place_match"] for e in made} == {
-            "Сумська область", "Рівненська область"}
-        assert all(e["kind"] == "alert" for e in made)
-
-    def test_it_says_it_was_derived_and_from_how_many(self, monkeypatch):
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        made = [e for e in self.raise_some(self.digest()) if e.get("derived")]
-        sumy = next(e for e in made if e["place_match"] == "Сумська область")
-        assert sumy["by"] == "derived"
-        assert sumy["from_marks"] == 2
-        assert "2 objects" in sumy["summary"]
-
-    def test_the_oblast_survives_the_channels_own_region(self, monkeypatch):
-        """The bug that made this impossible to do honestly.
-
-        An event's "region" is the channel's beat -- "Ukraine", "Luhansk and
-        Russia" -- and it was overwriting the oblast the READER found, so a
-        drone from a digest section headed "Сумщина" reached the map knowing
-        only which channel it came from. A warning is declared over an oblast,
-        so the oblast has to survive.
-        """
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        got = self.raise_some(self.digest())
-        towns = [e for e in got if e["kind"] == "drone"]
-        assert {e["oblast"] for e in towns} == {
-            "Сумська область", "Рівненська область"}
-        assert {e["region"] for e in towns} == {"Ukraine"}
-
-    def test_a_declared_warning_is_never_replaced_by_a_derived_one(
-            self, monkeypatch):
-        """The one that matters, and the first version of it proved nothing.
-
-        It used "Шахед над Сумщиною" as the drone, whose PLACE is the oblast
-        and whose oblast field is therefore empty -- so no warning could be
-        derived from it whatever the code did, and the test passed with the
-        "already declared" check deleted. The drone has to be somewhere INSIDE
-        the region for the two to collide at all.
-        """
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        tracker.reset()
-        for i, text in enumerate(["Повітряна тривога у Сумській області",
-                                  "Сумщина: Шахед над Охтиркою"]):
-            for plain in reports.read_all(text):
-                plain["kind"] = tracker.fold_kind(plain["kind"])
-                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
-                                {"id": f"c/{i}", "channel": "x",
-                                 "region": "Ukraine"}, "ua")
-        got = tracker.current()["events"]
-        # The drone is in Sumy oblast, so without the check a derived warning
-        # for Sumy oblast would be drawn on top of the declared one.
-        drones = [e for e in got if e["kind"] == "drone"]
-        assert drones and drones[0]["oblast"] == "Сумська область"
-
-        warnings = [e for e in got if e["kind"] == "alert"]
-        assert len(warnings) == 1, [(e.get("by"), e["place"]) for e in warnings]
-        assert not warnings[0].get("derived")
-        assert warnings[0]["by"] != "derived"
-
-    def test_a_region_with_nothing_in_it_gets_nothing(self):
-        assert tracker.derived_alerts([]) == []
-        assert tracker.derived_alerts([
-            {"kind": "explosion", "oblast": "Сумська область", "placed": True,
-             "seen": 0.0}]) == []
-
-    def test_an_unplaced_mark_raises_nothing(self):
-        # It could not be put anywhere, so there is no evidence anything is
-        # over that region -- only that a report named it.
-        assert tracker.derived_alerts([
-            {"kind": "drone", "oblast": "Сумська область", "placed": False,
-             "seen": 0.0}]) == []
-
-    def test_one_missile_makes_it_a_missile_warning(self):
-        # Which is drawn red rather than yellow. A province with nine drones
-        # and one missile in it is a missile problem.
-        made = tracker.derived_alerts([
-            {"kind": "drone", "oblast": "Сумська область", "placed": True,
-             "seen": 0.0},
-            {"kind": "missile", "oblast": "Сумська область", "placed": True,
-             "seen": 0.0}])
-        assert len(made) == 1 and made[0]["cause"] == "missile"
-
-    def test_it_costs_no_lookup(self, monkeypatch):
-        # Computed on a render path, so a region the built-in table does not
-        # know is skipped rather than fetched. A warning nobody declared is
-        # not worth a second of Nominatim's rate limit.
-        monkeypatch.setattr(tracker.gazetteer, "find", lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("derived_alerts must not reach the gazetteer")))
-        assert tracker.derived_alerts([
-            {"kind": "drone", "oblast": "Nowhere Anyone Knows", "placed": True,
-             "seen": 0.0}]) == []
-
-    def test_it_disappears_with_the_marks_it_came_from(self, monkeypatch):
-        # Not stored, so there is no second expiry clock to drift from the
-        # first. When the last drone in a province ages out, so does this.
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        self.raise_some(self.digest())
-        assert any(e.get("derived") for e in tracker.current()["events"])
-        with tracker._lock:
-            tracker._events.clear()
-        assert tracker.current()["events"] == []
-
-
-class TestARegionWhoseDronesAreReportedOverItDirectly:
-    """The commonest shape in the feed, and the one that raised no warning.
-
-    "БпЛА над Житомирщиною" places a mark on Zhytomyr oblast, and read() then
-    clears the region field because repeating the place as the region says
-    nothing. So the mark knew no oblast -- and a province with drones reported
-    straight over it, the clearest case there is, was the one case
-    derived_alerts() could not see.
-    """
-
-    def raise_over(self, monkeypatch, *texts):
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        tracker.reset()
-        for i, text in enumerate(texts):
-            for plain in reports.read_all(text):
-                plain["kind"] = tracker.fold_kind(plain["kind"])
-                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
-                                {"id": f"c/{i}", "channel": "x",
-                                 "region": "Ukraine"}, "ua")
-        return tracker.current()["events"]
-
-    def test_a_drone_over_an_oblast_raises_a_warning_for_it(self, monkeypatch):
-        got = self.raise_over(monkeypatch, "БпЛА над Житомирщиною")
-        made = [e for e in got if e.get("derived")]
-        assert [e["place_match"] for e in made] == ["Житомирська область"]
-
-    def test_it_works_for_every_way_an_oblast_is_written(self, monkeypatch):
-        got = self.raise_over(monkeypatch,
-                              "БпЛА над Житомирщиною",
-                              "Шахед над Львівською областю",
-                              "БпЛА над Воронежской областью")
-        made = {e["place_match"] for e in got if e.get("derived")}
-        assert made == {"Житомирська область", "Львівська область",
-                        "Воронежская область"}
-
-    def test_a_town_still_raises_one_for_the_region_it_is_in(self, monkeypatch):
-        # The other half, which already worked: the oblast comes from the
-        # report rather than from the mark's own place.
-        got = self.raise_over(monkeypatch, "Сумщина: Шахед над Охтиркою")
-        made = [e for e in got if e.get("derived")]
-        assert [e["place_match"] for e in made] == ["Сумська область"]
-
-    def test_a_strike_on_an_oblast_raises_nothing(self, monkeypatch):
-        # Only things in flight put a region under threat. A strike is a fact
-        # about a place that has already happened.
-        got = self.raise_over(monkeypatch, "Вибухи на Житомирщині")
-        assert not [e for e in got if e.get("derived")]
-
-    def test_a_declared_warning_over_that_oblast_still_wins(self, monkeypatch):
-        got = self.raise_over(monkeypatch,
-                              "Повітряна тривога у Житомирській області",
-                              "БпЛА над Житомирщиною")
-        warnings = [e for e in got if e["kind"] == "alert"]
-        assert len(warnings) == 1, [(e.get("by"), e["place"]) for e in warnings]
-        assert not warnings[0].get("derived")
-
-
-class TestTheDemoShowsTheDerivedWarnings:
-    """Or they go unexamined, which is how this one reached a screenshot.
-
-    The demo builds its events directly rather than through _record, so the
-    oblast the reader found was being dropped on the way in -- and the offline
-    build showed no derived warning at all while the live path drew them. That
-    is the fourth time a drawing has gone unlooked-at because the build with
-    no network could not reach the state.
-    """
-
-    def test_the_demo_draws_some(self):
-        made = [e for e in tracker.demo()["events"] if e.get("derived")]
-        assert made, "the offline build cannot show a derived warning"
-
-    def test_they_come_from_the_same_function_as_the_live_ones(self):
-        made = [e for e in tracker.demo()["events"] if e.get("derived")]
-        assert all(e["by"] == "derived" for e in made)
-        assert all(e["kind"] == "alert" for e in made)
-        assert all(e["from_marks"] >= 1 for e in made)
-
-    def test_the_demos_marks_carry_the_oblast_the_reader_found(self):
-        # The thing that was dropped. Without it derived_alerts() sees nothing
-        # to group, and the demo silently disagrees with the live path.
-        towns = [e for e in tracker.demo()["events"]
-                 if e["kind"] == "drone" and e.get("oblast")]
-        assert towns, "no demo mark knows which oblast it is in"
-
-
-class TestADerivedWarningExplainsItself:
-    """A mark with nothing in the panel about it is worse than no mark.
-
-    That is the rule this panel exists for, and a derived warning is the one a
-    reader is most likely to want explained -- because nobody reported it. It
-    was going onto the map with no row at all, which the "every drawn event
-    has a row" invariant caught.
-    """
-
-    def made(self):
-        got = tracker.demo()
-        return ([e for e in got["events"] if e.get("derived")],
-                [a for a in got["alerts"] if a.get("derived")])
-
-    def test_every_derived_mark_has_a_row(self):
-        marks, rows = self.made()
-        assert marks
-        assert {e["id"] for e in marks} == {a["id"] for a in rows}
-
-    def test_the_row_says_it_was_not_reported(self):
-        _, rows = self.made()
-        assert rows
-        assert all(a["by"] == "derived" for a in rows)
-        assert all("Not reported" in a["text"] for a in rows)
-
-    def test_the_row_says_what_it_came_from(self):
-        _, rows = self.made()
-        assert any("report(s) placed inside" in a["text"] for a in rows)
-
-    def test_it_claims_to_cover_a_region_only_when_it_can_draw_one(self):
-        # Every other path sets region_wide from whether there is a shape.
-        # Claiming it without one leaves a mark that says it covers a province
-        # and has no province to draw.
-        marks, _ = self.made()
-        for event in marks:
-            if event["region_wide"]:
-                assert event["shape"], event["place"]
-
-    def test_it_is_projected_like_any_other_event(self):
-        # They were appended raw, so every field project() adds was missing
-        # and the page read undefined for each of them.
-        marks, _ = self.made()
-        for event in marks:
-            assert "age_minutes" in event, event["id"]
-            assert "region_wide" in event
-
-
 class TestTakingAMarkOffByHand:
     """Somebody watching this knows things the feed does not.
 
@@ -3075,24 +2737,6 @@ class TestTakingAMarkOffByHand:
         tracker._record(item, {"id": "p/0", "channel": "x",
                                "region": "Ukraine"}, "ua")
         assert [e for e in tracker.current()["events"] if e["kind"] == "drone"]
-
-    def test_a_derived_warning_can_be_cancelled_and_stays_cancelled(
-            self, monkeypatch):
-        # These are rebuilt from scratch on every read, so nothing but the
-        # dismissal itself can keep one off.
-        monkeypatch.setattr(tracker.gazetteer, "find",
-                            lambda name, countries="": places.lookup(name))
-        tracker.reset()
-        for plain in reports.read_all("БпЛА над Житомирщиною"):
-            plain["kind"] = tracker.fold_kind(plain["kind"])
-            tracker._record(tracker._clean({**plain, "id": "c/1"}),
-                            {"id": "c/1", "channel": "x",
-                             "region": "Ukraine"}, "ua")
-        made = [e for e in tracker.current()["events"] if e.get("derived")]
-        assert made
-        tracker.dismiss(made[0]["id"])
-        assert not [e for e in tracker.current()["events"] if e.get("derived")]
-        assert not [e for e in tracker.current()["events"] if e.get("derived")]
 
     def test_the_count_is_said_out_loud(self, monkeypatch):
         # "The map is missing things" and "I hid those" look identical from

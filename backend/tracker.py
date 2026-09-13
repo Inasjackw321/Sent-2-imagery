@@ -77,31 +77,26 @@ log = logging.getLogger("sent2.tracker")
 # asked for "Sumy" with no country will happily return a street somewhere
 # else; asked for "Sumy" in Ukraine it returns the oblast capital. Two-letter
 # ISO codes, as Nominatim wants them.
+# The Telegram channels still read, which is now one.
+#
+# NEPTUN is the source for Ukraine. It carries the same channels' reports --
+# and more -- already read, already placed, and with its own alert feed keyed
+# to real boundaries, so reading those channels here as well was two paths to
+# the same facts with only the worse one able to put a mark in the wrong
+# province.
+#
+# What NEPTUN does not cover is the Russian side, so @lpr1_treugolnik stays:
+# reports from Luhansk and Russia, which is the one thing this app would
+# otherwise lose. Russia first in its country list, because a gazetteer asked
+# for a Donbas town with Ukraine first answers with the pre-war name of
+# somewhere else.
+#
+# The others -- eRadarrua, kpszsu, war_monitor, radarrussiia -- are gone for
+# now rather than deleted: they are four lines, and putting one back is
+# adding its row here.
 CHANNELS = (
-    # Ukraine's own air-raid radar channel, and the Air Force's. Between them
-    # they carry the city and oblast alerts -- the "warnings" half of this
-    # layer -- and the Air Force's morning summaries of what was launched and
-    # what was shot down.
-    {"name": "eRadarrua", "region": "Ukraine", "countries": "ua,ru,by"},
-    {"name": "kpszsu", "region": "Ukraine", "countries": "ua"},
-    # General monitoring, both sides of the border.
-    {"name": "war_monitor", "region": "Ukraine and Russia", "countries": "ua,ru,by"},
-    # Reports from the Luhansk side. Russia and the occupied east are where
-    # its place names will be, so those come first in the lookup order --
-    # otherwise a gazetteer asked for a Donbas town with Ukraine first will
-    # answer with the pre-war administrative name of somewhere else.
     {"name": "lpr1_treugolnik", "region": "Luhansk and Russia",
      "countries": "ru,ua"},
-    # The Russian side's own radar channel. It posts in English, which is why
-    # it needed English region spellings in backend/places.py, and it posts
-    # almost entirely warnings and stand-downs:
-    #
-    #   Lipetsk Oblast Drone Alert
-    #   Republic of Tatarstan, Republic of Bashkortostan — UAV alert cleared.
-    #
-    # Russia first in the country list for the obvious reason; Ukraine after
-    # it because the channel does report strikes on the occupied side.
-    {"name": "radarrussiia", "region": "Russia", "countries": "ru,ua"},
 )
 
 # The public web preview. Not the API: this is the page Telegram serves to a
@@ -2035,183 +2030,13 @@ def start_poll() -> bool:
     return True
 
 
-# Kinds that put a region under threat by being in it.
-RAISES_A_WARNING = ("drone", "jet_drone", "missile")
-
-
-def derived_row(event: dict[str, Any]) -> dict[str, Any]:
-    """The panel row for a derived warning.
-
-    A mark on the map with nothing in the list to explain it is the thing this
-    panel exists to prevent -- and a derived warning is the one a reader is
-    most likely to want explained, because nobody reported it. The row says
-    what it was derived from.
-    """
-    return {
-        "id": event["id"],
-        "source": None,
-        "by": "derived",
-        "derived": True,
-        "kind": "alert",
-        "cause": event.get("cause"),
-        "rank": KINDS["alert"]["rank"],
-        "summary": event["summary"],
-        "place": event.get("place_match") or event.get("place"),
-        "placed": True,
-        "why_unplaced": None,
-        "channel": None,
-        "region": event.get("region"),
-        "seen": event["seen"],
-        "text": (f"Not reported as a warning. Derived from "
-                 f"{event.get('from_marks', 0)} report(s) placed inside "
-                 f"{event.get('place_match') or event.get('place')}."),
-        "photos": [],
-        "link": None,
-    }
-
-
-def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A warning over every region that has things in the air in it.
-
-    Asked for, and worth being careful about: this is the only mark on the map
-    that nobody reported. Three things keep it honest.
-
-    It is DERIVED, not invented. Every one of these exists because reports
-    placed one or more objects inside that named region; the region is the one
-    the report itself gave ("Сумщина:" at the head of a digest section), never
-    one this worked out. A region with nothing in it gets nothing.
-
-    It never competes with a real one. Where a channel has actually declared a
-    warning for that region, the declared one stands and this adds nothing --
-    so a real warning is never replaced by a guess at one.
-
-    And it says so. `by` is "derived" and the summary says how many marks it
-    came from, so a reader can tell "the air force declared this" from "there
-    are four drones in this province".
-
-    Computed rather than stored, so it appears and disappears with the marks
-    it is derived from: when the last drone in a region ages out, so does the
-    warning, with no expiry bookkeeping of its own to drift.
-    """
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for event in events:
-        if event.get("kind") not in RAISES_A_WARNING or not event.get("placed"):
-            continue
-        # The oblast the reader named, OR the place itself when the place IS
-        # an oblast.
-        #
-        # The second half was missing and it is the commonest shape in the
-        # whole feed: "БпЛА над Житомирщиною" places a mark on Zhytomyr oblast
-        # and reports.read() then clears the region field, because repeating
-        # the place as the region says nothing. So the mark knew no oblast,
-        # and a province with drones reported straight over it -- the clearest
-        # case there is -- was the one case that raised no warning.
-        oblast = event.get("oblast")
-        if not oblast and event.get("place_category") == "boundary":
-            oblast = event.get("place")
-        if not oblast:
-            continue
-        grouped.setdefault(oblast, []).append(event)
-    if not grouped:
-        return []
-
-    # The regions somebody has already declared a warning over, by name.
-    declared = {e.get("place") for e in events if e.get("kind") == "alert"}
-    declared |= {e.get("place_match") for e in events if e.get("kind") == "alert"}
-
-    out: list[dict[str, Any]] = []
-    for oblast, inside in sorted(grouped.items()):
-        if oblast in declared:
-            continue
-        # Derived warnings are rebuilt from scratch on every read, so the only
-        # thing that can keep one dismissed is the dismissal itself. Keyed on
-        # the identifier, which is built from the region name and is therefore
-        # the same one every time.
-        if f"DR-{oblast}" in _dismissed:
-            continue
-        where = places.lookup(oblast)
-        if not where:
-            # Not in the built-in table, so placing it would mean a lookup on
-            # a render path. A warning nobody declared is not worth a second
-            # of the rate limit; the marks it would have covered are all
-            # drawn anyway.
-            continue
-        # Drawn for the most serious thing in there: one missile in a province
-        # full of drones makes it a missile warning.
-        cause = ("missile" if any(e["kind"] == "missile" for e in inside)
-                 else "drone")
-        n = len(inside)
-        out.append({
-            "id": f"DR-{oblast}",
-            "kind": "alert",
-            "cause": cause,
-            "by": "derived",
-            "derived": True,
-            "from_marks": n,
-            "rank": KINDS["alert"]["rank"],
-            "place": oblast,
-            "place_match": where["name"],
-            "place_category": "boundary",
-            "lat": where["lat"], "lon": where["lon"],
-            "origin_lat": where["lat"], "origin_lon": where["lon"],
-            "bbox": where["bbox"],
-            # The real boundary, the same way a declared warning gets one. It
-            # was taking the built-in entry's shape, which is always None --
-            # so every derived warning was a rectangle however many outlines
-            # had been fetched.
-            "shape": (neptun.shape_for(where["name"])
-                      or neptun.shape_for(oblast) or where["shape"]),
-            "area_km": area_km(where),
-            # Set here because these are built by hand rather than by
-            # place_event(), and set the SAME way it sets them: only where
-            # there is a real boundary to draw. "covers" is otherwise right --
-            # a warning is a claim about the whole province -- but claiming it
-            # without a shape leaves a mark that says it covers a region and
-            # has no region to draw, which every other path avoids.
-            "region_scope": "covers" if (neptun.shape_for(where["name"])
-                                         or neptun.shape_for(oblast)
-                                         or where["shape"]) else None,
-            "region_wide": bool(neptun.shape_for(where["name"])
-                                or neptun.shape_for(oblast)
-                                or where["shape"]),
-            "placed": True,
-            "motion": "still",
-            "heading": None, "course": None, "course_from": None,
-            "toward": None, "dest_lat": None, "dest_lon": None,
-            "dest_km": None,
-            "count": n,
-            "summary": (f"{n} {'object' if n == 1 else 'objects'} reported "
-                        f"over {where['name']}"),
-            "seen": max(e["seen"] for e in inside),
-            "channel": None,
-            "region": inside[0].get("region"),
-            "source": None,
-            "text": "",
-            "photos": [],
-            "link": None,
-        })
-    return out
-
-
 def current() -> dict[str, Any]:
     """Every live event and recent alert, carried forward to now."""
     now = time.time()
     with _lock:
         _expire(now)
         events = [project(e, now) for e in _events]
-        # A warning over every region that has things in the air in it. Added
-        # here rather than stored, so these live and die with the marks they
-        # come from. See derived_alerts() for why this is safe to draw.
-        #
-        # Projected like any other event. They were appended raw, and every
-        # field project() adds -- age_minutes, region_wide, region_scope --
-        # was simply missing from them, so the page read undefined for each.
-        made = [project(e, now) for e in derived_alerts(events)]
-        events += made
-        alerts = sorted([*_alerts, *(derived_row(e) for e in made)],
-                        key=lambda a: a["seen"], reverse=True)
-        # Derived warnings are rebuilt each call, so their rows have to be
-        # re-marked each call too.
+        alerts = sorted(_alerts, key=lambda a: a["seen"], reverse=True)
         events = hide_dismissed(events, alerts)
         # Over the alert window, not since the process started. A running
         # total answers a question nobody asked -- what matters is whether
@@ -2459,28 +2284,17 @@ _demo_epoch = 0.0
 # warnings and nothing else -- which is its own state worth seeing: read and
 # placed, but every mark a warning rather than a thing in the air.
 DEMO_SOURCE_STATES = (
-    # Reading and placing: what a working channel looks like.
+    # One per source the app actually has, which is now two: the channel and
+    # the feed. It was five, for the five things a channel can be doing, back
+    # when there were five channels to be in them -- a state with no source to
+    # sit in simply never appeared, so the list said more than the demo could
+    # show.
+    #
+    # What is lost is the offline view of a channel that is unreachable or
+    # unreadable. Those states are still built and still tested; they are just
+    # no longer visible in the demo, because inventing a second channel to put
+    # one in would be the demo telling a lie about which channels exist.
     {"posts": 14, "fresh": 6, "read": 6, "placed": 5, "problem": None},
-    # Reading, but naming places the gazetteer does not know.
-    {"posts": 5, "fresh": 2, "read": 2, "placed": 0, "problem": None},
-    # Reachable, posting, and with nothing inside the twenty-minute window.
-    #
-    # The commonest quiet state by a distance, and the one that was missing:
-    # a channel whose page has posts on it but none of them new. All four
-    # channels were in it on a live start, and because the demo could not
-    # produce it, the wording for it was never looked at -- so the panel said
-    # "20 posts, none readable", which claims the app cannot read them.
-    #
-    # It replaces a "no posts at all" state, which a real channel is
-    # essentially never in: the preview page always carries its last twenty.
-    {"posts": 17, "fresh": 0, "read": 0, "placed": 0, "problem": None},
-    # Not answering at all.
-    {"posts": 0, "fresh": 0, "read": 0, "placed": 0,
-     "problem": "the channel answered 404"},
-    # Warnings only. What the Russian radar channel looks like on an ordinary
-    # night: every post a warning or a stand-down, all of them placed, none of
-    # them a thing in flight.
-    {"posts": 20, "fresh": 9, "read": 9, "placed": 9, "problem": None},
 )
 
 DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Kharkiv": 0.12, "Kyiv oblast": 1.3,
@@ -2675,12 +2489,6 @@ def demo() -> dict[str, Any]:
             continue
         events.append(project(event, now))
 
-    # The same derived warnings the live path draws, from the same function,
-    # so the offline build shows them rather than asserting they exist.
-    made = [project(e, now) for e in derived_alerts(events)]
-    events += made
-    alerts += [derived_row(e) for e in made]
-
     # A NEPTUN-shaped track and an areaOnly one, read by the same reader the
     # live path uses. The offline build could otherwise show neither, and
     # both are the states most easily got wrong: an advisory drawn as an
@@ -2762,9 +2570,17 @@ def demo() -> dict[str, Any]:
         # exactly the kind of wrong that a demo is supposed to catch rather
         # than cause.
         "sources": [
-            {"channel": channel["name"], "region": channel["region"],
-             **DEMO_SOURCE_STATES[i % len(DEMO_SOURCE_STATES)]}
-            for i, channel in enumerate(CHANNELS)
+            *({"channel": channel["name"], "region": channel["region"],
+               **DEMO_SOURCE_STATES[i % len(DEMO_SOURCE_STATES)]}
+              for i, channel in enumerate(CHANNELS)),
+            # And the feed, which is a source and not a channel. It was
+            # missing from this list while its marks were on the demo map --
+            # so the panel section that exists to answer "why can I not see
+            # anything from NEPTUN" had nothing to say about NEPTUN.
+            {"channel": NEPTUN_SOURCE, "region": "Ukraine",
+             "posts": len(DEMO_NEPTUN), "fresh": len(DEMO_NEPTUN),
+             "read": len(DEMO_NEPTUN), "placed": len(DEMO_NEPTUN),
+             "problem": None},
         ],
         "gazetteer": {"remembered": len(DEMO_PLACES), "lookups": 0},
     }

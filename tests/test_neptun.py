@@ -831,58 +831,102 @@ class TestWarningsCoverRealRegions:
         assert neptun.shape_for("Сумська область") == self.SHAPE
 
 
-class TestEveryWarningGetsTheRealOutline:
-    """Not only the declared ones, and not only NEPTUN's own.
 
-    A bounding box is a rectangle and no province is shaped like one. Three
-    paths build a warning -- one read from a channel, one declared by NEPTUN,
-    and one derived from the marks in a region -- and each has to reach the
-    same boundaries or the map draws the same province two different shapes
-    depending on who mentioned it.
+
+class TestEveryWarningIsARegion:
+    """A warning is drawn as a region or it is not drawn as an area at all.
+
+    It used to fall back to the region's EXTENT as a dotted rectangle, and a
+    screen full of those is what "the map looks wrong" meant: ten dashed boxes
+    in a country made of jagged borders, none of them the shape of anything,
+    each covering ground the warning does not cover and missing ground it
+    does. A rectangle is not a cautious version of a province -- it is a
+    different and wrong claim about where a warning applies.
     """
 
-    def test_all_three_kinds_of_warning_are_drawn_as_regions(self):
-        warnings = [e for e in tracker.demo()["events"] if e["kind"] == "alert"]
-        shaped = [e for e in warnings if e.get("shape")]
-        assert len(warnings) >= 5
-        # Every one that is about a REGION. A warning for a city is a point
-        # and is right not to have one.
-        regions = [e for e in warnings
-                   if e.get("place_category") == "boundary" or e.get("derived")]
-        assert regions
-        assert all(e.get("shape") for e in regions), [
-            e["place"] for e in regions if not e.get("shape")]
-        assert shaped
+    def test_a_warning_with_a_boundary_is_drawn_as_one(self):
+        drawn = [e for e in tracker.demo()["events"]
+                 if e["kind"] == "alert" and e.get("region_wide")]
+        assert drawn
+        assert all(e["shape"] for e in drawn)
 
-    def test_a_derived_warning_gets_one(self):
-        """It was taking the built-in entry's shape, which is always None.
+    def test_no_warning_is_drawn_from_a_bounding_box(self):
+        # The property, stated about every warning rather than sampled: if it
+        # claims to cover a region it has the region's shape, and if it has no
+        # shape it makes no claim about area.
+        for event in tracker.demo()["events"]:
+            if event["kind"] != "alert":
+                continue
+            assert bool(event.get("region_wide")) == bool(event.get("shape")), (
+                event["place"])
 
-        So every derived warning was a rectangle however many real outlines
-        had been fetched -- and derived warnings are most of them on a busy
-        night, since every region with drones in it raises one.
-        """
-        made = [e for e in tracker.demo()["events"] if e.get("derived")]
-        assert made
-        assert all(e.get("shape") for e in made), [
-            e["place"] for e in made if not e.get("shape")]
-        assert all(e["region_wide"] for e in made)
+    def test_neptuns_own_alerts_arrive_with_theirs(self, monkeypatch):
+        shape = {"type": "Polygon",
+                 "coordinates": [[[33, 50], [35, 50], [35, 52], [33, 50]]]}
+        monkeypatch.setattr(neptun, "shape_for", lambda name: shape)
+        monkeypatch.setattr(neptun, "threats", lambda: [])
+        monkeypatch.setattr(neptun, "alerts", lambda: neptun.read_alerts(
+            {"oblasts": [{"key": "sumska", "name": "Сумська область"}],
+             "raions": []}))
+        tracker.reset()
+        tracker.take_neptun()
+        got = tracker.current()["events"][0]
+        assert got["shape"] == shape
+        assert got["region_wide"] is True
 
-    def test_a_city_warning_is_still_a_point(self):
-        # The other half. A warning for Kharkiv the city is not a claim about
-        # Kharkiv oblast, and giving it a province's outline would make it one.
-        city = [e for e in tracker.demo()["events"]
-                if e["kind"] == "alert" and e.get("place") == "Kharkiv"]
-        if city:
-            assert not city[0].get("shape")
 
-    def test_the_demo_reaches_them_through_the_real_door(self):
-        # Seeded via remember_shapes and read via shape_for, which is the path
-        # the live boundaries take. A demo that reimplemented this would prove
-        # nothing about it.
-        #
-        # demo() first, because the suite clears the cache between tests --
-        # the seeding is part of building the demo, not a fixture.
-        neptun.forget()
-        assert neptun.shape_for("Сумська область") is None
-        tracker.demo()
-        assert neptun.shape_for("Сумська область")
+class TestNothingRaisesAWarningByItself:
+    """The feature that put a warning wherever there were drones is gone.
+
+    It was asked for and then asked to be removed, and the removal is the
+    better call: it was the only mark on this map that nobody reported. Every
+    warning now comes from something that actually declared one -- NEPTUN's
+    official alert feed, or a channel post saying so.
+    """
+
+    def test_no_event_claims_to_be_derived(self):
+        assert not [e for e in tracker.demo()["events"] if e.get("derived")]
+
+    def test_the_machinery_is_gone_rather_than_switched_off(self):
+        # Left in and disabled, it would be dead code that looks live.
+        assert not hasattr(tracker, "derived_alerts")
+        assert not hasattr(tracker, "derived_row")
+        assert not hasattr(tracker, "RAISES_A_WARNING")
+
+    def test_drones_over_a_region_raise_nothing(self, monkeypatch):
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        for i, text in enumerate(["БпЛА над Житомирщиною",
+                                  "Шахед над Львівською областю"]):
+            for plain in tracker.reports.read_all(text):
+                plain["kind"] = tracker.fold_kind(plain["kind"])
+                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
+                                {"id": f"c/{i}", "channel": "x",
+                                 "region": "Ukraine"}, "ua")
+        got = tracker.current()["events"]
+        assert len(got) == 2
+        assert not [e for e in got if e["kind"] == "alert"]
+
+
+class TestTheSourcesItReadsNow:
+    def test_neptun_covers_ukraine(self):
+        assert tracker.NEPTUN_SOURCE == "neptun.in.ua"
+
+    def test_one_channel_is_left_and_it_is_the_russian_one(self):
+        # NEPTUN carries the Ukrainian channels' reports already read and
+        # already placed. What it does not cover is the Russian side, which
+        # is the one thing this app would otherwise lose.
+        assert [c["name"] for c in tracker.CHANNELS] == ["lpr1_treugolnik"]
+
+    def test_it_looks_in_russia_first(self):
+        # Its place names are in Russia and the occupied east. Ukraine first
+        # would have a gazetteer answer a Donbas town with the pre-war
+        # administrative name of somewhere else.
+        assert tracker.CHANNELS[0]["countries"].split(",")[0] == "ru"
+
+    def test_the_feed_has_a_row_in_the_panel(self):
+        # "I cannot see anything from NEPTUN" has to be answerable from the
+        # panel rather than by guessing, the same way it is for a channel.
+        rows = {r["channel"] for r in tracker.demo()["sources"]}
+        assert tracker.NEPTUN_SOURCE in rows

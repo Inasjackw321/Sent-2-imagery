@@ -503,10 +503,6 @@ function popup(event) {
       + (event.uncertainty_km ? `, ±${Math.round(event.uncertainty_km)} km` : '')
       + '.');
   }
-  if (event.derived) {
-    rows.push('<b>Not reported as a warning.</b> Derived from the '
-      + `${event.from_marks ?? 0} report(s) placed inside this region.`);
-  }
 
   return `<div class="ao-pop">
     <h4>${label(event)}</h4>
@@ -693,23 +689,21 @@ function areaFor(event) {
     });
   }
 
-  // No outline yet, and a warning does not get a circle instead.
+  // A warning with no boundary gets NO AREA AT ALL.
   //
-  // The real boundary arrives from the gazetteer a moment later; until it
-  // does, the honest stand-in is the region's EXTENT as a rectangle, drawn
-  // dotted so it reads as provisional. A disc centred on an oblast is not
-  // shaped like any province and was the thing that read as wrong: a smooth
-  // circle in a country made of jagged borders looks like a blast radius,
-  // which is a claim about ground nobody made.
-  if (event.kind === 'alert') {
-    const [south, north, west, east] = event.bbox
-      ?? [event.origin_lat, event.origin_lat, event.origin_lon, event.origin_lon];
-    return L.rectangle([[south, west], [north, east]], {
-      ...style,
-      className: `${style.className} is-provisional`,
-      fillOpacity: 0,
-    });
-  }
+  // It used to get the region's extent as a dotted rectangle, and a screen
+  // full of those is what "the map looks wrong" meant: ten dashed boxes in a
+  // country made of jagged borders, none of them the shape of anything, each
+  // one covering ground the warning does not cover and missing ground it
+  // does. A rectangle is not a cautious version of a province — it is a
+  // different and wrong claim about where a warning applies.
+  //
+  // So the triangle stands alone until the real outline arrives, which for
+  // NEPTUN's own alerts is immediate (their alert keys index their boundary
+  // files) and for anything else is the next poll or two. A mark with no
+  // shading says "a warning here, area not drawn"; a rectangle says "this
+  // rectangle", and only one of those is true.
+  if (event.kind === 'alert') return null;
 
   return L.circle([event.origin_lat, event.origin_lon], {
     ...style,
@@ -760,9 +754,14 @@ function trailFor(event) {
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
   && Number.isFinite(event.origin_lat)
-  // Either it covers ground, or the report only located it to a region --
-  // both are worth drawing, and they are drawn differently.
-  && (motionOf(event) === 'still' || Boolean(event.shape));
+  // A warning is drawn as an area only when there is a real region to draw.
+  // Anything else — a rectangle round its extent, a circle on its centre —
+  // is a claim about ground nobody made.
+  && (event.kind === 'alert'
+    ? Boolean(event.shape)
+    // Either it covers ground, or the report only located it to a region --
+    // both are worth drawing, and they are drawn differently.
+    : motionOf(event) === 'still' || Boolean(event.shape));
 
 /**
  * Move the map so that everything drawn is on screen.
@@ -1307,9 +1306,8 @@ function paintDock() {
     el('i', { style: dot ? `background:${dot}` : '' }),
     el('span', {
       class: `ao-row-what${item.by === 'rules' ? ' is-plain' : ''}`,
-      title: item.by === 'derived'
-        ? 'Not reported — derived from the marks in this region'
-        : item.by === 'rules' ? 'Read by pattern' : '',
+      title: item.by === 'rules' ? 'Read by pattern'
+        : item.by === 'neptun' ? 'From NEPTUN' : '',
     }, item.summary || kind.label || item.kind),
     el('span', { class: 'ao-row-when' }, mins < 1 ? 'now' : ago(mins))),
     // Removing a mark from the panel rather than only from its popup,
