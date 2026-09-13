@@ -1504,6 +1504,37 @@ def start_poll() -> bool:
 RAISES_A_WARNING = ("drone", "jet_drone", "missile")
 
 
+def derived_row(event: dict[str, Any]) -> dict[str, Any]:
+    """The panel row for a derived warning.
+
+    A mark on the map with nothing in the list to explain it is the thing this
+    panel exists to prevent -- and a derived warning is the one a reader is
+    most likely to want explained, because nobody reported it. The row says
+    what it was derived from.
+    """
+    return {
+        "id": event["id"],
+        "source": None,
+        "by": "derived",
+        "derived": True,
+        "kind": "alert",
+        "cause": event.get("cause"),
+        "rank": KINDS["alert"]["rank"],
+        "summary": event["summary"],
+        "place": event.get("place_match") or event.get("place"),
+        "placed": True,
+        "why_unplaced": None,
+        "channel": None,
+        "region": event.get("region"),
+        "seen": event["seen"],
+        "text": (f"Not reported as a warning. Derived from "
+                 f"{event.get('from_marks', 0)} report(s) placed inside "
+                 f"{event.get('place_match') or event.get('place')}."),
+        "photos": [],
+        "link": None,
+    }
+
+
 def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A warning over every region that has things in the air in it.
 
@@ -1529,10 +1560,21 @@ def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     grouped: dict[str, list[dict[str, Any]]] = {}
     for event in events:
-        oblast = event.get("oblast")
-        if not oblast or event.get("kind") not in RAISES_A_WARNING:
+        if event.get("kind") not in RAISES_A_WARNING or not event.get("placed"):
             continue
-        if not event.get("placed"):
+        # The oblast the reader named, OR the place itself when the place IS
+        # an oblast.
+        #
+        # The second half was missing and it is the commonest shape in the
+        # whole feed: "БпЛА над Житомирщиною" places a mark on Zhytomyr oblast
+        # and reports.read() then clears the region field, because repeating
+        # the place as the region says nothing. So the mark knew no oblast,
+        # and a province with drones reported straight over it -- the clearest
+        # case there is -- was the one case that raised no warning.
+        oblast = event.get("oblast")
+        if not oblast and event.get("place_category") == "boundary":
+            oblast = event.get("place")
+        if not oblast:
             continue
         grouped.setdefault(oblast, []).append(event)
     if not grouped:
@@ -1573,6 +1615,14 @@ def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "origin_lat": where["lat"], "origin_lon": where["lon"],
             "bbox": where["bbox"], "shape": where["shape"],
             "area_km": area_km(where),
+            # Set here because these are built by hand rather than by
+            # place_event(), and set the SAME way it sets them: only where
+            # there is a real boundary to draw. "covers" is otherwise right --
+            # a warning is a claim about the whole province -- but claiming it
+            # without a shape leaves a mark that says it covers a region and
+            # has no region to draw, which every other path avoids.
+            "region_scope": "covers" if where["shape"] else None,
+            "region_wide": bool(where["shape"]),
             "placed": True,
             "motion": "still",
             "heading": None, "course": None, "course_from": None,
@@ -1601,8 +1651,14 @@ def current() -> dict[str, Any]:
         # A warning over every region that has things in the air in it. Added
         # here rather than stored, so these live and die with the marks they
         # come from. See derived_alerts() for why this is safe to draw.
-        events += derived_alerts(events)
-        alerts = sorted(_alerts, key=lambda a: a["seen"], reverse=True)
+        #
+        # Projected like any other event. They were appended raw, and every
+        # field project() adds -- age_minutes, region_wide, region_scope --
+        # was simply missing from them, so the page read undefined for each.
+        made = [project(e, now) for e in derived_alerts(events)]
+        events += made
+        alerts = sorted([*_alerts, *(derived_row(e) for e in made)],
+                        key=lambda a: a["seen"], reverse=True)
         # Over the alert window, not since the process started. A running
         # total answers a question nobody asked -- what matters is whether
         # the names coming in tonight are being found.
@@ -1952,15 +2008,20 @@ def demo() -> dict[str, Any]:
     for text in DEMO_WARNINGS:
         for got in reports.read_all(text):
             seed.append((got["kind"], got["place"], None, None, 1,
-                         got["summary"], 12, got.get("cause")))
+                         got["summary"], 12, got.get("cause"),
+                         got.get("region")))
     for got in reports.read_all(DEMO_DIGEST):
         seed.append((got["kind"], got["place"], None, got["course"], 1,
-                     got["summary"], 6))
+                     got["summary"], 6, None, got.get("region")))
 
     events, alerts = [], []
     for i, row in enumerate(seed, start=1):
         kind, place, toward, course, count, summary = row[:6]
         cause = row[7] if len(row) > 7 else None
+        # The oblast the reader found, as _record keeps it. Without this the
+        # demo could not produce a derived warning at all -- which is how the
+        # offline build came to show none of them while the live path did.
+        oblast = row[8] if len(row) > 8 else None
         # Staggered by position, unless the row says how old it should be.
         seen = epoch - (row[6] * 60 if len(row) > 6 else i * 90)
         item = {"kind": kind, "place": place, "toward": toward,
@@ -1982,7 +2043,7 @@ def demo() -> dict[str, Any]:
         shots = ([_demo_photo(f"{place} · 1", "#5a3550"),
                   _demo_photo(f"{place} · 2", "#3a4a62")]
                  if kind == "explosion" else [])
-        event = {**placed, "id": ident,
+        event = {**placed, "id": ident, "oblast": oblast,
                  "origin_lat": placed["lat"], "origin_lon": placed["lon"],
                  "seen": seen, "channel": "demo", "region": "Ukraine",
                  "source": f"demo/{i}", "text": f"Demo report — {summary}.",
@@ -1990,6 +2051,12 @@ def demo() -> dict[str, Any]:
         if not _alive(event, now):
             continue
         events.append(project(event, now))
+
+    # The same derived warnings the live path draws, from the same function,
+    # so the offline build shows them rather than asserting they exist.
+    made = [project(e, now) for e in derived_alerts(events)]
+    events += made
+    alerts += [derived_row(e) for e in made]
 
     alerts = [a for a in alerts
               if now - a["seen"] <= max(ALERT_MINUTES, keep_minutes(a["kind"])) * 60]

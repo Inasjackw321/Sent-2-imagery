@@ -829,3 +829,99 @@ class TestTheFeminineInstrumental:
         for written in ("Охтиркою", "Шосткою", "Вінницею", "Харкові",
                         "Белгороде", "Нікополем"):
             assert len(reports.variants(written)) <= 4, written
+
+
+class TestTheCasesThatWereLeavingReportsUnplaced:
+    """Measured, not guessed at: eleven of fifteen realistic forms missed.
+
+    The panel said "5 on the map · 7 unplaced" and the rows it could not place
+    were ordinary posts -- "над Броварами", "над Фастовом", "над Кривим
+    Рогом". Each was a different hole in the de-inflection, and each failed
+    silently as an unplaced row rather than as anything that looked wrong.
+    """
+
+    def placeable(self, text):
+        got = reports.read(text)
+        if not got:
+            return False
+        name = got.get("place") or got.get("toward")
+        return bool(name) and any(places.lookup(v)
+                                  for v in reports.variants(name))
+
+    def test_the_plural_instrumental(self):
+        # A large share of these towns have plural names, and "над X" is the
+        # commonest preposition in the feed -- so this one hole covered
+        # Бровари, Прилуки, Лубни, Ромни, Черкаси and Суми at once.
+        for text in ("Шахед над Броварами", "БпЛА над Прилуками",
+                     "Шахед над Лубнами", "БпЛА над Ромнами",
+                     "Шахед над Черкасами", "БпЛА над Сумами"):
+            assert self.placeable(text), text
+
+    def test_the_vowel_alternation_after_an_instrumental(self):
+        # The rule existed and was applied only after the locative strip, so
+        # "над Фастовом" gave "Фастов" and the place is "Фастів".
+        assert "Фастів" in reports.variants("Фастовом")
+        assert "Обухів" in reports.variants("Обуховом")
+
+    def test_the_feminine_accusative_a_course_produces(self):
+        # "курсом на Одесу" -- the destination, which is looked up the same
+        # way a place is.
+        for written, wanted in (("Одесу", "Одеса"), ("Полтаву", "Полтава"),
+                                ("Вінницю", "Вінниця")):
+            assert wanted in reports.variants(written), written
+
+    def test_two_word_names_in_oblique_cases(self):
+        # The letter rules work a word at a time and these inflect both words
+        # at once, so no rule was ever going to reach them. Listed instead.
+        for text in ("БпЛА над Білою Церквою", "Шахед над Кривим Рогом",
+                     "БпЛА над Новгородом-Сіверським"):
+            assert self.placeable(text), text
+
+    def test_the_whole_sweep_places(self):
+        """The measurement itself, as a test.
+
+        Eleven of these fifteen were unplaceable. Kept as a sweep rather than
+        as separate cases because the number is the point: a rule added for
+        one of them that broke another would still pass every test above.
+        """
+        forms = [
+            "Шахед над Броварами", "БпЛА над Прилуками", "Шахед над Лубнами",
+            "БпЛА над Ромнами", "Шахед над Фастовом", "Шахед над Обуховом",
+            "Шахед курсом на Полтаву", "БпЛА курсом на Вінницю",
+            "БпЛА над Білою Церквою", "Шахед над Кривим Рогом",
+            "БпЛА над Сумами", "Шахед над Черкасами", "БпЛА над Конотопом",
+            "Шахед над Ніжином", "БпЛА над Воронежской областью",
+        ]
+        missed = [text for text in forms if not self.placeable(text)]
+        assert not missed, missed
+
+    def test_a_junk_form_is_not_tried_ahead_of_the_answer(self):
+        # "Броварами" also ends in "и", so the locative strip produced
+        # "Броварам" -- a form no map holds -- and appended it FIRST. Every
+        # one of those is a second of Nominatim's rate limit spent ahead of
+        # the right answer.
+        got = reports.variants("Броварами")
+        assert "Броварам" not in got, got
+        assert got.index("Бровари") == 1, got
+
+    def test_none_of_this_costs_more_than_the_cap(self):
+        # Five rules were added to a set the cap was written to bound.
+        for written in ("Броварами", "Фастовом", "Одесу", "Охтиркою",
+                        "Харкові", "Белгороде", "Нікополем", "Сумами",
+                        "Львові", "Тернополі", "Волинської області"):
+            assert len(reports.variants(written)) <= 4, (
+                written, reports.variants(written))
+
+    def test_a_report_that_says_only_where_it_is_going_stays_unplaced(self):
+        """And that is correct, however much it looks like a miss.
+
+        "БпЛА курсом на Одесу" says a drone is heading for Odesa and does not
+        say where it is. Drawing it on Odesa would claim it had arrived, which
+        on a map somebody uses to decide whether to take cover is a materially
+        wrong thing to say. It is listed with its reason instead.
+        """
+        got = reports.read("БпЛА курсом на Одесу")
+        assert got["place"] is None
+        assert got["toward"] == "Одесу"
+        # Named properly in the line a person reads, even so.
+        assert "Одеса" in got["summary"]

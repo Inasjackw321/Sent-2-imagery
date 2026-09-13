@@ -372,7 +372,17 @@ def _canonical(name: str | None) -> str | None:
     if not name:
         return name
     known = places.lookup(name)
-    return known["name"] if known else name
+    if known:
+        return known["name"]
+    # The de-inflected forms too, so a line reads "heading for Одеса" rather
+    # than "heading for Одесу". Only for display -- `place` and `toward` keep
+    # the spelling that was written, because that is what the gazetteer is
+    # asked for first.
+    for attempt in variants(name)[1:]:
+        known = places.lookup(attempt)
+        if known:
+            return known["name"]
+    return name
 
 
 def _nominative(name: str) -> str:
@@ -475,9 +485,23 @@ def variants(name: str) -> list[str]:
         if low.endswith("ем"):
             out.append(f"{name[:-2]}ь")
         if low.endswith("ом"):
-            out.append(name[:-2])
+            stem = name[:-2]
+            out.append(stem)
+            # And the vowel alternation, which the strip alone gets wrong for
+            # a whole family: "над Фастовом" gives "Фастов", and the place is
+            # "Фастів". The same rule was already applied after the locative
+            # strip below and not after this one, so half the names it exists
+            # for went unplaced.
+            for was, becomes in (("ов", "ів"), ("ол", "іль")):
+                if stem.lower().endswith(was):
+                    out.append(stem[:-2] + becomes)
         # Locative of a masculine name: "Белгороде" -> "Белгород".
-        if low.endswith(("е", "і", "и")):
+        #
+        # Not for a plural instrumental, which also ends in "и" and is handled
+        # below: stripping "Броварами" to "Броварам" is a form no map holds,
+        # and because it is appended first it was tried first -- a wasted
+        # second of the rate limit ahead of the answer.
+        if low.endswith(("е", "і", "и")) and not low.endswith(("ами", "ями")):
             stem = name[:-1]
             out.append(stem)
             # Ukrainian alternates the vowel in a closed syllable, which the
@@ -508,6 +532,22 @@ def variants(name: str) -> list[str]:
             out.append(f"{name[:-2]}а")
         elif low.endswith("ею"):
             out.append(f"{name[:-2]}я")
+        # Plural instrumental. A large share of these towns have plural names
+        # -- Бровари, Прилуки, Лубни, Ромни, Черкаси, Суми -- and "над
+        # Броварами" had no rule at all, so every one of them was an unplaced
+        # row whenever a post used the commonest preposition in the feed.
+        elif low.endswith("ами"):
+            out.append(f"{name[:-3]}и")
+        elif low.endswith("ями"):
+            out.append(f"{name[:-3]}і")
+        # Feminine accusative, which is what "курсом на X" produces:
+        # "курсом на Одесу" -> Одеса, "на Вінницю" -> Вінниця. Only for a
+        # name that is not already known, since the table check in
+        # _nominative() guards the read-time side and this is the lookup side.
+        elif low.endswith("у") and not places.lookup(name):
+            out.append(f"{name[:-1]}а")
+        elif low.endswith("ю") and not places.lookup(name):
+            out.append(f"{name[:-1]}я")
 
     # A ceiling, not a filter. Nothing above currently reaches it -- the most
     # any name produces is exactly four, for a form like "Харкове" -- so this

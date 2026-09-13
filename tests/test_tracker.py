@@ -1035,7 +1035,11 @@ class TestNothingIsSilentlyDropped:
         # well, and counting it as unplaced makes the gazetteer look broken
         # in exactly the number a reader checks to see whether it is.
         got = tracker.demo()
-        assert got["reports"]["placed"] >= len(got["events"])
+        # Against the marks that came from reports. Derived warnings are not
+        # reports -- nobody sent one -- so counting them here would make the
+        # number stop meaning "reports the gazetteer could place".
+        reported = [e for e in got["events"] if not e.get("derived")]
+        assert got["reports"]["placed"] >= len(reported)
         placed_ids = {a["id"] for a in got["alerts"] if a["placed"]}
         assert {e["id"] for e in got["events"]} <= placed_ids
 
@@ -2809,3 +2813,136 @@ class TestAWarningWhereThereAreThingsInTheAir:
         with tracker._lock:
             tracker._events.clear()
         assert tracker.current()["events"] == []
+
+
+class TestARegionWhoseDronesAreReportedOverItDirectly:
+    """The commonest shape in the feed, and the one that raised no warning.
+
+    "БпЛА над Житомирщиною" places a mark on Zhytomyr oblast, and read() then
+    clears the region field because repeating the place as the region says
+    nothing. So the mark knew no oblast -- and a province with drones reported
+    straight over it, the clearest case there is, was the one case
+    derived_alerts() could not see.
+    """
+
+    def raise_over(self, monkeypatch, *texts):
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        for i, text in enumerate(texts):
+            for plain in reports.read_all(text):
+                plain["kind"] = tracker.fold_kind(plain["kind"])
+                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
+                                {"id": f"c/{i}", "channel": "x",
+                                 "region": "Ukraine"}, "ua")
+        return tracker.current()["events"]
+
+    def test_a_drone_over_an_oblast_raises_a_warning_for_it(self, monkeypatch):
+        got = self.raise_over(monkeypatch, "БпЛА над Житомирщиною")
+        made = [e for e in got if e.get("derived")]
+        assert [e["place_match"] for e in made] == ["Житомирська область"]
+
+    def test_it_works_for_every_way_an_oblast_is_written(self, monkeypatch):
+        got = self.raise_over(monkeypatch,
+                              "БпЛА над Житомирщиною",
+                              "Шахед над Львівською областю",
+                              "БпЛА над Воронежской областью")
+        made = {e["place_match"] for e in got if e.get("derived")}
+        assert made == {"Житомирська область", "Львівська область",
+                        "Воронежская область"}
+
+    def test_a_town_still_raises_one_for_the_region_it_is_in(self, monkeypatch):
+        # The other half, which already worked: the oblast comes from the
+        # report rather than from the mark's own place.
+        got = self.raise_over(monkeypatch, "Сумщина: Шахед над Охтиркою")
+        made = [e for e in got if e.get("derived")]
+        assert [e["place_match"] for e in made] == ["Сумська область"]
+
+    def test_a_strike_on_an_oblast_raises_nothing(self, monkeypatch):
+        # Only things in flight put a region under threat. A strike is a fact
+        # about a place that has already happened.
+        got = self.raise_over(monkeypatch, "Вибухи на Житомирщині")
+        assert not [e for e in got if e.get("derived")]
+
+    def test_a_declared_warning_over_that_oblast_still_wins(self, monkeypatch):
+        got = self.raise_over(monkeypatch,
+                              "Повітряна тривога у Житомирській області",
+                              "БпЛА над Житомирщиною")
+        warnings = [e for e in got if e["kind"] == "alert"]
+        assert len(warnings) == 1, [(e.get("by"), e["place"]) for e in warnings]
+        assert not warnings[0].get("derived")
+
+
+class TestTheDemoShowsTheDerivedWarnings:
+    """Or they go unexamined, which is how this one reached a screenshot.
+
+    The demo builds its events directly rather than through _record, so the
+    oblast the reader found was being dropped on the way in -- and the offline
+    build showed no derived warning at all while the live path drew them. That
+    is the fourth time a drawing has gone unlooked-at because the build with
+    no network could not reach the state.
+    """
+
+    def test_the_demo_draws_some(self):
+        made = [e for e in tracker.demo()["events"] if e.get("derived")]
+        assert made, "the offline build cannot show a derived warning"
+
+    def test_they_come_from_the_same_function_as_the_live_ones(self):
+        made = [e for e in tracker.demo()["events"] if e.get("derived")]
+        assert all(e["by"] == "derived" for e in made)
+        assert all(e["kind"] == "alert" for e in made)
+        assert all(e["from_marks"] >= 1 for e in made)
+
+    def test_the_demos_marks_carry_the_oblast_the_reader_found(self):
+        # The thing that was dropped. Without it derived_alerts() sees nothing
+        # to group, and the demo silently disagrees with the live path.
+        towns = [e for e in tracker.demo()["events"]
+                 if e["kind"] == "drone" and e.get("oblast")]
+        assert towns, "no demo mark knows which oblast it is in"
+
+
+class TestADerivedWarningExplainsItself:
+    """A mark with nothing in the panel about it is worse than no mark.
+
+    That is the rule this panel exists for, and a derived warning is the one a
+    reader is most likely to want explained -- because nobody reported it. It
+    was going onto the map with no row at all, which the "every drawn event
+    has a row" invariant caught.
+    """
+
+    def made(self):
+        got = tracker.demo()
+        return ([e for e in got["events"] if e.get("derived")],
+                [a for a in got["alerts"] if a.get("derived")])
+
+    def test_every_derived_mark_has_a_row(self):
+        marks, rows = self.made()
+        assert marks
+        assert {e["id"] for e in marks} == {a["id"] for a in rows}
+
+    def test_the_row_says_it_was_not_reported(self):
+        _, rows = self.made()
+        assert rows
+        assert all(a["by"] == "derived" for a in rows)
+        assert all("Not reported" in a["text"] for a in rows)
+
+    def test_the_row_says_what_it_came_from(self):
+        _, rows = self.made()
+        assert any("report(s) placed inside" in a["text"] for a in rows)
+
+    def test_it_claims_to_cover_a_region_only_when_it_can_draw_one(self):
+        # Every other path sets region_wide from whether there is a shape.
+        # Claiming it without one leaves a mark that says it covers a province
+        # and has no province to draw.
+        marks, _ = self.made()
+        for event in marks:
+            if event["region_wide"]:
+                assert event["shape"], event["place"]
+
+    def test_it_is_projected_like_any_other_event(self):
+        # They were appended raw, so every field project() adds was missing
+        # and the page read undefined for each of them.
+        marks, _ = self.made()
+        for event in marks:
+            assert "age_minutes" in event, event["id"]
+            assert "region_wide" in event

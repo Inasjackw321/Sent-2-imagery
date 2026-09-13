@@ -448,6 +448,23 @@ ALIASES: dict[str, str] = {
     "Karelia": "Республика Карелия",
     "Adygea": "Республика Адыгея",
     "Dagestan": "Республика Дагестан",
+    # Two-word city names in their oblique cases.
+    #
+    # The letter-stripping rules work a word at a time and these inflect both
+    # words at once -- "над Білою Церквою", "над Кривим Рогом" -- so no rule
+    # was ever going to reach them. There are only a handful of two-word towns
+    # in this feed and they are among the most often named, so they are simply
+    # listed.
+    "Білою Церквою": "Біла Церква", "Білу Церкву": "Біла Церква",
+    "Білої Церкви": "Біла Церква",
+    "Кривим Рогом": "Кривий Ріг", "Кривого Рогу": "Кривий Ріг",
+    "Новою Боровою": "Нова Борова", "Новій Боровій": "Нова Борова",
+    "Жовтими Водами": "Жовті Води", "Жовтих Водах": "Жовті Води",
+    "Новгородом-Сіверським": "Новгород-Сіверський",
+    "Новгороді-Сіверському": "Новгород-Сіверський",
+    "Ростове-на-Дону": "Ростов-на-Дону", "Ростовом-на-Дону": "Ростов-на-Дону",
+    "Івано-Франківськом": "Івано-Франківськ",
+    "Кам'янським": "Кам'янське", "Кам'янському": "Кам'янське",
     # One place, two names. An alias rather than a second row so the two
     # spellings cannot drift to different coordinates.
     "Республика Крым": "Автономна Республіка Крим",
