@@ -659,3 +659,173 @@ class TestTheMovementDigest:
         # too, so deleting it entirely still passed.
         assert reports.MOST_PER_SECTION <= 20
         assert len(got) <= 60, len(got)
+
+
+class TestTheRussianRadarChannel:
+    """Warnings written in English, and read as drones.
+
+    @radarrussiia posts "Lipetsk Oblast Drone Alert" and "Republic of
+    Tatarstan, Republic of Bashkortostan — UAV alert cleared." Every one of
+    those was read as a DRONE, because the drone pattern matched the word
+    "Drone" and the English alert pattern only knew "air raid", "threat" and
+    "warning" -- a bare "Alert" was not in it.
+
+    So a warning FOR a province was drawn as an aircraft flying over it, at a
+    point, in the middle of a region where nothing had been reported; and a
+    stand-down put a fresh drone in the air at the moment one was lifted.
+    """
+
+    def test_a_warning_is_a_warning_and_not_the_thing_it_warns_about(self):
+        assert reports.find_kind("Lipetsk Oblast Drone Alert") == "alert"
+        assert reports.find_kind("Voronezh Oblast Missile Alert") == "alert"
+        assert reports.find_kind("Kursk Oblast UAV Alarm") == "alert"
+
+    def test_a_stand_down_is_not_a_warning_and_not_a_drone(self):
+        for text in ("Republic of Tatarstan — UAV alert cleared.",
+                     "Chuvash Republic — UAV alert cleared.",
+                     "Bryansk Oblast — missile threat lifted",
+                     "Belgorod Oblast — drone alert is over"):
+            assert reports.find_kind(text) == "all_clear", text
+
+    def test_the_weapon_word_says_what_the_warning_is_about(self):
+        # Which is drawn as colour: yellow for a drone warning, red for a
+        # missile one. That difference is fifteen minutes against ninety
+        # seconds, and drawing both amber said neither.
+        assert reports.find_cause("Lipetsk Oblast Drone Alert") == "drone"
+        assert reports.find_cause("Voronezh Oblast Missile Alert") == "missile"
+        assert reports.find_cause("Ракетна небезпека для Харківщини") == "missile"
+
+    def test_a_warning_naming_both_is_about_the_faster_one(self):
+        # Being wrong towards "missile" costs a reader caution they did not
+        # need. Being wrong towards "drone" costs them the time to take cover.
+        assert reports.find_cause("drone and missile threat") == "missile"
+
+    def test_a_warning_that_does_not_say_keeps_no_cause(self):
+        # A real third state. Inventing one would be worse than the neutral
+        # amber it falls back to.
+        assert reports.find_cause("Повітряна тривога у Києві") is None
+        assert reports.read("Повітряна тривога у Києві")["cause"] is None
+
+    def test_only_warnings_carry_a_cause(self):
+        # A drone in the air IS a drone; "cause" would be saying the same
+        # thing twice and would colour a strike by whatever hit it.
+        for text in ("Шахед над Нікополем", "Вибухи у Харкові"):
+            assert reports.read(text)["cause"] is None, text
+
+    def test_several_regions_in_one_post_all_get_read(self):
+        """The shape most of that channel's stand-downs come in.
+
+        read() took the first region and dropped the rest, so a warning lifted
+        across four provinces was lifted on the map across one -- and the
+        other three kept a warning that had ended.
+        """
+        got = reports.read_all(
+            "Republic of Tatarstan, Republic of Bashkortostan – UAV alert cleared.")
+        assert [g["place"] for g in got] == [
+            "Tatarstan republic", "Bashkortostan republic"]
+        assert all(g["kind"] == "all_clear" for g in got)
+        assert all(g["cause"] == "drone" for g in got)
+
+    def test_and_the_republics_without_the_word_republic_first(self):
+        got = reports.read_all("Chuvash Republic, Mari El Republic – UAV alert cleared.")
+        assert [g["place"] for g in got] == ["Chuvash republic", "Mari El republic"]
+
+    def test_every_region_it_names_is_one_the_table_can_place(self):
+        # These posts arrive in English and OpenStreetMap holds these regions
+        # in Russian, so without the aliases each one was a failed lookup that
+        # cost a second of Nominatim's rate limit to discover.
+        for text in ("Lipetsk Oblast Drone Alert",
+                     "Voronezh Oblast Missile Alert",
+                     "Republic of Tatarstan, Republic of Bashkortostan – UAV alert cleared.",
+                     "Chuvash Republic, Mari El Republic – UAV alert cleared."):
+            for got in reports.read_all(text):
+                assert places.lookup(got["place"]), (text, got["place"])
+
+    def test_a_strike_report_is_still_a_strike(self):
+        # The alert pattern is tried before the weapon words now, so a post
+        # that is genuinely about something happening must not be swept up.
+        got = reports.read(
+            "Nizhnekamsk, Republic of Tatarstan, was the target of a massive drone strike.")
+        assert got["kind"] == "explosion"
+
+    def test_an_ordinary_movement_report_is_not_a_warning(self):
+        # The risk of putting a bare "alert" in the pattern. These have to go
+        # on being read as things in the air.
+        for text in ("Шахед над Нікополем курсом на північ",
+                     "БпЛА курсом на Київ",
+                     "UAV heading west past Kaharlyk"):
+            assert reports.find_kind(text) in ("drone", "jet_drone"), text
+
+
+class TestHeadlinesAreNotSentences:
+    """These channels write headlines, and the words in them are capitalised.
+
+    Every name pattern here takes up to two capitalised words, which is right
+    for "Nova Borova" and wrong for "Tatarstan Drone" -- and the second is what
+    "Republic of Tatarstan Drone Alert" produced. That is a place no gazetteer
+    has, so a warning written in that word order was listed as unplaceable
+    while the same warning written "Lipetsk Oblast Drone Alert" worked.
+    """
+
+    def test_a_weapon_word_after_the_name_is_not_part_of_it(self):
+        got = reports.read("Republic of Tatarstan Drone Alert")
+        assert got["place"] == "Tatarstan republic"
+        assert places.lookup(got["place"])
+
+    def test_a_headline_word_before_the_name_is_not_either(self):
+        for text in ("BREAKING Kursk Oblast Drone Alert",
+                     "URGENT Voronezh Oblast Missile Alert"):
+            got = reports.read(text)
+            assert places.lookup(got["place"]), (text, got["place"])
+
+    def test_a_two_word_place_name_survives_the_trimming(self):
+        # The trim must not eat real names. "Mari El" and "Nova Borova" are
+        # two capitalised words and both of them are places.
+        assert reports._trim_en("Mari El") == "Mari El"
+        assert reports._trim_en("Nova Borova") == "Nova Borova"
+        assert reports._trim_en("Nizhny Novgorod") == "Nizhny Novgorod"
+
+    def test_a_name_that_is_only_headline_words_does_not_become_empty(self):
+        # The loops stop at one word rather than emptying the list, so this
+        # returns something rather than None and fails the gazetteer honestly.
+        assert reports._trim_en("Alert") == "Alert"
+
+
+class TestTheFeminineInstrumental:
+    """"над Охтиркою" had no rule at all, in either place it needed one.
+
+    "над X" is how half these reports name a place, and the masculine forms --
+    "над Нікополем", "над Харковом" -- were handled while the feminine one was
+    not. So every "над Охтиркою", "над Шосткою", "над Вінницею" produced a
+    name no gazetteer holds, and it failed as a silent unplaced row rather
+    than as anything anybody would notice.
+    """
+
+    def test_the_reader_puts_it_back_in_the_nominative(self):
+        for written, wanted in (("Сумщина: Шахед над Охтиркою", "Охтирка"),
+                                ("Шахед над Шосткою", "Шостка")):
+            assert reports.read(written)["place"] == wanted, written
+
+    def test_and_the_lookup_forms_carry_it_too(self):
+        # Two separate rule sets -- _nominative() at read time and variants()
+        # at lookup time -- and a name can arrive at either. Adding the rule
+        # to one and not the other leaves half the cases failing.
+        assert "Охтирка" in reports.variants("Охтиркою")
+        assert "Шостка" in reports.variants("Шосткою")
+        assert "Вінниця" in reports.variants("Вінницею")
+
+    def test_what_it_produces_is_a_place_the_table_holds(self):
+        for written in ("Охтиркою", "Шосткою", "Вінницею", "Полтавою"):
+            assert any(places.lookup(v) for v in reports.variants(written)), written
+
+    def test_it_does_not_fire_on_a_name_the_table_already_knows(self):
+        # The guard that stops a guess overruling an answer. A rule this
+        # broad would otherwise mangle anything ending in those two letters.
+        assert reports.read("Вибухи в Одесі")["place"] == "Одесі"
+
+    def test_it_still_costs_no_more_than_the_cap(self):
+        # Every variant is a second against Nominatim's rate limit, and this
+        # is a fifth rule added to a set the cap was written to bound.
+        for written in ("Охтиркою", "Шосткою", "Вінницею", "Харкові",
+                        "Белгороде", "Нікополем"):
+            assert len(reports.variants(written)) <= 4, written

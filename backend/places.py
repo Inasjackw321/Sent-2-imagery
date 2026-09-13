@@ -299,16 +299,161 @@ REGIONS: dict[str, tuple[float, float]] = {
     "Смоленская область": (55.00, 33.00),
     "Калужская область": (54.40, 35.50),
     "Московская область": (55.50, 37.50),
+    "Нижегородская область": (55.70, 44.00),
+    "Пензенская область": (53.20, 44.80),
+    "Саратовская область": (51.60, 46.50),
+    "Волгоградская область": (49.60, 44.00),
+    "Астраханская область": (47.00, 47.00),
+    "Ульяновская область": (54.20, 47.50),
+    "Самарская область": (53.20, 50.50),
+    "Оренбургская область": (52.00, 55.00),
+    "Владимирская область": (56.10, 40.60),
+    "Ярославская область": (57.90, 39.00),
+    "Ивановская область": (57.00, 41.50),
+    "Тверская область": (57.00, 34.50),
+    "Псковская область": (57.30, 29.00),
+    "Новгородская область": (58.30, 32.50),
+    "Ленинградская область": (59.70, 31.50),
+    "Вологодская область": (59.80, 40.00),
+    "Кировская область": (58.30, 49.50),
+    "Курганская область": (55.40, 64.50),
+    "Челябинская область": (54.70, 60.50),
+    "Свердловская область": (58.50, 61.00),
+    "Пермский край": (58.80, 56.50),
+    "Ставропольский край": (45.10, 43.00),
+    # The republics. These are named constantly by the Russian radar channels
+    # and none of them was here, so every warning for one went to Nominatim
+    # at a second apiece -- and the English spelling those posts use, which is
+    # what arrives, is not what OpenStreetMap holds.
+    #
+    # They are also much bigger than an oblast, which is what WIDE below is
+    # for: Bashkortostan is the size of Britain and drawing it at an oblast's
+    # extent claims a warning covers a tenth of what it covers.
+    "Республика Татарстан": (55.50, 50.50),
+    "Республика Башкортостан": (54.30, 56.60),
+    "Чувашская Республика": (55.50, 47.20),
+    "Республика Марий Эл": (56.60, 47.90),
+    "Удмуртская Республика": (57.10, 52.80),
+    "Республика Мордовия": (54.40, 44.50),
+    "Республика Калмыкия": (46.30, 45.00),
+    "Республика Коми": (63.50, 54.00),
+    "Республика Карелия": (63.00, 33.00),
+    "Республика Адыгея": (44.70, 40.10),
+    "Республика Дагестан": (42.80, 47.00),
     # Belarusian, in Russian, which is how these channels write them.
     "Гомельская область": (52.40, 29.50),
     "Брестская область": (52.40, 25.50),
     "Минская область": (53.80, 27.50),
 }
 
+# Regions whose extent is not an oblast's. A republic can be ten times the
+# area of a province, and drawing one at OBLAST_HALF puts a warning over a
+# tenth of the ground it actually covers -- which reads as "the warning is
+# somewhere near here" when what was said is "the warning is everywhere".
+#
+# Degrees of half-width, as everywhere else in this table.
+WIDE: dict[str, float] = {
+    "Республика Башкортостан": 2.6,
+    "Республика Татарстан": 2.2,
+    "Республика Коми": 6.0,
+    "Республика Карелия": 4.0,
+    "Республика Дагестан": 1.6,
+    "Пермский край": 2.4,
+    "Краснодарский край": 1.8,
+    "Ставропольский край": 1.5,
+    "Свердловская область": 2.6,
+    "Вологодская область": 2.6,
+    "Ленинградская область": 2.2,
+    "Волгоградская область": 2.0,
+    "Оренбургская область": 3.2,
+    "Ростовская область": 1.8,
+    "Воронежская область": 1.5,
+    "Саратовская область": 1.8,
+    "Тверская область": 1.8,
+    "Кировская область": 2.4,
+    "Курганская область": 1.8,
+    "Челябинская область": 1.8,
+    "Московская область": 1.3,
+}
+
 # Other ways the same places are written. Only forms a report actually uses --
 # every alias is a name nobody has to pay a lookup for, and a wrong one is a
 # marker in the wrong place.
 ALIASES: dict[str, str] = {
+    # The English spellings, because the Russian radar channel posts in
+    # English: "Lipetsk Oblast Drone Alert", "Republic of Tatarstan — UAV
+    # alert cleared". OpenStreetMap holds these in Russian, so without these
+    # rows every one of those warnings was a failed lookup that cost a second
+    # of the rate limit to discover.
+    #
+    # The reader normalises the type word to lower case, so "Lipetsk oblast"
+    # is the form that arrives here.
+    "Belgorod oblast": "Белгородская область",
+    "Bryansk oblast": "Брянская область",
+    "Kursk oblast": "Курская область",
+    "Voronezh oblast": "Воронежская область",
+    "Rostov oblast": "Ростовская область",
+    "Oryol oblast": "Орловская область",
+    "Orel oblast": "Орловская область",
+    "Lipetsk oblast": "Липецкая область",
+    "Tula oblast": "Тульская область",
+    "Ryazan oblast": "Рязанская область",
+    "Tambov oblast": "Тамбовская область",
+    "Smolensk oblast": "Смоленская область",
+    "Kaluga oblast": "Калужская область",
+    "Moscow oblast": "Московская область",
+    "Nizhny Novgorod oblast": "Нижегородская область",
+    "Penza oblast": "Пензенская область",
+    "Saratov oblast": "Саратовская область",
+    "Volgograd oblast": "Волгоградская область",
+    "Astrakhan oblast": "Астраханская область",
+    "Ulyanovsk oblast": "Ульяновская область",
+    "Samara oblast": "Самарская область",
+    "Orenburg oblast": "Оренбургская область",
+    "Vladimir oblast": "Владимирская область",
+    "Yaroslavl oblast": "Ярославская область",
+    "Ivanovo oblast": "Ивановская область",
+    "Tver oblast": "Тверская область",
+    "Pskov oblast": "Псковская область",
+    "Novgorod oblast": "Новгородская область",
+    "Leningrad oblast": "Ленинградская область",
+    "Vologda oblast": "Вологодская область",
+    "Kirov oblast": "Кировская область",
+    "Kurgan oblast": "Курганская область",
+    "Chelyabinsk oblast": "Челябинская область",
+    "Sverdlovsk oblast": "Свердловская область",
+    "Perm krai": "Пермский край",
+    "Krasnodar krai": "Краснодарский край",
+    "Stavropol krai": "Ставропольский край",
+    # The republics, in both the orders these posts write them: "Republic of
+    # Tatarstan" and "Tatarstan Republic" both appear, sometimes in the same
+    # post, and the reader hands over whichever was written.
+    "Tatarstan republic": "Республика Татарстан",
+    "Republic of Tatarstan": "Республика Татарстан",
+    "Tatarstan": "Республика Татарстан",
+    "Bashkortostan republic": "Республика Башкортостан",
+    "Republic of Bashkortostan": "Республика Башкортостан",
+    "Bashkortostan": "Республика Башкортостан",
+    "Chuvash republic": "Чувашская Республика",
+    "Chuvashia": "Чувашская Республика",
+    "Mari El republic": "Республика Марий Эл",
+    "Mari El": "Республика Марий Эл",
+    "Udmurt republic": "Удмуртская Республика",
+    "Udmurtia": "Удмуртская Республика",
+    "Mordovia republic": "Республика Мордовия",
+    "Republic of Mordovia": "Республика Мордовия",
+    "Mordovia": "Республика Мордовия",
+    "Kalmykia": "Республика Калмыкия",
+    "Komi republic": "Республика Коми",
+    "Karelia": "Республика Карелия",
+    "Adygea": "Республика Адыгея",
+    "Dagestan": "Республика Дагестан",
+    # One place, two names. An alias rather than a second row so the two
+    # spellings cannot drift to different coordinates.
+    "Республика Крым": "Автономна Республіка Крим",
+    "Crimea": "Автономна Республіка Крим",
+    "Republic of Crimea": "Автономна Республіка Крим",
+
     # The city of Kyiv, said several ways.
     "Київ місто": "Київ",
     "м. Київ": "Київ",
@@ -422,11 +567,12 @@ def _fold(name: Any) -> str:
 def _index() -> dict[str, dict[str, Any]]:
     """Every name and alias, folded, pointing at a finished answer."""
     out: dict[str, dict[str, Any]] = {}
-    for table, half, kind, category in (
+    for table, default, kind, category in (
         (CITIES, CITY_HALF, "town", "place"),
         (REGIONS, OBLAST_HALF, "administrative", "boundary"),
     ):
         for name, (lat, lon) in table.items():
+            half = WIDE.get(name, default)
             out[_fold(name)] = {
                 "lat": lat, "lon": lon, "name": name,
                 "kind": kind, "category": category,

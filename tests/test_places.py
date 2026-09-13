@@ -19,11 +19,17 @@ from __future__ import annotations
 
 from backend import places
 
-# Ukraine and European Russia, generously. Anything outside this is a typo or
-# a swapped pair of coordinates, which is the failure mode that matters: a
-# marker in the Atlantic reads as a bug in the map, not in a dict.
-SOUTH, NORTH = 44.0, 62.0
-WEST, EAST = 21.0, 49.0
+# Ukraine, Belarus and Russia west of the Urals, generously. Anything outside
+# this is a typo or a swapped pair of coordinates, which is the failure mode
+# that matters: a marker in the Atlantic reads as a bug in the map, not in a
+# dict.
+#
+# Widened east once the Russian radar channel was added: it warns for
+# Bashkortostan and Kurgan, which are past the old 49E edge, and a bound that
+# excludes places the app legitimately reports on is a bound that will get
+# loosened carelessly the next time rather than deliberately this time.
+SOUTH, NORTH = 42.0, 66.0
+WEST, EAST = 21.0, 66.0
 
 
 class TestEveryEntryIsSomewhereReal:
@@ -156,3 +162,36 @@ class TestWhatALookupHandsBack:
     def test_a_name_nobody_has_heard_of_is_a_miss_not_a_guess(self):
         for absurd in ("", None, "   ", "Springfield", "Обоян", "42"):
             assert places.lookup(absurd) is None, absurd
+
+
+class TestRegionsAreDrawnTheSizeTheyAre:
+    """A republic is not an oblast, and drawing one as one understates it.
+
+    Bashkortostan is about the area of Britain. At OBLAST_HALF a warning for
+    it covers roughly a tenth of the ground it actually covers, which reads as
+    "somewhere around here" when what was said is "everywhere in this".
+    """
+
+    def test_the_big_ones_are_drawn_bigger(self):
+        for name in ("Республика Башкортостан", "Республика Коми",
+                     "Свердловская область", "Оренбургская область"):
+            got = places.lookup(name)
+            assert got is not None, name
+            tall = got["bbox"][1] - got["bbox"][0]
+            assert tall > places.OBLAST_HALF * 2, (name, tall)
+
+    def test_an_ordinary_oblast_is_still_an_oblast(self):
+        got = places.lookup("Сумська область")
+        tall = got["bbox"][1] - got["bbox"][0]
+        assert abs(tall - places.OBLAST_HALF * 2) < 0.01
+
+    def test_every_wide_entry_names_a_region_that_exists(self):
+        # A typo here is silent: the override simply never applies and the
+        # region goes on being drawn at an oblast's size.
+        for name in places.WIDE:
+            assert name in places.REGIONS, name
+
+    def test_a_wide_region_reached_through_its_english_name_too(self):
+        # Which is how it arrives, since that channel posts in English.
+        got = places.lookup("Bashkortostan republic")
+        assert got["bbox"][1] - got["bbox"][0] > places.OBLAST_HALF * 2

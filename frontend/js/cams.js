@@ -114,6 +114,32 @@ export const CAMS = [
     host: 'streamlock.net',
   },
 
+  // The Polish side of the Ukrainian border. These three sit along the
+  // approach corridor drones have repeatedly strayed over, which is the
+  // reason to have a picture of the sky there at all.
+  //
+  // Their names are read off the coordinates that came with them, not off
+  // the camera's own title: a webcam is routinely labelled with the town
+  // that owns it rather than the one it points at.
+  {
+    id: 'hrubieszow-border', name: 'Hrubieszów area', place: 'Lublin Voivodeship, Poland',
+    lat: 51.1000, lon: 23.5000, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1670155377/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'zamosc', name: 'Zamość', place: 'Lublin Voivodeship, Poland',
+    lat: 50.7166, lon: 23.2532, precision: 'given position',
+    kind: 'still', src: 'https://imageserver.webcamera.pl/miniaturki/zamosc.jpg',
+    host: 'webcamera.pl',
+  },
+  {
+    id: 'lubaczow-border', name: 'Lubaczów area', place: 'Subcarpathian Voivodeship, Poland',
+    lat: 50.1575, lon: 23.1216, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793906876/original.jpg',
+    host: 'windy.com',
+  },
+
   // The names below are read off the coordinates rather than given with them,
   // so the position is exact and the label is a best reading of where that is.
   {

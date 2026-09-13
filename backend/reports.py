@@ -73,6 +73,12 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      # naming a Ukrainian region was filed as an explosion.
      r"|\bexplosions?\b|\bblast\b|\bimpacts?\b|\bshot down\b|\bshootdown\b"
      r"|\bintercepted\b|\bstruck\b|\bdebris fell\b|\bhit recorded\b"
+     # "was the target of a massive drone strike" -- something that happened,
+     # not something in the air. Without these the sentence matched on the
+     # word "drone" and put an aircraft over a town that had already been hit.
+     r"|\b(?:drone|missile|uav|air)\s+strikes?\b|\bstrikes?\s+(?:on|against)\b"
+     r"|\bwas\s+(?:the\s+)?target\b|\bcame\s+under\s+attack\b"
+     r"|\bdamage\s+reported\b|\bfires?\s+broke\s+out\b"
      r"|انفجار|انفجارات|قصف|استهداف|اعتراض"
      r"|פיצוץ|נפילה|יירוט"
      r"|انفجار|اصابت"),
@@ -83,11 +89,23 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
     ("all_clear",
      r"відбій\s+(?:повітряної\s+)?тривог|відбій\s+загроз|отбой\s+"
      r"(?:воздушной\s+)?тревог|отбой\s+угроз|\ball[- ]clear\b"
-     r"|\balert (?:is )?over\b|\ball clear\b"),
+     # "UAV alert cleared" / "missile threat lifted" -- how the Russian radar
+     # channels write a stand-down in English. Without these the post was read
+     # as a DRONE, so a warning being lifted put a drone in the air.
+     r"|\balert (?:is )?(?:over|cleared|lifted)\b|\ball clear\b"
+     r"|\b(?:threat|alert|alarm) (?:has been |is )?(?:cleared|lifted|over)\b"
+     r"|\bno longer\b.{0,20}\b(?:threat|alert)\b"),
     ("alert",
      r"повітряна тривога|тривога|воздушная тревога"
-     r"|угроза|опасность|ракетная опасность|внимание"
-     r"|\bair (?:raid|alert|alarm)\b|\bthreats?\b"
+     r"|угроза|опасность|ракетная опасность|внимание|небезпек\w*"
+     # A bare "Alert", because "Lipetsk Oblast Drone Alert" is a WARNING for
+     # Lipetsk and not a drone over it. This pattern is tried before the
+     # weapon words on purpose: in these posts the weapon says what the
+     # warning is ABOUT, and find_cause() below reads it for that. Before this
+     # every Russian-side warning was drawn as an aircraft in flight, at a
+     # point, in the middle of a province nobody had reported anything over.
+     r"|\bair (?:raid|alert|alarm)\b|\balerts?\b|\balarms?\b"
+     r"|\bthreats?\b"
      r"|\bdangers?\b|\bwarnings?\b"
      r"|إنذار|انذار|صفارات|تحذير|غارة|غارات"
      r"|אזעקה|התרעה|צבע אדום"
@@ -243,6 +261,38 @@ REGION_OF_EN = re.compile(
     r"\b((?i:emirate|governorate|province|region|district|republic))\s+of\s+"
     r"([A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?)")
 
+# Capitalised words that follow a region's name and are not part of it.
+#
+# These channels write headlines, so the words after the name are capitalised
+# too: "Republic of Tatarstan Drone Alert". The name patterns take up to two
+# capitalised words, so that came out as the region "Tatarstan Drone" -- a
+# place no gazetteer has, which meant every warning written in that word order
+# was listed as unplaceable while the ones written "Lipetsk Oblast Drone Alert"
+# worked. A headline is not a sentence and cannot be parsed like one.
+NOT_PART_OF_A_NAME = re.compile(
+    r"^(?:drone|drones|uav|uavs|missile|missiles|alert|alerts|alarm|alarms"
+    r"|threat|threats|warning|warnings|strike|strikes|attack|attacks"
+    r"|air|raid|danger|update|breaking|urgent)$", re.I)
+
+
+def _trim_en(name: str | None) -> str | None:
+    """A captured English name with the headline words stripped off it.
+
+    Both ends. "Republic of Tatarstan Drone Alert" puts them after the name
+    and "BREAKING Kursk Oblast" puts them before it, and these channels write
+    both -- so a pattern that takes up to two capitalised words picks up
+    whichever is adjacent.
+    """
+    if not name:
+        return name
+    words = name.split()
+    while len(words) > 1 and NOT_PART_OF_A_NAME.match(words[-1]):
+        words.pop()
+    while len(words) > 1 and NOT_PART_OF_A_NAME.match(words[0]):
+        words.pop(0)
+    return " ".join(words) if words else None
+
+
 # "over Nikopol", "in Novy Olshanets", "near Kupiansk".
 NEAR_EN = re.compile(
     r"\b(?:over|above|near|past|in|at|around)\s+"
@@ -293,6 +343,11 @@ COUNT = re.compile(
 ENDINGS = (
     ("щині", "щина"), ("ській", "ська"), ("ському", "ське"),
     ("ові", "ів"), ("єві", "їв"), ("аві", "ава"), ("олі", "іль"),
+    # The feminine instrumental, which is what "над" produces and which these
+    # posts are full of: "над Охтиркою", "над Шосткою", "над Вінницею". There
+    # was no rule for it at all, so every one of those was a name no gazetteer
+    # has -- and unlike a wrong guess it failed silently, as an unplaced row.
+    ("ою", "а"), ("ею", "я"),
 )
 
 
@@ -444,6 +499,15 @@ def variants(name: str) -> list[str]:
         # Genitive after "в районе X".
         if low.endswith("а"):
             out.append(name[:-1])
+        # Feminine instrumental, the other thing "над X" produces: "над
+        # Охтиркою" -> "Охтирка", "над Шосткою" -> "Шостка". The masculine
+        # forms above were here and this was not, so half the names these
+        # posts write after "над" had no rule at all -- and unlike a wrong
+        # guess that fails loudly, this failed as a silent unplaced row.
+        if low.endswith("ою"):
+            out.append(f"{name[:-2]}а")
+        elif low.endswith("ею"):
+            out.append(f"{name[:-2]}я")
 
     # A ceiling, not a filter. Nothing above currently reaches it -- the most
     # any name produces is exactly four, for a form like "Харкове" -- so this
@@ -475,12 +539,12 @@ def find_region(text: str) -> str | None:
         return f"{stem} {'область' if tail == 'обл' else RU_TAIL[tail]}"
     english = REGION_EN.search(text)
     if english:
-        name = _tidy(english.group(1))
+        name = _trim_en(_tidy(english.group(1)))
         if name:
             return f"{name} {english.group(2).lower()}"
     backwards = REGION_OF_EN.search(text)
     if backwards:
-        name = _tidy(backwards.group(2))
+        name = _trim_en(_tidy(backwards.group(2)))
         if name:
             return f"{name} {backwards.group(1).lower()}"
     return None
@@ -492,6 +556,40 @@ def find_kind(text: str) -> str:
         if re.search(pattern, low):
             return kind
     return "unknown"
+
+
+# What a warning is ABOUT. Only meaningful for alerts and all-clears.
+#
+# "Lipetsk Oblast Drone Alert" and "Voronezh Oblast Missile Alert" are both
+# warnings, and the difference between them is the difference between fifteen
+# minutes and ninety seconds. The kind patterns above deliberately read both as
+# "alert" -- the weapon word there says what the warning is about, not what is
+# in the air -- so it is read here instead and drawn as colour: yellow for a
+# drone warning, red for a missile one.
+CAUSE_WORDS: tuple[tuple[str, str], ...] = (
+    ("missile",
+     r"ракет\w*|баліст|баллист|крилат|крылат|калібр|калибр|іскандер|искандер"
+     r"|кинжал|кинджал"
+     r"|\bmissiles?\b|\bballistic\b|\bcruise\b|\biskander\b|\bkinzhal\b"
+     r"|\bkalibr\b|\brocket\b"),
+    ("drone",
+     r"бпла|шахед|шахид|герань|дрон|безпілотн|беспилотн"
+     r"|\buavs?\b|\bdrones?\b|\bshahed\b|\bgeran\b|\bunmanned\b"),
+)
+
+
+def find_cause(text: str) -> str | None:
+    """Which weapon a warning is about, or None if it does not say.
+
+    Missile first. A post naming both -- "drone and missile threat" -- is
+    warning about the faster and more dangerous of the two, and a warning
+    drawn as the milder of two stated threats is the wrong way to be wrong.
+    """
+    low = str(text or "").lower()
+    for cause, pattern in CAUSE_WORDS:
+        if re.search(pattern, low):
+            return cause
+    return None
 
 
 def find_course(phrase: str) -> str | None:
@@ -733,6 +831,43 @@ def _settlements(section: str) -> list[str]:
     return out
 
 
+# A post that names several regions and then says one thing about all of them:
+#
+#   Republic of Tatarstan, Republic of Bashkortostan — UAV alert cleared.
+#   Chuvash Republic, Mari El Republic — UAV alert cleared.
+#   Белгородская, Курская области — отбой угрозы БпЛА
+#
+# The Russian radar channels write most of their stand-downs this way, and
+# read() took the first region and dropped the rest -- so a warning lifted
+# across four provinces was lifted on the map across one.
+REGION_KIND = (
+    r"[Oo]blast|[Rr]egion|[Rr]epublic|[Kk]rai|[Oo]krug"
+    r"|обл(?:асть|асти|\.)|респ(?:ублика|ублики|\.)|край|округ"
+)
+LISTED_REGIONS = re.compile(
+    rf"^(?P<list>[^—–\-:;.]*?(?:{REGION_KIND})[^—–:;.]*?)\s*[—–-]\s*(?P<says>.+)$")
+
+
+def _listed(text: str) -> tuple[list[str], str] | None:
+    """The regions a post names before its dash, and what it says about them."""
+    match = LISTED_REGIONS.match(text)
+    if not match:
+        return None
+    names = []
+    for chunk in BETWEEN.split(match.group("list")):
+        name = _tidy(chunk)
+        if not name or not name[0].isupper():
+            continue
+        if not re.search(REGION_KIND, name):
+            # "Republic of Tatarstan, Bashkortostan" -- the second one drops
+            # the type word and is still a region. Kept, because the pattern
+            # above already established that this line is a list of them.
+            if len(names) == 0:
+                return None
+        names.append(name)
+    return (names, match.group("says")) if len(names) >= 2 else None
+
+
 def read_all(text: str) -> list[dict[str, Any]]:
     """Every report in one post. Usually one; for a digest, one per place.
 
@@ -741,6 +876,33 @@ def read_all(text: str) -> list[dict[str, Any]]:
     regular expression that does not match.
     """
     text = " ".join(str(text or "").split())
+
+    # Several regions, one thing said about all of them. Checked before the
+    # digest split because it is a different shape -- a comma list ahead of a
+    # dash rather than headings with colons -- and because the thing being
+    # said is usually a stand-down, which has to reach every region named or
+    # the warnings stay up on the ones it missed.
+    listed = _listed(text)
+    if listed:
+        names, says = listed
+        kind = find_kind(text)
+        if kind != "unknown":
+            cause = (find_cause(text)
+                     if kind in ("alert", "all_clear") else None)
+            out = []
+            for name in names:
+                region = find_region(name) or name
+                said = _canonical(region)
+                out.append({
+                    "kind": kind, "cause": cause, "place": region,
+                    "region": None, "toward": None, "course": None,
+                    "count": 1,
+                    "summary": summarise(kind, said, None, None, 1),
+                    "by": "rules",
+                })
+            if out:
+                return out
+
     heads = list(SECTION.finditer(text))
     if len(heads) < 2:
         # One heading is an ordinary report that happens to name its oblast.
@@ -773,6 +935,8 @@ def read_all(text: str) -> list[dict[str, Any]]:
             said = _canonical(name)
             out.append({
                 "kind": kind,
+                "cause": (find_cause(section) or find_cause(text)
+                          if kind in ("alert", "all_clear") else None),
                 "place": name,
                 "region": region if region != name else None,
                 "toward": None,
@@ -827,6 +991,10 @@ def read(text: str) -> dict[str, Any] | None:
 
     return {
         "kind": kind,
+        # What the warning is about, for alerts and all-clears only. Drawn as
+        # colour -- yellow for a drone warning, red for a missile one -- which
+        # is the difference between fifteen minutes and ninety seconds.
+        "cause": find_cause(text) if kind in ("alert", "all_clear") else None,
         "place": place,
         # Only worth sending as a hint if it is not the place itself.
         "region": region if region and region != place else None,

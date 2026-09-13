@@ -132,6 +132,32 @@ function advance(lat, lon, heading, km) {
  * the server, and the two ends cannot drift apart about what a jet drone is.
  */
 const look = (event) => feed?.kinds?.[event.kind] ?? {};
+
+// A warning's colour says what the warning is ABOUT, not that it is a warning.
+//
+// "Lipetsk Oblast Drone Alert" and "Voronezh Oblast Missile Alert" are both
+// warnings, and the difference between them is the difference between fifteen
+// minutes and ninety seconds. Drawing both amber said neither.
+//
+// Yellow for drones and RED for missiles, which is what was asked for and is
+// worth being deliberate about: the missile ARROW is purple, so a missile
+// warning is not the same hue as a missile in flight. The alternative -- reuse
+// the in-flight colours so the key is learnt once -- is tidier and loses the
+// thing that matters more, which is that red is what a person already reads as
+// "take cover now". A warning is an instruction to a viewer; an arrow is an
+// observation about the sky. They are allowed to use different alphabets, and
+// the shapes already differ (a triangle in a shaded province against an arrow).
+//
+// A warning that does not say what it is about keeps the neutral amber. That
+// is a real third state, and inventing a cause for it would be worse than the
+// colour it started with.
+const WARNING_COLOURS = { drone: '#ffd400', missile: '#ff3b30' };
+
+function colourOf(event) {
+  const base = look(event).colour ?? '#ff8a3b';
+  if (event.kind !== 'alert' || !event.cause) return base;
+  return WARNING_COLOURS[event.cause] ?? base;
+}
 const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
 
 /** How long this kind of marker stays, in minutes. */
@@ -253,6 +279,30 @@ const SLIM_KINDS = new Set(['missile']);
 const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
   fill="none" stroke="${c}" stroke-width="1.7" stroke-linejoin="round"/>`;
 
+// The number the report gave, on the mark.
+//
+// "Група БпЛА на Сумщині" and "12 шахедів над Одещиною" are one mark each,
+// and drawing them identically to a single drone loses the only number in the
+// sentence. Same plate as a mass count, so the two read as the same idea --
+// the difference being that a mass count is how many marks were grouped and
+// this is how many the report said were there.
+//
+// Counter-rotated, because the arrow it sits on is rotated to its course and
+// a rotated numeral is unreadable at this size.
+function countPlate(n, colour, turn) {
+  if (!(n > 1)) return '';
+  const wide = n > 99;
+  const back = turn == null ? '' : ` transform="rotate(${(-turn).toFixed(1)} 9 9)"`;
+  return `<g class="ao-count-plate"${back}>
+      <rect x="${wide ? 8.6 : 9.6}" y="0" rx="3.4" ry="3.4"
+            width="${wide ? 9.4 : 7.8}" height="7.4"
+            fill="rgba(13,16,21,.92)" stroke="${colour}" stroke-width="0.9"/>
+      <text x="${(wide ? 8.6 + 4.7 : 9.6 + 3.9).toFixed(1)}" y="4.0"
+            text-anchor="middle" dominant-baseline="central" fill="${colour}"
+            style="font: 700 5.4px system-ui, sans-serif"
+            >${n > 999 ? '999' : n}</text></g>`;
+}
+
 function glyph(event, colour, facing) {
   const motion = motionOf(event);
   // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
@@ -300,7 +350,8 @@ function glyph(event, colour, facing) {
     return svg('dot',
       `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
                stroke-width="1.6"/>`
-      + `<circle cx="9" cy="9" r="2" fill="${colour}"/>`);
+      + `<circle cx="9" cy="9" r="2" fill="${colour}"/>`
+      + countPlate(event.count, colour, null));
   }
   // Solid when the course came from the report, hollow when it was borrowed
   // from the group. Both are arrows and both point somewhere real; the weight
@@ -310,12 +361,13 @@ function glyph(event, colour, facing) {
   const slim = SLIM_KINDS.has(event.kind);
   const shape = `${slim ? 'missile' : 'arrow'}${borrowed ? '-borrowed' : ''}`;
   const draw = borrowed ? BORROWED : (slim ? SLIM : ARROW);
-  return svg(shape, draw(colour), facing);
+  return svg(shape, draw(colour) + countPlate(event.count, colour, facing),
+             facing);
 }
 
 /** One marker: its glyph, and its label underneath. */
 function icon(event, facing) {
-  const colour = look(event).colour ?? '#ff8a3b';
+  const colour = colourOf(event);
   const loud = event.kind === 'alert' || event.kind === 'explosion';
   return L.divIcon({
     // Warnings and strikes are the two things somebody scanning this map is
@@ -508,7 +560,9 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
  * oblast to a dot.
  */
 function areaFor(event) {
-  const colour = look(event).colour ?? '#ff8a3b';
+  // The shaded province takes the warning's cause colour too, so the outline
+  // and the triangle inside it agree about what is being warned against.
+  const colour = colourOf(event);
   const style = {
     pane: 'trackerArea',
     renderer: areaInk,
@@ -576,6 +630,39 @@ const hasArea = (event) => event.placed !== false
  * already says so, and flying to a default place would imply there was
  * something there.
  */
+// The two countries this layer reports on, as the airspace each one covers.
+//
+// Asked for as a way to see one country's sky at a time. The map fits to
+// everything drawn by default, which on a night with warnings in Tatarstan and
+// drones over Volyn means a view four thousand kilometres wide where neither
+// is legible. These put one country on the screen at the size it is.
+//
+// Bounds rather than a centre and a zoom, so the framing is right whatever
+// shape the window is. Russia is its European part: the radar channel reports
+// as far as the Urals and no further, and fitting to Kamchatka would put the
+// half of the country that is ever mentioned into a corner.
+const AIRSPACE = {
+  ua: { name: 'Ukraine', bounds: [[44.0, 22.0], [52.5, 40.4]] },
+  ru: { name: 'Russia', bounds: [[43.5, 27.0], [61.0, 60.0]] },
+};
+
+/** Put one country's airspace on the screen, marks and all. */
+function showAirspace(which) {
+  const want = AIRSPACE[which];
+  if (!want || !map) return;
+  const bounds = L.latLngBounds(want.bounds);
+  // Extended to take in anything drawn inside it that reaches past the box --
+  // an oblast outline on the border, a mark just outside. The box is a frame,
+  // not a filter: nothing is hidden, the view is just put where the country is.
+  for (const held of drawn.values()) {
+    const at = held.marker.getLatLng();
+    if (bounds.contains(at) && held.area?.getBounds) {
+      bounds.extend(held.area.getBounds());
+    }
+  }
+  map.flyToBounds(bounds, { duration: 0.7 });
+}
+
 function fitToMarks() {
   const points = [];
   for (const held of drawn.values()) {
@@ -931,6 +1018,16 @@ function buildDock() {
           title: 'Move the map to fit everything currently drawn',
           onclick: fitToMarks,
         }, 'Find')),
+      // One country's sky at a time. With warnings in Tatarstan and drones
+      // over Volyn, "fit everything" is a view four thousand kilometres wide
+      // in which neither is readable.
+      el('div', { class: 'ao-airspace' },
+        el('span', { class: 'ao-airspace-what' }, 'Airspace'),
+        ...Object.entries(AIRSPACE).map(([code, what]) => el('button', {
+          class: 'ao-country', type: 'button', 'data-country': code,
+          title: `Show ${what.name}'s airspace`,
+          onclick: () => showAirspace(code),
+        }, what.name))),
       // The reports, whether or not they could be put on the map. This list is
       // the fix for the complaint that the layer "does not work": a night when
       // the gazetteer cannot place the names still shows six reports here,

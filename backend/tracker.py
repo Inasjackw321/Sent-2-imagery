@@ -92,6 +92,16 @@ CHANNELS = (
     # answer with the pre-war administrative name of somewhere else.
     {"name": "lpr1_treugolnik", "region": "Luhansk and Russia",
      "countries": "ru,ua"},
+    # The Russian side's own radar channel. It posts in English, which is why
+    # it needed English region spellings in backend/places.py, and it posts
+    # almost entirely warnings and stand-downs:
+    #
+    #   Lipetsk Oblast Drone Alert
+    #   Republic of Tatarstan, Republic of Bashkortostan — UAV alert cleared.
+    #
+    # Russia first in the country list for the obvious reason; Ukraine after
+    # it because the channel does report strikes on the occupied side.
+    {"name": "radarrussiia", "region": "Russia", "countries": "ru,ua"},
 )
 
 # The public web preview. Not the API: this is the page Telegram serves to a
@@ -525,9 +535,16 @@ def _clean(item: Any) -> dict[str, Any] | None:
         course, toward = None, None
 
     summary = " ".join(str(item.get("summary") or "").split())[:160]
+    cause = item.get("cause")
+    cause = cause if cause in ("drone", "missile") else None
     return {
         "id": str(item.get("id") or "")[:120] or None,
         "kind": kind,
+        # What a warning is ABOUT, which is not the same question as what kind
+        # of mark this is. "Lipetsk Oblast Drone Alert" is a warning, and the
+        # word "Drone" in it says what the warning concerns -- so it is drawn
+        # yellow, against red for a missile warning. Only warnings carry one.
+        "cause": cause if kind in ("alert", LIFTED) else None,
         "place": place,
         "region": region,
         "toward": toward,
@@ -1139,6 +1156,9 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         "source": message.get("id"),
         "by": item.get("by", "model"),
         "kind": placed["kind"],
+        # Drone or missile, for warnings. The row in the panel is coloured by
+        # it the same way the mark is.
+        "cause": placed.get("cause"),
         "rank": KINDS[placed["kind"]]["rank"],
         "summary": placed["summary"] or (placed.get("place") or "Report"),
         "place": placed.get("place"),
@@ -1161,6 +1181,14 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         return False
     _events.append({
         **placed,
+        # The oblast the READER found, kept under its own name.
+        #
+        # "region" on an event is the channel's beat -- "Ukraine", "Luhansk
+        # and Russia" -- and it was overwriting this, so a drone reported in a
+        # digest section headed "Сумщина" arrived on the map knowing only that
+        # it came from a Ukrainian channel. The oblast is what a warning is
+        # declared over, so it has to survive.
+        "oblast": placed.get("region"),
         "id": ident,
         "by": item.get("by", "model"),
         "origin_lat": placed["lat"],
@@ -1472,12 +1500,108 @@ def start_poll() -> bool:
     return True
 
 
+# Kinds that put a region under threat by being in it.
+RAISES_A_WARNING = ("drone", "jet_drone", "missile")
+
+
+def derived_alerts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A warning over every region that has things in the air in it.
+
+    Asked for, and worth being careful about: this is the only mark on the map
+    that nobody reported. Three things keep it honest.
+
+    It is DERIVED, not invented. Every one of these exists because reports
+    placed one or more objects inside that named region; the region is the one
+    the report itself gave ("Сумщина:" at the head of a digest section), never
+    one this worked out. A region with nothing in it gets nothing.
+
+    It never competes with a real one. Where a channel has actually declared a
+    warning for that region, the declared one stands and this adds nothing --
+    so a real warning is never replaced by a guess at one.
+
+    And it says so. `by` is "derived" and the summary says how many marks it
+    came from, so a reader can tell "the air force declared this" from "there
+    are four drones in this province".
+
+    Computed rather than stored, so it appears and disappears with the marks
+    it is derived from: when the last drone in a region ages out, so does the
+    warning, with no expiry bookkeeping of its own to drift.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        oblast = event.get("oblast")
+        if not oblast or event.get("kind") not in RAISES_A_WARNING:
+            continue
+        if not event.get("placed"):
+            continue
+        grouped.setdefault(oblast, []).append(event)
+    if not grouped:
+        return []
+
+    # The regions somebody has already declared a warning over, by name.
+    declared = {e.get("place") for e in events if e.get("kind") == "alert"}
+    declared |= {e.get("place_match") for e in events if e.get("kind") == "alert"}
+
+    out: list[dict[str, Any]] = []
+    for oblast, inside in sorted(grouped.items()):
+        if oblast in declared:
+            continue
+        where = places.lookup(oblast)
+        if not where:
+            # Not in the built-in table, so placing it would mean a lookup on
+            # a render path. A warning nobody declared is not worth a second
+            # of the rate limit; the marks it would have covered are all
+            # drawn anyway.
+            continue
+        # Drawn for the most serious thing in there: one missile in a province
+        # full of drones makes it a missile warning.
+        cause = ("missile" if any(e["kind"] == "missile" for e in inside)
+                 else "drone")
+        n = len(inside)
+        out.append({
+            "id": f"DR-{oblast}",
+            "kind": "alert",
+            "cause": cause,
+            "by": "derived",
+            "derived": True,
+            "from_marks": n,
+            "rank": KINDS["alert"]["rank"],
+            "place": oblast,
+            "place_match": where["name"],
+            "place_category": "boundary",
+            "lat": where["lat"], "lon": where["lon"],
+            "origin_lat": where["lat"], "origin_lon": where["lon"],
+            "bbox": where["bbox"], "shape": where["shape"],
+            "area_km": area_km(where),
+            "placed": True,
+            "motion": "still",
+            "heading": None, "course": None, "course_from": None,
+            "toward": None, "dest_lat": None, "dest_lon": None,
+            "dest_km": None,
+            "count": n,
+            "summary": (f"{n} {'object' if n == 1 else 'objects'} reported "
+                        f"over {where['name']}"),
+            "seen": max(e["seen"] for e in inside),
+            "channel": None,
+            "region": inside[0].get("region"),
+            "source": None,
+            "text": "",
+            "photos": [],
+            "link": None,
+        })
+    return out
+
+
 def current() -> dict[str, Any]:
     """Every live event and recent alert, carried forward to now."""
     now = time.time()
     with _lock:
         _expire(now)
         events = [project(e, now) for e in _events]
+        # A warning over every region that has things in the air in it. Added
+        # here rather than stored, so these live and die with the marks they
+        # come from. See derived_alerts() for why this is safe to draw.
+        events += derived_alerts(events)
         alerts = sorted(_alerts, key=lambda a: a["seen"], reverse=True)
         # Over the alert window, not since the process started. A running
         # total answers a question nobody asked -- what matters is whether
@@ -1569,6 +1693,15 @@ DEMO_DIGEST = (
     "\U0001f6f8 \u0416\u0438\u0442\u043e\u043c\u0438\u0440\u0449\u0438\u043d\u0430: \U0001f6e9 \u0411\u043f\u041b\u0410 \u0432 \u0440-\u043d\u0456 \u043d.\u043f. "
     "\u041c\u0430\u043b\u0438\u043d, \u041a\u043e\u0440\u043e\u0441\u0442\u0435\u043d\u044c \u0442\u0430 \u041d\u043e\u0432\u0430 \u0411\u043e\u0440\u043e\u0432\u0430 "
     "\u0440\u0443\u0445\u0430\u044e\u0442\u044c\u0441\u044f \u0437\u0430\u0445\u0456\u0434\u043d\u0438\u043c \u043a\u0443\u0440\u0441\u043e\u043c."
+)
+
+# The Russian radar channel's two states, in its own words and word order.
+# Read by the same reader, so the offline build shows the drone/missile colour
+# split rather than asserting it exists somewhere.
+DEMO_WARNINGS = (
+    "Lipetsk Oblast Drone Alert",
+    "Voronezh Oblast Missile Alert",
+    "Republic of Tatarstan Drone Alert",
 )
 
 DEMO_SEED = [
@@ -1670,11 +1803,15 @@ _demo_epoch = 0.0
 # configured: reading and placing, reading nothing placeable, posting nothing,
 # and not answering at all. One of each so the panel that explains a thin map
 # can itself be seen without a network.
-# Exactly four, for the four things a channel can be doing, so with four
-# channels configured every one of them is drawn at least once. A fifth state
+# One per thing a channel can be doing, so that with the channels configured
+# every state is drawn at least once. A state more than there are channels
 # would never appear, and a duplicate would leave one undrawn -- which is what
 # happened when this list was first shortened and the "quiet, and nothing
 # wrong" row disappeared from the demo.
+#
+# Five now, because the fifth channel is the Russian radar one and it posts
+# warnings and nothing else -- which is its own state worth seeing: read and
+# placed, but every mark a warning rather than a thing in the air.
 DEMO_SOURCE_STATES = (
     # Reading and placing: what a working channel looks like.
     {"posts": 14, "fresh": 6, "read": 6, "placed": 5, "problem": None},
@@ -1694,6 +1831,10 @@ DEMO_SOURCE_STATES = (
     # Not answering at all.
     {"posts": 0, "fresh": 0, "read": 0, "placed": 0,
      "problem": "the channel answered 404"},
+    # Warnings only. What the Russian radar channel looks like on an ordinary
+    # night: every post a warning or a stand-down, all of them placed, none of
+    # them a thing in flight.
+    {"posts": 20, "fresh": 9, "read": 9, "placed": 9, "problem": None},
 )
 
 DEMO_EXTENT = {"Kharkiv oblast": 1.6, "Kharkiv": 0.12, "Kyiv oblast": 1.3,
@@ -1805,6 +1946,13 @@ def demo() -> dict[str, Any]:
     # Worth insisting on. Three separate drawing bugs reached a screenshot
     # because the offline build could not reach the case they were in.
     seed = list(DEMO_SEED)
+    # The Russian side's warnings, read the same way -- so the offline build
+    # shows what the two warning colours look like beside each other, which is
+    # the whole point of having two.
+    for text in DEMO_WARNINGS:
+        for got in reports.read_all(text):
+            seed.append((got["kind"], got["place"], None, None, 1,
+                         got["summary"], 12, got.get("cause")))
     for got in reports.read_all(DEMO_DIGEST):
         seed.append((got["kind"], got["place"], None, got["course"], 1,
                      got["summary"], 6))
@@ -1812,16 +1960,17 @@ def demo() -> dict[str, Any]:
     events, alerts = [], []
     for i, row in enumerate(seed, start=1):
         kind, place, toward, course, count, summary = row[:6]
+        cause = row[7] if len(row) > 7 else None
         # Staggered by position, unless the row says how old it should be.
         seen = epoch - (row[6] * 60 if len(row) > 6 else i * 90)
         item = {"kind": kind, "place": place, "toward": toward,
                 "course": read_course(course), "region": None,
-                "count": count, "summary": summary}
+                "count": count, "summary": summary, "cause": cause}
         placed = place_event(item, "ua", lookup=_demo_lookup)
         ident = f"AO{100 + i * 7:04d}"
         alerts.append({
             "id": ident, "kind": kind, "rank": KINDS[kind]["rank"],
-            "summary": summary, "place": place, "placed": placed["placed"],
+            "cause": cause, "summary": summary, "place": place, "placed": placed["placed"],
             "why_unplaced": placed.get("why_unplaced"),
             "channel": "demo", "region": "Ukraine", "seen": seen,
             "text": f"Demo report — {summary}.",

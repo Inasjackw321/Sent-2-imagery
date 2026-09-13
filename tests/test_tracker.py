@@ -1899,15 +1899,18 @@ class TestReadingByRule:
             "🛸 Житомирщина: 🛩 БпЛА в р—ні н.п. Малин, Коростень та Нова Борова "
             "рухаються західним курсом."])
         got = tracker.poll()
-        assert got["count"] >= 13, [e["summary"] for e in got["events"]]
-        assert all(e["kind"] == "drone" for e in got["events"])
+        # The towns. The regions those towns are in also get a derived warning
+        # each -- see derived_alerts() -- so this counts the marks the digest
+        # itself produced rather than everything on the map.
+        towns = [e for e in got["events"] if e["kind"] == "drone"]
+        assert len(towns) >= 13, [e["summary"] for e in got["events"]]
         # Every one of them pointing west, which is what the post said and
         # what the single ring could not say at all.
-        assert all(e["heading"] == 270.0 for e in got["events"]), \
-            sorted({e["heading"] for e in got["events"]})
+        assert all(e["heading"] == 270.0 for e in towns), \
+            sorted({e["heading"] for e in towns})
         # And on distinct spots -- one mark per town, not fifteen on a centre.
-        spots = {(round(e["lat"], 3), round(e["lon"], 3)) for e in got["events"]}
-        assert len(spots) == got["count"]
+        spots = {(round(e["lat"], 3), round(e["lon"], 3)) for e in towns}
+        assert len(spots) == len(towns)
 
     def test_a_digest_costs_no_more_requests_than_an_ordinary_post(
             self, monkeypatch):
@@ -1922,7 +1925,10 @@ class TestReadingByRule:
             "та Лебедин рухаються західним курсом; 🛸 Рівненщина: 🛩 БпЛА в р—ні "
             "н.п. Корець та Здолбунів рухаються західним курсом."])
         got = tracker.poll()
-        assert got["count"] == 7
+        assert len([e for e in got["events"] if e["kind"] == "drone"]) == 7
+        # Including the two derived region warnings, which are placed from the
+        # built-in table or not placed at all -- a warning nobody declared is
+        # not worth a second of Nominatim's rate limit.
         assert asked == [], asked
 
     def test_forgetting_a_post_takes_its_alert_with_it(self):
@@ -2368,10 +2374,17 @@ class TestDemo:
     def test_the_channels_the_app_offers_are_the_ones_it_reads(self):
         names = {c["name"] for c in tracker.CHANNELS}
         assert tracker.demo()["channels"] == [c["name"] for c in tracker.CHANNELS]
-        # The four that were asked for, and only those. Written out rather
+        # The ones that were asked for, and only those. Written out rather
         # than derived, because the point is that this list is a decision
         # somebody made and not whatever happens to be in the tuple.
-        assert names == {"eRadarrua", "kpszsu", "war_monitor", "lpr1_treugolnik"}
+        #
+        # @radarrussiia joined the original four when the Russian side's
+        # warnings were asked for. It is the only one that posts in English,
+        # and reading it needed both the English region spellings in
+        # backend/places.py and a reader that stops calling "Lipetsk Oblast
+        # Drone Alert" a drone.
+        assert names == {"eRadarrua", "kpszsu", "war_monitor",
+                         "lpr1_treugolnik", "radarrussiia"}
 
     def test_every_channel_says_which_countries_to_look_in(self):
         # Without it "Sumy" is as likely to match a street in another
@@ -2536,3 +2549,263 @@ class TestTheDemoShowsTheDigest:
         assert len(west) >= 12
         spots = {(round(e["lat"], 3), round(e["lon"], 3)) for e in west}
         assert len(spots) == len(west), "marks stacked on one point"
+
+
+class TestWarningsAreColouredByWhatTheyWarnAbout:
+    """Yellow for a drone warning, red for a missile one.
+
+    Both were amber, which said "a warning" and nothing else -- and the
+    difference between the two is the difference between fifteen minutes and
+    ninety seconds. The colours are the ones those things are drawn in when
+    they are in the air, so the key is learnt once rather than twice.
+    """
+
+    def one(self, text):
+        tracker.reset()
+        plain = reports.read(text)
+        plain["kind"] = tracker.fold_kind(plain["kind"])
+        item = tracker._clean({**plain, "id": "c/1"})
+        tracker._record(item, {"id": "c/1", "channel": "radarrussiia"}, "ru")
+        return tracker.current()
+
+    def test_a_drone_warning_carries_its_cause_to_the_map(self):
+        got = self.one("Lipetsk Oblast Drone Alert")["events"]
+        assert len(got) == 1
+        assert got[0]["kind"] == "alert"
+        assert got[0]["cause"] == "drone"
+
+    def test_a_missile_warning_carries_its_own(self):
+        got = self.one("Voronezh Oblast Missile Alert")["events"]
+        assert got[0]["kind"] == "alert" and got[0]["cause"] == "missile"
+
+    def test_the_panel_row_carries_it_too(self):
+        # The list is coloured the same way the mark is, or the two disagree
+        # about what a reader is being told.
+        assert self.one("Voronezh Oblast Missile Alert")["alerts"][0]["cause"] \
+            == "missile"
+
+    def test_a_warning_that_does_not_say_carries_nothing(self):
+        got = self.one("Повітряна тривога у Києві")["events"]
+        assert got[0]["cause"] is None
+
+    def test_nothing_but_a_warning_carries_a_cause(self):
+        # A drone in the air IS a drone; a cause there would say the same
+        # thing twice, and on a strike it would colour the crater by whatever
+        # made it.
+        for text in ("Шахед над Нікополем", "Вибухи у Харкові"):
+            got = self.one(text)["events"]
+            assert got[0].get("cause") is None, text
+
+    def test_the_colours_a_cause_can_name_are_ones_the_map_has(self):
+        # The page looks the cause up in the same kinds table it colours marks
+        # from, so a cause naming a kind that is not there would fall back to
+        # amber silently.
+        for cause in ("drone", "missile"):
+            assert cause in tracker.KINDS, cause
+
+
+class TestTheRussianRadarChannelIsRead:
+    def test_it_is_one_of_the_channels(self):
+        named = [c["name"] for c in tracker.CHANNELS]
+        assert "radarrussiia" in named
+
+    def test_it_is_asked_for_russia_first(self):
+        # A gazetteer asked for a Russian region with Ukraine first answers
+        # with somewhere else confidently.
+        row = next(c for c in tracker.CHANNELS if c["name"] == "radarrussiia")
+        assert row["countries"].split(",")[0] == "ru"
+
+    def test_an_hour_of_its_warnings_lands_on_the_map(self, monkeypatch):
+        """What "alerts from the last hour on starting the app" needs.
+
+        Two things have to hold together: the read window must reach back far
+        enough to find them, and a warning must be kept long enough to still
+        be drawn once found. At a twenty-minute window and a sixty-minute
+        keep, a warning declared fifty minutes ago -- still running -- was
+        never read at all.
+        """
+        tracker.reset()
+        now = dt.datetime.now(dt.timezone.utc)
+        posts = [
+            ("Lipetsk Oblast Drone Alert", 5),
+            ("Voronezh Oblast Missile Alert", 25),
+            ("Kursk Oblast Drone Alert", 50),
+            ("Bryansk Oblast Drone Alert", 85),
+        ]
+        monkeypatch.setattr(tracker, "CHANNELS", (
+            {"name": "radarrussiia", "region": "Russia", "countries": "ru,ua"},))
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/{i}", "channel": channel,
+             "when": (now - dt.timedelta(minutes=old)).isoformat(),
+             "text": text, "photos": [], "link": None}
+            for i, (text, old) in enumerate(posts)])
+        got = tracker.poll()
+        # The three inside ninety minutes. The eighty-five-minute one is read
+        # and kept; the ninety-minute keep is what decides the edge.
+        drawn = {e["place"]: e for e in got["events"]}
+        assert "Lipetsk oblast" in drawn
+        assert "Voronezh oblast" in drawn
+        assert "Kursk oblast" in drawn
+        assert drawn["Voronezh oblast"]["cause"] == "missile"
+        assert drawn["Kursk oblast"]["cause"] == "drone"
+
+    def test_a_stand_down_takes_its_regions_warnings_down(self, monkeypatch):
+        # The built-in table answers for these, so no network is reached --
+        # but pinned explicitly rather than relied on, because a test that
+        # quietly starts making requests is a test that starts being slow and
+        # then starts being flaky.
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        for i, text in enumerate([
+            "Republic of Tatarstan Drone Alert",
+            "Republic of Bashkortostan Drone Alert",
+        ]):
+            for plain in reports.read_all(text):
+                plain["kind"] = tracker.fold_kind(plain["kind"])
+                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
+                                {"id": f"c/{i}", "channel": "radarrussiia"}, "ru")
+        assert len(tracker.current()["events"]) == 2
+
+        # One post, both regions -- which is the shape that channel writes.
+        for plain in reports.read_all(
+                "Republic of Tatarstan, Republic of Bashkortostan – UAV alert cleared."):
+            plain["kind"] = tracker.fold_kind(plain["kind"])
+            tracker._record(tracker._clean({**plain, "id": "c/9"}),
+                            {"id": "c/9", "channel": "radarrussiia"}, "ru")
+        assert tracker.current()["events"] == []
+
+
+class TestAWarningWhereThereAreThingsInTheAir:
+    """The only mark on this map that nobody reported.
+
+    Asked for: drones in a region should mean a warning over that region. That
+    is a real convenience and a real hazard -- every other mark here exists
+    because somebody said so, and this one does not. So it is derived rather
+    than invented, it never displaces a declared warning, and it says which it
+    is.
+    """
+
+    def raise_some(self, text, channel_region="Ukraine"):
+        tracker.reset()
+        for plain in reports.read_all(text):
+            plain["kind"] = tracker.fold_kind(plain["kind"])
+            tracker._record(tracker._clean({**plain, "id": "c/1"}),
+                            {"id": "c/1", "channel": "x",
+                             "region": channel_region}, "ua")
+        return tracker.current()["events"]
+
+    def digest(self):
+        return ("🛸 Сумщина: 🛩 БпЛА в р-ні н.п. Путивль та Глухів рухаються "
+                "західним курсом; 🛸 Рівненщина: 🛩 БпЛА в р-ні н.п. Корець "
+                "рухаються західним курсом.")
+
+    def test_a_region_with_drones_in_it_gets_a_warning(self, monkeypatch):
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        got = self.raise_some(self.digest())
+        made = [e for e in got if e.get("derived")]
+        assert {e["place_match"] for e in made} == {
+            "Сумська область", "Рівненська область"}
+        assert all(e["kind"] == "alert" for e in made)
+
+    def test_it_says_it_was_derived_and_from_how_many(self, monkeypatch):
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        made = [e for e in self.raise_some(self.digest()) if e.get("derived")]
+        sumy = next(e for e in made if e["place_match"] == "Сумська область")
+        assert sumy["by"] == "derived"
+        assert sumy["from_marks"] == 2
+        assert "2 objects" in sumy["summary"]
+
+    def test_the_oblast_survives_the_channels_own_region(self, monkeypatch):
+        """The bug that made this impossible to do honestly.
+
+        An event's "region" is the channel's beat -- "Ukraine", "Luhansk and
+        Russia" -- and it was overwriting the oblast the READER found, so a
+        drone from a digest section headed "Сумщина" reached the map knowing
+        only which channel it came from. A warning is declared over an oblast,
+        so the oblast has to survive.
+        """
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        got = self.raise_some(self.digest())
+        towns = [e for e in got if e["kind"] == "drone"]
+        assert {e["oblast"] for e in towns} == {
+            "Сумська область", "Рівненська область"}
+        assert {e["region"] for e in towns} == {"Ukraine"}
+
+    def test_a_declared_warning_is_never_replaced_by_a_derived_one(
+            self, monkeypatch):
+        """The one that matters, and the first version of it proved nothing.
+
+        It used "Шахед над Сумщиною" as the drone, whose PLACE is the oblast
+        and whose oblast field is therefore empty -- so no warning could be
+        derived from it whatever the code did, and the test passed with the
+        "already declared" check deleted. The drone has to be somewhere INSIDE
+        the region for the two to collide at all.
+        """
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        tracker.reset()
+        for i, text in enumerate(["Повітряна тривога у Сумській області",
+                                  "Сумщина: Шахед над Охтиркою"]):
+            for plain in reports.read_all(text):
+                plain["kind"] = tracker.fold_kind(plain["kind"])
+                tracker._record(tracker._clean({**plain, "id": f"c/{i}"}),
+                                {"id": f"c/{i}", "channel": "x",
+                                 "region": "Ukraine"}, "ua")
+        got = tracker.current()["events"]
+        # The drone is in Sumy oblast, so without the check a derived warning
+        # for Sumy oblast would be drawn on top of the declared one.
+        drones = [e for e in got if e["kind"] == "drone"]
+        assert drones and drones[0]["oblast"] == "Сумська область"
+
+        warnings = [e for e in got if e["kind"] == "alert"]
+        assert len(warnings) == 1, [(e.get("by"), e["place"]) for e in warnings]
+        assert not warnings[0].get("derived")
+        assert warnings[0]["by"] != "derived"
+
+    def test_a_region_with_nothing_in_it_gets_nothing(self):
+        assert tracker.derived_alerts([]) == []
+        assert tracker.derived_alerts([
+            {"kind": "explosion", "oblast": "Сумська область", "placed": True,
+             "seen": 0.0}]) == []
+
+    def test_an_unplaced_mark_raises_nothing(self):
+        # It could not be put anywhere, so there is no evidence anything is
+        # over that region -- only that a report named it.
+        assert tracker.derived_alerts([
+            {"kind": "drone", "oblast": "Сумська область", "placed": False,
+             "seen": 0.0}]) == []
+
+    def test_one_missile_makes_it_a_missile_warning(self):
+        # Which is drawn red rather than yellow. A province with nine drones
+        # and one missile in it is a missile problem.
+        made = tracker.derived_alerts([
+            {"kind": "drone", "oblast": "Сумська область", "placed": True,
+             "seen": 0.0},
+            {"kind": "missile", "oblast": "Сумська область", "placed": True,
+             "seen": 0.0}])
+        assert len(made) == 1 and made[0]["cause"] == "missile"
+
+    def test_it_costs_no_lookup(self, monkeypatch):
+        # Computed on a render path, so a region the built-in table does not
+        # know is skipped rather than fetched. A warning nobody declared is
+        # not worth a second of Nominatim's rate limit.
+        monkeypatch.setattr(tracker.gazetteer, "find", lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("derived_alerts must not reach the gazetteer")))
+        assert tracker.derived_alerts([
+            {"kind": "drone", "oblast": "Nowhere Anyone Knows", "placed": True,
+             "seen": 0.0}]) == []
+
+    def test_it_disappears_with_the_marks_it_came_from(self, monkeypatch):
+        # Not stored, so there is no second expiry clock to drift from the
+        # first. When the last drone in a province ages out, so does this.
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": places.lookup(name))
+        self.raise_some(self.digest())
+        assert any(e.get("derived") for e in tracker.current()["events"])
+        with tracker._lock:
+            tracker._events.clear()
+        assert tracker.current()["events"] == []

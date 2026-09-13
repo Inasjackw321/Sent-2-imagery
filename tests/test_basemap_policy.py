@@ -107,6 +107,9 @@ def test_the_policy_does_not_allow_tile_hosts_it_no_longer_needs() -> None:
         "www.ndbc.noaa.gov", "airtw.moenv.gov.tw", "ristmikud.tallinn.ee",
         "pics.starvisor.net", "www.customs.gov.by", "eismoinfo.lt",
         "view.eumetsat.int", "cdn.jsdelivr.net",
+        # A webcam still on the Polish side of the Ukrainian border, served
+        # from its own host rather than through Windy's proxy like the others.
+        "imageserver.webcamera.pl",
     }
     # A wildcard source stands for any host under it, so it is accounted for
     # by anything it would cover rather than by an exact string match.

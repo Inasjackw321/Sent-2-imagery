@@ -1765,3 +1765,35 @@ body.is-walled { overflow: hidden; }
 }
 .ao-row.is-lifts i { background: #37e0a0 !important; }
 .ao-row.is-lifts .ao-row-what { color: var(--ink-dim); }
+
+/* One country's airspace at a time. */
+.ao-airspace {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.ao-airspace-what {
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.ao-country {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--dim);
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid rgba(255, 255, 255, .14);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ao-country:hover {
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, .32);
+}
