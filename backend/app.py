@@ -362,18 +362,6 @@ def ollama_status() -> dict:
     return ollama.status()
 
 
-@app.post("/api/tracker/model")
-def tracker_model(body: dict = Body(...)) -> dict:
-    """Name the Ollama model to read with, or clear it to choose one.
-
-    What replaced the key endpoint. Held in memory only, exactly as the key
-    was, and never written to disk -- though unlike a key there is nothing
-    secret about it.
-    """
-    tracker.use_model(body.get("model"))
-    return ollama.status()
-
-
 @app.get("/api/quakes")
 def earthquakes(
     west: float = Query(..., ge=-180, le=180),

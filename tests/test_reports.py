@@ -556,3 +556,106 @@ class TestTheOutputFitsWhatConsumesIt:
         assert got["kind"] == "drone"
         assert got["place"] == "Кагарлик"
         assert got["course"] == 0.0
+
+
+DIGEST = (
+    "⚠️ Щодо руху ударних БпЛА: "
+    "🛸 Сумщина: 🛩 БпЛА в р—ні н.п. Путивль, Глухів, Кролевець, Буринь та "
+    "Лебедин рухаються західним курсом; "
+    "🛸 Чернігівщина: 🛩 БпЛА в р—ні н.п. Батурин, Сосниця, Макошине, Ніжин, "
+    "Козелець та Гончарівське рухаються західним курсом; "
+    "🛸 Київщина: 🛩 БпЛА в р—ні Київського водосховища рухаються західним "
+    "курсом; "
+    "🛸 Житомирщина: 🛩 БпЛА в р—ні н.п. Малин, Коростень та Нова Борова "
+    "рухаються західним курсом; "
+    "🛸 Рівненщина: 🛩 БпЛА в р—ні н.п. Корець та Здолбунів рухаються "
+    "західним курсом."
+)
+
+
+class TestTheMovementDigest:
+    """The busiest post of the night, and the one that was read worst.
+
+    Fifteen settlements across five oblasts, each section stating its own
+    course. read() returned ONE reading for it -- on whichever oblast matched
+    last, with no course -- so a post naming fifteen towns heading west drew a
+    single courseless ring in the middle of a province, and the fifteen towns
+    were simply not on the map.
+
+    Both halves of that had a cause. The place came from a pattern that finds
+    the first plausible name and stops; the course was missing because these
+    posts write it in the instrumental -- "рухаються західним курсом" -- and
+    find_heading() only looks for "курсом на <point>".
+    """
+
+    def test_every_named_town_gets_its_own_reading(self):
+        got = reports.read_all(DIGEST)
+        named = [g["place"] for g in got]
+        for town in ("Путивль", "Глухів", "Кролевець", "Буринь", "Лебедин",
+                     "Батурин", "Сосниця", "Макошине", "Ніжин", "Козелець",
+                     "Гончарівське", "Малин", "Коростень", "Нова Борова",
+                     "Корець", "Здолбунів"):
+            assert town in named, f"{town} missing from {named}"
+
+    def test_the_last_town_in_a_section_is_not_eaten_by_the_course_phrase(self):
+        # "Лебедин рухаються західним курсом" has no comma before the verb, so
+        # the last name of every section arrived with the phrase stuck to it.
+        # Judged before it was trimmed, it failed and the list ended there --
+        # which quietly dropped the last town of all five sections.
+        got = [g["place"] for g in reports.read_all(DIGEST)]
+        assert "Лебедин" in got
+        assert "Нова Борова" in got
+        assert "Здолбунів" in got
+        assert not any("рухаються" in name for name in got), got
+
+    def test_each_section_carries_its_own_course(self):
+        got = reports.read_all(DIGEST)
+        assert all(g["course"] == "W" for g in got), \
+            sorted({g["course"] for g in got})
+
+    def test_a_section_naming_no_town_falls_back_to_its_oblast(self):
+        # "в р-ні Київського водосховища" is the Kyiv Reservoir: a hundred
+        # kilometres of water, in the genitive, that no gazetteer answers for.
+        # The oblast the section named is the honest place for that mark.
+        got = reports.read_all(DIGEST)
+        kyiv = [g for g in got if "Київськ" in g["place"]]
+        assert kyiv, [g["place"] for g in got]
+        assert kyiv[0]["place"] == "Київська область"
+        assert not any("водосховищ" in g["place"] for g in got)
+
+    def test_every_place_it_produces_is_one_the_app_can_put_down(self):
+        # The point of reading fifteen names is fifteen marks. A name that
+        # reaches neither the built-in table nor a plausible gazetteer lookup
+        # is a row in "unplaced", which is worse than the ring it replaced.
+        for got in reports.read_all(DIGEST):
+            assert places.lookup(got["place"]), got["place"]
+
+    def test_the_kind_comes_from_the_section(self):
+        assert all(g["kind"] == "drone" for g in reports.read_all(DIGEST))
+
+    def test_an_ordinary_post_is_still_one_reading(self):
+        # One heading is a report that happens to name its oblast. It takes
+        # two to be a digest, or every "Сумщина: вибухи" becomes a section.
+        for text in ("Вибухи у Харкові", "Сумщина: вибухи в Охтирці",
+                     "Шахед над Нікополем курсом на північ"):
+            got = reports.read_all(text)
+            assert len(got) == 1, (text, got)
+
+    def test_a_post_with_nothing_in_it_is_still_nothing(self):
+        assert reports.read_all("Підписуйтесь на наш канал") == []
+        assert reports.read_all("") == []
+
+    def test_a_malformed_digest_cannot_become_a_hundred_marks(self):
+        # A comma-separated wall of capitalised words is bounded, so a page
+        # that changes shape degrades to too few marks rather than to a
+        # thousand.
+        wall = "; ".join(
+            "Сумщина: БпЛА в р-ні н.п. " + ", ".join(f"Місто{i}{j}"
+                                                     for j in range(40))
+            for i in range(3))
+        got = reports.read_all(wall)
+        # A literal, not `3 * reports.MOST_PER_SECTION`. Written that way this
+        # compared the cap against itself: raising the cap raised the bound
+        # too, so deleting it entirely still passed.
+        assert reports.MOST_PER_SECTION <= 20
+        assert len(got) <= 60, len(got)

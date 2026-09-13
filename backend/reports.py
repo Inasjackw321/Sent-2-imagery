@@ -632,6 +632,161 @@ def summarise(kind: str, place: str | None, toward: str | None,
 OTHER_SCRIPT = re.compile(r"[\u0590-\u05FF\u0600-\u06FF]")
 
 
+# ---------------------------------------------------------------------------
+# Digest posts: one message, many places
+# ---------------------------------------------------------------------------
+#
+# The most-read post on these channels is not one report. It is the running
+# movement summary, and it looks like this:
+#
+#   Щодо руху ударних БпЛА:
+#   🛸 Сумщина:
+#   🛩 БпЛА в р-ні н.п. Путивль, Глухів, Кролевець, Буринь та Лебедин
+#      рухаються західним курсом;
+#   🛸 Чернігівщина:
+#   🛩 БпЛА в р-ні н.п. Батурин, Сосниця, Ніжин, Козелець та Гончарівське...
+#
+# Fifteen settlements across five oblasts, every one with a stated course.
+# read() returned ONE reading for it -- on whichever oblast matched last, with
+# no course at all -- so the busiest post of the night drew a single courseless
+# ring in the middle of a province and fifteen towns went undrawn.
+#
+# Both halves had a cause. The place came from a pattern that finds the first
+# plausible name and stops. The course was missing because these posts write it
+# in the instrumental -- "рухаються західним курсом" -- and find_heading() only
+# looks for "курсом на <point>".
+#
+# This reads the shape instead: split at the oblast headings, and within each
+# section take the list of settlements and the course that section states.
+
+# An oblast heading inside a digest: "Сумщина:", "Київська область:". The colon
+# is what makes it a heading rather than a mention, and what separates one
+# section from the next.
+SECTION = re.compile(
+    r"(?:^|[\s;.])(?P<name>[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]*щин[аиуі]"
+    r"|[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]+\s+обл(?:асть|асти|\.)?)\s*:")
+
+# What introduces the list of settlements in a section. "н.п." is "населений
+# пункт" -- settlement -- and is how these posts always write it.
+ROLL = re.compile(
+    r"(?:н\.?\s*п\.?|в\s+р[-—–]?ні|у\s+р[-—–]?ні|в\s+районі|у\s+районі"
+    r"|в\s+районе|поблизу|над|біля)\s*(?P<list>.+)", re.I | re.S)
+
+# The "settlement" marker itself, stripped off the head of a list once the
+# pattern above has found it.
+MARKER = re.compile(r"^\s*(?:н\.?\s*п\.?|нп)\s*", re.I)
+
+# The separators inside such a list, in both languages.
+BETWEEN = re.compile(r"\s*(?:[,;]|\bта\b|\bі\b|\bй\b|\bи\b|\band\b)\s*", re.I)
+
+# Words that appear inside a settlement list and are not settlements: the verb
+# and the course phrase the section ends with.
+NOT_A_SETTLEMENT = re.compile(
+    r"рух\w*|курс\w*|прямую\w*|лет\w*|напрям\w*|бпла|шахед\w*|ракет\w*"
+    r"|moving|course|heading|drone|uav", re.I)
+
+# Geography that is not a settlement. "в р-ні Київського водосховища" is the
+# Kyiv Reservoir -- a hundred kilometres of water, in the genitive, that no
+# gazetteer will answer for as written. The oblast the section names is the
+# honest place for that mark.
+NOT_A_PLACE = re.compile(
+    r"водосховищ|водохранилищ|річк|реки|озер|лиман|заток|мор[еяію]"
+    r"|кордон|границ|акватор|reservoir|river|\blake\b|\bbay\b", re.I)
+
+# Enough for the longest real digest, and a ceiling so a malformed post cannot
+# turn into a hundred marks.
+MOST_PER_SECTION = 12
+
+
+def _settlements(section: str) -> list[str]:
+    """The place names listed in one section of a digest."""
+    roll = ROLL.search(section)
+    if not roll:
+        return []
+    # "в р-ні н.п. Путивль" matches on "в р-ні", leaving "н.п." at the head of
+    # the list. It is lowercase, so the first chunk failed the capital-letter
+    # test and the whole list was abandoned at its first entry -- every digest
+    # fell back to its oblast centre and fifteen towns went undrawn.
+    listed = MARKER.sub("", roll.group("list"), count=1)
+    out: list[str] = []
+    for chunk in BETWEEN.split(listed):
+        name = _tidy(chunk)
+        if not name:
+            break
+        # The last name in a list carries the section's course phrase with no
+        # comma before it -- "Лебедин рухаються західним курсом" -- so the
+        # phrase is cut off the name BEFORE the name is judged. Checking first
+        # and cutting second threw away the last settlement of every section.
+        name = NOT_A_SETTLEMENT.split(name)[0].strip(" .,;:-—–()")
+        if not name or not name[0].isupper():
+            # The list has ended: what follows is the course phrase, the next
+            # sentence, or punctuation.
+            break
+        if len(name) < 3 or name.lower() in NOT_PLACES:
+            continue
+        if NOT_A_PLACE.search(name):
+            continue
+        if name not in out:
+            out.append(name)
+        if len(out) >= MOST_PER_SECTION:
+            break
+    return out
+
+
+def read_all(text: str) -> list[dict[str, Any]]:
+    """Every report in one post. Usually one; for a digest, one per place.
+
+    Ordinary posts go straight to read() and come back as a list of one, so
+    every caller can treat a post as a list and the common case costs one
+    regular expression that does not match.
+    """
+    text = " ".join(str(text or "").split())
+    heads = list(SECTION.finditer(text))
+    if len(heads) < 2:
+        # One heading is an ordinary report that happens to name its oblast.
+        # It takes two to be a digest.
+        one = read(text)
+        return [one] if one else []
+
+    out: list[dict[str, Any]] = []
+    for i, head in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        section = text[head.end():end]
+        region = find_region(head.group("name")) or find_region(section)
+        if not region:
+            continue
+        kind = find_kind(section)
+        if kind == "unknown":
+            kind = find_kind(text)
+        if kind == "unknown":
+            continue
+        # The course is stated once per section and applies to everything in
+        # it: "рухаються західним курсом" -- moving on a westerly course.
+        course = None if kind in ("explosion", "alert") else find_course(section)
+        found = _settlements(section)
+        if not found:
+            # A section naming no settlement is still a report about the
+            # oblast, and the province is the honest answer rather than
+            # nothing.
+            found = [region]
+        for name in found:
+            said = _canonical(name)
+            out.append({
+                "kind": kind,
+                "place": name,
+                "region": region if region != name else None,
+                "toward": None,
+                "course": course,
+                "count": 1,
+                "summary": summarise(kind, said, None, course, 1),
+                "by": "rules",
+            })
+    if not out:
+        one = read(text)
+        return [one] if one else []
+    return out
+
+
 def read(text: str) -> dict[str, Any] | None:
     """One report, read without a model. None if there is nothing in it.
 

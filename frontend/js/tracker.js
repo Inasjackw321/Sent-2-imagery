@@ -62,9 +62,6 @@ let layer = null;
 let areas = null;
 let areaInk = null;
 let enabled = false;
-// Whether a model is available. Not "is there a key": the model runs here, so
-// the question is whether the daemon is up with something pulled.
-let ready = false;
 // Concentrate mode: one shape over a mass of marks instead of every mark.
 let concentrated = false;
 let masses = null;
@@ -882,7 +879,6 @@ function age(held) {
 // ── The feed ───────────────────────────────────────────────────
 
 async function load() {
-  const before = ready;
   try {
     feed = await api.tracker();
     // The backend reads the channels in the background, so an answer that
@@ -890,35 +886,15 @@ async function load() {
     // Ask again shortly rather than waiting out the minute.
     clearTimeout(catchup);
     if (feed.polling && enabled) catchup = setTimeout(load, CATCHUP_MS);
-    ready = Boolean(feed.ollama?.ready);
     problem = '';
     reconcile(feed.events ?? []);
     drawMasses();
   } catch (err) {
     problem = err.message;
   }
-  // The model row is built rather than shown and hidden, so learning that a
-  // model has appeared -- Ollama started, or a model pulled, while the page
-  // was open -- means rebuilding rather than repainting. Without this the
-  // panel keeps telling you to start something that is already running.
-  if (ready !== before) buildDock();
-  else paintDock();
+  paintDock();
 }
 
-async function chooseModel(value) {
-  try {
-    const out = await api.trackerModel(value);
-    ready = Boolean(out.ready);
-    buildDock();
-    if (enabled) await load();
-  } catch (err) {
-    problem = err.message;
-    paintDock();
-  }
-}
-
-
-// ── The panel ──────────────────────────────────────────────────
 
 function buildDock() {
   const dock = $('#trackerDock');
@@ -944,17 +920,6 @@ function buildDock() {
           },
         }),
         'Concentrate'),
-      // Whether the model is there, said as a state rather than buried in a
-      // paragraph. It was a sentence at the end of the note before, which is
-      // the last place anyone looks when the layer is not behaving.
-      el('div', { class: 'ao-ollama', id: 'trackerOllama' },
-        el('i', { class: 'ao-led' }),
-        el('span', { class: 'ao-ollama-what' }, 'Checking Ollama…'),
-        el('button', {
-          class: 'ao-recheck', type: 'button',
-          title: 'Ask again — the daemon can be started while this is open',
-          onclick: recheck,
-        }, 'Check')),
       el('div', { class: 'ao-head' },
         el('div', { class: 'ao-count', id: 'trackerCount' }, 'Loading…'),
         // Because "not placed" and "placed somewhere I am not looking" are
@@ -1013,71 +978,11 @@ function tally() {
   return { ...got, total: (got.placed ?? 0) + (got.unplaced ?? 0) };
 }
 
-/**
- * Ask again whether Ollama is there.
- *
- * Its own request rather than a whole feed refresh, because the answer this
- * gives changes on a different timescale from the reports: somebody starts the
- * daemon, or pulls a model, and wants to see that land now without waiting for
- * the next poll or reloading the page.
- */
-async function recheck() {
-  const led = $('#trackerOllama');
-  led?.classList.add('is-asking');
-  try {
-    const got = await api.ollama();
-    if (feed) feed.ollama = got;
-    ready = Boolean(got.ready);
-    paintOllama(got);
-    // A model that has just appeared should read the backlog, not wait a
-    // minute for the next tick.
-    if (ready && enabled) await load();
-  } catch (err) {
-    paintOllama({ ready: false, problem: err.message });
-  } finally {
-    led?.classList.remove('is-asking');
-  }
-}
-
-/** The connected/not line. */
-function paintOllama(status) {
-  const host = $('#trackerOllama');
-  if (!host) return;
-  const what = host.querySelector('.ao-ollama-what');
-  const led = host.querySelector('.ao-led');
-  if (!what || !led) return;
-
-  if (!status) {
-    host.classList.remove('is-on', 'is-off');
-    what.textContent = 'Checking Ollama…';
-    what.title = '';
-    return;
-  }
-  const on = Boolean(status.ready);
-  host.classList.toggle('is-on', on);
-  host.classList.toggle('is-off', !on);
-  led.title = on ? 'connected' : 'not connected';
-  if (on) {
-    what.textContent = `Ollama · ${status.model}`;
-    what.title = `${status.installed?.length ?? 0} model`
-      + `${status.installed?.length === 1 ? '' : 's'} installed: `
-      + `${(status.installed ?? []).join(', ')}`;
-  } else {
-    // The kind of problem decides the wording, because the two have different
-    // fixes and "not connected" would be wrong for a model that is missing
-    // from a daemon that is running perfectly well.
-    what.textContent = status.kind === 'ModelMissing'
-      ? 'Ollama connected · no model' : 'Ollama not connected';
-    what.title = status.problem ?? '';
-  }
-}
-
 function paintDock() {
   const count = $('#trackerCount');
   const note = $('#trackerNote');
   const list = $('#trackerList');
   if (!count || !note || !enabled) return;
-  paintOllama(feed?.ollama);
 
   // Objects, not reports: each mark is one drone or one missile, so this is
   // the number in the air, which is what the line is read for.
@@ -1141,21 +1046,12 @@ function paintDock() {
   const lines = [];
   const demo = feed?.state?.startsWith('demo');
   const got = tally();
-  const by = feed?.read_by ?? {};
   if (demo) {
     lines.push('Demo mode: these reports are invented.');
-  } else if (by.rules && !by.model) {
-    // The case that used to show an empty map and a line of red text. It is
-    // worth saying plainly that the layer is working, just not as well.
-    lines.push(`${(feed?.channels ?? []).length} public Telegram channels, read `
-      + 'without the model — the patterns these reports are written in are '
-      + 'regular enough to follow. A model reads them better.');
-  } else if (by.rules) {
-    lines.push(`${(feed?.channels ?? []).length} public Telegram channels. `
-      + `${by.model} read by the model, ${by.rules} by pattern.`);
   } else {
-    lines.push(`${(feed?.channels ?? []).length} public Telegram channels. `
-      + 'A model reads the words; a gazetteer decides where they are.');
+    lines.push(`${(feed?.channels ?? []).length} public Telegram channels, read `
+      + 'by pattern — no model. One post can be many marks: a movement '
+      + 'summary naming a dozen towns per oblast gets an arrow for each.');
   }
   // Said plainly, because it is the number that explains an empty map.
   if (got.total) {
@@ -1207,16 +1103,6 @@ function paintDock() {
       + 'carrying the count and the group\u2019s average trajectory. Grouped '
       + 'by real distance, so a mass means the same at every zoom. Anything '
       + 'not in a group still shows on its own.');
-  }
-  // Whether the model is connected is its own line at the top of the panel
-  // now, so this only says what to DO about it -- which is the part that
-  // needs the room, and the part a status light cannot carry.
-  const oll = feed?.ollama;
-  if (!demo && oll && !oll.ready && oll.problem) {
-    lines.push(oll.problem);
-  } else if (!demo && oll?.ready) {
-    lines.push('The model runs on this machine — no key, no quota, and none of '
-      + 'these reports leave it.');
   }
   if (problem) lines.push(problem);
   else if (!demo && feed?.state && feed.state !== 'nothing new') lines.push(feed.state);

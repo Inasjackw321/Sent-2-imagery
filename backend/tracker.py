@@ -21,11 +21,14 @@ So the work is split along the seam it should always have had:
   reading    the channels' public web preview at t.me/s/<name>. No account, no
              API key -- the same HTML a logged-out visitor gets.
 
-  reading    a model turns the prose into structure: what kind of thing, the
-  meaning    NAME of the place, the NAME of where it is going. Language work,
-             which is what it is for. It is asked for no numbers at all.
-             It runs locally, through Ollama -- see backend/ollama.py for what
-             that changed and what it did not.
+  reading    backend/reports.py turns the prose into structure: what kind of
+  meaning    thing, the NAME of the place, which way it is going. Regular
+             expressions over a grammar these channels genuinely follow, not
+             a model -- a model was tried here and was both slower and worse,
+             transliterating names the gazetteer holds in Cyrillic and
+             flattening the movement digests that carry most of a night.
+             One post can be many reports: a digest names a dozen towns per
+             oblast and each one gets its own mark.
 
   placing    a gazetteer turns those names into coordinates, biased to the
              country the channel reports on. If it does not know the place,
@@ -54,7 +57,6 @@ from __future__ import annotations
 import datetime as dt
 import html
 import logging
-import json
 import math
 import re
 import threading
@@ -65,7 +67,7 @@ from typing import Any
 
 import requests
 
-from . import config, gazetteer, ollama, places, reports
+from . import config, gazetteer, places, reports
 
 log = logging.getLogger("sent2.tracker")
 
@@ -96,10 +98,6 @@ CHANNELS = (
 # visitor with no account, and it carries the recent posts as plain HTML.
 PREVIEW = "https://t.me/s/{channel}"
 
-# The prompt is put to a local model through backend/ollama.py, which chooses
-# one from what is actually installed. There is no key, no quota and no reason
-# to back off, so the model list, the rate-limit parsing and the exponential
-# rest that used to live here are all gone with the hosted service.
 
 
 # How long a marker stays on the map, when its kind does not say otherwise.
@@ -222,11 +220,16 @@ KINDS = {
     # inbound, both are drawn at the same place, and neither changes what the
     # map can tell you. One kind that is always right beats two that are
     # sometimes swapped.
+    # Yellow, red, purple: the three that matter told apart by hue alone, so a
+    # glance at a screen full of arrows reads without checking a key. An
+    # ordinary drone is the common case and keeps the colour these maps have
+    # always used for it; a jet drone is three times the speed and gets red;
+    # a missile gets purple.
     "drone":     {"colour": "#ffd400", "label": "Drone",
                   "motion": "track", "rank": 3},
-    "jet_drone": {"colour": "#ff9d00", "label": "Jet drone",
+    "jet_drone": {"colour": "#ff3b30", "label": "Jet drone",
                   "motion": "track", "rank": 4},
-    "missile":   {"colour": "#ff2d6f", "label": "Missile",
+    "missile":   {"colour": "#a855f7", "label": "Missile",
                   "motion": "track", "rank": 6},
     # Kept separate, and deliberately. A crewed aircraft is neither a drone nor
     # a missile: "тактична авіація" means aircraft are up, which is a warning
@@ -234,7 +237,10 @@ KINDS = {
     # folding it into either would be saying something the report did not.
     "aircraft":  {"colour": "#7dffcf", "label": "Aircraft",
                   "motion": "track", "rank": 3},
-    "explosion": {"colour": "#b06bff", "label": "Explosion",
+    # Moved off purple, which is the missile colour now. A strike is a star
+    # rather than an arrow, so shape already tells them apart, but two things
+    # this different should not share a hue.
+    "explosion": {"colour": "#ff2d9a", "label": "Explosion",
                   "motion": "still", "rank": 7,
                   # Twenty-five hours. A strike is a fact about a place rather
                   # than a guess about one, so nothing about it decays, and a
@@ -246,10 +252,17 @@ KINDS = {
                   "keep": 1500},
     "alert":     {"colour": "#ffb020", "label": "Air alert",
                   "motion": "still", "rank": 1,
-                  # An hour, which is roughly how long an alert for a city
-                  # actually runs -- and long enough that one declared while
-                  # you were looking elsewhere is still there when you return.
-                  "keep": 60},
+                  # An hour and a half. An alert for a city runs about that
+                  # long, and on a cold start it is what decides whether the
+                  # warnings already in force when you open the app are drawn
+                  # at all -- at an hour, one declared seventy minutes ago and
+                  # still running showed as nothing.
+                  #
+                  # Matches ALERT_MINUTES, which is how long the report stays
+                  # readable in the stream, so the mark and the line that
+                  # explains it now go together instead of the mark leaving
+                  # first.
+                  "keep": 90},
     "unknown":   {"colour": "#9aa4b2", "label": "Unidentified",
                   "motion": "track", "rank": 2},
 
@@ -306,27 +319,6 @@ _sources: dict[str, dict[str, Any]] = {}
 
 class TrackerError(RuntimeError):
     pass
-
-
-# ---------------------------------------------------------------------------
-# The key
-# ---------------------------------------------------------------------------
-
-
-def use_model(name: str | None) -> str | None:
-    """Name the model to read with, or None to let it be chosen.
-
-    What replaced set_key(). There is no credential to hold any more -- the
-    model is on this machine -- so the only thing left to configure is which
-    one, and that is held in memory exactly as the key was: never written to
-    disk, gone when the process stops.
-    """
-    return ollama.prefer(name)
-
-
-def model_status() -> dict[str, Any]:
-    """Whether a model is available, and which. See ollama.status()."""
-    return ollama.status()
 
 
 # ---------------------------------------------------------------------------
@@ -412,127 +404,6 @@ def _fetch_channel(channel: str) -> list[dict[str, Any]]:
     if not resp.ok:
         raise TrackerError(f"{channel} answered {resp.status_code}")
     return parse_preview(resp.text, channel)
-
-
-# ---------------------------------------------------------------------------
-# Reading the meaning
-# ---------------------------------------------------------------------------
-
-# Note what this does NOT ask for: coordinates. That is the whole difference
-# between this version and the one before it.
-PROMPT = """You read air-threat reports in Ukrainian, Russian, Arabic, Farsi
-and Hebrew, and return JSON describing them.
-
-Return ONLY a JSON object: {"events": [...]}. One entry per report you were
-given, in the same order, using the "id" you were given. No prose, no fences.
-
-Each event:
-  "id"      the id of the message this came from, copied exactly
-  "kind"    one of: recon, drone, jet_drone, cruise, ballistic, aircraft,
-            helicopter, explosion, alert, unknown.
-              recon      a reconnaissance or observation UAV, one that
-                         loiters: "розвідувальний БпЛА", "Orlan", "ZALA",
-                         "Supercam", "борт-розвідник"
-              jet_drone  a jet-powered one: "реактивний БпЛА", "Shahed-238"
-              drone      any other one-way attack UAV: "Shahed", "Geran"
-              alert      an air-raid warning or an all-clear
-              explosion  a strike, an interception, or something brought down
-  "place"   the NAME of the place the report is about, COPIED IN THE SAME
-            SCRIPT THE POST USED. Do not transliterate and do not translate:
-            "Любешів" stays "Любешів", "Белгородская область" stays
-            "Белгородская область". This is looked up in OpenStreetMap, whose
-            names for these places ARE the Cyrillic ones, so a Latin spelling
-            you produce is a spelling the map has never heard of.
-            Do put it in the nominative rather than the case the sentence
-            used: "у Харкові" -> "Харків", "Волинської області" ->
-            "Волинська область", "Харківщини" -> "Харківська область".
-            Null if the report names no place.
-  "region"  the oblast, governorate or province the place is in, if the
-            report says or if you know it, in the same script: "Київська
-            область". Null otherwise. This is used to tell places with similar
-            names apart, so it matters more than it looks.
-  "toward"  the NAME of the place it is travelling TO, or null.
-  "course"  the compass direction it is travelling, when the report gives one
-            and names no destination. One of: N, NE, E, SE, S, SW, W, NW,
-            NNE, ENE, ESE, SSE, SSW, WSW, WNW, NNW. Null otherwise.
-  "count"   how many objects, if stated, else 1
-  "summary" one short English sentence saying what is being reported, under
-            110 characters. This is read aloud on a wall display.
-
-DO NOT return coordinates, latitudes, longitudes or bearings. You are not
-asked for them and they will be discarded. Somewhere else turns names into
-positions; your job is the words.
-
-Rules:
-  - A DIRECTION AND A LOCATION ARE DIFFERENT THINGS. Set "toward" or
-    "course" only when the report says the object is MOVING:
-        "курс на Полтаву", "у напрямку Києва"   -> toward: "Poltava"/"Kyiv"
-        "курсом на північ", "рухаються на південь" -> course: "N" / "S"
-    A phrase saying which PART of a region something is in is not a
-    direction, and both must be null:
-        "на північний схід Харківщини" = in the north-east OF Kharkiv oblast.
-        That is "place": "Kharkiv oblast", "toward" and "course" both null.
-  - "повз X курсом на північ" means it is passing X and heading north:
-        "place": "X", "course": "N", "toward": null.
-  - The course matters and is usually there. These posts state a direction far
-    more often than not -- "курсом на", "у напрямку", "рухається на", "в
-    напрямку" -- and a report whose direction is dropped is drawn as a mark
-    with no heading at all. Read it whenever it is stated.
-  - If the report names no place at all, still return the event with "place"
-    null. It will be listed rather than mapped. Do not invent a place.
-  - Appeals for donations, channel promotion, and general commentary are not
-    events: leave them out entirely.
-"""
-
-
-def _call_model(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Read a batch of posts with the local model.
-
-    What this replaced was four times the size: a list of hosted models to
-    fall through as each hit its daily ceiling, `Retry-After` and
-    `X-RateLimit-Reset` parsing, and an exponential rest so that a rate limit
-    did not keep itself alive. A model on this machine has no ceiling, so
-    none of it is needed. There is no retry either -- a local daemon that
-    fails once will fail again, and the caller already has the right answer
-    to a failed model step, which is to read the reports by rule instead.
-    """
-    got = ollama.ask(PROMPT, json.dumps(
-        [{"id": m["id"], "text": m["text"]} for m in messages],
-        ensure_ascii=False))
-    return take_events(got)
-
-
-def take_events(parsed: Any) -> list[dict[str, Any]]:
-    """The events out of whatever shape the model answered in.
-
-    Asked for {"events": [...]} a model will sometimes return the bare list
-    instead. Both are cheap to accept and expensive to be surprised by at
-    three in the morning.
-    """
-    raw = parsed.get("events") if isinstance(parsed, dict) else parsed
-    if not isinstance(raw, list):
-        return []
-    return [clean for clean in (_clean(item) for item in raw) if clean]
-
-
-def read_events(content: str) -> list[dict[str, Any]]:
-    """The events out of a model's raw text answer.
-
-    The unwrapping -- code fences, a sentence before the JSON, a bare list --
-    now lives in ollama.read_json, which every caller of a model goes through.
-    This stays because it is the whole path from text to events in one place,
-    which is the thing worth testing.
-    """
-    if not isinstance(content, str) or not content.strip():
-        raise TrackerError("the model returned nothing")
-    try:
-        # read_any rather than read_json: asked for {"events": [...]} a model
-        # will sometimes answer with the bare list, and take_events accepts
-        # either. Losing a whole batch of reports over the wrapper would be a
-        # poor trade.
-        return take_events(ollama.read_any(content))
-    except ollama.OllamaError as exc:
-        raise TrackerError(str(exc)) from exc
 
 
 # Things a model offers as a place name when it has not got one. Each of these
@@ -1498,122 +1369,44 @@ def poll() -> dict[str, Any]:
     # nothing: cutting that list cut whole channels.
     fresh.sort(key=_when, reverse=True)
 
-    # The model reads a bounded number of posts; the rules read all of them.
+    # Read by rule. Every post, every place in it, no model.
     #
-    # This used to be one cap over both, and it was the second half of the
-    # same bug as the lookback. Four channels of twenty posts is eighty, the
-    # cap was forty, and the forty that lost the draw were counted in the
-    # panel as read and then never looked at -- so the panel's numbers and the
-    # map disagreed, and the missing half was whichever channels sorted last.
+    # The model is gone from this path, and not because it was slow -- though
+    # it was, by two orders of magnitude against four page fetches. It is that
+    # it was worse at the job. It was asked to pull a kind, a place and a
+    # course out of a post; the patterns do that from a grammar these channels
+    # genuinely follow, and every disagreement that got measured came down on
+    # the patterns' side. The model transliterated names the gazetteer holds
+    # in Cyrillic and turned "Кагарлик" into "Kagul", which is in Moldova.
     #
-    # They belong on different caps because they cost different things. A
-    # rules read is a few regular expressions: eighty of them is under a
-    # millisecond, so there is no reason to read anything less than everything.
-    # A model read is a local model thinking about each post, which is seconds,
-    # and that is worth bounding.
-    MODEL_BATCH = 40
-    batch = fresh[:MODEL_BATCH]
-
-    # Read by rule first, and publish that immediately.
+    # What reads these posts is structure, not comprehension. The busiest post
+    # of the night is the movement digest: fifteen settlements across five
+    # oblasts, each section stating its own course. reports.read_all() returns
+    # one reading per place, so that post is seventeen arrows with a westerly
+    # bearing instead of one courseless ring in the middle of a province.
     #
-    # This is the whole of "load fast". The model is the slow step by a wide
-    # margin -- four page fetches take 350 ms and a local model asked about
-    # twenty posts can take the better part of a minute -- and until now
-    # nothing appeared on the map until it had finished. A first open on a
-    # busy night showed an empty country for as long as the model took to
-    # think.
-    #
-    # The rules are microseconds and they read most of these posts correctly:
-    # they are written to be scanned during an air raid and they are formulaic
-    # to the point of being a grammar. So they go up straight away, marked as
-    # rules-read, and the model's version replaces them when it lands.
-    #
-    # Nothing is lost by the replacement being late. A mark that appears in a
-    # third of a second and gets a better reading twenty seconds later is
-    # strictly better than the same mark appearing at twenty seconds, and the
-    # panel says which reading each one came from either way.
-    for post in fresh:
-        plain = reports.read(post.get("text", ""))
-        if not plain:
-            continue
-        plain["kind"] = fold_kind(plain.get("kind"))
-        item = _clean({**plain, "id": post["id"]})
-        if item:
-            item["by"] = "rules"
-            _record(item, post, post.get("countries", ""))
-
-    found: list[dict[str, Any]] = []
-    limited = ""
-
-    try:
-        found = _call_model(batch)
-    except ollama.NotRunning as exc:
-        # The one failure with a single obvious remedy, so it says the remedy.
-        limited = str(exc)
-    except ollama.ModelMissing as exc:
-        limited = str(exc)
-    except TrackerError as exc:
-        limited = str(exc)
-    except ollama.OllamaError as exc:
-        limited = str(exc)
-
-    # Whatever went wrong with the model, the reports are still read. They are
-    # read worse -- by rule rather than by comprehension -- but a layer that
-    # shows most of a busy night without a model beats one that shows an empty
-    # map and an explanation.
-
-    by_id = {item["id"]: item for item in found if item.get("id")}
-
-    # Geocoding is done outside the lock: it may go to the network, and
-    # holding the lock across that would stall every request for the map.
-    # Now the model's readings, each one replacing the rules-read version of
-    # the same post.
-    #
-    # Only where the model actually answered about that post. A post it
-    # skipped keeps the reading it already has, which is the whole reason the
-    # rules run first -- there is never a moment where a readable post is
-    # absent from the map.
-    read_by_rules = 0
+    # So a poll is regular expressions and dict lookups end to end: no daemon
+    # to be down, no model to be missing, no "reading 3 of 20 reports without
+    # it", and nothing on the map that came from a guess.
     for post in fresh:
         _seen.add(post["id"])
-        item = by_id.get(post["id"])
-        if item is None and len(batch) == 1 and found:
-            # A model that ignored the ids, with only one message to
-            # confuse: the single answer can only belong to it.
-            item = found[0]
-
-        if item is None:
-            # No model reading for this one -- it is not running, it refused,
-            # it skipped the message, or the post was outside the model's
-            # batch. Whatever the rules made of it stands, and it is already
-            # on the map.
-            #
-            # This is the difference between a quiet night and a dead layer.
-            # A missing model used to mean an empty map and a line of red
-            # text, which from the outside is indistinguishable from the
-            # feature being broken.
-            if any(e.get("source") == post["id"] for e in _events) \
-                    or any(a.get("source") == post["id"] for a in _alerts):
-                read_by_rules += 1
-            continue
-
-        item["by"] = "model"
-        with _lock:
-            # Out with the rules reading, in with the model's. Both together
-            # would draw the post twice.
-            forget_source(post["id"])
-            _record(item, post, post["countries"])
+        for plain in reports.read_all(post.get("text", "")):
+            plain["kind"] = fold_kind(plain.get("kind"))
+            item = _clean({**plain, "id": post["id"]})
+            if not item:
+                continue
+            item["by"] = "rules"
+            _record(item, post, post.get("countries", ""))
 
     with _lock:
         _expire(now)
         # What each channel actually contributed, counted from what is on the
         # map rather than tallied as it went.
         #
-        # Counting inline got this wrong as soon as the rules and the model
-        # stopped reading the same set of posts: a post read by rule outside
-        # the model's batch was never counted, so the panel said a channel had
-        # contributed nothing while its marks were on the screen. Reading the
-        # answer off the result cannot drift from it.
+        # Counting inline got this wrong as soon as one post could produce
+        # more than one mark: a digest naming fifteen towns is one post and
+        # fifteen events, and no total kept in the loop stayed in step with
+        # both. Reading the answer off the result cannot drift from it.
         on_map = {e.get("source") for e in _events}
         in_stream = on_map | {a.get("source") for a in _alerts}
     for post in fresh:
@@ -1625,13 +1418,7 @@ def poll() -> dict[str, Any]:
         if post["id"] in on_map:
             tally["placed"] += 1
 
-    if limited and read_by_rules:
-        _state = (f"{limited} — reading {read_by_rules} of {len(fresh)} reports "
-                  "without it")
-    elif limited:
-        _state = limited
-    else:
-        _state = f"reading {len(CHANNELS)} channels"
+    _state = f"reading {len(CHANNELS)} channels"
     if trouble:
         _state = "; ".join([*trouble[:1], _state])
 
@@ -1717,15 +1504,6 @@ def current() -> dict[str, Any]:
         "kinds": KINDS,
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
-        # Which model, and whether there is one at all. What replaced
-        # "keyed": the question is no longer whether a key was pasted in but
-        # whether a daemon is running with something pulled, and the answer
-        # carries the command that fixes it when it is not.
-        "ollama": ollama.status(),
-        "read_by": {
-            "model": sum(1 for a in alerts if a.get("by") == "model"),
-            "rules": sum(1 for a in alerts if a.get("by") == "rules"),
-        },
         # Whether a read of the channels is happening right now. The page uses
         # it to ask again in a couple of seconds instead of waiting out its
         # whole minute, which is what makes a first open feel immediate: the
@@ -1776,6 +1554,22 @@ DEMO_PLACES = {
     "Nedryhailiv": (50.8300, 33.8770), "Romny": (50.7450, 33.4747),
     "Konotop": (51.2378, 33.2020),
 }
+
+# A real movement digest, in the shape these channels post them: a heading
+# per oblast, a list of settlements, and the course stated once for the
+# section in the instrumental. Read by reports.read_all() like any other post.
+DEMO_DIGEST = (
+    "\u26a0\ufe0f \u0429\u043e\u0434\u043e \u0440\u0443\u0445\u0443 \u0443\u0434\u0430\u0440\u043d\u0438\u0445 \u0411\u043f\u041b\u0410: "
+    "\U0001f6f8 \u0421\u0443\u043c\u0449\u0438\u043d\u0430: \U0001f6e9 \u0411\u043f\u041b\u0410 \u0432 \u0440-\u043d\u0456 \u043d.\u043f. "
+    "\u041f\u0443\u0442\u0438\u0432\u043b\u044c, \u0413\u043b\u0443\u0445\u0456\u0432, \u041a\u0440\u043e\u043b\u0435\u0432\u0435\u0446\u044c, \u0411\u0443\u0440\u0438\u043d\u044c \u0442\u0430 \u041b\u0435\u0431\u0435\u0434\u0438\u043d "
+    "\u0440\u0443\u0445\u0430\u044e\u0442\u044c\u0441\u044f \u0437\u0430\u0445\u0456\u0434\u043d\u0438\u043c \u043a\u0443\u0440\u0441\u043e\u043c; "
+    "\U0001f6f8 \u0427\u0435\u0440\u043d\u0456\u0433\u0456\u0432\u0449\u0438\u043d\u0430: \U0001f6e9 \u0411\u043f\u041b\u0410 \u0432 \u0440-\u043d\u0456 \u043d.\u043f. "
+    "\u0411\u0430\u0442\u0443\u0440\u0438\u043d, \u0421\u043e\u0441\u043d\u0438\u0446\u044f, \u041d\u0456\u0436\u0438\u043d, \u041a\u043e\u0437\u0435\u043b\u0435\u0446\u044c \u0442\u0430 "
+    "\u0413\u043e\u043d\u0447\u0430\u0440\u0456\u0432\u0441\u044c\u043a\u0435 \u0440\u0443\u0445\u0430\u044e\u0442\u044c\u0441\u044f \u0437\u0430\u0445\u0456\u0434\u043d\u0438\u043c \u043a\u0443\u0440\u0441\u043e\u043c; "
+    "\U0001f6f8 \u0416\u0438\u0442\u043e\u043c\u0438\u0440\u0449\u0438\u043d\u0430: \U0001f6e9 \u0411\u043f\u041b\u0410 \u0432 \u0440-\u043d\u0456 \u043d.\u043f. "
+    "\u041c\u0430\u043b\u0438\u043d, \u041a\u043e\u0440\u043e\u0441\u0442\u0435\u043d\u044c \u0442\u0430 \u041d\u043e\u0432\u0430 \u0411\u043e\u0440\u043e\u0432\u0430 "
+    "\u0440\u0443\u0445\u0430\u044e\u0442\u044c\u0441\u044f \u0437\u0430\u0445\u0456\u0434\u043d\u0438\u043c \u043a\u0443\u0440\u0441\u043e\u043c."
+)
 
 DEMO_SEED = [
     # kind, place, toward, course, count, summary
@@ -1951,7 +1745,14 @@ def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
     """A small gazetteer, for the build with no network."""
     found = DEMO_PLACES.get(name)
     if not found:
-        return None
+        # The digest names a dozen towns that the hand-written demo table has
+        # no reason to carry, and they are all in the built-in table already.
+        # Falling through to it keeps the demo honest -- the same lookup the
+        # live path makes first -- without duplicating fifty coordinates.
+        known = places.lookup(name)
+        if not known:
+            return None
+        found = (known["lat"], known["lon"])
     lat, lon = found
     half = DEMO_EXTENT.get(name, 0.06)
     region = half > 1
@@ -1993,8 +1794,23 @@ def demo() -> dict[str, Any]:
             _demo_epoch = now
         epoch = _demo_epoch
 
+    # One real movement digest, read by the real reader.
+    #
+    # The rest of the demo is a table of pre-read rows, which is fine for what
+    # it shows and useless for this: a seeded row proves nothing about the
+    # code that turns a post into rows. This one goes through read_all() the
+    # way a live post does, so the offline build actually exercises the path
+    # where one post becomes fourteen marks.
+    #
+    # Worth insisting on. Three separate drawing bugs reached a screenshot
+    # because the offline build could not reach the case they were in.
+    seed = list(DEMO_SEED)
+    for got in reports.read_all(DEMO_DIGEST):
+        seed.append((got["kind"], got["place"], None, got["course"], 1,
+                     got["summary"], 6))
+
     events, alerts = [], []
-    for i, row in enumerate(DEMO_SEED, start=1):
+    for i, row in enumerate(seed, start=1):
         kind, place, toward, course, count, summary = row[:6]
         # Staggered by position, unless the row says how old it should be.
         seen = epoch - (row[6] * 60 if len(row) > 6 else i * 90)
@@ -2043,7 +1859,7 @@ def demo() -> dict[str, Any]:
         "mass_within_km": MASS_WITHIN_KM, "mass_least": MASS_LEAST,
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
-        "ollama": ollama.status(), "last_poll": now,
+        "last_poll": now,
         # Counted from the reports' own flags, not from how many markers
         # survive. A track that has arrived or aged off the map was placed
         # perfectly well; calling it unplaced would make the gazetteer look

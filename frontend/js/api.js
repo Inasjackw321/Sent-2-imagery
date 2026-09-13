@@ -41,7 +41,6 @@ export const api = {
   ollama: () => request('/api/ollama', { method: 'GET' }),
   // Names the Ollama model to read with; null lets the backend choose from
   // whatever is installed.
-  trackerModel: (model) => request('/api/tracker/model', { body: { model } }),
   copernicus: () => request('/api/copernicus', { method: 'GET' }),
 
   quakes: ({ west, south, east, north, hours, minMagnitude }) => request(

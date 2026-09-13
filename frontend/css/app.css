@@ -1735,35 +1735,6 @@ body.is-walled { overflow: hidden; }
 /* Is the local model there? Said as a state with a light, not as a sentence
    at the end of a paragraph -- which is where it was, and which is the last
    place anyone looks when the layer is not behaving. */
-.ao-ollama {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 10.5px; color: var(--ink-dim);
-  padding: 4px 7px; border-radius: 7px;
-  background: rgba(255,255,255,.04); border: 1px solid var(--line);
-}
-.ao-led {
-  width: 7px; height: 7px; border-radius: 50%; flex: none;
-  background: var(--ink-faint); box-shadow: 0 0 0 0 transparent;
-  transition: background .2s, box-shadow .2s;
-}
-.ao-ollama.is-on .ao-led {
-  background: #37e0a0; box-shadow: 0 0 7px rgba(55,224,160,.75);
-}
-.ao-ollama.is-off .ao-led { background: #ff8f5e; }
-.ao-ollama.is-asking .ao-led { background: #ffd23b; }
-.ao-ollama.is-on { color: var(--ink); }
-.ao-ollama-what {
-  flex: 1 1 auto; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ao-recheck {
-  flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer;
-  font: inherit; font-size: 10px;
-  background: transparent; color: var(--ink-dim);
-  border: 1px solid var(--line);
-}
-.ao-recheck:hover { color: var(--ink); border-color: rgba(255,255,255,.3); }
-.ao-ollama.is-asking .ao-recheck { opacity: .5; pointer-events: none; }
 
 /* The pictures a report came with. A strip of thumbnails in the popup, each
    opening the full one; a strike held for a day will outlive some of its own
