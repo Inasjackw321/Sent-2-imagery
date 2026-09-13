@@ -1092,3 +1092,73 @@ class TestTheLineAPersonActuallyReads:
         # this class is about -- and it fails silently, as a dull row.
         for kind, _ in reports.KIND_WORDS:
             assert kind in reports.SAYS, kind
+
+
+class TestWhereItIsVersusWhereItIsGoing:
+    """A report gives both, and the position was being read as the destination.
+
+    "Реактивний БпЛА через зону відчуження Чорнобильської АЕС курсом на
+    Житомирщину" says a jet drone is crossing the Chornobyl exclusion zone on
+    its way to Zhytomyr oblast. The place-finding read the whole sentence, so
+    it took Zhytomyr -- the destination -- as the position, and the popup said
+    "over Житомирська область, heading for Житомирська область": a thing drawn
+    where it has not got to yet, claiming to be heading for where it already
+    is.
+    """
+
+    CHORNOBYL = ("Реактивний БпЛА через зону відчуження Чорнобильської АЕС "
+                 "курсом на Житомирщину.")
+
+    def test_the_position_is_where_it_is_not_where_it_is_going(self):
+        got = reports.read(self.CHORNOBYL)
+        assert places.lookup(got["place"])["name"] == "Чорнобиль"
+        assert got["toward"] == "Житомирщину"
+        assert "Чорнобиль" in got["summary"]
+
+    def test_nothing_is_ever_heading_for_where_it_already_is(self):
+        # Compared by what the names RESOLVE to, not by the strings.
+        # "Житомирщину" and "Житомирська область" are one province written two
+        # ways, so a string comparison said they were different.
+        got = reports.read("БпЛА над Житомирщиною курсом на Житомирську область")
+        assert got["toward"] is None
+
+    def test_the_english_word_order_still_works(self):
+        """The first attempt at this cut the sentence at the course phrase.
+
+        That is right for Ukrainian, where the destination comes last, and
+        wrong for English: "UAV heading west past Kaharlyk" puts the course
+        BEFORE the position, so cutting there threw the position away. Only
+        the destination NAME is removed now -- a compass word can never be
+        mistaken for a place, so there is nothing to protect against.
+        """
+        got = reports.read("UAV heading west past Kaharlyk")
+        assert places.lookup(got["place"])["name"] == "Кагарлик"
+        assert got["course"] == "W"
+
+    def test_a_report_with_only_a_destination_is_still_unplaced(self):
+        # It says where something is going and not where it is. Putting it on
+        # the destination claims it has arrived.
+        got = reports.read("БпЛА курсом на Одесу")
+        assert got["place"] is None
+        assert got["toward"] == "Одесу"
+
+    def test_a_name_after_a_lowercase_word_or_two_is_still_found(self):
+        """"через зону відчуження Чорнобильської АЕС" -- the name is third.
+
+        The preposition patterns wanted a capitalised word immediately after
+        the preposition, so every "в районі міста Суми" and "над селищем
+        Козелець" read as no place at all.
+        """
+        for text, wanted in (("БпЛА в районі міста Суми", "Суми"),
+                             ("Шахед над селищем Козелець", "Козелець"),
+                             ("БпЛА через зону відчуження Чорнобильської АЕС",
+                              "Чорнобиль")):
+            got = reports.read(text)
+            assert places.lookup(got["place"])["name"] == wanted, text
+
+    def test_the_reach_is_bounded(self):
+        # The further that reaches, the more likely it is to walk past the
+        # phrase and pick up an unrelated name later in the sentence. Four
+        # lowercase words is past the limit, so nothing is found -- and a
+        # report with no place, no destination and no course is not a report.
+        assert reports.read("БпЛА над одним двома трьома чотирма Харковом") is None

@@ -236,8 +236,21 @@ OBLAST_FULL = re.compile(
 # The prepositions that introduce the place a report is about. Anything after
 # one of these that looks like a proper noun is where this is happening.
 NEAR = re.compile(
-    r"(?:повз|в\s+районі|у\s+районі|поблизу|над|біля|коло"
+    # "через" -- through -- is how these posts describe a corridor: "через
+    # зону відчуження Чорнобильської АЕС" is a drone crossing the Chornobyl
+    # exclusion zone, which is a position and was being read as no position at
+    # all. Without it the report fell through to whatever came after "курсом
+    # на" and the mark went on the destination.
+    r"(?:повз|через|в\s+районі|у\s+районі|поблизу|над|біля|коло"
     r"|в\s+районе|около|близ|возле|мимо|рядом\s+с)\s+"
+    # Up to two lowercase words may stand between the preposition and the
+    # name: "через ЗОНУ ВІДЧУЖЕННЯ Чорнобильської АЕС", "в районі МІСТА Суми",
+    # "над СЕЛИЩЕМ Козелець". The pattern wanted the capital immediately after
+    # the preposition, so every one of those read as no place at all.
+    #
+    # Two, not any number: the further this reaches the more likely it is to
+    # walk past the phrase and pick up an unrelated name later in the sentence.
+    r"(?:[а-яіїєґё'’\-]+\s+){0,2}"
     r"(?P<what>[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]+"
     r"(?:\s+[А-ЯІЇЄҐЁ][А-Яа-яІЇЄҐЁіїєґё'’\-]+)?)")
 
@@ -479,6 +492,13 @@ def variants(name: str) -> list[str]:
     for tail, becomes in (("ої області", "а область"),
                           ("ой области", "ая область"),
                           ("ій області", "а область"),
+                          # The accusative, which is what "курсом на" produces:
+                          # "курсом на Житомирську область". Without it that
+                          # form never resolved, so a report naming the same
+                          # province as both its position and its destination
+                          # could not tell that they were the same place.
+                          ("ську область", "ська область"),
+                          ("скую область", "ская область"),
                           (" області", " область"),
                           (" области", " область")):
         if low.endswith(tail):
@@ -1047,9 +1067,35 @@ def read(text: str) -> dict[str, Any] | None:
     if kind == "unknown":
         return None
 
+    course, toward = (None, None) if kind in ("explosion", "alert") else find_heading(text)
+
+    # Where it IS, which is not where it is going.
+    #
+    # "Реактивний БпЛА через зону відчуження Чорнобильської АЕС курсом на
+    # Житомирщину" says both, and this used to take Zhytomyr oblast -- the
+    # destination -- as the position. The mark went on the destination and the
+    # popup said "over Житомирська область, heading for Житомирська область":
+    # a thing drawn where it has not got to yet, claiming to be heading for
+    # where it already is.
+    #
+    # The fix turned out to be in the patterns rather than here. "через" was
+    # missing from the prepositions, and a name could not be found behind a
+    # lowercase word or two ("через ЗОНУ ВІДЧУЖЕННЯ Чорнобильської АЕС"), so
+    # the report named no position at all and the destination was all that was
+    # left to find.
+    #
+    # Two things were tried here first and are deliberately NOT kept. Cutting
+    # the sentence at the course phrase broke the English word order, where
+    # the course comes first ("UAV heading west past Kaharlyk"). Blanking the
+    # destination name turned out to be unreachable -- no pattern here can
+    # match the name after "курсом на", because AT's preposition class is a
+    # single character and cannot match a two-letter "на". Keeping code that
+    # guards against nothing, with a comment saying what it guards against, is
+    # worse than not having it: the comment is then the only evidence, and it
+    # is wrong. If AT is ever widened to multi-letter prepositions, this is
+    # where the destination would start being read as the position.
     region = find_region(text)
     place = find_place(text, region)
-    course, toward = (None, None) if kind in ("explosion", "alert") else find_heading(text)
     if not place and not toward and not course:
         # A report in a script whose place names this cannot read is still a
         # report, and listing it beats the silence those channels used to get.
@@ -1058,7 +1104,15 @@ def read(text: str) -> dict[str, Any] | None:
         # anything happening.
         if not OTHER_SCRIPT.search(text):
             return None
-    if toward and place and toward.lower() == place.lower():
+    # Heading for where it already is, compared by what the names RESOLVE to
+    # rather than by the strings.
+    #
+    # "Житомирщину" and "Житомирська область" are the same province written
+    # two ways, so a string comparison said they were different and the popup
+    # claimed a journey from a place to itself.
+    if toward and place and (
+            toward.lower() == place.lower()
+            or (_canonical(toward) or "").lower() == (_canonical(place) or "").lower()):
         toward = None
     count = find_count(text)
     # The summary says the place by its own name, not by the case the

@@ -671,8 +671,19 @@ function areaFor(event) {
     //
     // Strikes keep their fill: those are small and the fill is what makes them
     // findable.
-    fillOpacity: event.kind === 'alert' ? 0
-      : event.region_scope === 'located' ? 0.04
+    // A warning fills its region.
+    //
+    // It was an outline only, because a filled BOUNDING BOX was covering a
+    // third of the country in a shape no province has. With the rectangles
+    // gone the fill is the right drawing again -- a province under a warning
+    // reading as a state of that province from across a room is most of what
+    // this layer is for, and an outline alone does not do it at country zoom.
+    //
+    // A track located only to a region is still barely tinted: that outline
+    // says how precisely something was located, not that the province is
+    // under anything, and filling it would say the second.
+    fillOpacity: event.region_scope === 'located' ? 0.05
+      : event.kind === 'alert' ? 0.42
         : event.region_wide ? 0.2 : 0.18,
   };
 
