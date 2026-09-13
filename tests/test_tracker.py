@@ -29,7 +29,7 @@ import time
 
 import pytest
 
-from backend import ollama, tracker
+from backend import ollama, places, tracker
 
 
 class Reply:
@@ -932,20 +932,45 @@ class TestBothSidesOfTheBorder:
             assert channel["countries"].split(",")[0] == "ua", channel["name"]
 
     def test_a_name_is_tried_as_written_before_any_guess_at_its_case(self):
+        # A town small enough that the built-in table has never heard of it,
+        # on purpose: the table now answers first and would take Белгород --
+        # which this used to use -- without asking the gazetteer at all.
+        assert places.lookup("Обояні") is None
         asked = []
 
         def only_nominative(name, countries=""):
             asked.append(name)
-            return {"lat": 50.6, "lon": 36.6, "name": name, "kind": "city",
-                    "category": "place"} if name == "Белгород" else None
+            return {"lat": 51.2, "lon": 36.3, "name": name, "kind": "city",
+                    "category": "place"} if name == "Обоян" else None
 
-        got = tracker.place_event(one(place="Белгороде"), "ru", lookup=only_nominative)
-        assert asked[0] == "Белгороде"
+        got = tracker.place_event(one(place="Обояні"), "ru", lookup=only_nominative)
+        assert asked[0] == "Обояні"
         assert got["placed"] is True
 
+    def test_a_name_the_table_knows_never_reaches_the_gazetteer(self):
+        """The whole point of the table, asserted as a cost.
+
+        Nominatim answers one request a second. A poll that asks it for
+        "Белгород" and "Сумська область" -- names that are three lines away in
+        a dict -- spends a second apiece finding that out, and a night's
+        reports took eleven seconds to place. Every form the reader can derive
+        is checked against the table too, not just the name as written.
+        """
+        asked = []
+
+        def counted(name, countries=""):
+            asked.append(name)
+            return None
+
+        for name in ("Белгород", "Київ", "Сумська область", "Кременчуці",
+                     "Харкові", "Одесі"):
+            got = tracker.place_event(one(place=name), "ua,ru", lookup=counted)
+            assert got["placed"] is True, name
+        assert asked == [], asked
+
     def test_the_demo_reports_from_russia_too(self):
-        places = [e["place"] for e in tracker.demo()["events"]]
-        assert any("Белгород" in str(p) for p in places)
+        named = [e["place"] for e in tracker.demo()["events"]]
+        assert any("Белгород" in str(p) for p in named)
 
 
 class TestNothingMoves:
@@ -2421,3 +2446,101 @@ class TestDemo:
             assert channel["countries"] and channel["region"]
             for code in channel["countries"].split(","):
                 assert len(code) == 2 and code.islower(), channel
+
+
+class TestAWarningThatHasEnded:
+    """"Відбій тривоги" is the opposite of "тривога" and contains it.
+
+    That is the whole bug. The alert pattern matched the all-clear text, so
+    the moment a region stood down, the map raised a fresh warning over it --
+    and kept it there for the full hour, saying exactly the opposite of what
+    the channel said. The lifted warnings in these channels outnumber the
+    raised ones, because every alert eventually ends.
+    """
+
+    def test_the_reader_tells_them_apart(self):
+        from backend import reports
+        assert reports.find_kind("Повітряна тривога у Києві") == "alert"
+        assert reports.find_kind("Відбій тривоги у Києві") == "all_clear"
+        assert reports.find_kind("Отбой воздушной тревоги") == "all_clear"
+        assert reports.find_kind("Відбій загрози") == "all_clear"
+
+    def test_an_all_clear_takes_the_warning_off_the_map(self):
+        tracker.reset()
+        tracker._record(one(kind="alert", place="Київ",
+                            summary="Air raid alert"),
+                        {"id": "c/1", "channel": "c"}, "ua")
+        assert len([e for e in tracker.current()["events"]
+                    if e["kind"] == "alert"]) == 1
+
+        tracker._record(one(kind=tracker.LIFTED, place="Київ",
+                            summary="All clear"),
+                        {"id": "c/2", "channel": "c"}, "ua")
+        assert [e for e in tracker.current()["events"]
+                if e["kind"] == "alert"] == []
+
+    def test_an_all_clear_draws_nothing_of_its_own(self):
+        # It is a report that something stopped. Putting a marker down for it
+        # would be a second warning where there is now none.
+        tracker.reset()
+        tracker._record(one(kind=tracker.LIFTED, place="Київ",
+                            summary="All clear"),
+                        {"id": "c/1", "channel": "c"}, "ua")
+        assert tracker.current()["events"] == []
+
+    def test_it_is_still_worth_reading(self):
+        tracker.reset()
+        tracker._record(one(kind=tracker.LIFTED, place="Київ",
+                            summary="All clear over Kyiv"),
+                        {"id": "c/1", "channel": "c"}, "ua")
+        stream = tracker.current()["alerts"]
+        assert len(stream) == 1
+        assert stream[0]["lifts"] is True
+
+    def test_it_lifts_only_warnings_and_only_nearby_ones(self):
+        """A stand-down in Kyiv does not clear Kharkiv, or unexplode anything.
+
+        Both halves have bitten in other forms: a lift that took everything
+        emptied the map on the first all-clear of the night, and one matched
+        by name alone left warnings up wherever the two channels spelled the
+        oblast differently.
+        """
+        tracker.reset()
+        tracker._record(one(kind="alert", place="Київ", summary="Alert"),
+                        {"id": "c/1", "channel": "c"}, "ua")
+        tracker._record(one(kind="alert", place="Харків", summary="Alert"),
+                        {"id": "c/2", "channel": "c"}, "ua")
+        tracker._record(one(kind="explosion", place="Київ", summary="Boom"),
+                        {"id": "c/3", "channel": "c"}, "ua")
+        tracker._record(one(kind="drone", place="Київ", summary="Drone"),
+                        {"id": "c/4", "channel": "c"}, "ua")
+
+        tracker._record(one(kind=tracker.LIFTED, place="Київ",
+                            summary="All clear"),
+                        {"id": "c/5", "channel": "c"}, "ua")
+
+        left = tracker.current()["events"]
+        kinds = sorted(e["kind"] for e in left)
+        assert kinds == ["alert", "drone", "explosion"]
+        # The one left standing is Kharkiv's, four hundred kilometres away.
+        alert = next(e for e in left if e["kind"] == "alert")
+        assert tracker.separation(alert["lat"], alert["lon"],
+                                  *places.CITIES["Харків"]) < 1
+
+    def test_an_all_clear_nobody_can_place_lifts_nothing(self):
+        # Better a warning that stays up for its hour than every warning in
+        # the country cleared by a stand-down for a town no map knows.
+        tracker.reset()
+        tracker._record(one(kind="alert", place="Київ", summary="Alert"),
+                        {"id": "c/1", "channel": "c"}, "ua")
+        tracker._record(one(kind=tracker.LIFTED, place="Zzzzzborough",
+                            summary="All clear"),
+                        {"id": "c/2", "channel": "c"}, "ua")
+        assert len(tracker.current()["events"]) == 1
+
+    def test_the_lift_is_not_folded_into_an_ordinary_kind(self):
+        # fold_kind() maps the reader's finer kinds onto the seven the map
+        # draws. If LIFTED went through that, it would come out "unknown" and
+        # be drawn as a grey mark -- a warning, at the moment one ended.
+        assert tracker.fold_kind(tracker.LIFTED) == tracker.LIFTED
+        assert tracker.LIFTED not in tracker.KINDS

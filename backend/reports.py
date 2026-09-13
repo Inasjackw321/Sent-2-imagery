@@ -42,6 +42,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from . import places
+
 # ---------------------------------------------------------------------------
 # What kind of thing
 # ---------------------------------------------------------------------------
@@ -74,10 +76,18 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      r"|انفجار|انفجارات|قصف|استهداف|اعتراض"
      r"|פיצוץ|נפילה|יירוט"
      r"|انفجار|اصابت"),
+    # The all-clear, and it must be tried BEFORE "alert" -- "відбій тривоги"
+    # contains "тривога", so the broader pattern would swallow it and draw a
+    # warning at the moment one was lifted. Same ordering reason as jet_drone
+    # before drone.
+    ("all_clear",
+     r"відбій\s+(?:повітряної\s+)?тривог|відбій\s+загроз|отбой\s+"
+     r"(?:воздушной\s+)?тревог|отбой\s+угроз|\ball[- ]clear\b"
+     r"|\balert (?:is )?over\b|\ball clear\b"),
     ("alert",
-     r"повітряна тривога|тривога|відбій|отбой|воздушная тревога"
+     r"повітряна тривога|тривога|воздушная тревога"
      r"|угроза|опасность|ракетная опасность|внимание"
-     r"|\bair (?:raid|alert|alarm)\b|\ball[- ]clear\b|\bthreats?\b"
+     r"|\bair (?:raid|alert|alarm)\b|\bthreats?\b"
      r"|\bdangers?\b|\bwarnings?\b"
      r"|إنذار|انذار|صفارات|تحذير|غارة|غارات"
      r"|אזעקה|התרעה|צבע אדום"
@@ -273,9 +283,16 @@ COUNT = re.compile(
 # The endings Ukrainian puts on a place name in the locative and genitive.
 # Nominatim copes with a lot, but not all, and undoing the commonest few is a
 # few lines here against a whole class of misses.
+# Ukrainian case endings, and what the nominative actually is.
+#
+# "ові" used to map to nothing at all, which turned "Харкові" into "Харк" and
+# "Львові" into "Льв" -- names no gazetteer holds, so every strike reported in
+# either city went unplaced. The locative of a masculine name does not just
+# lose its ending: the stem vowel alternates back, which is why it is "Харків"
+# and not "Харков".
 ENDINGS = (
     ("щині", "щина"), ("ській", "ська"), ("ському", "ське"),
-    ("ові", ""), ("еві", ""), ("аві", "ава"),
+    ("ові", "ів"), ("єві", "їв"), ("аві", "ава"), ("олі", "іль"),
 )
 
 
@@ -289,12 +306,47 @@ def _tidy(name: str) -> str | None:
     return text[:80] or None
 
 
+def _canonical(name: str | None) -> str | None:
+    """The name a place calls itself, if the built-in table knows it.
+
+    Only for display. A report about "Кременчуці" is placed by that spelling
+    -- the table is keyed by it -- but the line a person reads should say
+    "Кременчук". Anything the table has not heard of comes back untouched
+    rather than guessed at.
+    """
+    if not name:
+        return name
+    known = places.lookup(name)
+    return known["name"] if known else name
+
+
 def _nominative(name: str) -> str:
-    """Undo the commonest Ukrainian case endings on a place name."""
+    """Undo the commonest Ukrainian case endings on a place name.
+
+    Conservative on purpose. A wrong nominative is worse than an inflected
+    name, because variants() de-inflects again at lookup time and will try the
+    name as written first -- so leaving it alone costs nothing, and mangling it
+    costs the report its place. "Харкові" becoming "Харк" was exactly that.
+    """
+    # A name the built-in table already knows is left exactly as it is. The
+    # rules below are guesses, and a guess has no business overruling a known
+    # answer: the feminine rule at the bottom turned "Кременчуці" -- which is
+    # in the table, pointing at Kremenchuk -- into "Кременчуца", which is in
+    # nothing, and sent it to Nominatim to fail slowly.
+    if places.lookup(name):
+        return name
     low = name.lower()
     for ending, replacement in ENDINGS:
-        if low.endswith(ending) and len(low) > len(ending) + 2:
-            return name[: -len(ending)] + replacement
+        # >= rather than >, which was one character too strict: "Києві" is
+        # five letters and "єві" is three, so the rule that turns it into
+        # "Київ" never fired and a feminine rule turned it into "Києва".
+        if low.endswith(ending) and len(low) >= len(ending) + 2:
+            made = name[: -len(ending)] + replacement
+            # Nothing shorter than a short name. The guard above counts the
+            # ending, not the stem, so it let "Харкові" through to "Харк".
+            if len(made) < 4:
+                return name
+            return made
     # Locative singular of a feminine name: "в Одесі" -> "Одеса".
     if low.endswith("і") and len(low) > 4:
         return name[:-1] + "а"
@@ -610,6 +662,13 @@ def read(text: str) -> dict[str, Any] | None:
     if toward and place and toward.lower() == place.lower():
         toward = None
     count = find_count(text)
+    # The summary says the place by its own name, not by the case the
+    # sentence happened to put it in: "Explosions reported in Кременчук",
+    # not "... in Кременчуці". The inflected spelling is kept in `place`,
+    # because that is what the gazetteer is asked for and what the table
+    # resolves; this is the line a person reads.
+    said = _canonical(place)
+    named = _canonical(toward)
 
     return {
         "kind": kind,
@@ -619,7 +678,7 @@ def read(text: str) -> dict[str, Any] | None:
         "toward": toward,
         "course": course,
         "count": count,
-        "summary": summarise(kind, place, toward, course, count),
+        "summary": summarise(kind, said, named, course, count),
         # Marked, always. A reading from a handful of regular expressions is
         # not the same claim as one from a model that read the sentence, and
         # the interface says which is which rather than blurring them.

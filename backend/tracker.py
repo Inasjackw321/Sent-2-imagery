@@ -65,7 +65,7 @@ from typing import Any
 
 import requests
 
-from . import config, gazetteer, ollama, reports
+from . import config, gazetteer, ollama, places, reports
 
 log = logging.getLogger("sent2.tracker")
 
@@ -591,10 +591,23 @@ FOLD = {
 }
 
 
+# Not a thing on the map: a warning being lifted.
+#
+# "Відбій тривоги" is the all-clear, and it used to be read as an alert --
+# "відбій тривоги" contains "тривога", so the broader pattern swallowed it and
+# drew a warning at the moment one ended. Worse than a missing feature: the map
+# said a province was under alert precisely when it had stopped being.
+#
+# It is not drawn at all. It takes the warning away.
+LIFTED = "all_clear"
+
+
 def fold_kind(kind: Any) -> str:
     """A kind as this app draws it, whatever the reader called it."""
     name = str(kind or "unknown").lower().strip().replace("-", "_")
     name = FOLD.get(name, name)
+    if name == LIFTED:
+        return name
     return name if name in KINDS else "unknown"
 
 
@@ -952,6 +965,30 @@ def _look(lookup, name: str, region: str | None, countries: str):
     gazetteer spells differently, and a right town found without it beats no
     town at all.
     """
+    # The built-in table first, before anything that costs a request.
+    #
+    # This was the difference between a poll taking eleven seconds and taking
+    # half of one. The region-qualified lookup below is a good idea and it was
+    # running FIRST, so "Волинська область" was being asked for as
+    # "Волинська область, Ukraine" -- a string the built-in table has never
+    # heard of -- and every oblast in the country went to Nominatim at a
+    # second apiece despite being three lines away in a dict.
+    #
+    # Safe to do first precisely because of what is in that table: oblast and
+    # major-city names, which are unambiguous. The region qualifier exists to
+    # tell two small towns of the same name apart, and no entry here is one.
+    # Every de-inflected form is tried against the table too, not just the
+    # name as written. These are dict lookups -- the whole sweep costs less
+    # than a microsecond -- and each one that hits is a second of Nominatim
+    # rate limit not spent. "Кременчуці" is in the table; the spellings the
+    # reader derives from it are not, and without this they went to the wire.
+    for attempt in (name, *reports.variants(name)):
+        built_in = places.lookup(attempt)
+        if built_in:
+            if built_in.get("category") == "boundary":
+                gazetteer.improve_later(attempt, countries)
+            return built_in
+
     if region and region.lower() not in name.lower():
         found = lookup(f"{name}, {region}", countries)
         if found:
@@ -1173,6 +1210,37 @@ def _record(item: dict[str, Any], message: dict[str, Any],
     seen = _when(message)
     placed = place_event(item, countries)
 
+    # An all-clear takes a warning away rather than putting one up.
+    #
+    # It still goes into the stream -- "the warning over Kyiv oblast was
+    # lifted" is worth reading -- but it draws nothing, and it removes the
+    # warnings near where it was reported. Without this an alert sat on the
+    # map for its full hour after being called off, which is the map saying
+    # the opposite of what happened.
+    if placed["kind"] == LIFTED:
+        took_down = 0
+        if placed["placed"]:
+            took_down = lift_alerts(placed["lat"], placed["lon"])
+        _counter += 1
+        _alerts.append({
+            "id": f"AO{_counter:04d}",
+            "source": message.get("id"),
+            "by": item.get("by", "model"),
+            "kind": "alert",
+            "rank": 0,
+            "lifts": True,
+            "summary": placed["summary"] or "All clear",
+            "place": placed.get("place"),
+            "placed": placed["placed"],
+            "why_unplaced": placed.get("why_unplaced"),
+            "channel": message.get("channel"),
+            "region": message.get("region"),
+            "seen": seen,
+            "took_down": took_down,
+            "text": message.get("text", "")[:300],
+        })
+        return False
+
     _counter += 1
     ident = f"AO{_counter:04d}"
     _alerts.append({
@@ -1222,6 +1290,37 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         "link": message.get("link"),
     })
     return True
+
+
+# How near a lifted warning has to be to the one it lifts, in kilometres.
+#
+# Generous, because an oblast is generous: a warning for Kyiv oblast may have
+# been placed at the province centre and the all-clear at its capital, and both
+# are the same warning. Matching on the name alone would miss that; matching
+# on the whole country would lift warnings elsewhere.
+LIFT_WITHIN_KM = 90.0
+
+
+def lift_alerts(lat: float, lon: float, within_km: float = LIFT_WITHIN_KM) -> int:
+    """Take down the warnings near a point. Returns how many were lifted.
+
+    Nothing else is touched. A strike does not stop having happened because a
+    warning was lifted, and a drone reported five minutes ago is still a drone
+    -- only the warning itself is a state that can end.
+    """
+    lifted = [e for e in _events
+              if e["kind"] == "alert"
+              and separation(lat, lon, e["lat"], e["lon"]) <= within_km]
+    if not lifted:
+        return 0
+    gone = {e["id"] for e in lifted}
+    _events[:] = [e for e in _events if e["id"] not in gone]
+    # The reports stay in the stream, marked, because "a warning here was
+    # lifted" is worth reading even though there is nothing left to draw.
+    for alert in _alerts:
+        if alert["id"] in gone:
+            alert["lifted"] = True
+    return len(lifted)
 
 
 def forget_source(post_id: Any) -> int:

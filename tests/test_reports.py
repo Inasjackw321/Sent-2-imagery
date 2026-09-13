@@ -15,7 +15,7 @@ here are the grammar: the shapes that actually appear in these channels, and
 
 from __future__ import annotations
 
-from backend import reports
+from backend import places, reports
 
 
 def read(text):
@@ -241,8 +241,28 @@ class TestWhere:
         # "Сумщиною" to Nominatim gets nothing back.
         assert read("Орлан над Сумщиною")["place"] == "Сумська область"
 
-    def test_a_locative_town_is_put_back_in_the_nominative(self):
-        assert read("Вибухи в Одесі")["place"] == "Одеса"
+    def test_a_locative_town_a_table_knows_is_left_alone_and_read_aloud(self):
+        """The guess does not overrule the answer.
+
+        "Одесі" used to be rewritten to "Одеса" by a blanket feminine rule
+        that turns a trailing "і" into "а". That rule is a guess, and on
+        "Кременчуці" -- masculine -- it produced "Кременчуца", a string no
+        gazetteer has, costing the report its place and a second of
+        Nominatim's rate limit to find that out.
+
+        Now a name the built-in table recognises survives as written, because
+        the table is keyed by these forms and resolves them directly. The
+        nominative still appears where a person reads it.
+        """
+        got = read("Вибухи в Одесі")
+        assert got["place"] == "Одесі"
+        assert places.lookup(got["place"])["name"] == "Одеса"
+        assert "Одеса" in got["summary"]
+
+    def test_a_locative_town_no_table_knows_is_still_guessed_at(self):
+        # The feminine rule is not gone, only outranked. An unknown town still
+        # gets its ending undone, because an inflected name reaches nothing.
+        assert read("Вибухи в Кобеляці")["place"] == "Кобеляца"
 
     def test_the_sea_is_not_a_place_a_marker_goes(self):
         # The gazetteer would refuse the water anyway, but "Чорним" should not
@@ -510,7 +530,13 @@ class TestTheOutputFitsWhatConsumesIt:
         from backend import tracker
         for kind, _ in reports.KIND_WORDS:
             folded = tracker.fold_kind(kind)
-            assert folded in tracker.KINDS, f"{kind} -> {folded}"
+            # LIFTED is the one kind that is not drawn on purpose. "Відбій
+            # тривоги" is a report that a warning has ENDED, and the reader
+            # has to tell it apart from "тривога" -- which it contains -- or
+            # the map raises an alert at the moment one is lifted. It goes to
+            # tracker.lift_alerts() instead of to a marker.
+            assert folded in tracker.KINDS or folded == tracker.LIFTED, (
+                f"{kind} -> {folded}")
             # And not silently thrown away: a kind the reader identified must
             # not come out the other side as "unknown".
             assert folded != "unknown" or kind == "unknown", \

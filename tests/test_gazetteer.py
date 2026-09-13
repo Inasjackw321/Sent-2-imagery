@@ -380,3 +380,99 @@ class TestPoliteness:
         gazetteer._last_call = time.time() - 99
         with pytest.raises(gazetteer.GazetteerError, match="rate limiting"):
             gazetteer.find("Sumy", "ua")
+
+
+class TestTheBuiltInTableComesFirst:
+    """What makes the map fill in at once instead of over a minute.
+
+    Nominatim is rate-limited to one request a second, by its own policy and
+    by this module honouring it. That is fine for a place nobody has asked
+    about and absurd for "Харків", which is asked for every poll and has not
+    moved since 1654. Measured: placing a night's reports went from 14.5s to
+    0.0s once the table answered first.
+    """
+
+    def setup_method(self):
+        gazetteer.forget()
+        # Nothing here may reach the network: the outline worker is a real
+        # background thread and it would otherwise spend the suite's time
+        # waiting on a host this environment cannot reach anyway.
+        self.asked = []
+        self.original = gazetteer._ask
+        gazetteer._ask = self.watched
+
+    def teardown_method(self):
+        gazetteer._ask = self.original
+
+    def watched(self, name, countries=""):
+        self.asked.append(name)
+        return None
+
+    def test_a_known_name_is_answered_without_a_request(self):
+        got = gazetteer.find("Харків", "ua")
+        assert got is not None
+        assert got["name"] == "Харків"
+        assert self.asked == []
+
+    def test_an_unknown_name_still_goes_to_nominatim(self):
+        # The table is a cache that ships with the app, not a different way of
+        # deciding where things are. Anything not in it behaves as before.
+        gazetteer.find("Обоян", "ru")
+        assert self.asked == ["Обоян"]
+
+    def test_a_learned_outline_beats_the_built_in_centre(self):
+        """Otherwise the background upgrade is thrown away every poll.
+
+        The table holds a centre and an extent -- enough to put a mark down,
+        not the shape of the province. Once a real boundary has been fetched
+        it has to win, or find() goes on returning the circle forever and the
+        worker's work is invisible.
+        """
+        real = {"lat": 51.0, "lon": 34.2, "name": "Сумська область",
+                "kind": "administrative", "category": "boundary",
+                "bbox": [50.0, 52.0, 33.0, 35.4],
+                "shape": {"type": "Polygon", "coordinates": [[[33, 50]]]}}
+        gazetteer.remember("Сумська область", "ua", real)
+        got = gazetteer.find("Сумська область", "ua")
+        assert got["shape"] == real["shape"]
+
+    def test_a_region_from_the_table_queues_its_outline(self):
+        # Asserted through improve_later rather than through the queue length:
+        # the worker drains the queue in the background, so its length a
+        # moment later is a race, while "has this already been asked for" is
+        # not. False means find() got there first.
+        gazetteer.find("Сумська область", "ua")
+        assert gazetteer.improve_later("Сумська область", "ua") is False
+
+    def test_a_city_from_the_table_does_not(self):
+        # A strike in a town is a point in it. Drawing the municipal boundary
+        # round one would claim the damage followed the council's border, and
+        # it would spend the rate limit doing so.
+        gazetteer.find("Харків", "ua")
+        assert gazetteer.improve_later("Харків", "ua") is True
+
+    def test_the_same_outline_is_not_queued_twice(self):
+        gazetteer.find("Сумська область", "ua")
+        for _ in range(5):
+            assert gazetteer.improve_later("Сумська область", "ua") is False
+
+    def test_queueing_an_outline_does_not_block(self):
+        # The whole point: the mark is on the map from the built-in centre
+        # while the boundary is still being waited for.
+        started = time.time()
+        for name in ("Сумська область", "Харківська область",
+                     "Київська область", "Полтавська область"):
+            gazetteer.find(name, "ua")
+        assert time.time() - started < 0.5
+
+    def test_the_outline_worker_gives_way_to_the_foreground(self):
+        # It shares the one-a-second gate. Without a pause of its own it takes
+        # every other slot, and a report waiting to be placed queues behind a
+        # boundary nobody is looking at yet.
+        assert gazetteer.IMPROVE_EVERY >= 1.0
+
+    def test_forgetting_clears_what_was_queued_too(self):
+        gazetteer.find("Сумська область", "ua")
+        assert gazetteer.improve_later("Сумська область", "ua") is False
+        gazetteer.forget()
+        assert gazetteer.improve_later("Сумська область", "ua") is True

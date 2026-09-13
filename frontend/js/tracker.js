@@ -1114,7 +1114,13 @@ function paintDock() {
     const kind = feed?.kinds?.[item.kind] ?? {};
     const mins = Math.max(0, Math.round(Date.now() / 1000 - item.seen) / 60);
     const row = el('button', {
-      class: `ao-row${item.placed ? '' : ' is-unplaced'}`,
+      // A warning that was lifted, and the all-clear that lifted it, are
+      // both worth keeping in the stream and neither is on the map. Marked
+      // rather than removed: "the warning over Kyiv oblast ended" is a thing
+      // that happened and reads as news.
+      class: `ao-row${item.lifts ? ' is-lifts' : ''}`
+        + `${item.lifted ? ' is-over' : ''}`
+        + `${item.placed ? '' : ' is-unplaced'}`,
       type: 'button',
       title: item.text ?? '',
       onclick: () => goTo(item),

@@ -39,7 +39,7 @@ from typing import Any
 
 import requests
 
-from . import config
+from . import config, places
 
 # Nominatim's usage policy is one request per second for a service like this.
 MIN_INTERVAL = 1.05
@@ -288,7 +288,40 @@ def find(name: str, countries: str = "") -> dict[str, Any] | None:
     name = " ".join(str(name or "").split())
     if len(name) < 2:
         return None
+
     key = _key(name, countries)
+
+    # A boundary learned earlier beats the built-in centre.
+    #
+    # Checked first so the upgrade below is not thrown away: once Nominatim
+    # has given a real outline for an oblast it is in here, and the built-in
+    # entry -- which is a centre and an extent and no shape at all -- must not
+    # go on shadowing it.
+    with _lock:
+        learned = _known.get(key)
+        if learned and learned.get("shape"):
+            return dict(learned)
+
+    # The places these reports name every night, without asking anybody.
+    #
+    # This is the whole of "make it fast". Nominatim is correct and it is
+    # rate-limited to one request a second, so twenty reports took fourteen
+    # and a half seconds to place -- measured -- and the map filled in one
+    # mark at a time over a minute, which reads as a layer that does not work.
+    #
+    # The names are not arbitrary: the same two dozen oblasts and the same
+    # hundred cities, every night. A request for "Харків" is a round trip to
+    # be told something that has not moved since 1654. See backend/places.py.
+    known = places.lookup(name)
+    if known:
+        # A region drawn from its extent is a circle over an oblast, which is
+        # right enough to act on and not what the province looks like. So the
+        # real outline is asked for in the background, at the rate limit,
+        # behind a mark that is already on the map. Nothing waits for it and
+        # the next poll draws the boundary.
+        if known.get("category") == "boundary":
+            improve_later(name, countries)
+        return known
 
     with _lock:
         if key in _known:
@@ -310,6 +343,76 @@ def find(name: str, countries: str = "") -> dict[str, Any] | None:
     return dict(place) if place else None
 
 
+# Names whose real boundary is worth having, and the one worker that fetches
+# them. A queue rather than a thread each: they all go through the same
+# one-a-second gate, so more than one worker would only queue harder.
+_wanted: list[tuple[str, str]] = []
+_asked_for_shapes: set[str] = set()
+_improver: threading.Thread | None = None
+
+
+def improve_later(name: str, countries: str) -> bool:
+    """Ask for a region's real outline in the background. Never blocks.
+
+    Returns whether it was queued -- False if it is already queued, already
+    fetched, or already known with a shape.
+    """
+    global _improver
+    key = _key(name, countries)
+    with _lock:
+        if key in _asked_for_shapes:
+            return False
+        learned = _known.get(key)
+        if learned and learned.get("shape"):
+            return False
+        _asked_for_shapes.add(key)
+        _wanted.append((name, countries))
+        running = _improver is not None and _improver.is_alive()
+    if not running:
+        _improver = threading.Thread(target=_improve, name="gazetteer-shapes",
+                                     daemon=True)
+        _improver.start()
+    return True
+
+
+# How long the outline worker waits between requests, on top of the shared
+# one-a-second gate.
+#
+# It shares that gate with the foreground, so without this it takes every
+# other slot and a report waiting to be placed queues behind a boundary
+# nobody is looking at yet. The mark matters and the outline does not, so the
+# outline gives way.
+IMPROVE_EVERY = 3.0
+
+
+def _improve() -> None:
+    """Drain the queue, one rate-limited lookup at a time, unhurriedly."""
+    while True:
+        with _lock:
+            if not _wanted:
+                return
+            name, countries = _wanted.pop(0)
+        # Let anything urgent go first.
+        time.sleep(IMPROVE_EVERY)
+        try:
+            found = _ask(name, countries)
+        except GazetteerError:
+            # It is down, or it is rate limiting. The mark is already on the
+            # map from the built-in centre and stays there; the outline can
+            # wait for another night.
+            continue
+        if not found or not found.get("shape"):
+            continue
+        with _lock:
+            _known[_key(name, countries)] = found
+
+
+def shapes_wanted() -> int:
+    """How many outlines are still queued, for the panel to say."""
+    with _lock:
+        return len(_wanted)
+
+
 def remember(name: str, countries: str, place: dict[str, Any] | None) -> None:
     """Put an answer in without asking for it. For seeding and for tests."""
     with _lock:
@@ -328,4 +431,9 @@ def forget() -> None:
     with _lock:
         _known.clear()
         _missed_at.clear()
+        # And what has been asked for, or a test that clears the cache and
+        # looks up the same region again would find the outline request
+        # already "done" and never made.
+        _wanted.clear()
+        _asked_for_shapes.clear()
         _calls = 0

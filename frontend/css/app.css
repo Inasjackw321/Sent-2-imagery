@@ -1779,3 +1779,18 @@ body.is-walled { overflow: hidden; }
 .ao-shot img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .ao-shot.is-gone { display: none; }
 .ao-shots-note { color: var(--ink-faint); font-size: 9.5px; margin: 0 0 4px; }
+
+/* A warning that has been called off, and the all-clear that called it.
+
+   An all-clear used to be read as an alert -- "відбій тривоги" contains
+   "тривога" -- so lifting a warning drew one, and the map said a province was
+   under alert at precisely the moment it stopped being. Now it takes the
+   warning down, and both rows stay in the stream because the ending is news
+   too. */
+.ao-row.is-over .ao-row-what {
+  text-decoration: line-through;
+  text-decoration-color: rgba(143, 168, 216, .5);
+  opacity: .7;
+}
+.ao-row.is-lifts i { background: #37e0a0 !important; }
+.ao-row.is-lifts .ao-row-what { color: var(--ink-dim); }
