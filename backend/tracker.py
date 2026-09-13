@@ -67,7 +67,7 @@ from typing import Any
 
 import requests
 
-from . import config, gazetteer, places, reports
+from . import config, gazetteer, neptun, places, reports
 
 log = logging.getLogger("sent2.tracker")
 
@@ -241,6 +241,15 @@ KINDS = {
                   "motion": "track", "rank": 4},
     "missile":   {"colour": "#a855f7", "label": "Missile",
                   "motion": "track", "rank": 6},
+    # A guided bomb, and its own kind rather than a missile.
+    #
+    # NEPTUN reports these separately and it is right to. A KAB is released
+    # from an aircraft near the line and glides tens of kilometres, so a KAB
+    # mark says something different about where the danger is and how long
+    # there is: flattening it into "missile" would draw a hundreds-of-
+    # kilometres weapon where a tens-of-kilometres one was reported.
+    "bomb":      {"colour": "#ff8a3b", "label": "Guided bomb",
+                  "motion": "track", "rank": 5},
     # Kept separate, and deliberately. A crewed aircraft is neither a drone nor
     # a missile: "тактична авіація" means aircraft are up, which is a warning
     # about what may follow rather than about something already inbound, and
@@ -1441,6 +1450,204 @@ def _remember_sources(seen_now: dict[str, dict[str, Any]]) -> None:
         _sources.update(seen_now)
 
 
+# What the second source is called in the panel. Their terms ask for a
+# visible link beside the data, and naming the source is the least of that;
+# ATTRIBUTION below carries the link itself.
+NEPTUN_SOURCE = "neptun.in.ua"
+
+
+def take_neptun() -> tuple[int, int]:
+    """Read NEPTUN once, and record what it has. Returns (tracks, alerts).
+
+    Everything it gives arrives already placed, so none of it goes near the
+    gazetteer or the text reader -- which is the point of having it.
+    """
+    # Fetched BEFORE anything is cleared. Clearing first and then failing
+    # would empty the map on a blip, which is the worst possible way for a
+    # second source to behave: the first source is fine and the screen goes
+    # blank anyway.
+    tracks = neptun.threats()
+    declared = neptun.alerts()
+    now = time.time()
+
+    with _lock:
+        # Their track ids are stable across updates, so a track that has moved
+        # replaces its own mark instead of adding a second one. Everything
+        # NEPTUN gave last time and has not given this time is gone: their
+        # snapshot is the whole state, not a delta, so a track absent from it
+        # has ended.
+        _events[:] = [e for e in _events if e.get("by") != "neptun"]
+        _alerts[:] = [a for a in _alerts if a.get("by") != "neptun"]
+
+    drawn = 0
+    for track in tracks:
+        if _is_dismissed({"id": f"NP-{track['id']}", "source": track["id"]}):
+            continue
+        drawn += 1
+        _record_neptun(track, now)
+
+    raised = 0
+    for alert in declared:
+        ident = f"NP-alert-{alert.get('key') or alert['name']}"
+        if _is_dismissed({"id": ident, "source": ident}):
+            continue
+        raised += 1
+        _record_neptun_alert(alert, ident, now)
+    return drawn, raised
+
+
+def _record_neptun(track: dict[str, Any], now: float) -> None:
+    """One NEPTUN track, as a mark."""
+    ident = f"NP-{track['id']}"
+    area_only = track["area_only"]
+    # Their outline for the region, where this is a region rather than a
+    # place. This is what finally gives a region mark its real shape without
+    # a geocoding request: their alert keys index the same boundary file.
+    shape = neptun.shape_for(track["region"]) if area_only else None
+    here = places.lookup(track["region"]) if area_only else None
+
+    _events.append({
+        "id": ident,
+        "source": track["id"],
+        "by": "neptun",
+        "kind": track["kind"],
+        "cause": None,
+        "place": track["place"],
+        "place_match": track["place"],
+        "place_category": "boundary" if area_only else "place",
+        "region": track["region"],
+        # An areaOnly track knows its province and nothing finer, so the
+        # province IS its oblast for the purpose of raising a warning over it.
+        "oblast": track["region"] if area_only else None,
+        "lat": track["lat"], "lon": track["lon"],
+        "origin_lat": track["lat"], "origin_lon": track["lon"],
+        "heading": track["heading"],
+        "course": track["heading"],
+        # "stated", because that is what this map's vocabulary calls a course
+        # that came from the source rather than from an inference -- and it is
+        # what draws a SOLID arrow rather than a hollow one. Inventing a
+        # fifth value here would have fallen through to the hollow drawing,
+        # marking somebody else's stated course as this app's guess.
+        "course_from": None if track["heading"] is None else "stated",
+        # No destination, ever. They give a course and a speed; turning that
+        # into "arrives in eleven minutes" would be this app's arithmetic
+        # presented as their data.
+        "toward": None, "dest_lat": None, "dest_lon": None, "dest_km": None,
+        "count": track["count"],
+        "motion": MOTION.get(track["kind"], "track"),
+        "placed": True,
+        "shape": shape,
+        "bbox": list(here["bbox"]) if here else None,
+        # Their own uncertainty, where they give one, which is a better number
+        # than any default: it is how far out they think the position is.
+        # Every event carries an area -- it is what sizes the mark -- so a
+        # None here left a mark with no size at all.
+        "area_km": (area_km(here) if here
+                    else max(2.0, track["uncertainty_km"] or 6.0)),
+        # "There is no dot." An areaOnly track is drawn as the region it
+        # names, never as a point in it.
+        "region_scope": "located" if area_only else None,
+        "region_wide": False,
+        "area_only": area_only,
+        # Surveillance rather than a signal to hide. Drawn quietly.
+        "advisory": track["advisory"],
+        "confidence": track["confidence"],
+        "uncertainty_km": track["uncertainty_km"],
+        "summary": track["summary"] or track["title"] or track["kind"],
+        "seen": now,
+        "channel": NEPTUN_SOURCE,
+        "text": track["summary"] or "",
+        "photos": [], "link": neptun.BASE,
+        "age_minutes": 0.0,
+    })
+    _alerts.append({
+        "id": ident, "source": track["id"], "by": "neptun",
+        "kind": track["kind"], "cause": None,
+        "rank": KINDS[track["kind"]]["rank"],
+        "summary": track["summary"] or track["title"] or track["kind"],
+        "place": track["place"], "placed": True, "why_unplaced": None,
+        "channel": NEPTUN_SOURCE, "region": track["region"], "seen": now,
+        "text": track["summary"] or "", "photos": [], "link": neptun.BASE,
+        "advisory": track["advisory"],
+    })
+
+
+def _record_neptun_alert(alert: dict[str, Any], ident: str, now: float) -> None:
+    """One official alert from NEPTUN, as a warning over its region."""
+    name = alert["name"]
+    shape = neptun.shape_for(alert.get("key")) or neptun.shape_for(name)
+    here = places.lookup(name) or places.lookup(alert.get("oblast") or "")
+    if not here and not shape:
+        # Nowhere to draw it. Listed rather than dropped, because "an alert
+        # was declared for a region this cannot place" is a visible outcome.
+        _alerts.append({
+            "id": ident, "source": ident, "by": "neptun", "kind": "alert",
+            "cause": None, "rank": KINDS["alert"]["rank"],
+            "summary": f"Air alert — {name}", "place": name, "placed": False,
+            "why_unplaced": f'"{name}" is not a region this map knows',
+            "channel": NEPTUN_SOURCE, "region": alert.get("oblast"),
+            "seen": now, "text": "", "photos": [], "link": neptun.BASE,
+        })
+        return
+
+    lat = here["lat"] if here else _middle(shape)[0]
+    lon = here["lon"] if here else _middle(shape)[1]
+    _events.append({
+        "id": ident, "source": ident, "by": "neptun", "kind": "alert",
+        "cause": None,
+        "place": name, "place_match": name, "place_category": "boundary",
+        "region": alert.get("oblast"), "oblast": None,
+        "lat": lat, "lon": lon, "origin_lat": lat, "origin_lon": lon,
+        "heading": None, "course": None, "course_from": None,
+        "toward": None, "dest_lat": None, "dest_lon": None, "dest_km": None,
+        "count": 1, "motion": "still", "placed": True,
+        "shape": shape,
+        "bbox": list(here["bbox"]) if here else None,
+        "area_km": area_km(here) if here else None,
+        "region_scope": "covers" if shape else None,
+        "region_wide": bool(shape),
+        "official": True,
+        "summary": f"Air alert — {name}",
+        "seen": now, "channel": NEPTUN_SOURCE, "text": "",
+        "photos": [], "link": neptun.BASE, "age_minutes": 0.0,
+    })
+    _alerts.append({
+        "id": ident, "source": ident, "by": "neptun", "kind": "alert",
+        "cause": None, "rank": KINDS["alert"]["rank"],
+        "summary": f"Air alert — {name}", "place": name, "placed": True,
+        "why_unplaced": None, "channel": NEPTUN_SOURCE,
+        "region": alert.get("oblast"), "seen": now, "text": "",
+        "photos": [], "link": neptun.BASE, "official": True,
+    })
+
+
+def _middle(shape: Any) -> tuple[float, float]:
+    """The middle of a polygon's extent. Only used when nothing else knows."""
+    lats: list[float] = []
+    lons: list[float] = []
+
+    def walk(part: Any) -> None:
+        if (isinstance(part, (list, tuple)) and len(part) == 2
+                and all(isinstance(n, (int, float)) for n in part)):
+            lons.append(float(part[0]))
+            lats.append(float(part[1]))
+        elif isinstance(part, (list, tuple)):
+            for inner in part:
+                walk(inner)
+
+    walk(shape.get("coordinates") if isinstance(shape, dict) else None)
+    if not lats:
+        return (48.4, 31.2)
+    return ((min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2)
+
+
+def _poll_state(trouble: list[str], feed_state: str) -> str:
+    """What the panel says the poll did. One place, so the two exits agree."""
+    said = f"reading {len(CHANNELS)} channels and {NEPTUN_SOURCE}"
+    parts = [*trouble[:1], *([feed_state] if feed_state else []), said]
+    return "; ".join(parts)
+
+
 def poll() -> dict[str, Any]:
     """Read the channels once, and turn anything new into events.
 
@@ -1513,9 +1720,43 @@ def poll() -> dict[str, Any]:
             fresh.append(post)
 
     now = time.time()
+    # And the second source, which fails independently of the first.
+    #
+    # The channels are prose that has to be read and geocoded, and every step
+    # of that can be wrong. NEPTUN has already done that work and hands over
+    # coordinates, so a night where the reader misses a name is a night where
+    # this still has the track -- and vice versa, since they carry different
+    # things. That independence is the whole reason to have two.
+    feed_state = ""
+    try:
+        drawn, declared = take_neptun()
+        seen_now[NEPTUN_SOURCE] = {
+            "region": "Ukraine", "posts": drawn + declared, "fresh": drawn + declared,
+            "read": drawn + declared, "placed": drawn + declared, "problem": None,
+        }
+    except neptun.TooSoon:
+        # Asked again inside their interval. Their snapshot is CDN-cached and
+        # they ask for one poll every five seconds at most, so the answer is
+        # to keep what is already drawn rather than to ask again -- and NOT to
+        # clear it, which take_neptun() is careful about.
+        kept = sum(1 for e in _events if e.get("by") == "neptun")
+        seen_now[NEPTUN_SOURCE] = {
+            "region": "Ukraine", "posts": kept, "fresh": 0, "read": kept,
+            "placed": kept, "problem": None,
+        }
+    except neptun.NeptunError as exc:
+        feed_state = str(exc)
+        seen_now[NEPTUN_SOURCE] = {
+            "region": "Ukraine", "posts": 0, "fresh": 0, "read": 0,
+            "placed": 0, "problem": str(exc)[:120],
+        }
     _remember_sources(seen_now)
+
     if not fresh:
-        _state = "; ".join(trouble[:2]) if trouble else "nothing new"
+        # Nothing new from the channels. Not "nothing new" any more: the feed
+        # was still read, and on a quiet night that is the whole of what is on
+        # the map.
+        _state = _poll_state(trouble, feed_state)
         _last_poll = now
         return current()
 
@@ -1573,10 +1814,7 @@ def poll() -> dict[str, Any]:
         if post["id"] in on_map:
             tally["placed"] += 1
 
-    _state = f"reading {len(CHANNELS)} channels"
-    if trouble:
-        _state = "; ".join([*trouble[:1], _state])
-
+    _state = _poll_state(trouble, feed_state)
     _last_poll = now
     return current()
 
@@ -1824,6 +2062,11 @@ def current() -> dict[str, Any]:
         # it to ask again in a couple of seconds instead of waiting out its
         # whole minute, which is what makes a first open feel immediate: the
         # empty answer arrives at once and fills in as the poll lands.
+        # NEPTUN's credit, carried WITH the data rather than hard-coded in
+        # the page. Their one condition of use is a visible link beside the
+        # map, and putting it in the payload means the marks and the credit
+        # cannot get separated -- a page that has the one has the other.
+        "attribution": neptun.ATTRIBUTION,
         # How many marks a person has taken off by hand. Said out loud,
         # because "the map is missing things" and "I hid those" look identical
         # from across a room and only one of them is a bug.
@@ -1898,6 +2141,31 @@ DEMO_WARNINGS = (
     "Lipetsk Oblast Drone Alert",
     "Voronezh Oblast Missile Alert",
     "Republic of Tatarstan Drone Alert",
+)
+
+# NEPTUN-shaped tracks, in their documented shape, read by the same reader
+# the live path uses. Two states that are easy to draw wrongly and impossible
+# to check without them: an advisory (observed, not an alarm) and an areaOnly
+# track (a region centroid, which is not a place).
+DEMO_NEPTUN = (
+    {"id": "demo_np_1", "type": "uav", "title": "Шахед",
+     "region": "Полтавська область", "locality": "Миргород",
+     "lat": 49.9667, "lon": 33.6083, "heading": 300, "count": 3,
+     "status": "active", "confidenceLevel": "high", "uncertaintyKm": 5,
+     "explanationShort": "БпЛА курсом на північний захід", "advisory": False,
+     "areaOnly": False},
+    {"id": "demo_np_2", "type": "mig31k", "title": "МіГ-31К",
+     "region": "Брянская область", "lat": 53.24, "lon": 34.36,
+     "status": "active", "advisory": True, "areaOnly": False,
+     "explanationShort": "Зліт МіГ-31К — спостереження, не сигнал ховатися"},
+    {"id": "demo_np_3", "type": "missile", "region": "Одеська область",
+     "lat": 46.60, "lon": 30.20, "status": "active", "areaOnly": True,
+     "positionQuality": "approx",
+     "explanationShort": "Ракета на Одещину — названо лише область"},
+    {"id": "demo_np_4", "type": "kab", "title": "КАБ",
+     "region": "Харківська область", "locality": "Вовчанськ",
+     "lat": 50.2894, "lon": 36.9436, "heading": 200, "status": "active",
+     "explanationShort": "КАБ у напрямку Вовчанська"},
 )
 
 DEMO_SEED = [
@@ -2198,6 +2466,28 @@ def demo() -> dict[str, Any]:
     events += made
     alerts += [derived_row(e) for e in made]
 
+    # A NEPTUN-shaped track and an areaOnly one, read by the same reader the
+    # live path uses. The offline build could otherwise show neither, and
+    # both are the states most easily got wrong: an advisory drawn as an
+    # alarm, and a region centroid drawn as a place.
+    for raw in DEMO_NEPTUN:
+        track = neptun.read_threat(raw)
+        if track:
+            _record_neptun(track, epoch - 240)
+    with _lock:
+        # Aged like everything else in here. Without this they sat on the map
+        # through the demo's whole cycle while the seeded marks came and went,
+        # so the one thing the demo exists to show -- things arriving and
+        # expiring -- was false for a quarter of what it drew.
+        made_np = [project(e, now) for e in _events
+                   if e.get("by") == "neptun" and _alive(e, now)]
+        events += made_np
+        drawn_np = {e["id"] for e in made_np}
+        alerts += [a for a in _alerts
+                   if a.get("by") == "neptun" and a["id"] in drawn_np]
+        _events[:] = [e for e in _events if e.get("by") != "neptun"]
+        _alerts[:] = [a for a in _alerts if a.get("by") != "neptun"]
+
     # And the same dismissals. Without this the button was inert offline.
     with _lock:
         events = hide_dismissed(events, alerts)
@@ -2208,6 +2498,7 @@ def demo() -> dict[str, Any]:
         "events": events, "count": len(events),
         "alerts": sorted(alerts, key=lambda a: a["seen"], reverse=True),
         "state": "demo — synthetic reports",
+        "attribution": neptun.ATTRIBUTION,
         "dismissed": len(_dismissed),
         "keep_minutes": KEEP_MINUTES, "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,

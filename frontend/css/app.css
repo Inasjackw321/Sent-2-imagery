@@ -1863,3 +1863,28 @@ body.is-walled { overflow: hidden; }
   stroke-dasharray: 2 5;
   opacity: .5;
 }
+
+/* NEPTUN's credit, which their terms require beside the data. */
+.ao-credit {
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--dim);
+  min-width: 0;
+}
+.ao-credit-link {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .28);
+}
+.ao-credit-link:hover { border-bottom-color: var(--ink); }
+.ao-credit-caveat { display: block; margin-top: 3px; opacity: .75; }
+
+/* Advisory: observed, not a reason to take cover. Same colour, no shouting. */
+.ao-pin.is-advisory .ao-glyph { opacity: .62; }
+.ao-pin.is-advisory .ao-label {
+  opacity: .7;
+  font-style: italic;
+}

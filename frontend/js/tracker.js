@@ -372,14 +372,22 @@ function glyph(event, colour, facing) {
 /** One marker: its glyph, and its label underneath. */
 function icon(event, facing) {
   const colour = colourOf(event);
-  const loud = event.kind === 'alert' || event.kind === 'explosion';
+  // "Surveillance, not a signal to hide." NEPTUN's words about advisory
+  // tracks, and their argument is the right one: a MiG-31K taking off is
+  // worth recording and is not a reason to take cover, and drawing it like
+  // one teaches people to ignore the signal that matters. So it keeps its
+  // colour and loses the pulsing halo and the label plate.
+  const loud = (event.kind === 'alert' || event.kind === 'explosion')
+    && !event.advisory;
   return L.divIcon({
     // Warnings and strikes are the two things somebody scanning this map is
     // looking for, and at the zoom it gets used at a 24-pixel glyph in a
     // colour was disappearing into the basemap. They get a pulsing halo
     // behind them and a label with a background, which is the difference
     // between something you can find and something you have to hunt for.
-    className: `ao-pin${loud ? ` is-loud is-${event.kind}` : ''}`,
+    className: `ao-pin${loud ? ` is-loud is-${event.kind}` : ''}`
+      + (event.advisory ? ' is-advisory' : '')
+      + (event.area_only ? ' is-area-only' : ''),
     // The label says what is being reported. An opaque identifier told the
     // reader nothing they could not see, and made them open a popup to find
     // out whether a triangle was a drone or a missile.
@@ -468,6 +476,25 @@ function popup(event) {
       + 'be anywhere in, not an area under attack.');
   }
 
+  if (event.advisory) {
+    rows.push('<b>Advisory</b> — reported as something observed, not as a '
+      + 'reason to take cover. NEPTUN marks these so they are not read as an '
+      + 'alarm; a MiG-31K taking off is the usual case.');
+  }
+  if (event.area_only) {
+    // NEPTUN's sharpest caveat, said in full because the mark looks like any
+    // other region mark and the difference is invisible.
+    rows.push('<b>Region only — there is no point.</b> The sources named this '
+      + 'region and nothing finer, so the position is the middle of the '
+      + 'region rather than anywhere anybody reported. No course, no '
+      + 'distance, and nothing here is extrapolated from it.');
+  }
+  if (event.by === 'neptun') {
+    rows.push('From <b>NEPTUN</b>'
+      + (event.confidence ? ` — confidence ${escapeHtml(event.confidence)}` : '')
+      + (event.uncertainty_km ? `, ±${Math.round(event.uncertainty_km)} km` : '')
+      + '.');
+  }
   if (event.derived) {
     rows.push('<b>Not reported as a warning.</b> Derived from the '
       + `${event.from_marks ?? 0} report(s) placed inside this region.`);
@@ -1111,7 +1138,13 @@ function buildDock() {
       el('details', { class: 'ao-sources' },
         el('summary', {}, 'Channels'),
         el('div', { id: 'trackerSources' })),
-      el('div', { class: 'ao-note', id: 'trackerNote' }, '')));
+      el('div', { class: 'ao-note', id: 'trackerNote' }, ''),
+      // NEPTUN's credit. Their only condition of use is a visible link beside
+      // the data, so it is a fixed part of the panel rather than a sentence
+      // in the note -- a note gets rewritten, and this must not quietly go
+      // with it. The caveat beside it is theirs too, and it belongs on
+      // anything somebody might use to decide whether to take cover.
+      el('div', { class: 'ao-credit', id: 'trackerCredit' })));
   paintDock();
 }
 
@@ -1143,6 +1176,21 @@ function toggle() {
 function tally() {
   const got = feed?.reports ?? { placed: 0, unplaced: 0 };
   return { ...got, total: (got.placed ?? 0) + (got.unplaced ?? 0) };
+}
+
+/** NEPTUN's link and caveat, which their terms require beside the data. */
+function paintCredit() {
+  const host = $('#trackerCredit');
+  const said = feed?.attribution;
+  if (!host || !said?.url) return;
+  if (host.dataset.url === said.url) return;
+  host.dataset.url = said.url;
+  host.replaceChildren(
+    el('a', {
+      href: said.url, target: '_blank', rel: 'noopener noreferrer',
+      class: 'ao-credit-link',
+    }, said.english ?? said.text ?? 'NEPTUN'),
+    el('span', { class: 'ao-credit-caveat' }, said.caveat ?? ''));
 }
 
 function paintDock() {
@@ -1227,6 +1275,7 @@ function paintDock() {
     ? [el('div', { class: 'ao-row-more' }, `+${hidden} older`)]
     : []));
 
+  paintCredit();
   paintSources();
 
   // One delegated listener for the whole list, rebound each paint because

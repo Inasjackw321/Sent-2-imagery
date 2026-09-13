@@ -266,10 +266,18 @@ class TestKindsAndHowTheyLast:
             assert tracker.MOTION[name] == "still", name
         assert set(tracker.NOT_AIRBORNE) == {"explosion", "alert"}
 
-    def test_the_kinds_are_the_four_differences_worth_drawing(self):
-        # Seven, down from ten. Three of them are not things in the air.
+    def test_the_kinds_are_the_differences_worth_drawing(self):
+        # Eight. Written out rather than derived, because which distinctions
+        # this map makes is a decision somebody took and not whatever happens
+        # to be in the table.
+        #
+        # "bomb" joined when NEPTUN's feed did. A KAB is released from an
+        # aircraft near the line and glides tens of kilometres; folding it
+        # into "missile" would draw a hundreds-of-kilometres weapon where a
+        # tens-of-kilometres one was reported, which is the wrong answer to
+        # "how long have I got".
         assert set(tracker.KINDS) == {
-            "drone", "jet_drone", "missile", "aircraft",
+            "drone", "jet_drone", "missile", "bomb", "aircraft",
             "explosion", "alert", "unknown"}
 
     def test_every_removed_kind_folds_somewhere_real(self):
@@ -803,7 +811,12 @@ class TestSayingWhichChannelGaveWhat:
     def test_every_channel_is_accounted_for(self, monkeypatch):
         try:
             rows = self.read_one(monkeypatch, {})
-            assert set(rows) == {c["name"] for c in tracker.CHANNELS}
+            # Every channel, and the feed, which is a source and not a
+            # channel: it has no posts and no page, and it gets a row for the
+            # same reason the channels do -- so "I cannot see anything from
+            # NEPTUN" is answerable from the panel rather than by guessing.
+            assert set(rows) == ({c["name"] for c in tracker.CHANNELS}
+                                 | {tracker.NEPTUN_SOURCE})
         finally:
             tracker.reset()
 
@@ -2127,7 +2140,10 @@ class TestWhatItGrabsOnStartUp:
         monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
         got = tracker.poll()
         assert got["count"] == many * len(tracker.CHANNELS)
-        assert all(s["read"] == many for s in got["sources"]), got["sources"]
+        # The channels. NEPTUN is a source too and has its own row, which is
+        # not a channel and has no posts to have read.
+        rows = [s for s in got["sources"] if s["channel"] != tracker.NEPTUN_SOURCE]
+        assert all(s["read"] == many for s in rows), rows
 
     def test_an_old_post_is_remembered_so_it_is_not_read_twice(self, monkeypatch):
         # Otherwise every poll re-reads and re-discards the whole page.
