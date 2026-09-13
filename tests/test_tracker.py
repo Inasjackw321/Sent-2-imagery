@@ -1527,15 +1527,42 @@ class TestHowLongAStrikeStays:
 
 
 class TestHowFarBackItReads:
-    def test_it_catches_up_on_twenty_minutes(self):
-        assert tracker.LOOKBACK_MINUTES == 20
+    def test_it_reads_everything_that_could_still_be_on_the_map(self):
+        """The window is the longest keep time, and it is derived from it.
 
-    def test_which_is_less_than_a_strike_is_kept_for(self):
-        # Not a contradiction, and worth pinning so nobody "fixes" one to
-        # match the other. The lookback bounds the catch-up read; each poll
-        # after it reads whatever is new, so a day of strikes accumulates as
-        # the app runs rather than being fetched on start.
-        assert tracker.LOOKBACK_MINUTES < tracker.KEEP["explosion"]
+        It used to be twenty minutes, with a comment arguing that reading
+        further back would cost "a lot of somebody else's bandwidth". It costs
+        none: Telegram's preview page is one fetch returning about twenty
+        posts whatever you do, so every post is already downloaded and parsed
+        before this decides whether to look at it. The window only decided how
+        many to throw away.
+
+        What it looked like was four channels reporting "20 posts, nothing
+        new" and an empty map, because on any quiet half-hour nothing on the
+        page is inside twenty minutes.
+        """
+        assert tracker.LOOKBACK_MINUTES == max(tracker.KEEP.values())
+
+    def test_it_is_long_enough_for_the_kind_held_longest(self):
+        # A strike is held for a day. Reading back less than that meant a
+        # freshly opened app could never show one older than twenty minutes,
+        # however long it was meant to be kept.
+        for kind, keep in tracker.KEEP.items():
+            assert tracker.LOOKBACK_MINUTES >= keep, kind
+        assert tracker.LOOKBACK_MINUTES >= tracker.ALERT_MINUTES
+
+    def test_raising_a_keep_time_widens_the_window_on_its_own(self):
+        # Derived, not written down twice. These fell out of step once
+        # already: strikes were given a day and the read window stayed at
+        # twenty minutes, so the extra day was unreachable.
+        assert tracker._lookback_minutes() == tracker.LOOKBACK_MINUTES
+        was = dict(tracker.KEEP)
+        try:
+            tracker.KEEP["explosion"] = 9999
+            assert tracker._lookback_minutes() == 9999
+        finally:
+            tracker.KEEP.clear()
+            tracker.KEEP.update(was)
 
     def test_it_is_at_least_as_long_as_the_gap_between_polls(self):
         # A lookback shorter than the poll interval would drop posts in the
@@ -2086,8 +2113,14 @@ class TestWhatEachChannelActuallyDid:
     def test_a_post_older_than_the_window_is_seen_but_not_fresh(self, monkeypatch):
         # The exact case that read as "none readable". One post, read from the
         # page perfectly well, simply too old to be news.
+        #
+        # Ninety minutes no longer qualifies -- the window is the longest keep
+        # time now, so a post is only "not news" once nothing it could become
+        # would still be drawn. Aged past that.
+        stale = tracker.LOOKBACK_MINUTES + 60
         rows = self.read_one(monkeypatch,
-                             {"eRadarrua": "Шахед над Нікополем"}, {"eRadarrua": 90})
+                             {"eRadarrua": "Шахед над Нікополем"},
+                             {"eRadarrua": stale})
         assert rows["eRadarrua"]["posts"] == 1
         assert rows["eRadarrua"]["fresh"] == 0
         assert rows["eRadarrua"]["problem"] is None, \
@@ -2142,8 +2175,26 @@ class TestWhatItGrabsOnStartUp:
         monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
         return tracker.poll()
 
-    def test_the_window_is_twenty_minutes(self):
-        assert tracker.LOOKBACK_MINUTES == 20
+    def strikes_at(self, monkeypatch, *ages):
+        """The same, but reporting strikes -- which are held for a day.
+
+        A drone is held for twenty minutes, so a test written with drones
+        cannot tell "not read" from "read and expired", and would pass with
+        the read window set to anything at all.
+        """
+        tracker.reset()
+        now = dt.datetime.now(dt.timezone.utc)
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/{i}", "channel": channel,
+             "when": (now - dt.timedelta(minutes=old)).isoformat(),
+             "text": "Вибух у Кременчуці", "photos": [], "link": None}
+            for i, old in enumerate(ages)])
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
+        return tracker.poll()
+
+    def test_the_window_is_the_longest_a_mark_survives(self):
+        assert tracker.LOOKBACK_MINUTES == max(tracker.KEEP.values())
 
     def test_everything_inside_it_is_taken(self, monkeypatch):
         got = self.posts_at(monkeypatch, 1, 5, 12, 19)
@@ -2155,10 +2206,84 @@ class TestWhatItGrabsOnStartUp:
         assert got["count"] == 0
 
     def test_the_boundary_is_the_window(self, monkeypatch):
-        inside = self.posts_at(monkeypatch, tracker.LOOKBACK_MINUTES - 1)
-        outside = self.posts_at(monkeypatch, tracker.LOOKBACK_MINUTES + 1)
+        # Tested with a strike rather than a drone, because a drone an hour
+        # old is read and then immediately expired by its own keep time --
+        # which would make this pass whatever the window was.
+        inside = self.strikes_at(monkeypatch, tracker.LOOKBACK_MINUTES - 5)
+        outside = self.strikes_at(monkeypatch, tracker.LOOKBACK_MINUTES + 5)
         assert inside["count"] == len(tracker.CHANNELS)
         assert outside["count"] == 0
+
+    def test_a_strike_from_hours_ago_is_on_the_map_from_a_cold_start(self):
+        """The failure this whole change was about.
+
+        Strikes are held for twenty-five hours. With a twenty-minute read
+        window a freshly opened app could only ever show one from the last
+        twenty minutes, so the other twenty-four hours and forty minutes of
+        the feature were unreachable on every start -- which is every start,
+        for a page somebody opens to see what has happened.
+        """
+        assert tracker.LOOKBACK_MINUTES >= tracker.KEEP["explosion"]
+
+    def test_the_model_gets_the_newest_posts_when_there_are_too_many(
+            self, monkeypatch):
+        """Which posts lose the draw is not arbitrary.
+
+        Fresh posts arrive grouped by channel, and cutting that list to the
+        model's batch size cut whole channels -- the ones that happened to
+        sort last got no model reading at all, however recent their posts
+        were, while another channel's four-hour-old ones did. Sorted by time
+        so that where anything is cut it is the oldest.
+        """
+        tracker.reset()
+        now = dt.datetime.now(dt.timezone.utc)
+        # The first channel's posts are all ancient, the last channel's all
+        # recent -- the arrangement that made channel order look like time.
+        old_by_channel = {c["name"]: 600 - i * 199
+                          for i, c in enumerate(tracker.CHANNELS)}
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/{i}", "channel": channel,
+             "when": (now - dt.timedelta(
+                 minutes=old_by_channel[channel] + i)).isoformat(),
+             "text": "Вибух у Кременчуці", "photos": [], "link": None}
+            for i in range(20)])
+        seen = []
+        monkeypatch.setattr(tracker, "_call_model",
+                            lambda batch: seen.extend(batch) or [])
+        monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
+        tracker.poll()
+
+        assert len(seen) == 40
+        ages = [tracker._when(p) for p in seen]
+        assert ages == sorted(ages, reverse=True), "not newest first"
+        # And the newest channel is represented, which is the failure: it was
+        # last in channel order and its posts were the most recent of all.
+        youngest = tracker.CHANNELS[-1]["name"]
+        assert any(p["channel"] == youngest for p in seen)
+
+    def test_an_old_post_is_read_by_rule_even_outside_the_model_batch(
+            self, monkeypatch):
+        """Everything gets read; only the model's share is capped.
+
+        These were one cap. Four channels of twenty posts is eighty, the cap
+        was forty, and the forty that lost were counted in the panel as read
+        and then never looked at. They cost different things -- a rules read
+        is a few regular expressions and a model read is seconds -- so they
+        get different limits.
+        """
+        tracker.reset()
+        many = 30
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
+            {"id": f"{channel}/{i}", "channel": channel,
+             "when": (dt.datetime.now(dt.timezone.utc)
+                      - dt.timedelta(minutes=i % 10)).isoformat(),
+             "text": "Вибух у Кременчуці", "photos": [], "link": None}
+            for i in range(many)])
+        monkeypatch.setattr(tracker, "_call_model", lambda batch: [])
+        monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
+        got = tracker.poll()
+        assert got["count"] == many * len(tracker.CHANNELS)
+        assert all(s["read"] == many for s in got["sources"]), got["sources"]
 
     def test_an_old_post_is_remembered_so_it_is_not_read_twice(self, monkeypatch):
         # Otherwise every poll re-reads and re-discards the whole page.

@@ -118,20 +118,34 @@ KEEP_MINUTES = 20
 # reported in Kharkiv an hour ago" is still true an hour later.
 ALERT_MINUTES = 90
 
-# How far back to read when the app starts, or after it has been idle.
+# How far back to read. Every post the page offers that could still be on the
+# map -- which means the longest time any kind is held for, not less.
 #
-# Twenty minutes: what is happening now rather than what happened this
-# afternoon. Worth knowing what this does and does not mean. Each poll after
-# the first reads whatever is new since the last one, so nothing is missed
-# while the app is running -- this only bounds the catch-up read.
+# This was twenty minutes, and it was wrong in a way the old comment here
+# argued for at length: it said reading further back would cost "a lot of
+# somebody else's bandwidth". It costs none. Telegram's preview page is ONE
+# fetch that returns about twenty posts whatever you do, so those posts are
+# already downloaded, already parsed, and already in memory when this decides
+# whether to look at them. Throwing away the ones older than twenty minutes
+# saved nothing and lost most of the feed.
 #
-# Which has a consequence for strikes, and it is not a bug. They are held for
-# a day now, but a freshly started app has only ever read twenty minutes, so
-# it shows the strikes of the last twenty minutes and fills in towards a full
-# day as it runs. There is no way round that short of reading hours of history
-# on every start, which is a lot of somebody else's bandwidth for a page that
-# may be closed in a minute.
-LOOKBACK_MINUTES = 20
+# What it looked like from the outside: four channels, "20 posts, nothing
+# new", four times over, and an empty map. Every post had arrived. All of them
+# were binned before anything read them, because on a quiet half-hour -- or
+# any moment more than twenty minutes after the last burst -- nothing on the
+# page is inside the window.
+#
+# Age still matters; it is just applied at the right end. Each kind has its
+# own keep time (a drone twenty minutes, a warning ninety, a strike twenty-five
+# hours) and _expire() enforces it against the post's own timestamp. So reading
+# a strike from four hours ago puts it on the map where it belongs, and reading
+# a drone from four hours ago costs one dict lookup and then nothing.
+#
+# Derived rather than written down, so it cannot fall behind the keep times:
+# raising how long strikes are held automatically reads back far enough to
+# find them.
+def _lookback_minutes() -> int:
+    return max([KEEP_MINUTES, ALERT_MINUTES, *KEEP.values()])
 
 # The floor between two reads of the channels.
 #
@@ -247,6 +261,10 @@ KINDS = {
 # join a mass in concentrate mode and how long it stays on the map.
 MOTION = {name: look["motion"] for name, look in KINDS.items()}
 KEEP = {name: look.get("keep", KEEP_MINUTES) for name, look in KINDS.items()}
+
+# See _lookback_minutes() above for why this is the longest keep time and not
+# a window of its own.
+LOOKBACK_MINUTES = _lookback_minutes()
 
 # Kinds that are announcements or places rather than things in flight.
 NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "still")
@@ -1451,11 +1469,18 @@ def poll() -> dict[str, Any]:
                 continue
             try:
                 when = dt.datetime.fromisoformat(post["when"].replace("Z", "+00:00"))
-            except ValueError:
+            except (AttributeError, TypeError, ValueError):
+                # No usable timestamp, so it cannot be known to be current,
+                # so it is not drawn: a mark that might be from last week is
+                # worse than no mark. Widened from ValueError alone because a
+                # post whose "when" is missing entirely gives AttributeError
+                # on .replace(), which took the whole poll down rather than
+                # one post.
                 continue
             if when < cutoff:
-                # Old on the first read: remembered so it is not read again,
-                # but not turned into a marker.
+                # Older than the longest any kind is held for, so there is
+                # nothing it could become that would still be on the map.
+                # Remembered so it is not weighed again next poll.
                 _seen.add(post["id"])
                 continue
             tally["fresh"] += 1
@@ -1468,7 +1493,26 @@ def poll() -> dict[str, Any]:
         _last_poll = now
         return current()
 
-    batch = fresh[:40]
+    # Newest first, so that where anything has to be cut it is the oldest
+    # that goes. They arrive grouped by channel, which is an order that means
+    # nothing: cutting that list cut whole channels.
+    fresh.sort(key=_when, reverse=True)
+
+    # The model reads a bounded number of posts; the rules read all of them.
+    #
+    # This used to be one cap over both, and it was the second half of the
+    # same bug as the lookback. Four channels of twenty posts is eighty, the
+    # cap was forty, and the forty that lost the draw were counted in the
+    # panel as read and then never looked at -- so the panel's numbers and the
+    # map disagreed, and the missing half was whichever channels sorted last.
+    #
+    # They belong on different caps because they cost different things. A
+    # rules read is a few regular expressions: eighty of them is under a
+    # millisecond, so there is no reason to read anything less than everything.
+    # A model read is a local model thinking about each post, which is seconds,
+    # and that is worth bounding.
+    MODEL_BATCH = 40
+    batch = fresh[:MODEL_BATCH]
 
     # Read by rule first, and publish that immediately.
     #
@@ -1488,7 +1532,7 @@ def poll() -> dict[str, Any]:
     # third of a second and gets a better reading twenty seconds later is
     # strictly better than the same mark appearing at twenty seconds, and the
     # panel says which reading each one came from either way.
-    for post in batch:
+    for post in fresh:
         plain = reports.read(post.get("text", ""))
         if not plain:
             continue
@@ -1530,7 +1574,7 @@ def poll() -> dict[str, Any]:
     # rules run first -- there is never a moment where a readable post is
     # absent from the map.
     read_by_rules = 0
-    for post in batch:
+    for post in fresh:
         _seen.add(post["id"])
         item = by_id.get(post["id"])
         if item is None and len(batch) == 1 and found:
@@ -1538,11 +1582,11 @@ def poll() -> dict[str, Any]:
             # confuse: the single answer can only belong to it.
             item = found[0]
 
-        tally = _sources.get(post.get("channel"))
         if item is None:
             # No model reading for this one -- it is not running, it refused,
-            # or it skipped the message. Whatever the rules made of it stands,
-            # and it is already on the map.
+            # it skipped the message, or the post was outside the model's
+            # batch. Whatever the rules made of it stands, and it is already
+            # on the map.
             #
             # This is the difference between a quiet night and a dead layer.
             # A missing model used to mean an empty map and a line of red
@@ -1551,28 +1595,38 @@ def poll() -> dict[str, Any]:
             if any(e.get("source") == post["id"] for e in _events) \
                     or any(a.get("source") == post["id"] for a in _alerts):
                 read_by_rules += 1
-                if tally is not None:
-                    tally["read"] += 1
-                    if any(e.get("source") == post["id"] for e in _events):
-                        tally["placed"] += 1
             continue
 
         item["by"] = "model"
-        if tally is not None:
-            tally["read"] += 1
         with _lock:
             # Out with the rules reading, in with the model's. Both together
             # would draw the post twice.
             forget_source(post["id"])
-            placed = _record(item, post, post["countries"])
-        if tally is not None and placed:
-            tally["placed"] += 1
+            _record(item, post, post["countries"])
 
     with _lock:
         _expire(now)
+        # What each channel actually contributed, counted from what is on the
+        # map rather than tallied as it went.
+        #
+        # Counting inline got this wrong as soon as the rules and the model
+        # stopped reading the same set of posts: a post read by rule outside
+        # the model's batch was never counted, so the panel said a channel had
+        # contributed nothing while its marks were on the screen. Reading the
+        # answer off the result cannot drift from it.
+        on_map = {e.get("source") for e in _events}
+        in_stream = on_map | {a.get("source") for a in _alerts}
+    for post in fresh:
+        tally = _sources.get(post.get("channel"))
+        if tally is None:
+            continue
+        if post["id"] in in_stream:
+            tally["read"] += 1
+        if post["id"] in on_map:
+            tally["placed"] += 1
 
     if limited and read_by_rules:
-        _state = (f"{limited} — reading {read_by_rules} of {len(batch)} reports "
+        _state = (f"{limited} — reading {read_by_rules} of {len(fresh)} reports "
                   "without it")
     elif limited:
         _state = limited
