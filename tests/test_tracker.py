@@ -21,6 +21,8 @@ those silently and made a patchy night look like a broken feature.
 
 from __future__ import annotations
 
+import pathlib
+
 import datetime as dt
 import threading
 import math
@@ -28,7 +30,7 @@ import time
 
 import pytest
 
-from backend import ollama, places, reports, tracker
+from backend import gazetteer as gaz, neptun, ollama, places, reports, tracker
 
 
 class Reply:
@@ -2952,6 +2954,26 @@ class TestTheDrawingMoves:
         block = block[block.index("const hasArea"):]
         assert "event.kind !== 'explosion'" in block[:block.index(";\n")]
 
+    def test_a_strike_has_no_ring_around_it(self):
+        # Twice asked for, and right both times: the halo is a circle, and a
+        # circle round a strike reads as how far the blast went whatever it
+        # is meant as. The glow that keeps it findable follows the star's own
+        # outline instead.
+        text = self.source()
+        assert "const ringed = loud && event.kind !== 'explosion';" in text
+        assert "ringed ? `<span class=\"ao-halo\"" in text
+        assert "ao-flare" in text
+
+    def test_the_glow_that_replaces_it_takes_the_kind_own_colour(self):
+        # From the kinds table, inline, rather than a second copy of the
+        # colour in the stylesheet that could drift from the mark it belongs to.
+        text = self.source()
+        assert 'class="ao-flare" style="color:${colour}"' in text
+        css = (pathlib.Path(__file__).resolve().parent.parent
+               / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
+        block = css[css.index(".ao-flare {"):]
+        assert "currentColor" in block[:block.index("}")]
+
     def test_each_object_of_a_report_is_its_own_mark(self):
         # A report of three drones is three drones. The count badge that used
         # to go on each of them said nine.
@@ -2970,3 +2992,120 @@ class TestTheDrawingMoves:
         block = block[block.index("function untold"):]
         block = block[:block.index("\n}")]
         assert "said > MOST_SHOWN ? said : 0" in block
+
+
+class TestRussiaIsDrawnLikeUkraine:
+    """One layer, one look, whichever side of the border a region is on.
+
+    Ukraine's outlines come from NEPTUN's own boundary file. Russia has no
+    such file, so its regions are answered by the built-in table -- which has
+    a centre and an extent and no shape. The outline the background worker
+    fetched for them was remembered and then never read, because the built-in
+    answer short-circuited the lookup that would have read it.
+
+    The visible result was a layer split in half: Ukrainian warnings shaded
+    their province, Russian ones were a triangle on a dot.
+    """
+
+    SHAPE = {"type": "Polygon",
+             "coordinates": [[[38.0, 50.5], [41.0, 50.5], [41.0, 52.5],
+                              [38.0, 52.5], [38.0, 50.5]]]}
+
+    def setup_method(self):
+        gaz.forget()
+        tracker.reset()
+        neptun.forget()
+        self.original = gaz._ask
+        # Nothing may reach the network; the outline worker is a real thread.
+        gaz._ask = lambda name, countries="": None
+
+    def teardown_method(self):
+        gaz._ask = self.original
+        gaz.forget()
+        tracker.reset()
+        neptun.forget()
+
+    def warning(self, place, countries):
+        return tracker.place_event(
+            {"kind": "alert", "place": place, "toward": None, "course": None,
+             "count": 1, "summary": f"Air alert — {place}", "region": None},
+            countries)
+
+    def test_a_russian_warning_is_flat_until_its_outline_arrives(self):
+        # Honest, and not the end state: the mark is on the map from the
+        # built-in centre while the boundary is still being fetched.
+        got = self.warning("Воронежская область", "ru,ua")
+        assert got["placed"] is True
+        assert got["shape"] is None
+
+    def test_and_shaped_once_it_has(self):
+        gaz.remember("Воронежская область", "ru,ua",
+                           {"name": "Воронежская область", "lat": 51.6,
+                            "lon": 39.2, "category": "boundary",
+                            "bbox": (50.5, 38.0, 52.5, 41.0),
+                            "shape": self.SHAPE})
+        got = self.warning("Воронежская область", "ru,ua")
+        assert got["shape"] == self.SHAPE
+        # And the same two fields a Ukrainian warning gets, because "the same
+        # style" is these rather than a resemblance anybody has to eyeball.
+        assert got["region_wide"] is True
+        assert got["region_scope"] == "covers"
+
+    def test_a_ukrainian_warning_is_the_same_two_fields(self):
+        neptun.remember_shapes({"сумська область": self.SHAPE})
+        got = self.warning("Сумська область", "ua")
+        assert got["shape"] == self.SHAPE
+        assert got["region_wide"] is True
+        assert got["region_scope"] == "covers"
+
+    def test_the_outline_is_asked_for_rather_than_waited_for(self):
+        # It must not block the poll: the mark goes down now and gains its
+        # province on a later one.
+        self.warning("Липецкая область", "ru,ua")
+        assert gaz.shapes_wanted() >= 0
+
+    def test_a_town_does_not_get_a_boundary(self):
+        # A strike in a town is a point in it. Drawing the municipal border
+        # round one would claim the damage followed the council's line.
+        gaz.remember("Белгород", "ru,ua",
+                           {"name": "Белгород", "lat": 50.6, "lon": 36.6,
+                            "category": "place", "bbox": None,
+                            "shape": self.SHAPE})
+        got = tracker.place_event(
+            {"kind": "explosion", "place": "Белгород", "toward": None,
+             "course": None, "count": 1, "summary": "Strike", "region": None},
+            "ru,ua")
+        assert got["shape"] is None
+
+
+class TestRememberingWhatHasBeenRead:
+    """The set that stops a re-read feed drawing everything twice.
+
+    NEPTUN's message feed is read on every poll now, so this is load-bearing
+    in a way it was not when it was read once: without it every post inside
+    the catch-up window would produce a fresh mark every thirty seconds.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+
+    def teardown_method(self):
+        tracker.reset()
+
+    def test_a_post_read_once_is_remembered(self):
+        tracker.mark_seen("np-msg/1")
+        assert "np-msg/1" in tracker._seen
+
+    def test_it_does_not_grow_without_end(self):
+        for i in range(tracker.MOST_SEEN + 500):
+            tracker.mark_seen(f"np-msg/{i}")
+        assert len(tracker._seen) == tracker.MOST_SEEN
+
+    def test_the_oldest_go_and_the_newest_stay(self):
+        # Not a clear: clearing would re-offer every post still inside the
+        # catch-up window and draw a second mark for each, which is the one
+        # failure this exists to prevent.
+        for i in range(tracker.MOST_SEEN + 500):
+            tracker.mark_seen(f"np-msg/{i}")
+        assert "np-msg/0" not in tracker._seen
+        assert f"np-msg/{tracker.MOST_SEEN + 499}" in tracker._seen

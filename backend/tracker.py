@@ -311,7 +311,13 @@ MAX_EVENTS = 1200
 MAX_ALERTS = 600
 
 _lock = threading.Lock()
-_seen: set[str] = set()
+# Post ids already read, oldest first -- a dict rather than a set so the
+# oldest can be dropped when it gets too big. It grows faster than it used
+# to: NEPTUN's message feed is re-read on every poll now, and the whole
+# reason that is cheap is this remembering what has been read. Unbounded, it
+# would be the one thing in here that only ever grows.
+_seen: dict[str, float] = {}
+MOST_SEEN = 50_000
 _events: list[dict[str, Any]] = []
 _alerts: list[dict[str, Any]] = []
 _counter = 0
@@ -931,6 +937,15 @@ def _look(lookup, name: str, region: str | None, countries: str,
                 gazetteer.improve_later(
                     attempt, countries,
                     urgent=fold_kind(kind) in ("alert", LIFTED))
+                # And if it has already arrived, use it. Without this the
+                # table's shapeless answer shadowed the boundary forever:
+                # the outline was fetched, remembered, and never read, so
+                # every region this table knows -- which is every region in
+                # Russia -- was a warning with no province under it while
+                # Ukraine's came out of NEPTUN's file properly shaped.
+                learned = gazetteer.outline(attempt, countries)
+                if learned:
+                    found = {**found, "shape": learned}
             return found
 
     if region and region.lower() not in name.lower():
@@ -1510,8 +1525,7 @@ def _expire(now: float) -> None:
 
 def reset() -> None:
     """Forget everything read so far. For tests and for starting over."""
-    global _counter, _state, _last_poll, _polling, _caught_up
-    _caught_up = False
+    global _counter, _state, _last_poll, _polling
     with _lock:
         _trails.clear()
         _dismissed.clear()
@@ -1562,7 +1576,6 @@ NEPTUN_SOURCE = "neptun.in.ua"
 _trails: dict[str, list[list[float]]] = {}
 
 # Whether the one-off catch-up has run this session.
-_caught_up = False
 
 # How long a trail is. Their snapshot updates every few seconds and this app
 # polls every thirty, so twenty points is about ten minutes of flight -- long
@@ -1612,13 +1625,40 @@ def forget_trails(keep: set[str] | None = None) -> int:
 CATCH_UP_MINUTES = 30
 
 
+def mark_seen(ident: str) -> None:
+    """Remember a post as read, and forget the oldest once there are too many.
+
+    The oldest rather than all of them. Clearing the lot would re-read every
+    post still inside the catch-up window and draw a second mark for each,
+    which is the exact failure this set exists to prevent -- so the cap drops
+    the ids that are long past being offered again.
+    """
+    _seen[ident] = time.time()
+    if len(_seen) > MOST_SEEN:
+        for old in list(_seen)[:len(_seen) - MOST_SEEN]:
+            _seen.pop(old, None)
+
+
 def catch_up() -> int:
-    """Read NEPTUN's recent messages, once, for what happened before now.
+    """Read NEPTUN's message feed -- every channel they aggregate.
 
     Returns how many reports it produced. Their messages go through the same
     reader the Telegram channels do, because they are the same kind of thing:
     prose from the same channels. What this adds is that they arrive with
-    times attached and in one request.
+    times attached, in one request, from every source they watch rather than
+    the one this app can reach directly.
+
+    Run on every poll, not once. It used to run on the first poll of a
+    process and never again -- "a cold start is the only time there is a gap
+    to fill" -- and that reasoning was wrong. Their snapshot carries the
+    tracks somebody has already turned into a track; their messages carry
+    everything their sources actually said, which is a great deal more, and
+    is the difference between a map with a handful of marks on it and a map
+    with the night on it. Cutting it off after the first poll threw away
+    every source but two after the first thirty seconds of a run.
+
+    Cheap to repeat: `_seen` holds the post ids, so a post read once is
+    skipped for nothing, and the request is the same one either way.
     """
     posts = neptun.messages()
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=CATCH_UP_MINUTES)
@@ -1631,9 +1671,9 @@ def catch_up() -> int:
         except (AttributeError, TypeError, ValueError):
             continue
         if when < cutoff:
-            _seen.add(post["id"])
+            mark_seen(post["id"])
             continue
-        _seen.add(post["id"])
+        mark_seen(post["id"])
         for plain in reports.read_all(post["text"]):
             plain["kind"] = fold_kind(plain.get("kind"))
             item = _clean({**plain, "id": post["id"]})
@@ -1925,7 +1965,7 @@ def poll() -> dict[str, Any]:
                 # Older than the longest any kind is held for, so there is
                 # nothing it could become that would still be on the map.
                 # Remembered so it is not weighed again next poll.
-                _seen.add(post["id"])
+                mark_seen(post["id"])
                 continue
             tally["fresh"] += 1
             fresh.append(post)
@@ -1941,18 +1981,16 @@ def poll() -> dict[str, Any]:
     feed_state = ""
     caught = 0
     try:
-        # Once, on the first poll of a run. A cold start is the only time
-        # there is a gap to fill; after that the channels and the snapshot
-        # between them have everything.
-        global _caught_up
-        if not _caught_up:
-            _caught_up = True
-            caught = catch_up()
+        # Every poll. Their message feed is every channel they aggregate, and
+        # it is the widest source this app has -- see catch_up(). The first
+        # pass fills the gap before the process started; the ones after it
+        # are how the other sources keep arriving at all.
+        caught = catch_up()
     except neptun.NeptunError:
-        # Not worth a word in the panel. The catch-up is a convenience on
-        # start and the live sources are what matter; failing it silently is
-        # right where failing the snapshot is not.
-        _caught_up = True
+        # Not worth a word in the panel: the snapshot below is the reading
+        # that the panel's NEPTUN row is about, and this is prose on top of
+        # it. Failing silently is right here where it is not there.
+        pass
     try:
         drawn, declared = take_neptun()
         seen_now[NEPTUN_SOURCE] = {
@@ -2011,7 +2049,7 @@ def poll() -> dict[str, Any]:
     # to be down, no model to be missing, no "reading 3 of 20 reports without
     # it", and nothing on the map that came from a guess.
     for post in fresh:
-        _seen.add(post["id"])
+        mark_seen(post["id"])
         for plain in reports.read_all(post.get("text", "")):
             plain["kind"] = fold_kind(plain.get("kind"))
             item = _clean({**plain, "id": post["id"]})

@@ -485,3 +485,61 @@ class TestTheBuiltInTableComesFirst:
         assert gazetteer.improve_later("Сумська область", "ua") is False
         gazetteer.forget()
         assert gazetteer.improve_later("Сумська область", "ua") is True
+
+
+class TestALearnedOutlineIsActuallyUsed:
+    """The boundary that was fetched, remembered, and never read.
+
+    find() has always preferred a learned outline over the built-in centre.
+    The trouble is that the hot path does not go through find(): tracker's
+    _look reads the built-in table directly, because that is what turned an
+    eleven-second poll into half a second. That table has centres and extents
+    and no shapes, so once it answered, the outline the background worker had
+    already fetched was never looked at again.
+
+    Ukraine did not show it. NEPTUN publish Ukraine's boundaries and those
+    come from their file, not from here. Russia has no such file, so every
+    Russian warning was drawn as a marker with no province under it while the
+    Ukrainian ones were properly shaped -- two halves of one layer looking
+    completely different, for a reason that had nothing to do with what was
+    being reported.
+    """
+
+    def setup_method(self):
+        gazetteer.forget()
+
+    def teardown_method(self):
+        gazetteer.forget()
+
+    def test_an_outline_learned_earlier_can_be_read_back(self):
+        shape = {"type": "Polygon", "coordinates": [[[39.0, 51.0], [40.0, 51.0],
+                                                     [40.0, 52.0], [39.0, 51.0]]]}
+        gazetteer.remember("Воронежская область", "ru",
+                           {"name": "Воронежская область", "lat": 51.6,
+                            "lon": 39.2, "category": "boundary",
+                            "bbox": (50.0, 38.0, 52.0, 41.0), "shape": shape})
+        assert gazetteer.outline("Воронежская область", "ru") == shape
+
+    def test_a_name_nobody_has_fetched_has_no_outline(self):
+        assert gazetteer.outline("Воронежская область", "ru") is None
+
+    def test_an_answer_without_a_shape_is_not_an_outline(self):
+        # The built-in entry is exactly this: a centre and an extent. Reading
+        # it back as an outline would put the bug back in a new place.
+        gazetteer.remember("Липецкая область", "ru",
+                           {"name": "Липецкая область", "lat": 52.6,
+                            "lon": 39.6, "category": "boundary",
+                            "bbox": (51.0, 38.0, 54.0, 41.0)})
+        assert gazetteer.outline("Липецкая область", "ru") is None
+
+    def test_it_never_asks(self):
+        # It is read on the hot path, once per mark per poll. A lookup here
+        # would put the rate limit back into the thing it was taken out of.
+        asked = []
+        original = gazetteer._ask
+        gazetteer._ask = lambda name, countries="": asked.append(name)
+        try:
+            assert gazetteer.outline("Обоянь", "ru") is None
+        finally:
+            gazetteer._ask = original
+        assert asked == []

@@ -453,6 +453,14 @@ function icon(event, facing, index = 0) {
   // colour and loses the pulsing halo and the label plate.
   const loud = (event.kind === 'alert' || event.kind === 'explosion')
     && !event.advisory;
+  // The halo is a circle, and on a strike a circle round the mark is the one
+  // thing that has been asked for twice not to be there -- it reads as a
+  // blast radius whatever it is meant as. So a strike keeps the label and the
+  // weight and loses the ring: the glow that makes it findable follows the
+  // star's own outline instead, which says "look here" without saying "this
+  // far". A warning keeps its halo; a warning IS about an area, and the ring
+  // agrees with the shaded province underneath it.
+  const ringed = loud && event.kind !== 'explosion';
   return L.divIcon({
     // Warnings and strikes are the two things somebody scanning this map is
     // looking for, and at the zoom it gets used at a 24-pixel glyph in a
@@ -479,8 +487,11 @@ function icon(event, facing, index = 0) {
     //
     // Warnings and strikes keep theirs, because those ARE a statement about a
     // place and the words are the statement.
-    html: (loud ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
-      + `${glyph(event, colour, facing, index)}`
+    html: (ringed ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
+      + (loud && !ringed
+        ? `<span class="ao-flare" style="color:${colour}">`
+          + `${glyph(event, colour, facing, index)}</span>`
+        : `${glyph(event, colour, facing, index)}`)
       + (loud
         ? `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`
         : ''),
@@ -1559,12 +1570,20 @@ function paintDock() {
       + (got.unplaced ? `; ${got.unplaced} named nowhere a map knows.` : '.'));
   }
   if (n) {
-    // No claim of tracking. Each mark sits where a report put it and does not
-    // move; the arrow points along the reported course, which is a direction
-    // somebody said, not a path anybody watched.
-    lines.push('One arrow per drone or missile, at the place the report named. '
-      + 'Nothing moves — the arrow points along the reported course, which is '
-      + 'a direction that was stated, not a track.');
+    // Still no claim of tracking, and now there is more to say about it: a
+    // mark with a source's own course and speed is carried along from the
+    // last position that source confirmed, and a mark without them sits
+    // exactly where the report put it. Both are on the map at once, so the
+    // note has to say which is which rather than one sentence for both.
+    const moving = [...drawn.values()]
+      .filter((h) => driftKm(h.event) > 0).length;
+    lines.push('One arrow per drone or missile, at the place the report named.'
+      + (moving
+        ? ` ${moving} carried along from the last confirmed position on the `
+          + 'source’s own course and speed — the dashed tail is that '
+          + 'reckoning rather than a report.'
+        : ' Nothing is moving: the arrows point along a course that was '
+          + 'stated, which is a direction rather than a track.'));
     // How many of them actually have a direction, and where from. The honest
     // number, because the arrows themselves cannot carry it: a solid and a
     // hollow arrow are distinguishable side by side and not across a map.

@@ -1090,3 +1090,80 @@ class TestMarksThatMove:
                   if e.get("drift_minutes") is not None]
         assert all(e["drift_minutes"] < tracker.MOST_DRIFT_MINUTES
                    for e in moving)
+
+
+class TestEverySourceTheyAggregate:
+    """Their message feed, which is every channel they watch.
+
+    /api/v1/threats is what somebody has already turned into a track.
+    /api/v1/messages is what their sources actually said, which is a great
+    deal more of the night, and it is the widest source this app has.
+
+    It used to be read on the first poll of a process and never again, on the
+    reasoning that a cold start is the only time there is a gap to fill. That
+    was wrong. After thirty seconds of a run the only NEPTUN input left was
+    the snapshot, so every other source they aggregate stopped contributing
+    and the map went as sparse as the snapshot happened to be.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+
+    def teardown_method(self):
+        tracker.reset()
+
+    def posts(self, n):
+        """n distinct reports their feed might carry, newest first."""
+        when = dt.datetime.now(dt.timezone.utc).isoformat().replace(
+            "+00:00", "Z")
+        return [{"id": f"np-msg/{i}", "channel": "napramok",
+                 "when": when, "text": f"Шахед на Полтавщині, курс на захід {i}",
+                 "photos": [], "link": neptun.BASE} for i in range(n)]
+
+    def poll_with(self, monkeypatch, messages):
+        monkeypatch.setattr(neptun, "messages", lambda: messages)
+        monkeypatch.setattr(neptun, "threats", lambda: [])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [])
+        return tracker.poll()
+
+    def test_their_messages_are_read_on_every_poll(self, monkeypatch):
+        calls = []
+        real = tracker.catch_up
+        monkeypatch.setattr(tracker, "catch_up",
+                            lambda: (calls.append(1), real())[1])
+        self.poll_with(monkeypatch, self.posts(1))
+        self.poll_with(monkeypatch, self.posts(1))
+        self.poll_with(monkeypatch, self.posts(1))
+        assert len(calls) == 3, "their other sources stopped after the first poll"
+
+    def test_a_report_that_arrives_later_still_gets_on_the_map(self, monkeypatch):
+        # The whole point of reading them again: a post their feed did not
+        # have on the first poll is a mark on the fourth.
+        first = self.poll_with(monkeypatch, self.posts(1))
+        was = len(first["events"])
+        later = self.poll_with(monkeypatch, self.posts(3))
+        assert len(later["events"]) > was
+
+    def test_a_post_read_once_is_not_drawn_twice(self, monkeypatch):
+        # Re-reading the same feed every thirty seconds is only safe because
+        # the post ids are remembered. Without that this would pile up a
+        # duplicate mark a poll for as long as the post stayed in the window.
+        self.poll_with(monkeypatch, self.posts(2))
+        settled = len(tracker.current()["events"])
+        self.poll_with(monkeypatch, self.posts(2))
+        self.poll_with(monkeypatch, self.posts(2))
+        assert len(tracker.current()["events"]) == settled
+
+    def test_the_feed_being_down_does_not_stop_the_snapshot(self, monkeypatch):
+        # Prose on top of the snapshot. It failing is not the panel's
+        # business; the snapshot failing is.
+        monkeypatch.setattr(neptun, "messages", lambda: (_ for _ in ()).throw(
+            neptun.NeptunError("messages 503")))
+        monkeypatch.setattr(neptun, "threats",
+                            lambda: [neptun.read_threat(ONE_THREAT)])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [])
+        got = tracker.poll()
+        assert [e for e in got["events"] if e.get("by") == "neptun"]
+        assert "503" not in got["state"]

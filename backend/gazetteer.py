@@ -351,6 +351,28 @@ _asked_for_shapes: set[str] = set()
 _improver: threading.Thread | None = None
 
 
+def outline(name: str, countries: str = "") -> Any | None:
+    """A real boundary learned earlier for this name, or None. Never asks.
+
+    find() already prefers a learned outline over the built-in centre, but
+    the hot path in tracker._look does not go through find(): it reads the
+    built-in table directly, because that is what turned an eleven-second
+    poll into half a second. The table has centres and extents and no shapes
+    at all, so once it answered, the outline that arrived later in the
+    background was never looked at again -- and every region it knows was
+    drawn forever as a warning with no province under it.
+
+    That is most of Russia. NEPTUN publish Ukraine's boundaries, so Ukrainian
+    warnings had real outlines from their file while Russian ones, whose
+    names all come from the built-in table, never got one. Same layer, two
+    completely different-looking halves, for a reason that was nothing to do
+    with what was being reported.
+    """
+    with _lock:
+        learned = _known.get(_key(name, countries))
+    return learned.get("shape") if learned else None
+
+
 def improve_later(name: str, countries: str, urgent: bool = False) -> bool:
     """Ask for a region's real outline in the background. Never blocks.
 
