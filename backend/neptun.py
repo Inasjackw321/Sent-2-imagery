@@ -113,7 +113,21 @@ class NeptunError(RuntimeError):
 
 
 _lock = threading.Lock()
-_last_call = 0.0
+# When each endpoint was last asked, keyed by URL.
+#
+# Per endpoint, emphatically, and this was a real bug rather than a
+# refinement: it used to be one number for the whole module, and a poll reads
+# three different endpoints one after another -- the messages, the threat
+# snapshot, and the alerts. The first took the slot and the other two were
+# refused as "asked again too soon", so the snapshot was never fetched at all
+# and the map had every warning NEPTUN declared and not one of the tracks
+# they were declared about.
+#
+# The politeness this exists for is about not hammering a resource. Three
+# different resources, read once each per thirty-second poll, is nowhere near
+# that line; one queue across all of them was not politeness, it was a
+# starvation bug wearing politeness as a costume.
+_called: dict[str, float] = {}
 _shapes: dict[str, Any] | None = None
 _shapes_at = 0.0
 
@@ -193,26 +207,29 @@ class TooSoon(NeptunError):
     """Asked again before the interval was up. Not a failure -- a skip."""
 
 
-def claim_turn() -> bool:
-    """Take the next slot if it is due, without waiting. False if it is not.
+def claim_turn(url: str = BASE) -> bool:
+    """Take this endpoint's next slot if it is due. False if it is not.
 
     Skipping rather than blocking, which is the whole difference between a
     rate limit on a fetch somebody is waiting for and a rate limit inside a
     poll loop. The gazetteer waits because a report cannot be placed without
-    its answer; this must not, because the poll has four channels to get
-    through and the previous snapshot is still perfectly good. A blocking
-    version made every test that calls poll() wait fifteen seconds.
+    its answer; this must not, because the poll has channels to get through
+    and the previous snapshot is still perfectly good. A blocking version
+    made every test that calls poll() wait fifteen seconds.
+
+    Per endpoint. One slot shared across all of them meant the first
+    endpoint a poll happened to read locked out the rest of that poll -- see
+    _called.
     """
-    global _last_call
     with _lock:
-        if time.time() - _last_call < MIN_INTERVAL:
+        if time.time() - _called.get(url, 0.0) < MIN_INTERVAL:
             return False
-        _last_call = time.time()
+        _called[url] = time.time()
         return True
 
 
 def _get(url: str, *, paced: bool = True) -> Any:
-    if paced and not claim_turn():
+    if paced and not claim_turn(url):
         raise TooSoon("asked again before the interval was up")
     try:
         resp = requests.get(url, timeout=TIMEOUT,
@@ -462,9 +479,10 @@ def remember_shapes(index: dict[str, Any]) -> None:
 
 def forget() -> None:
     """Drop what is cached. For tests and for starting over."""
-    global _shapes, _shapes_at, _last_call
+    global _shapes, _shapes_at
     with _lock:
-        _shapes, _shapes_at, _last_call = None, 0.0, 0.0
+        _shapes, _shapes_at = None, 0.0
+        _called.clear()
 
 
 def messages() -> list[dict[str, Any]]:
@@ -509,5 +527,9 @@ def status() -> dict[str, Any]:
             "name": "neptun.in.ua",
             "attribution": ATTRIBUTION,
             "outlines": len(_shapes or {}),
-            "last_call": _last_call or None,
+            "last_call": max(_called.values()) if _called else None,
+            # Per endpoint, because "when did we last ask NEPTUN" is three
+            # different questions and one of them being stuck is exactly the
+            # thing worth being able to see.
+            "called": dict(_called),
         }

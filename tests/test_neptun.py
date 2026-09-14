@@ -307,9 +307,9 @@ class TestBeingPolite:
 
     def test_a_second_call_inside_the_interval_is_skipped_not_delayed(self):
         neptun.forget()
-        assert neptun.claim_turn() is True
+        assert neptun.claim_turn(neptun.THREATS) is True
         began = time.time()
-        assert neptun.claim_turn() is False
+        assert neptun.claim_turn(neptun.THREATS) is False
         assert time.time() - began < 0.5, "it waited instead of skipping"
 
     def test_a_skip_is_its_own_kind_of_answer(self):
@@ -331,7 +331,7 @@ class TestBeingPolite:
         # soon. Checked on _get itself rather than through threats(), which
         # this test has already replaced with a stub -- going through the stub
         # would have tested the stub.
-        assert neptun.claim_turn() is True
+        assert neptun.claim_turn(neptun.THREATS) is True
         # The real _get, which the suite otherwise stubs out so no test
         # reaches the network. The pacing being checked lives inside it, and
         # checking it through the stub would be checking the stub.
@@ -1167,3 +1167,174 @@ class TestEverySourceTheyAggregate:
         got = tracker.poll()
         assert [e for e in got["events"] if e.get("by") == "neptun"]
         assert "503" not in got["state"]
+
+
+class TestOneEndpointDoesNotStarveAnother:
+    """The bug that emptied the map of everything except warnings.
+
+    A poll reads three of their endpoints one after another: the messages,
+    the threat snapshot, and the alerts. The politeness gate was one slot for
+    the whole module, so the first of the three took it and the other two
+    were refused as "asked again too soon" -- every poll, forever.
+
+    What that looked like on screen was a province shaded for an air alert
+    with a single mark inside it, beside NEPTUN's own map showing ten. The
+    warnings were arriving (their boundary file is not paced) and the
+    snapshot the warnings were about was never fetched at all.
+
+    Their condition is one REST poll every five seconds, which is about not
+    hammering a resource. Three different resources read once each per
+    thirty-second poll is nowhere near it.
+    """
+
+    def setup_method(self):
+        neptun.forget()
+
+    def teardown_method(self):
+        neptun.forget()
+
+    def test_one_poll_reaches_all_three_endpoints(self, monkeypatch):
+        asked = []
+
+        def watched(url, **kw):
+            asked.append(url)
+            return {"messages": [], "threats": [], "oblasts": [], "raions": []}
+
+        monkeypatch.setattr(neptun, "_get", watched)
+        # Through the paced gate rather than around it: _get is stubbed for
+        # the fetch, and claim_turn is the thing under test, so each call
+        # takes its own turn first the way the real _get does.
+        for url in (neptun.MESSAGES, neptun.THREATS, neptun.ALERTS):
+            assert neptun.claim_turn(url) is True, f"{url} was refused"
+
+    def test_a_turn_taken_for_one_is_not_taken_for_the_others(self):
+        assert neptun.claim_turn(neptun.MESSAGES) is True
+        assert neptun.claim_turn(neptun.THREATS) is True
+        assert neptun.claim_turn(neptun.ALERTS) is True
+
+    def test_each_endpoint_still_has_its_own_floor(self):
+        # Per endpoint is not "no limit". Asking the same one twice in a row
+        # is still refused, which is the politeness this exists for.
+        assert neptun.claim_turn(neptun.THREATS) is True
+        assert neptun.claim_turn(neptun.THREATS) is False
+
+    def test_the_floor_is_inside_what_they_ask_for(self):
+        # They ask for no more than one poll every five seconds.
+        assert neptun.MIN_INTERVAL >= 5.0
+
+    def test_the_snapshot_actually_arrives_through_a_whole_poll(self, monkeypatch):
+        """End to end: messages first, and the tracks still get drawn.
+
+        The order matters and is the order poll() uses. With one shared slot
+        this drew nothing from the snapshot at all.
+        """
+        tracker.reset()
+        payloads = {
+            neptun.MESSAGES: {"messages": []},
+            neptun.THREATS: {"threats": [ONE_THREAT]},
+            neptun.ALERTS: DECLARED,
+        }
+
+        def served(url, *, paced=True):
+            # The real gate, on the real urls -- that is the whole point.
+            # The boundary files are fetched unpaced and are not part of it.
+            if paced and not neptun.claim_turn(url):
+                raise neptun.TooSoon("asked again before the interval was up")
+            return payloads.get(url, {"features": []})
+
+        monkeypatch.setattr(neptun, "_get", served)
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [])
+        got = tracker.poll()
+        tracks = [e for e in got["events"]
+                  if e.get("by") == "neptun" and e["kind"] != "alert"]
+        assert tracks, "the threat snapshot never reached the map"
+        tracker.reset()
+
+
+class TestOneRefusalDoesNotLoseTheOther:
+    """Tracks and warnings are two endpoints and arrive on their own terms.
+
+    Letting either refusal abort the whole read meant they could only ever
+    arrive together, so whichever was asked for second lost every time.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+
+    def teardown_method(self):
+        tracker.reset()
+        neptun.forget()
+
+    def test_the_warnings_survive_a_poll_where_the_tracks_were_not_due(
+            self, monkeypatch):
+        monkeypatch.setattr(neptun, "threats",
+                            lambda: [neptun.read_threat(ONE_THREAT)])
+        monkeypatch.setattr(neptun, "alerts",
+                            lambda: neptun.read_alerts(DECLARED))
+        tracker.take_neptun()
+        warnings = {e["id"] for e in tracker.current()["events"]
+                    if e["kind"] == "alert"}
+        assert warnings
+
+        was = {e["id"] for e in tracker.current()["events"]
+               if e.get("by") == "neptun" and e["kind"] != "alert"}
+        assert was
+
+        monkeypatch.setattr(neptun, "threats", lambda: (_ for _ in ()).throw(
+            neptun.TooSoon("not due")))
+        tracker.take_neptun()
+        assert {e["id"] for e in tracker.current()["events"]
+                if e["kind"] == "alert"} == warnings
+        # And the tracks themselves are still there. They were not re-read,
+        # which is not the same as having ended -- clearing them because the
+        # warnings came back would blank the map every other poll.
+        assert {e["id"] for e in tracker.current()["events"]
+                if e.get("by") == "neptun" and e["kind"] != "alert"} == was
+
+    def test_and_the_tracks_survive_a_poll_where_the_warnings_were_not(
+            self, monkeypatch):
+        monkeypatch.setattr(neptun, "threats",
+                            lambda: [neptun.read_threat(ONE_THREAT)])
+        monkeypatch.setattr(neptun, "alerts",
+                            lambda: neptun.read_alerts(DECLARED))
+        tracker.take_neptun()
+        tracks = [e for e in tracker.current()["events"]
+                  if e.get("by") == "neptun" and e["kind"] != "alert"]
+        assert tracks
+
+        monkeypatch.setattr(neptun, "alerts", lambda: (_ for _ in ()).throw(
+            neptun.TooSoon("not due")))
+        drawn, raised = tracker.take_neptun()
+        assert drawn == len(tracks)
+        assert [e for e in tracker.current()["events"]
+                if e.get("by") == "neptun" and e["kind"] != "alert"]
+
+    def test_a_trail_is_not_thrown_away_when_the_snapshot_was_not_due(
+            self, monkeypatch):
+        # forget_trails() treats "not in the snapshot" as "this track has
+        # ended". With no snapshot at all that would end every track there is.
+        monkeypatch.setattr(neptun, "threats",
+                            lambda: [neptun.read_threat(ONE_THREAT)])
+        monkeypatch.setattr(neptun, "alerts", lambda: [])
+        tracker.take_neptun()
+        tracker.take_neptun()
+        kept = len(tracker._trails)
+        assert kept
+
+        monkeypatch.setattr(neptun, "threats", lambda: (_ for _ in ()).throw(
+            neptun.TooSoon("not due")))
+        monkeypatch.setattr(neptun, "alerts",
+                            lambda: neptun.read_alerts(DECLARED))
+        tracker.take_neptun()
+        assert len(tracker._trails) == kept
+
+    def test_both_refused_is_still_a_skip(self, monkeypatch):
+        # Neither was due: nothing is cleared, nothing is drawn, and the
+        # caller's own TooSoon branch keeps the map as it stands.
+        monkeypatch.setattr(neptun, "threats", lambda: (_ for _ in ()).throw(
+            neptun.TooSoon("not due")))
+        monkeypatch.setattr(neptun, "alerts", lambda: (_ for _ in ()).throw(
+            neptun.TooSoon("not due")))
+        with pytest.raises(neptun.TooSoon):
+            tracker.take_neptun()

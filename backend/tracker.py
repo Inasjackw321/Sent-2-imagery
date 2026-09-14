@@ -1699,8 +1699,27 @@ def take_neptun() -> tuple[int, int]:
     # would empty the map on a blip, which is the worst possible way for a
     # second source to behave: the first source is fine and the screen goes
     # blank anyway.
-    tracks = neptun.threats()
-    declared = neptun.alerts()
+    #
+    # And fetched INDEPENDENTLY of each other. These are two endpoints and
+    # either can be refused on its own; letting one refusal abort the whole
+    # read meant the tracks and the warnings could only ever arrive together,
+    # so whichever was asked for second lost every time. That is how a map
+    # came to show every warning NEPTUN had declared and none of the tracks
+    # they were declared about.
+    tracks = declared = None
+    refused = []
+    try:
+        tracks = neptun.threats()
+    except neptun.TooSoon as exc:
+        refused.append(exc)
+    try:
+        declared = neptun.alerts()
+    except neptun.TooSoon as exc:
+        refused.append(exc)
+    if tracks is None and declared is None:
+        # Neither was due. Nothing is cleared and nothing is drawn: the
+        # caller's TooSoon branch keeps what is already on the map.
+        raise refused[0]
     now = time.time()
 
     with _lock:
@@ -1709,12 +1728,24 @@ def take_neptun() -> tuple[int, int]:
         # NEPTUN gave last time and has not given this time is gone: their
         # snapshot is the whole state, not a delta, so a track absent from it
         # has ended.
-        _events[:] = [e for e in _events if e.get("by") != "neptun"]
-        _alerts[:] = [a for a in _alerts if a.get("by") != "neptun"]
+        #
+        # Only the half that was actually re-read, though. Clearing the
+        # warnings because the tracks came back would take every warning off
+        # the map on a poll where their alert endpoint was merely not due.
+        if tracks is not None:
+            _events[:] = [e for e in _events
+                          if e.get("by") != "neptun" or e["kind"] == "alert"]
+            _alerts[:] = [a for a in _alerts
+                          if a.get("by") != "neptun" or a["kind"] == "alert"]
+        if declared is not None:
+            _events[:] = [e for e in _events
+                          if e.get("by") != "neptun" or e["kind"] != "alert"]
+            _alerts[:] = [a for a in _alerts
+                          if a.get("by") != "neptun" or a["kind"] != "alert"]
 
     drawn = 0
     alive: set[str] = set()
-    for track in tracks:
+    for track in tracks or ():
         ident = f"NP-{track['id']}"
         alive.add(ident)
         if _is_dismissed({"id": ident, "source": track["id"]}):
@@ -1722,10 +1753,13 @@ def take_neptun() -> tuple[int, int]:
         drawn += 1
         _record_neptun(track, now)
     # A track gone from the snapshot has ended, and its trail goes with it.
-    forget_trails(alive)
+    # Only when there WAS a snapshot: on a poll where the tracks were not due,
+    # every trail on the map would otherwise be thrown away as ended.
+    if tracks is not None:
+        forget_trails(alive)
 
     raised = 0
-    for alert in declared:
+    for alert in declared or ():
         ident = f"NP-alert-{alert.get('key') or alert['name']}"
         if _is_dismissed({"id": ident, "source": ident}):
             continue
