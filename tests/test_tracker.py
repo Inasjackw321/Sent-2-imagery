@@ -2879,3 +2879,94 @@ class TestTheDemoHonoursADismissal:
         assert tracker.demo()["dismissed"] == 0
         tracker.dismiss(tracker.demo()["events"][0]["id"])
         assert tracker.demo()["dismissed"] >= 1
+
+
+class TestTheDrawingMoves:
+    """The map carries a mark along; the popup and the trail say so.
+
+    Checked against the source text because the arithmetic lives in the
+    browser and there is no Leaflet here to run it in. These are the
+    invariants that make the movement honest rather than the maths itself --
+    the maths is checked in the browser, against the demo.
+    """
+
+    def source(self):
+        import pathlib
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
+
+    def test_the_marks_are_carried_along_on_a_tick(self):
+        text = self.source()
+        assert "function slide()" in text
+        assert "setInterval(slide, DRIFT_MS)" in text
+
+    def test_the_tick_is_stopped_with_the_layer(self):
+        # A timer left running against a cleared map is a leak that moves
+        # markers that are no longer on it.
+        text = self.source()
+        assert "clearInterval(drifter)" in text
+
+    def test_nothing_moves_without_a_speed_from_the_source(self):
+        # The removed version of this flew marks at a speed looked up from a
+        # table of what the type typically does. Every number here has to
+        # have come from the feed.
+        text = self.source()
+        block = text[text.index("function driftKm"):]
+        block = block[:block.index("\n}")]
+        assert "event.speed_kmh" in block
+        assert "speed > 0" in block
+        assert "event.heading" in block
+
+    def test_the_two_clocks_are_added_rather_than_compared(self):
+        # The browser's clock is not the server's. Elapsed time from each end
+        # is added; neither has to agree about what o'clock it is.
+        text = self.source()
+        block = text[text.index("function driftMinutes"):]
+        block = block[:block.index("\n}")]
+        assert "Date.now() - feedAt" in block
+        assert "event.drift_minutes" in block
+
+    def test_the_reckoned_part_of_a_track_is_drawn_apart_from_the_reported(self):
+        # The solid legs are positions somebody reported. The dashed one is
+        # this app's arithmetic, and a viewer can see the difference without
+        # opening anything.
+        text = self.source()
+        assert "function liveLegFor" in text
+        block = text[text.index("function liveLegFor"):]
+        block = block[:block.index("\n}")]
+        assert "dashArray" in block
+
+    def test_an_area_only_track_is_never_carried_anywhere(self):
+        # "Without extrapolation." Their rule, and the backend keeps it by
+        # sending no anchor -- but the reckoned tail checks it too, because
+        # that line would otherwise be drawn from a province's centroid.
+        block = self.source()
+        block = block[block.index("function liveLegFor"):]
+        assert "event.area_only" in block[:block.index("\n}")]
+
+    def test_a_strike_is_not_drawn_inside_a_circle(self):
+        # The circle was sized from how well the position was known and read
+        # as how far the blast went -- a claim nobody made, in the place
+        # where getting it wrong matters most.
+        block = self.source()
+        block = block[block.index("const hasArea"):]
+        assert "event.kind !== 'explosion'" in block[:block.index(";\n")]
+
+    def test_each_object_of_a_report_is_its_own_mark(self):
+        # A report of three drones is three drones. The count badge that used
+        # to go on each of them said nine.
+        text = self.source()
+        assert "countPlate(event.count" not in text
+        block = text[text.index("function untold"):]
+        block = block[:block.index("\n}")]
+        assert "index === 0" in block
+        assert "MOST_SHOWN" in block
+
+    def test_a_wave_too_big_to_draw_still_says_its_number(self):
+        # The one thing the arrows cannot say: past MOST_SHOWN the drawing
+        # stops and the difference between twenty-four and forty would exist
+        # nowhere on the map.
+        block = self.source()
+        block = block[block.index("function untold"):]
+        block = block[:block.index("\n}")]
+        assert "said > MOST_SHOWN ? said : 0" in block

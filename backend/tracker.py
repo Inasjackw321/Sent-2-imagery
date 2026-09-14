@@ -1081,25 +1081,81 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 
+# How far past a confirmed position a mark is carried, in minutes.
+#
+# Dead reckoning is only as good as the assumption that nothing turned, and
+# that assumption decays. NEPTUN confirm an active track far more often than
+# this, so in normal running the cap is never reached; it is here for the
+# track that stops being confirmed -- a drone that went down, a record that
+# stalled -- where the alternative is a mark flying serenely across the
+# country for an hour on the strength of one old sentence.
+#
+# Ten minutes at a Shahed's speed is about thirty kilometres, which is a
+# wrong-but-honest distance for a mark this map has stopped hearing about.
+MOST_DRIFT_MINUTES = 10.0
+
+
 def project(event: dict[str, Any], now: float) -> dict[str, Any]:
-    """An event as it stands now. The marker does not move.
+    """An event as it stands now, and how far it has run since it was confirmed.
 
-    It used to. A marker was carried along its reported course at a typical
-    speed for its kind, and a loitering drone was flown in circles. Both were
-    honest about being estimates and both were removed, because the estimate
-    was not worth what it cost: a map where everything drifts is hard to read,
-    the marks wander away from the places the reports actually named, and a
-    thing that slides across a province looks tracked whatever the popup says.
+    The position sent is always the reported one -- what somebody actually
+    said, at the place they said it. Nothing is moved here.
 
-    What was reported is where the mark goes. The course is still known and
-    still drawn -- the icon points along it -- but nothing is carried anywhere
-    on the strength of it.
+    What IS sent, for a track whose source gives a course, a speed and the
+    moment the position was last confirmed, is `drift_minutes`: how long ago
+    that confirmation was. The map carries the mark along from there and keeps
+    carrying it between polls, so a drone crossing an oblast moves instead of
+    jumping thirty kilometres every time the feed is refreshed.
+
+    An earlier version of this layer moved marks too and it was removed, for
+    reasons that still hold: it flew things along a course at a speed looked
+    up from a table of what that kind of aircraft typically does, which is an
+    assumption dressed as telemetry. This is not that. The course, the speed
+    and the anchor all come from the source, it is the arithmetic their own
+    SDK does, and a track that does not carry all three does not move at all.
+
+    Minutes rather than a position, and elapsed rather than absolute, because
+    the browser's clock is not this machine's clock. The map adds its own time
+    since the feed arrived, so the two never have to agree about what o'clock
+    it is -- only about how long a second is.
     """
     out = dict(event)
     out["age_minutes"] = round(max(0.0, (now - event["seen"]) / 60), 1)
     out["lat"], out["lon"] = event["origin_lat"], event["origin_lon"]
     out["projected"] = False
+    out["drift_minutes"] = _drift_minutes(event, now)
     return out
+
+
+def _drift_minutes(event: dict[str, Any], now: float) -> float | None:
+    """Minutes since this position was confirmed, or None if it cannot move.
+
+    None is the answer for everything except a moving track that came with all
+    three of a course, a speed above zero and an anchor. Those three are the
+    whole test, and between them they cover the cases that must never move:
+
+      areaOnly. Their "no extrapolation" rule. neptun.read_threat drops the
+      anchor for one, so the rule is kept by the shape of the data rather
+      than by a condition here that somebody could later delete.
+
+      A warning. It is a statement about a region, with no course and no
+      speed to carry anything at.
+
+      A strike. It has already happened where it happened.
+
+    There was a fourth condition here for a while, refusing anything whose
+    motion is "still". Nothing could reach it -- no kind NEPTUN send maps to
+    a still motion, and nothing without an anchor gets this far -- and a
+    condition that cannot be reached is a condition that cannot be trusted,
+    because nothing would notice if it stopped working.
+    """
+    anchor = event.get("confirmed_at")
+    speed = event.get("speed_kmh")
+    if not anchor or event.get("heading") is None:
+        return None
+    if not isinstance(speed, (int, float)) or speed <= 0:
+        return None
+    return round(min(MOST_DRIFT_MINUTES, max(0.0, (now - anchor) / 60)), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -1698,6 +1754,11 @@ def _record_neptun(track: dict[str, Any], now: float) -> None:
         "summary": track["summary"] or track["title"] or track["kind"],
         # Their speed, credited to them. See neptun.read_threat.
         "speed_kmh": track["speed_kmh"],
+        # The moment they last confirmed this position. With the course and
+        # the speed beside it, this is everything their own predict() needs,
+        # and it is what lets the mark move between snapshots instead of
+        # sitting still for thirty seconds and then jumping. See project().
+        "confirmed_at": track["confirmed_at"],
         # Where this track has been reported, oldest first. An areaOnly track
         # gets none: its positions are province centroids, so a line joining
         # them would be a path between two middles-of-nowhere drawn as though
@@ -2060,6 +2121,11 @@ def current() -> dict[str, Any]:
         "keep_minutes": KEEP_MINUTES,
         "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
+        # The furthest a mark is carried past its last confirmed
+        # position. Sent rather than written into the page as well, so
+        # the cap is one number: the map keeps drifting between polls
+        # and has to stop where this stops.
+        "drift_cap_minutes": MOST_DRIFT_MINUTES,
         "kinds": KINDS,
         "channels": [c["name"] for c in CHANNELS],
         "regions": sorted({c["region"] for c in CHANNELS}),
@@ -2326,6 +2392,12 @@ def _demo_photo(label: str, tint: str) -> str:
     return "data:image/svg+xml;utf8," + quote(svg, safe="")
 
 
+def _demo_stamp(when: float) -> str:
+    """An epoch moment in the spelling NEPTUN use, for the demo's tracks."""
+    return dt.datetime.fromtimestamp(when, dt.timezone.utc).isoformat(
+        timespec="seconds").replace("+00:00", "Z")
+
+
 def _demo_ring(lat: float, lon: float, half: float) -> dict[str, Any]:
     """A rough outline for a demo region: a lumpy ring, not a rectangle.
 
@@ -2494,7 +2566,13 @@ def demo() -> dict[str, Any]:
     # both are the states most easily got wrong: an advisory drawn as an
     # alarm, and a region centroid drawn as a place.
     for raw in DEMO_NEPTUN:
-        track = neptun.read_threat(raw)
+        # The confirmation stamp is minted here rather than written into the
+        # table above. A fixed one would be hours stale by the second time
+        # anybody opened the demo, so every track would sit pinned at the
+        # drift cap and the one thing this is meant to show -- a mark moving
+        # -- would be the one thing it never did.
+        track = neptun.read_threat(
+            {**raw, "confirmedAt": _demo_stamp(now - 90)})
         if not track:
             continue
         # A few earlier positions, so the demo can show a trail at all.
@@ -2539,6 +2617,11 @@ def demo() -> dict[str, Any]:
         "dismissed": len(_dismissed),
         "keep_minutes": KEEP_MINUTES, "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
+        # The furthest a mark is carried past its last confirmed
+        # position. Sent rather than written into the page as well, so
+        # the cap is one number: the map keeps drifting between polls
+        # and has to stop where this stops.
+        "drift_cap_minutes": MOST_DRIFT_MINUTES,
         "kinds": KINDS,
         # Two of them, one tight and one a corridor, so concentrate mode can
         # be seen and checked without a network.

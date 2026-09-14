@@ -14,6 +14,7 @@ lie confidently, so each gets its own test.
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 
 import pytest
@@ -930,3 +931,162 @@ class TestTheSourcesItReadsNow:
         # panel rather than by guessing, the same way it is for a channel.
         rows = {r["channel"] for r in tracker.demo()["sources"]}
         assert tracker.NEPTUN_SOURCE in rows
+
+
+class TestTheDeadReckoningAnchor:
+    """`confirmedAt` — the moment a position was last confirmed.
+
+    It is what NEPTUN's own predict() reckons from: the position at
+    confirmedAt, carried along velocity.bearingDeg at velocity.speedKmh for
+    however long it has been since. Without it a mark can only sit still
+    between snapshots and then jump.
+    """
+
+    def test_it_is_read_as_a_moment(self):
+        got = neptun.read_threat(ONE_THREAT)
+        # 2026-07-09T12:34:20Z, their example.
+        assert got["confirmed_at"] == pytest.approx(
+            dt.datetime(2026, 7, 9, 12, 34, 20,
+                        tzinfo=dt.timezone.utc).timestamp())
+
+    def test_a_stamp_with_no_offset_is_read_as_utc(self, monkeypatch):
+        # This runs on a server whose timezone is an accident of deployment.
+        # Reading their UTC as local time would put the anchor hours out and
+        # fling the mark across the country.
+        #
+        # Run with the machine somewhere else, which is the whole point: the
+        # test is worthless on a UTC box because a naive stamp read as local
+        # time comes out right there by accident, and that is exactly the
+        # accident a deployment elsewhere does not get.
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+        try:
+            naive = {**ONE_THREAT, "confirmedAt": "2026-07-09T12:34:20"}
+            assert neptun.read_threat(naive)["confirmed_at"] == pytest.approx(
+                dt.datetime(2026, 7, 9, 12, 34, 20,
+                            tzinfo=dt.timezone.utc).timestamp())
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+
+    def test_nonsense_is_no_anchor_rather_than_a_crash(self):
+        for bad in ("", None, "yesterday", 12345, {"at": 1}):
+            assert neptun.read_threat(
+                {**ONE_THREAT, "confirmedAt": bad})["confirmed_at"] is None
+
+    def test_updated_at_is_not_used_as_the_anchor(self):
+        # updatedAt moves for reasons that have nothing to do with the thing
+        # having moved. Falling back to it would restart the reckoning every
+        # time a record was touched.
+        no_anchor = dict(ONE_THREAT)
+        no_anchor.pop("confirmedAt")
+        got = neptun.read_threat(no_anchor)
+        assert got["confirmed_at"] is None
+        assert got["updated_at"] == ONE_THREAT["updatedAt"]
+
+    def test_an_area_only_track_never_gets_one(self):
+        # "Without extrapolation." Their rule for these, kept by the shape of
+        # the data rather than by a condition somebody can forget: no anchor
+        # means nothing downstream can carry it anywhere.
+        stamped = area_only(confirmedAt=ONE_THREAT["confirmedAt"],
+                            velocity={"bearingDeg": 90, "speedKmh": 700})
+        assert neptun.read_threat(stamped)["confirmed_at"] is None
+
+
+class TestMarksThatMove:
+    """What the map is told about carrying a mark along.
+
+    The position sent is always the reported one. What goes with it is
+    `drift_minutes`: how long ago that position was confirmed. The map adds
+    its own elapsed time to that and does the arithmetic, so the two clocks
+    never have to agree.
+    """
+
+    def _event(self, **over):
+        track = neptun.read_threat({**ONE_THREAT, **over})
+        tracker.reset()
+        tracker._record_neptun(track, time.time())
+        return next(e for e in tracker._events if e.get("by") == "neptun")
+
+    def test_a_moving_track_says_how_long_since_it_was_confirmed(self):
+        now = time.time()
+        event = self._event()
+        event["confirmed_at"] = now - 180
+        assert tracker.project(event, now)["drift_minutes"] == pytest.approx(3.0)
+
+    def test_the_position_sent_is_still_the_reported_one(self):
+        # Nothing is moved here. The anchor is sent so the MAP can move it,
+        # which is what keeps a mark gliding between polls instead of jumping.
+        now = time.time()
+        event = self._event()
+        event["confirmed_at"] = now - 300
+        out = tracker.project(event, now)
+        assert (out["lat"], out["lon"]) == (event["origin_lat"],
+                                            event["origin_lon"])
+        assert out["projected"] is False
+
+    def test_the_reckoning_stops_after_the_cap(self):
+        # An assumption that nothing turned decays. A track nobody has
+        # confirmed for an hour must not still be flying across the country.
+        now = time.time()
+        event = self._event()
+        event["confirmed_at"] = now - 3600
+        assert (tracker.project(event, now)["drift_minutes"]
+                == tracker.MOST_DRIFT_MINUTES)
+
+    def test_a_track_with_no_speed_does_not_move(self):
+        # The removed version of this feature flew things at a speed looked
+        # up from a table of what the type typically does. Without a speed
+        # from the source there is nothing honest to carry it at.
+        event = self._event(velocity=None)
+        assert tracker.project(event, time.time())["drift_minutes"] is None
+
+    def test_a_track_standing_still_does_not_move(self):
+        # A speed of zero is a speed, and it is the one that means "this is
+        # not going anywhere". Carrying it along anyway would be the map
+        # contradicting its own source.
+        event = self._event(velocity={"bearingDeg": 42, "speedKmh": 0})
+        assert tracker.project(event, time.time())["drift_minutes"] is None
+
+    def test_a_track_with_no_course_does_not_move(self):
+        event = self._event(heading=None, velocity={"speedKmh": 150})
+        assert tracker.project(event, time.time())["drift_minutes"] is None
+
+    def test_an_area_only_track_does_not_move(self):
+        track = neptun.read_threat(area_only())
+        tracker.reset()
+        tracker._record_neptun(track, time.time())
+        event = next(e for e in tracker._events if e.get("by") == "neptun")
+        assert tracker.project(event, time.time())["drift_minutes"] is None
+
+    def test_a_warning_does_not_move(self):
+        # It is a statement about a region, not an object with a course.
+        tracker.reset()
+        tracker._record_neptun_alert(
+            {"name": "Одеська область", "key": "odeska", "oblast": None},
+            "NP-alert-odeska", time.time())
+        event = next(e for e in tracker._events if e["kind"] == "alert")
+        assert tracker.project(event, time.time())["drift_minutes"] is None
+
+    def test_the_cap_goes_out_with_the_feed(self):
+        # The map keeps reckoning between polls and has to stop where this
+        # stops. One number, sent, rather than two that can drift apart.
+        assert tracker.demo()["drift_cap_minutes"] == tracker.MOST_DRIFT_MINUTES
+
+    def test_the_demo_has_something_that_actually_moves(self):
+        # Three drawing bugs reached a screenshot because the offline build
+        # could not reach the case they were in. A demo where nothing drifts
+        # cannot show whether drifting works.
+        moving = [e for e in tracker.demo()["events"]
+                  if e.get("drift_minutes") is not None]
+        assert moving, "the demo draws nothing that moves"
+        assert all(e["speed_kmh"] > 0 and e["heading"] is not None
+                   for e in moving)
+
+    def test_the_demo_anchors_are_fresh_rather_than_pinned_at_the_cap(self):
+        # A stamp written into the table would be hours stale the second time
+        # anybody opened the demo, and every mark would sit at the cap.
+        moving = [e for e in tracker.demo()["events"]
+                  if e.get("drift_minutes") is not None]
+        assert all(e["drift_minutes"] < tracker.MOST_DRIFT_MINUTES
+                   for e in moving)

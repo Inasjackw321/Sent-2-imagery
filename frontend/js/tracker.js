@@ -70,6 +70,11 @@ let problem = '';
 let poller = null;
 // A short follow-up while the backend is still reading.
 let catchup = null;
+// The moment this browser received the feed it is drawing, by this browser's
+// own clock. Everything about drift is measured from here; see driftMinutes().
+let feedAt = 0;
+// The tick that carries the moving marks along between polls.
+let drifter = null;
 
 // id -> { event, marker }. Kept across polls so a marker that is still being
 // reported is moved rather than destroyed and rebuilt, which would flicker and
@@ -110,11 +115,12 @@ export function initTracker(leafletMap) {
 
 /** Where you get to going `km` along a bearing, on a sphere.
  *
- * Nothing travels any more, so the only thing left that needs this is nudge():
- * trailing the several objects of one report behind the place it named. Still
- * done on a great circle rather than by adding degrees, because adding degrees
- * puts the line at the wrong angle and gets worse the further north you are,
- * and these reports are all from fifty degrees up.
+ * Two callers: nudge(), which trails the several objects of one report behind
+ * the place it named, and positionOf(), which carries a track along from the
+ * last position its source confirmed. Done on a great circle rather than by
+ * adding degrees, because adding degrees puts the line at the wrong angle and
+ * gets worse the further north you are, and these reports are all from fifty
+ * degrees up.
  */
 function advance(lat, lon, heading, km) {
   if (!(km > 0)) return [lat, lon];
@@ -168,12 +174,71 @@ const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
 const keepOf = (event) => feed?.keep?.[event.kind] ?? look(event).keep
   ?? feed?.keep_minutes ?? 20;
 
-/** Where a report goes: where it was reported, and nowhere else. */
-const positionOf = (event) => ({
-  lat: event.origin_lat,
-  lon: event.origin_lon,
-  facing: event.heading,
-});
+// The furthest a mark is carried past its last confirmed position, in
+// minutes. The backend's number; the fallback matches it and exists only for
+// a feed old enough not to carry the field.
+const driftCap = () => feed?.drift_cap_minutes ?? 10;
+
+/**
+ * How long this track has been running unconfirmed, right now.
+ *
+ * Two clocks, added. The backend says how long it had been since the source
+ * confirmed the position at the moment it built the feed; this adds however
+ * long the feed has been sitting in this browser. Neither end has to agree
+ * with the other about what o'clock it is -- only about how long a second is
+ * -- which matters because a viewer's clock being ten minutes out is common
+ * and would otherwise drag every mark a Shahed's half-hour across the map.
+ *
+ * null for everything that does not move: a warning, a strike, an areaOnly
+ * track, anything whose source gave no speed or no course. The backend
+ * decides that -- it is the end holding the source's rules -- and sends no
+ * drift_minutes at all for those, so there is nothing to get wrong here.
+ */
+function driftMinutes(event) {
+  const reported = event.drift_minutes;
+  if (typeof reported !== 'number') return null;
+  const here = Math.max(0, (Date.now() - feedAt) / 60000);
+  return Math.min(driftCap(), reported + here);
+}
+
+/** How far along its course a mark has been carried, in kilometres. */
+function driftKm(event) {
+  const minutes = driftMinutes(event);
+  if (minutes == null || event.heading == null) return 0;
+  const speed = event.speed_kmh;
+  if (!(typeof speed === 'number' && speed > 0)) return 0;
+  return speed * (minutes / 60);
+}
+
+/**
+ * Where a mark goes: the last position its source confirmed, carried along
+ * that source's own course at that source's own speed for the time since.
+ *
+ * This is dead reckoning, and it is the arithmetic NEPTUN's own SDK does in
+ * predict() -- position at confirmedAt, plus velocity.bearingDeg and
+ * velocity.speedKmh multiplied by the elapsed time. It is here because a
+ * track confirmed every few seconds and redrawn every thirty was a mark that
+ * sat still and then jumped fifteen kilometres, which reads as a glitch
+ * rather than as a drone.
+ *
+ * It is emphatically NOT the thing this layer removed once. That version
+ * flew a mark along at a speed looked up from a table of what that kind of
+ * aircraft typically does -- an assumption in the costume of telemetry. Every
+ * number here came from the source. Where one of them did not, the mark does
+ * not move at all, and `carried` is zero: nothing is ever moved on a guess.
+ */
+function positionOf(event) {
+  const at = {
+    lat: event.origin_lat,
+    lon: event.origin_lon,
+    facing: event.heading,
+    carried: 0,
+  };
+  const km = driftKm(event);
+  if (!(km > 0)) return at;
+  const [lat, lon] = advance(at.lat, at.lon, event.heading, km);
+  return { lat, lon, facing: event.heading, carried: km };
+}
 
 /**
  * How new a report is, as a fraction of its own lifetime. 1 is now, 0 is due
@@ -283,13 +348,18 @@ const SLIM_KINDS = new Set(['missile']);
 const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
   fill="none" stroke="${c}" stroke-width="1.7" stroke-linejoin="round"/>`;
 
-// The number the report gave, on the mark.
+// The number the report gave, on the mark -- but only where the drawing
+// cannot show it.
 //
-// "Група БпЛА на Сумщині" and "12 шахедів над Одещиною" are one mark each,
-// and drawing them identically to a single drone loses the only number in the
-// sentence. Same plate as a mass count, so the two read as the same idea --
-// the difference being that a mass count is how many marks were grouped and
-// this is how many the report said were there.
+// This used to go on every mark of a group, and it was wrong for the reason
+// the drawing changed: a report of three drones is drawn as three drones now,
+// and putting "×3" on each of them says nine. Each glyph IS one object, and a
+// row of three arrows is the count, said in the medium the map is made of.
+//
+// It survives for the one case the arrows cannot say: a wave bigger than
+// MOST_SHOWN, where the drawing stops at twenty-four and the report said
+// forty. There the plate goes on the leading mark alone, carrying the whole
+// number, because the alternative is losing sixteen drones silently.
 //
 // Counter-rotated, because the arrow it sits on is rotated to its course and
 // a rotated numeral is unreadable at this size.
@@ -307,8 +377,12 @@ function countPlate(n, colour, turn) {
             >${n > 999 ? '999' : n}</text></g>`;
 }
 
-function glyph(event, colour, facing) {
+function glyph(event, colour, facing, index = 0) {
   const motion = motionOf(event);
+  // How many the report said, where the drawing cannot say it itself. Zero
+  // -- and so no plate -- on every mark but the leading one, and on every
+  // group small enough to be drawn one glyph per object. See countPlate.
+  const unsaid = untold(event, index);
   // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
   // one number here: the artwork scales rather than being redrawn, and the
   // anchor below moves with it.
@@ -355,7 +429,7 @@ function glyph(event, colour, facing) {
       `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
                stroke-width="1.6"/>`
       + `<circle cx="9" cy="9" r="2" fill="${colour}"/>`
-      + countPlate(event.count, colour, null));
+      + countPlate(unsaid, colour, null));
   }
   // Solid when the course came from the report, hollow when it was borrowed
   // from the group. Both are arrows and both point somewhere real; the weight
@@ -365,12 +439,12 @@ function glyph(event, colour, facing) {
   const slim = SLIM_KINDS.has(event.kind);
   const shape = `${slim ? 'missile' : 'arrow'}${borrowed ? '-borrowed' : ''}`;
   const draw = borrowed ? BORROWED : (slim ? SLIM : ARROW);
-  return svg(shape, draw(colour) + countPlate(event.count, colour, facing),
+  return svg(shape, draw(colour) + countPlate(unsaid, colour, facing),
              facing);
 }
 
 /** One marker: its glyph, and its label underneath. */
-function icon(event, facing) {
+function icon(event, facing, index = 0) {
   const colour = colourOf(event);
   // "Surveillance, not a signal to hide." NEPTUN's words about advisory
   // tracks, and their argument is the right one: a MiG-31K taking off is
@@ -406,7 +480,7 @@ function icon(event, facing) {
     // Warnings and strikes keep theirs, because those ARE a statement about a
     // place and the words are the statement.
     html: (loud ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
-      + `${glyph(event, colour, facing)}`
+      + `${glyph(event, colour, facing, index)}`
       + (loud
         ? `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`
         : ''),
@@ -458,8 +532,20 @@ function popup(event) {
     } else {
       rows.push(`Heading <b>${deg}</b> — as the report stated it.`);
     }
-    rows.push('Course shown, not followed — the mark stays where the report '
-      + 'put it.');
+    const carried = driftKm(event);
+    if (carried > 0) {
+      rows.push(`<b>Carried ${carried < 10 ? carried.toFixed(1)
+        : Math.round(carried)} km</b> along that course since the position was `
+        + `last confirmed ${since(driftMinutes(event))} ago, at `
+        + `${Math.round(event.speed_kmh)} km/h — the course and the speed are `
+        + 'the source’s own, and the dashed tail behind the mark is the '
+        + 'part of the track that is this arithmetic rather than a report. '
+        + `Stops after ${Math.round(driftCap())} minutes without a new `
+        + 'confirmation.');
+    } else {
+      rows.push('Course shown, not followed — the mark stays where the report '
+        + 'put it, because nothing here reported a speed to carry it at.');
+    }
   } else {
     rows.push('<b>No course reported</b>, and none of the marks near it had '
       + 'one either — so it is drawn as a ring. An arrow would have to point '
@@ -762,9 +848,40 @@ function trailFor(event) {
   return legs;
 }
 
+/**
+ * The part of the track nobody has confirmed: from the last reported position
+ * to where the thing has been reckoned to since.
+ *
+ * Dashed, and drawn apart from the trail proper, because the difference
+ * between the two is the whole of what makes this honest. The solid legs are
+ * places a source said something was. This one is arithmetic. A viewer who
+ * learns nothing else about this layer can still see where the reporting
+ * stopped and the reckoning started, without opening anything.
+ */
+function liveLegFor(event) {
+  if (event.area_only || !(driftKm(event) > 0)) return null;
+  const at = positionOf(event);
+  return L.polyline([[event.origin_lat, event.origin_lon], [at.lat, at.lon]], {
+    pane: 'trackerArea',
+    renderer: areaInk,
+    interactive: false,
+    className: 'ao-trail is-reckoned',
+    color: colourOf(event),
+    weight: 1.8,
+    opacity: 0.5,
+    dashArray: '3 5',
+  });
+}
+
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
   && Number.isFinite(event.origin_lat)
+  // A strike is a point. The circle that used to go round it was sized from
+  // the accuracy of the position, which is a statement about how well the
+  // place is known and was read as how far the blast went -- so the mark said
+  // something nobody had reported, in the one place on this map where getting
+  // that wrong matters most. The star is the mark; it needs no ring.
+  && event.kind !== 'explosion'
   // A warning is drawn as an area only when there is a real region to draw.
   // Anything else — a rectangle round its extent, a circle on its centre —
   // is a claim about ground nobody made.
@@ -870,15 +987,20 @@ function reconcile(events) {
         // A fresh report for something already on the map: the course or the
         // kind may have changed, so the icon is rebuilt only when it differs.
         if (held.event.heading !== event.heading || held.event.kind !== event.kind) {
-          held.marker.setIcon(icon(event, at.facing));
+          held.marker.setIcon(icon(event, at.facing, n));
         }
         held.event = event;
         held.marker.setLatLng(where);
+        // The reckoned tail is rebuilt rather than moved: a fresh report can
+        // turn drift on or off -- a track that stopped reporting a speed, or
+        // started -- and moving a line that should no longer exist would
+        // leave it on the map until the mark itself expired.
+        refreshLive(held);
         age(held);
         continue;
       }
       const marker = L.marker(where, {
-        icon: icon(event, at.facing), pane: 'tracker', keyboard: false,
+        icon: icon(event, at.facing, n), pane: 'tracker', keyboard: false,
       });
       marker.bindPopup(() => popup(event));
       marker.addTo(layer);
@@ -890,7 +1012,11 @@ function reconcile(events) {
       // three marks a couple of kilometres apart has one history, not three.
       const trail = n === 0 ? trailFor(event) : null;
       trail?.forEach((leg) => leg.addTo(areas));
-      const made = { event, marker, area, trail, index: n };
+      // The reckoned tail, on the first mark only for the same reason: one
+      // report has one history, however many objects it named.
+      const live = n === 0 ? liveLegFor(event) : null;
+      live?.addTo(areas);
+      const made = { event, marker, area, trail, live, index: n };
       drawn.set(id, made);
       age(made);
     }
@@ -900,7 +1026,52 @@ function reconcile(events) {
     layer.removeLayer(held.marker);
     if (held.area) areas.removeLayer(held.area);
     held.trail?.forEach((leg) => areas.removeLayer(leg));
+    if (held.live) areas.removeLayer(held.live);
     drawn.delete(id);
+  }
+}
+
+/** Put the reckoned tail back in step with the report just received. */
+function refreshLive(held) {
+  if (held.live) {
+    areas.removeLayer(held.live);
+    held.live = null;
+  }
+  if (held.index !== 0) return;
+  const leg = liveLegFor(held.event);
+  if (!leg) return;
+  leg.addTo(areas);
+  held.live = leg;
+}
+
+// How often the moving marks are carried along, in milliseconds.
+//
+// A second. Fast enough that a Shahed at 180 km/h moves about fifty metres a
+// tick, which at any zoom this map is read at is a glide rather than a series
+// of hops; slow enough that a hundred marks cost nothing. The alternative --
+// an animation frame -- would redraw sixty times a second to show the same
+// fifty metres, for a picture nobody can tell apart.
+const DRIFT_MS = 1000;
+
+/**
+ * Carry the moving marks along, between polls.
+ *
+ * This is what makes the marks move. reconcile() puts them where the feed
+ * said; this keeps them going from there on the source's own course and speed
+ * until the next feed arrives and resets them to a confirmed position.
+ *
+ * Marks that do not move are skipped rather than rewritten -- positionOf
+ * returns carried: 0 for them -- so a map of forty warnings and three drones
+ * does three pieces of work a second.
+ */
+function slide() {
+  if (!enabled || !feed) return;
+  for (const held of drawn.values()) {
+    const at = positionOf(held.event);
+    if (!(at.carried > 0)) continue;
+    held.marker.setLatLng(nudge(at, held.event, held.index));
+    held.live?.setLatLngs([[held.event.origin_lat, held.event.origin_lon],
+      [at.lat, at.lon]]);
   }
 }
 
@@ -1053,6 +1224,22 @@ const MOST_SHOWN = 24;
 const drawnCount = (event) =>
   Math.max(1, Math.min(MOST_SHOWN, Number(event.count) || 1));
 
+/**
+ * The number to write on the nth mark of a report, or 0 for none.
+ *
+ * Nothing, almost always. A report of three drones is three arrows and the
+ * arrows are the count; a number beside each of them would read as nine.
+ *
+ * The exception is a wave larger than the drawing can show. Past MOST_SHOWN
+ * the marks stop at twenty-four however many were reported, and then the
+ * difference between twenty-four and forty exists nowhere on the map. So the
+ * leading mark -- and only that one -- carries the whole reported number.
+ */
+function untold(event, index) {
+  const said = Number(event.count) || 1;
+  return index === 0 && said > MOST_SHOWN ? said : 0;
+}
+
 // How far apart to draw objects reported together, in kilometres.
 //
 // Small, and deliberately smaller than the accuracy of the position they came
@@ -1127,7 +1314,13 @@ function age(held) {
 
 async function load() {
   try {
-    feed = await api.tracker();
+    const got = await api.tracker();
+    // Stamped the moment it lands, by this browser's clock, and only on a
+    // feed that actually arrived. Everything the marks are carried by is
+    // measured from here, so a failed fetch must not move the line -- the
+    // marks would jump back to where they were when the last good one came.
+    feedAt = Date.now();
+    feed = got;
     // The backend reads the channels in the background, so an answer that
     // says a read is in flight is an answer that is about to be superseded.
     // Ask again shortly rather than waiting out the minute.
@@ -1220,10 +1413,13 @@ function toggle() {
     layer.addTo(map);
     load();
     poller = setInterval(load, POLL_MS);
+    drifter = setInterval(slide, DRIFT_MS);
 
   } else {
     clearInterval(poller);
     poller = null;
+    clearInterval(drifter);
+    drifter = null;
     clearTimeout(catchup);
     catchup = null;
     layer.remove();

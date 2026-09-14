@@ -52,6 +52,7 @@ poll the difference is one refresh.
 
 from __future__ import annotations
 
+import datetime as dt
 import threading
 import time
 from typing import Any
@@ -164,6 +165,28 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if out == out and abs(out) != float("inf") else None
+
+
+def _moment(value: Any) -> float | None:
+    """An ISO timestamp as epoch seconds, or None.
+
+    NEPTUN stamp their times in UTC with a trailing Z, which is exactly the
+    one spelling `fromisoformat` did not accept before 3.11, so it is swapped
+    for the offset it means. A stamp without any offset at all is read as UTC
+    rather than as local time: this runs on a server whose timezone is an
+    accident of deployment, and reading their UTC as Europe/Kyiv would put
+    every anchor three hours out and drift every mark hundreds of kilometres.
+    """
+    text = _text(value, 40)
+    if not text:
+        return None
+    try:
+        when = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return when.timestamp()
 
 
 class TooSoon(NeptunError):
@@ -280,6 +303,20 @@ def read_threat(raw: Any) -> dict[str, Any] | None:
         "speed_kmh": (_number((raw.get("velocity") or {}).get("speedKmh"))
                       if isinstance(raw.get("velocity"), dict) else None),
         "updated_at": _text(raw.get("updatedAt"), 40),
+        # The moment the position was last CONFIRMED, which is the anchor
+        # their own predict() dead-reckons from: position at confirmedAt,
+        # carried along velocity.bearingDeg at velocity.speedKmh for however
+        # long it has been since. Not updatedAt -- that is when the record was
+        # touched, which happens for reasons that have nothing to do with the
+        # thing having moved, and using it would freeze a mark every time a
+        # comment was edited.
+        #
+        # None for an areaOnly track, whatever they send. "Without
+        # extrapolation" is their rule for those, and the anchor is the thing
+        # that makes extrapolation possible, so it is dropped at the source
+        # rather than left for every caller to remember not to use.
+        "confirmed_at": (None if area_only
+                         else _moment(raw.get("confirmedAt"))),
         # Their track id, which is stable across updates. Used as the source
         # id so an upserted track replaces its own mark instead of adding one.
         "id": _text(raw.get("id"), 80),
