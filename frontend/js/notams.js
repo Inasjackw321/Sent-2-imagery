@@ -94,8 +94,11 @@ async function refresh({ force = false } = {}) {
     });
     shown = got.notams ?? [];
     covered = asked;
-    state = got.configured === false
-      ? (got.problem ?? 'no key is set, so no notices can be fetched')
+    // Not having a key is no longer a failure -- there is a keyless way in
+    // and it is the default. What IS a failure is every source refusing, and
+    // that is what the trouble list carries.
+    state = (got.asked ?? []).length === 0
+      ? (got.trouble ?? []).join('; ') || 'nothing could be asked for this view'
       : '';
     paint(got);
   } catch (err) {
@@ -198,7 +201,11 @@ function paintDock(got) {
     + (got?.partial ? ' This view is wider than one query covers — zoom in for'
       + ' the rest.' : '')
     + (got?.capped ? ` ${got.total} notices exist here; the first few hundred`
-      + ' were read.' : '');
+      + ' were read.' : '')
+    // Some regions answering and one refusing is a better map than no map,
+    // and the one that refused is named rather than quietly missing.
+    + ((got?.trouble ?? []).length
+      ? ` Not answered: ${got.trouble.join('; ')}.` : '');
 }
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,

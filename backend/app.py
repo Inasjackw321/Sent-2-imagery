@@ -336,19 +336,16 @@ def airspace_notices(
 ) -> dict:
     """The NOTAMs in force over a rectangle: which airspace is closed, and when.
 
-    Answers with `configured: false` rather than an error when no key is set.
-    An empty list and "there is no key" are very different facts and a layer
-    that showed the first for the second would be saying the sky is clear.
+    No key is needed. There are two ways in and the keyless one is the
+    default -- see backend/notams.py. A key makes it the documented API
+    instead, which is better, and not having one is no longer the difference
+    between a layer and a message saying to go and register.
     """
     if config.DEMO_MODE:
         return {**notams.demo(), "configured": True}
-    if not notams.configured():
-        return {"notams": [], "unplaced": [], "count": 0, "total": 0,
-                "capped": False, "configured": False,
-                "source": "FAA NOTAM API",
-                "problem": "no FAA key is set, so no notices can be fetched"}
     try:
-        return {**notams.over(west, south, east, north), "configured": True}
+        return {**notams.over(west, south, east, north),
+                "configured": notams.configured()}
     except notams.NotamError as exc:
         raise _fail(exc)
 

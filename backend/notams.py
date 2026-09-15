@@ -53,7 +53,25 @@ import requests
 
 from . import config
 
-BASE = "https://external-api.faa.gov/notamapi/v1/notams"
+# Two ways in, and the keyless one is the default.
+#
+# The documented API wants a client id and secret. They are free and they are
+# still the better source -- documented, stable, paged -- so a key is used
+# when there is one. But requiring anybody to go and register before a layer
+# shows anything at all is the difference between a feature and a promise,
+# and the honest answer to "it still doesn't work" is that it should work
+# without being set up.
+#
+# So the second is the FAA's own NOTAM Search, which is what their public
+# search page talks to. No key, same notices, worldwide by ICAO location. It
+# is not a documented API and it can change under us, which is exactly why
+# read_notam below accepts several shapes and why every attempt records what
+# it was told rather than failing silently.
+API = "https://external-api.faa.gov/notamapi/v1/notams"
+SEARCH = "https://notams.aim.faa.gov/notamSearch/search"
+
+# Kept under the old name so nothing that reached for it breaks.
+BASE = API
 
 CLIENT_ID = os.environ.get("FAA_CLIENT_ID", "").strip()
 CLIENT_SECRET = os.environ.get("FAA_CLIENT_SECRET", "").strip()
@@ -146,6 +164,23 @@ def configured() -> bool:
 QCOORD = re.compile(
     r"^(\d{2})(\d{2})(\d{2})?([NS])(\d{3})(\d{2})(\d{2})?([EW])$", re.I)
 
+# And the other spelling, which is what their search page hands back one field
+# at a time: "49-15-00.000N". Same numbers, different punctuation, and a
+# reader that knew only the first would place nothing at all from that source.
+DMS = re.compile(r"^(\d{1,3})-(\d{1,2})(?:-(\d{1,2}(?:\.\d+)?))?\s*([NSEW])$",
+                 re.I)
+
+
+def read_angle(raw: Any) -> float | None:
+    """One "49-15-00.000N" as signed degrees, or None."""
+    text = " ".join(str(raw or "").split()).upper()
+    hit = DMS.match(text)
+    if not hit:
+        return None
+    out = (int(hit.group(1)) + int(hit.group(2)) / 60
+           + float(hit.group(3) or 0) / 3600)
+    return -out if hit.group(4) in ("S", "W") else out
+
 
 def read_coord(raw: Any) -> tuple[float, float] | None:
     """A Q-line coordinate as decimal degrees, or None.
@@ -204,10 +239,27 @@ def _moment(value: Any) -> float | None:
     try:
         when = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        # Their search page writes "01/15/2026 0000", which is not ISO
+        # anything. A time this cannot read is a notice whose period is
+        # unknown, and in_force() would then treat it as permanent -- so it
+        # is worth the second spelling rather than the wrong answer.
+        when = _american(text)
+        if when is None:
+            return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=dt.timezone.utc)
     return when.timestamp()
+
+
+def _american(text: str) -> dt.datetime | None:
+    """"01/15/2026 0000" and "01/15/2026 00:00", as their search page writes it."""
+    for shape in ("%m/%d/%Y %H%M", "%m/%d/%Y %H:%M", "%m/%d/%Y"):
+        try:
+            return dt.datetime.strptime(text, shape).replace(
+                tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 def read_notam(raw: Any) -> dict[str, Any] | None:
@@ -227,16 +279,26 @@ def read_notam(raw: Any) -> dict[str, Any] | None:
     if not isinstance(notam, dict):
         return None
 
-    ident = _text(notam.get("number") or notam.get("id"), 40)
-    body = _text(notam.get("text") or notam.get("icaoMessage"), 2000)
+    ident = _text(notam.get("number") or notam.get("notamNumber")
+                  or notam.get("id"), 40)
+    body = _text(notam.get("text") or notam.get("icaoMessage")
+                 or notam.get("traditionalMessage")
+                 or notam.get("traditionalMessageFrom4thWord"), 2000)
     if not ident or not body:
         return None
 
-    # Position, from whichever of the two forms is there. The decimal pair is
-    # preferred when present because it needs no interpretation; the Q-line
-    # string is the fallback and is what most records actually carry.
+    # Position, from whichever of the three forms is there, cheapest first.
+    #
+    # Three, because the two sources spell it differently and neither is
+    # negotiable: the API gives a decimal pair or a Q-line string, and the
+    # search page gives "49-15-00.000N" one field at a time. A reader that
+    # knew only one of them would place nothing at all from the other, which
+    # on a map is indistinguishable from an empty sky.
     lat = _number(notam.get("latitude"))
     lon = _number(notam.get("longitude"))
+    if lat is None or lon is None:
+        lat = read_angle(notam.get("latitude"))
+        lon = read_angle(notam.get("longitude"))
     if lat is None or lon is None:
         spot = read_coord(notam.get("coordinates"))
         if spot:
@@ -250,7 +312,8 @@ def read_notam(raw: Any) -> dict[str, Any] | None:
 
     return {
         "id": ident,
-        "location": _text(notam.get("location") or notam.get("icaoLocation"), 12),
+        "location": _text(notam.get("location") or notam.get("icaoLocation")
+                          or notam.get("facilityDesignator"), 12),
         "text": body,
         "classification": _text(notam.get("classification"), 20),
         "kind": _text(notam.get("type"), 20),
@@ -260,8 +323,8 @@ def read_notam(raw: Any) -> dict[str, Any] | None:
         # Bigger than a circle can honestly say. Listed rather than drawn as a
         # disc; a FIR-wide closure is a boundary, not a compass circle.
         "wide": km > MOST_KM,
-        "from": _moment(notam.get("effectiveStart")),
-        "to": _moment(notam.get("effectiveEnd")),
+        "from": _moment(notam.get("effectiveStart") or notam.get("startDate")),
+        "to": _moment(notam.get("effectiveEnd") or notam.get("endDate")),
         "placed": lat is not None,
         "why_unplaced": None if lat is not None else
                         "the notice carries no position this can read",
@@ -282,27 +345,85 @@ def in_force(notam: dict[str, Any], now: float) -> bool:
     return not (ends is not None and ends < now)
 
 
+def _read_json(resp: Any, who: str) -> dict[str, Any]:
+    """Their answer as a dict, or a NotamError saying what arrived instead.
+
+    The message matters as much as the refusal. "It doesn't work" was
+    unanswerable for two rounds because every failure looked the same from
+    outside; these say which service, which status, and what the body began
+    with, so the next round starts from a fact.
+    """
+    if resp.status_code in (401, 403):
+        raise NotamError(f"{who} refused the request ({resp.status_code})")
+    if resp.status_code == 429:
+        raise NotamError(f"{who} is rate limiting")
+    if not resp.ok:
+        raise NotamError(f"{who} answered {resp.status_code}")
+    try:
+        got = resp.json()
+    except ValueError:
+        head = " ".join((resp.text or "")[:120].split())
+        raise NotamError(f"{who} answered something that is not JSON: {head}") from None
+    return got if isinstance(got, dict) else {"items": got}
+
+
 def _ask(params: dict[str, Any]) -> dict[str, Any]:
+    """The documented API. Needs a key."""
     if not configured():
         raise NotamError("no FAA key is set, so NOTAMs cannot be fetched")
     try:
-        resp = _session.get(BASE, params=params, timeout=TIMEOUT, headers={
+        resp = _session.get(API, params=params, timeout=TIMEOUT, headers={
             "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
             "Accept": "application/json",
         })
     except requests.RequestException as exc:
-        raise NotamError(f"the NOTAM service could not be reached: {exc}") from exc
-    if resp.status_code in (401, 403):
-        raise NotamError("the NOTAM service refused the key")
-    if resp.status_code == 429:
-        raise NotamError("the NOTAM service is rate limiting")
-    if not resp.ok:
-        raise NotamError(f"the NOTAM service answered {resp.status_code}")
+        raise NotamError(f"the NOTAM API could not be reached: {exc}") from exc
+    return _read_json(resp, "the NOTAM API")
+
+
+# What their search page posts. Spelt out because it posts a whole form and
+# omitting a field it expects is a 500 rather than a default.
+def _search_form(location: str, offset: int) -> dict[str, str]:
+    return {
+        "searchType": "0",
+        "designatorsForLocation": location,
+        "designatorForAccountable": "",
+        "latDegrees": "", "latMinutes": "0", "latSeconds": "0",
+        "longDegrees": "", "longMinutes": "0", "longSeconds": "0",
+        "radius": "10",
+        "sortColumns": "5 false",
+        "sortDirection": "true",
+        "designatorForNotamNumberSearch": "",
+        "radiusSearchOnDesignator": "false",
+        "radiusSearchDesignator": "",
+        "latitudeDirection": "N", "longitudeDirection": "E",
+        "freeFormText": "", "flightPathText": "",
+        "flightPathDivertAirfields": "", "flightPathBuffer": "4",
+        "flightPathIncludeNavaids": "true",
+        "flightPathIncludeArtcc": "false",
+        "flightPathIncludeTfr": "true",
+        "flightPathIncludeRegulatory": "false",
+        "flightPathResultsType": "All NOTAMs",
+        "archiveDate": "", "archiveDesignator": "",
+        "offset": str(offset),
+        "notamsOnly": "false",
+        "filters": "",
+        "searchTypeSelected": "0",
+        "notamNumber": "",
+    }
+
+
+def _ask_search(location: str, offset: int = 0) -> dict[str, Any]:
+    """The keyless one: what their public search page talks to."""
     try:
-        got = resp.json()
-    except ValueError as exc:
-        raise NotamError("the NOTAM service answered something that is not JSON") from exc
-    return got if isinstance(got, dict) else {}
+        resp = _session.post(SEARCH, data=_search_form(location, offset),
+                             timeout=TIMEOUT, headers={
+                                 "Accept": "application/json",
+                                 "X-Requested-With": "XMLHttpRequest",
+                             })
+    except requests.RequestException as exc:
+        raise NotamError(f"NOTAM Search could not be reached: {exc}") from exc
+    return _read_json(resp, "NOTAM Search")
 
 
 def firs_over(west: float, south: float, east: float,
@@ -324,20 +445,59 @@ def firs_over(west: float, south: float, east: float,
     return [(code, name) for _, code, name in touching[:MOST_FIRS]]
 
 
+def _records(got: dict[str, Any]) -> list[Any]:
+    """The list of notices in an answer, whichever key it arrived under.
+
+    "items" is the documented API's; "notamList" is the search page's. Asked
+    for by name rather than by "whichever value is a list", because a payload
+    that changes shape should come back empty and say so, not quietly hand
+    over the first array it happens to contain.
+    """
+    for key in ("items", "notamList"):
+        got_list = got.get(key)
+        if isinstance(got_list, list):
+            return got_list
+    return []
+
+
+def _count(got: dict[str, Any]) -> int:
+    for key in ("totalCount", "totalNotamCount"):
+        n = _number(got.get(key))
+        if n:
+            return int(n)
+    return 0
+
+
 def _walk(params: dict[str, Any], found: list[dict[str, Any]]) -> int:
-    """Read every page of one query into `found`. Returns their total."""
+    """Read every page of one keyed query into `found`. Returns their total."""
     total = 0
     for page in range(1, MOST_PAGES + 1):
         got = _ask({**params, "pageSize": PER_PAGE, "pageNum": page})
-        items = got.get("items")
-        if not isinstance(items, list):
-            break
+        items = _records(got)
         for item in items:
             one = read_notam(item)
             if one:
                 found.append(one)
-        total = int(_number(got.get("totalCount")) or 0) or total
+        total = _count(got) or total
         if len(items) < PER_PAGE:
+            break
+    return total
+
+
+def _walk_search(location: str, found: list[dict[str, Any]]) -> int:
+    """The same, through the keyless search. Its paging is by offset."""
+    total = 0
+    seen = 0
+    for _ in range(MOST_PAGES):
+        got = _ask_search(location, seen)
+        items = _records(got)
+        for item in items:
+            one = read_notam(item)
+            if one:
+                found.append(one)
+        total = _count(got) or total
+        seen += len(items)
+        if not items or seen >= total:
             break
     return total
 
@@ -364,11 +524,27 @@ def over(west: float, south: float, east: float,
     found: list[dict[str, Any]] = []
     total = 0
     asked: list[str] = []
+    trouble: list[str] = []
     short = False
     if regions:
         for code, name in regions:
-            total += _walk({"icaoLocation": code}, found)
-            asked.append(f"{code} ({name})")
+            # The keyed API where there is a key, the keyless search where
+            # there is not. One region failing is not the whole view failing:
+            # five regions answering and one refusing is a better map than no
+            # map, and the one that refused is named in the panel.
+            try:
+                if configured():
+                    total += _walk({"icaoLocation": code}, found)
+                else:
+                    total += _walk_search(code, found)
+                asked.append(f"{code} ({name})")
+            except NotamError as exc:
+                trouble.append(f"{code}: {exc}")
+    elif not configured():
+        # No region in the table and no key. The search takes a location
+        # rather than a circle, so there is nothing to ask it.
+        trouble.append("nowhere in this view is a region this knows, and "
+                       "without a key there is no way to ask by position")
     else:
         lat, lon, radius_km = bounds_circle(west, south, east, north)
         wanted_nm = radius_km / NM_KM
@@ -402,13 +578,21 @@ def over(west: float, south: float, east: float,
         # unanswerable from the outside, and this is the one fact that
         # separates "nothing is closed" from "nothing was asked".
         "asked": asked,
+        # What went wrong, per region, and said out loud. Two rounds of "it
+        # doesn't work" went by with every failure looking identical from the
+        # outside; this is the difference between a bug report and a guess.
+        "trouble": trouble,
         # True when the view is wider than one radius query can cover and no
         # FIR was known for it, so part of it was not looked at.
         "partial": short,
-        "source": "FAA NOTAM API",
+        "source": "FAA NOTAM API" if configured() else "FAA NOTAM Search",
     }
     with _lock:
-        _cache[key] = (now, answer)
+        # An answer that got nothing from anybody is not worth keeping for ten
+        # minutes: it is usually a service having a moment, and caching it
+        # makes a blip last.
+        if live or not trouble:
+            _cache[key] = (now, answer)
         if len(_cache) > 64:
             _cache.clear()
     return answer
@@ -520,6 +704,7 @@ def demo() -> dict[str, Any]:
         "total": len(live),
         "capped": False,
         "asked": ["demo — nothing was asked of anybody"],
+        "trouble": [],
         "partial": False,
         "source": "demo — invented notices",
     }

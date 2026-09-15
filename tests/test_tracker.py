@@ -3611,16 +3611,26 @@ class TestTheClosedAirspaceLayer:
         return (pathlib.Path(__file__).resolve().parent.parent
                 / "frontend" / "js" / "notams.js").read_text(encoding="utf-8")
 
-    def test_no_key_is_said_rather_than_shown_as_an_empty_sky(self):
-        """An empty list and "there is no key" are different facts.
+    def test_nothing_asked_is_said_rather_than_shown_as_an_empty_sky(self):
+        """An empty list and "nobody was asked" are different facts.
 
-        A layer that showed the first for the second would be telling somebody
-        the airspace is open when it has not asked anybody.
+        A layer that showed the first for the second would be telling
+        somebody the airspace is open when it had not asked anybody. It used
+        to be the missing key that triggered this; there is a keyless way in
+        now, so what it watches for is every source refusing.
         """
         text = self.source()
-        assert "got.configured === false" in text
+        assert "(got.asked ?? []).length === 0" in text
+        assert "got.trouble" in text
         block = text[text.index("function paintDock"):]
         assert "Not available" in block
+
+    def test_a_region_that_refused_is_named_rather_than_missing(self):
+        # Five regions answering and one refusing is a better map than no
+        # map, and the one that refused has to be visible or the gap looks
+        # like quiet airspace.
+        text = self.source()
+        assert "Not answered:" in text
 
     def test_it_says_what_it_asked_and_of_whom(self):
         """The line that separates "nothing is closed" from "nothing was asked".

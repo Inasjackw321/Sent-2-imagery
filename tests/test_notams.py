@@ -171,14 +171,22 @@ class TestAskingForSomethingTheServiceWillAnswer:
     filed against the FIR rather than against a point in it.
     """
 
-    def asked(self, monkeypatch, box):
+    def asked(self, monkeypatch, box, key=True):
+        """What was actually put on the wire for a view, either way in."""
         seen = []
 
         def watch(params):
             seen.append(params)
             return {"items": [], "totalCount": 0}
 
+        def watch_search(location, offset=0):
+            seen.append({"icaoLocation": location, "via": "search"})
+            return {"notamList": [], "totalNotamCount": 0}
+
+        monkeypatch.setattr(notams, "CLIENT_ID", "id" if key else "")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "secret" if key else "")
         monkeypatch.setattr(notams, "_ask", watch)
+        monkeypatch.setattr(notams, "_ask_search", watch_search)
         notams.forget()
         notams.over(*box)
         return seen
@@ -213,6 +221,8 @@ class TestAskingForSomethingTheServiceWillAnswer:
         assert "locationRadius" in seen[0]
 
     def test_and_says_so_when_that_leaves_part_of_it_unasked(self, monkeypatch):
+        monkeypatch.setattr(notams, "CLIENT_ID", "id")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "secret")
         monkeypatch.setattr(notams, "_ask",
                             lambda params: {"items": [], "totalCount": 0})
         notams.forget()
@@ -263,6 +273,8 @@ class TestAskingForSomethingTheServiceWillAnswer:
             "number": "A9/26", "location": "UKBV", "coordinates": "5020N03030E",
             "radius": 10, "effectiveStart": "2026-01-01T00:00:00Z",
             "effectiveEnd": "PERM", "text": "SAME NOTICE, TWO REGIONS"}}}}
+        monkeypatch.setattr(notams, "CLIENT_ID", "id")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "secret")
         monkeypatch.setattr(notams, "_ask",
                             lambda params: {"items": [one], "totalCount": 1})
         notams.forget()
@@ -336,3 +348,169 @@ class TestTheDemo:
         got = notams.demo()
         for notice in got["notams"] + got["unplaced"]:
             assert "DEMO" in notice["text"] and "NOT A REAL NOTAM" in notice["text"]
+
+
+class TestItWorksWithoutAKey:
+    """Two rounds of "it still doesn't work" came down to this.
+
+    The layer needed a client id and secret before it would show anything, so
+    the answer to "it doesn't work" was "go and register" -- which is the
+    difference between a feature and a promise. There is a keyless way in: the
+    FAA's own NOTAM Search, which is what their public search page talks to.
+
+    The documented API is still better and is still used when a key is there.
+    """
+
+    def wired(self, monkeypatch, key):
+        seen = {"api": 0, "search": 0}
+
+        def api(params):
+            seen["api"] += 1
+            return {"items": [], "totalCount": 0}
+
+        def search(location, offset=0):
+            seen["search"] += 1
+            return {"notamList": [], "totalNotamCount": 0}
+
+        monkeypatch.setattr(notams, "CLIENT_ID", "id" if key else "")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "secret" if key else "")
+        monkeypatch.setattr(notams, "_ask", api)
+        monkeypatch.setattr(notams, "_ask_search", search)
+        notams.forget()
+        got = notams.over(22.0, 44.0, 40.4, 52.5)
+        return seen, got
+
+    def test_with_no_key_it_asks_the_keyless_one(self, monkeypatch):
+        seen, got = self.wired(monkeypatch, key=False)
+        assert seen["search"] > 0
+        assert seen["api"] == 0
+        assert got["asked"], "nothing was asked at all"
+        assert got["source"] == "FAA NOTAM Search"
+
+    def test_with_a_key_it_asks_the_documented_one(self, monkeypatch):
+        seen, got = self.wired(monkeypatch, key=True)
+        assert seen["api"] > 0
+        assert seen["search"] == 0
+        assert got["source"] == "FAA NOTAM API"
+
+    def test_one_region_refusing_does_not_lose_the_others(self, monkeypatch):
+        answered = []
+
+        def flaky(location, offset=0):
+            if location == "UKBV":
+                raise notams.NotamError("NOTAM Search answered 500")
+            answered.append(location)
+            return {"notamList": [], "totalNotamCount": 0}
+
+        monkeypatch.setattr(notams, "CLIENT_ID", "")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "")
+        monkeypatch.setattr(notams, "_ask_search", flaky)
+        notams.forget()
+        got = notams.over(22.0, 44.0, 40.4, 52.5)
+        assert answered, "one refusal lost the whole view"
+        assert any("UKBV" in t for t in got["trouble"])
+        assert not any("UKBV" in a for a in got["asked"])
+
+    def test_a_refusal_says_what_it_was_told(self, monkeypatch):
+        # "It doesn't work" was unanswerable for two rounds because every
+        # failure looked the same from outside.
+        def refuse(location, offset=0):
+            raise notams.NotamError("NOTAM Search answered 503")
+
+        monkeypatch.setattr(notams, "CLIENT_ID", "")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "")
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        notams.forget()
+        got = notams.over(22.0, 44.0, 40.4, 52.5)
+        assert got["asked"] == []
+        assert any("503" in t for t in got["trouble"])
+
+    def test_a_view_nobody_can_be_asked_about_says_so(self, monkeypatch):
+        # No region in the table and no key: the search takes a location
+        # rather than a circle, so there is nothing to ask it.
+        monkeypatch.setattr(notams, "CLIENT_ID", "")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "")
+        notams.forget()
+        got = notams.over(-120.0, 20.0, -100.0, 40.0)
+        assert got["asked"] == []
+        assert got["trouble"]
+
+    def test_a_failure_is_not_cached_for_ten_minutes(self, monkeypatch):
+        # A service having a moment should not make the layer dark until the
+        # cache expires.
+        calls = []
+
+        def refuse(location, offset=0):
+            calls.append(location)
+            raise notams.NotamError("down")
+
+        monkeypatch.setattr(notams, "CLIENT_ID", "")
+        monkeypatch.setattr(notams, "CLIENT_SECRET", "")
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        notams.forget()
+        notams.over(22.0, 44.0, 40.4, 52.5)
+        first = len(calls)
+        notams.over(22.0, 44.0, 40.4, 52.5)
+        assert len(calls) > first, "a failure was cached"
+
+
+class TestTheOtherSpellings:
+    """Their two sources write the same facts differently.
+
+    A reader that knew only one of them would place nothing at all from the
+    other, which on a map is indistinguishable from an empty sky.
+    """
+
+    SEARCH_RECORD = {
+        "notamNumber": "A1234/26",
+        "facilityDesignator": "UKBV",
+        "icaoMessage": "AIRSPACE CLOSED TO ALL CIVIL TRAFFIC",
+        "latitude": "50-20-00.000N",
+        "longitude": "030-30-00.000E",
+        "radius": "30",
+        "startDate": "01/15/2026 0000",
+        "endDate": "PERM",
+    }
+
+    def test_a_search_record_reads(self):
+        got = notams.read_notam(self.SEARCH_RECORD)
+        assert got["id"] == "A1234/26"
+        assert got["location"] == "UKBV"
+        assert got["placed"] is True
+        assert round(got["lat"], 4) == 50.3333
+        assert round(got["lon"], 4) == 30.5
+        assert got["radius_km"] == 55.56
+
+    def test_the_dashed_angle_form(self):
+        assert notams.read_angle("49-15-00.000N") == 49.25
+        assert notams.read_angle("023-30-00.000E") == 23.5
+        assert notams.read_angle("33-45-00S") == -33.75
+        assert notams.read_angle("070-30-00W") == -70.5
+
+    def test_and_refuses_anything_else(self):
+        for junk in ("49.25", "", None, 42, "nonsense", "49-15"):
+            assert notams.read_angle(junk) is None, junk
+
+    def test_their_date_spelling(self):
+        import datetime as dt
+        want = dt.datetime(2026, 1, 15, tzinfo=dt.timezone.utc).timestamp()
+        for spelling in ("01/15/2026 0000", "01/15/2026 00:00", "01/15/2026"):
+            assert notams._moment(spelling) == want, spelling
+
+    def test_a_time_it_cannot_read_is_none_rather_than_now(self):
+        # in_force() reads no-end as permanent, so a misread end date would
+        # keep an expired closure on the map for good.
+        assert notams._moment("not a date") is None
+
+    def test_the_list_is_found_under_either_name(self):
+        assert notams._records({"items": [1, 2]}) == [1, 2]
+        assert notams._records({"notamList": [1]}) == [1]
+        # And a payload that has changed shape comes back empty rather than
+        # handing over the first array it happens to contain.
+        assert notams._records({"somethingElse": [1, 2, 3]}) == []
+        assert notams._records({}) == []
+
+    def test_the_total_is_found_under_either_name(self):
+        assert notams._count({"totalCount": 7}) == 7
+        assert notams._count({"totalNotamCount": 9}) == 9
+        assert notams._count({}) == 0

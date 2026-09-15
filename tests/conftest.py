@@ -44,11 +44,15 @@ def no_notam_network(monkeypatch):
     point where this module touches the network, so an endpoint added later
     is caught by the same stub rather than quietly escaping it.
     """
-    def refuse(params):
+    def refuse(*a, **kw):
         raise notams.NotamError("the test suite does not reach the network")
 
     monkeypatch.setattr(notams, "unstubbed_ask", notams._ask, raising=False)
     monkeypatch.setattr(notams, "_ask", refuse)
+    # Both ways in. There are two sources now -- a keyed API and a keyless
+    # search -- and stubbing only the first would let the second reach the
+    # network the moment no key was set, which is the default.
+    monkeypatch.setattr(notams, "_ask_search", refuse)
     notams.forget()
     yield
     notams.forget()
