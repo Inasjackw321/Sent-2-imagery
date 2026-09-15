@@ -622,13 +622,52 @@ def variants(name: str) -> list[str]:
     return list(dict.fromkeys(out))[:4]
 
 
-def find_region(text: str) -> str | None:
-    """The region a report is about, in whichever way it named one."""
-    low = text.lower()
+def oblast_named(word: str) -> str | None:
+    """The oblast a single word names, by its nickname stem. None if it is not one.
+
+    First match, plainly, because no stem in either table is contained in
+    another -- checked, and it is a property of the names rather than luck:
+    these are twenty-four distinct province nicknames. A longest-match rule
+    was written here first and then removed, because nothing could reach it
+    and a condition nothing reaches is one nobody would notice breaking.
+    """
+    low = (word or "").lower()
     for table in (OBLASTS, RU_REGIONS):
         for stem, oblast in table.items():
             if stem in low:
                 return oblast
+    return None
+
+
+def find_region(text: str) -> str | None:
+    """The region a report is about, in whichever way it named one.
+
+    Whichever region is named FIRST, which was the whole of a real
+    misplacement. This used to walk the table of oblast nicknames in
+    dictionary order and return the first stem that appeared anywhere in the
+    sentence -- so "БпЛА на Сумщині курсом на Полтавщину" came back as
+    Poltava, because "полтавщин" happens to sit above "сумщин" in the table.
+    The drone was drawn in the province it was heading for rather than the one
+    it was over, which is a hundred and fifty kilometres wrong and the
+    commonest sentence shape these channels write.
+
+    Position first, destination second, is how the sentence is built: the
+    course phrase comes after the place. So the earliest name in the text is
+    the one the report is about.
+    """
+    low = text.lower()
+    at = len(low) + 1
+    first = None
+    for table in (OBLASTS, RU_REGIONS):
+        for stem, oblast in table.items():
+            where = low.find(stem)
+            # Earliest wins outright. No tie is possible: two stems can only
+            # start at the same index if one is inside the other, and none of
+            # them is -- see oblast_named().
+            if 0 <= where < at:
+                at, first = where, oblast
+    if first:
+        return first
     full = OBLAST_FULL.search(text)
     if full:
         # Rebuilt in the nominative, in whichever language it was written, so
@@ -747,6 +786,13 @@ def find_place(text: str, region: str | None) -> str | None:
             # the oblast has a proper name that a gazetteer knows. Preferring
             # the inflected nickname would send "Сумщиною" to Nominatim and
             # get nothing back.
+            # The oblast THIS phrase names, rather than whichever oblast the
+            # sentence mentions first. "над Сумщиною" is Sumy oblast even in
+            # a sentence that goes on to name another one, and deferring to
+            # the text-wide answer was how a position became a destination.
+            named = oblast_named(found)
+            if named:
+                return named
             if any(stem in found.lower() for stem in OBLASTS):
                 return region or _nominative(found)
             # "над Брянской областью" -- the preposition caught the adjective

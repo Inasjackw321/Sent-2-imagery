@@ -652,12 +652,32 @@ class TestRegionWideAlerts:
                                 "ua", lookup=self.looks_up())
         assert got["region_wide"] is True
 
-    def test_a_region_with_no_outline_falls_back_to_a_circle(self):
+    def test_a_region_is_one_before_its_outline_arrives(self):
+        """Two questions that used to be answered by one field.
+
+        "Did the report name a region" is about the match. "Can an area be
+        drawn for it" is about whether a boundary has been fetched yet. They
+        were the same test, so a report located to an oblast whose outline had
+        not arrived counted as a POINT -- and was drawn as one, a mark sitting
+        on the arithmetic centre of a province.
+
+        Region-wide now, outline or not; the drawing waits for the boundary
+        and hasArea() asks about that separately.
+        """
         got = tracker.place_event(one(kind="alert", place="Kyivia oblast"), "ua",
                                 lookup=self.looks_up(shape=None))
-        assert got["region_wide"] is False
+        assert got["region_wide"] is True
+        assert got["region_scope"] == "covers"
         assert got["shape"] is None
         assert got["area_km"] > 0
+
+    def test_a_track_located_to_a_region_says_so_without_an_outline(self):
+        # The case the dots came from: a drone over an oblast, no boundary
+        # fetched, drawn as a point in the middle of the province.
+        got = tracker.place_event(one(kind="drone", place="Kyivia oblast"), "ua",
+                                lookup=self.looks_up(shape=None))
+        assert got["region_scope"] == "located"
+        assert got["shape"] is None
 
     def test_what_counts_as_a_region(self):
         for kind in ("administrative", "state", "province", "county",
@@ -3412,3 +3432,64 @@ class TestTheBordersForAPictureOfItsOwn:
 
     def test_nothing_known_is_an_empty_list_rather_than_a_failure(self):
         assert tracker.outlines() == []
+
+
+class TestADotOnlyWhereSomebodyGaveAPosition:
+    """The dots that made no sense were province centroids.
+
+    A report naming a region and nothing finer carries the arithmetic middle
+    of that region as its position, and it used to be drawn there whenever the
+    region's boundary had not been fetched yet -- because "is this a region"
+    was answered by "do we have its outline", which is a different question.
+    So the mark sat on an oblast's centre, usually right on the province's own
+    label, and looked like a report about a field.
+    """
+
+    def region(self, shape):
+        return {"lat": 49.1, "lon": 28.5, "name": "Vinnytsia oblast",
+                "kind": "administrative", "category": "boundary",
+                "bbox": [48.0, 50.2, 27.4, 29.6], "shape": shape}
+
+    def test_a_region_says_so_whether_or_not_its_outline_arrived(self):
+        for shape in (None, {"type": "Polygon",
+                             "coordinates": [[[27, 48], [29, 48], [29, 50],
+                                              [27, 48]]]}):
+            got = tracker.place_event(
+                one(kind="drone", place="Vinnytsia oblast"), "ua",
+                lookup=lambda name, countries="", s=shape: self.region(s))
+            assert got["region_scope"] == "located", shape
+
+    def test_the_demo_has_a_region_with_no_outline_to_prove_it(self):
+        """Otherwise the offline build cannot reach the case at all.
+
+        Every other region in the demo is handed a boundary, so the happy
+        path was the only path and "a mark on a province centroid" was
+        something only the live map could show. Three drawing bugs have now
+        reached a screenshot for exactly that reason.
+        """
+        marks = [e for e in tracker.demo()["events"]
+                 if str(e.get("place")) == tracker.DEMO_WITHOUT_AN_OUTLINE_EN]
+        assert marks, "the demo names no report in the unshaped region"
+        for mark in marks:
+            assert mark["shape"] is None
+            assert mark["region_scope"] == "located"
+
+    def test_everything_else_in_the_demo_still_has_one(self):
+        # One region without a boundary is the case being reached; two would
+        # be the boundary path quietly not working.
+        bare = {e["place"] for e in tracker.demo()["events"]
+                if e.get("region_scope") and not e.get("shape")}
+        assert bare == {tracker.DEMO_WITHOUT_AN_OUTLINE_EN}
+
+    def test_a_real_position_with_no_course_is_still_a_mark(self):
+        """A dot is not the problem; a dot on a centroid was.
+
+        NEPTUN give a real point for anything that is not areaOnly, so a
+        MiG-31K over Bryansk oblast is where they say it is even though the
+        finest name they gave is the province. It has no course, so it is
+        drawn as a ring -- which says "here, direction unknown" and is true.
+        """
+        drawn = [e for e in tracker.demo()["events"]
+                 if e["kind"] != "alert" and e.get("heading") is None
+                 and not e.get("area_only") and e.get("region_scope") != "located"]
+        assert drawn, "the demo draws no courseless mark at a real position"

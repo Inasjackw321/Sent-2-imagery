@@ -1226,3 +1226,74 @@ class TestTheKindsThatHadNoName:
         got = reports.read("Missile heading north over Belgorod Oblast")
         assert got["course"] == "N"
         assert got["place"]
+
+
+class TestThePositionIsNotTheDestination:
+    """The misplacement, and it was the commonest sentence these channels write.
+
+    "БпЛА на Сумщині курсом на Полтавщину" -- drones over Sumy oblast, heading
+    for Poltava. It came back as Poltava, so the mark was drawn in the
+    province the drones were heading FOR rather than the one they were over:
+    a hundred and fifty kilometres wrong, on a map somebody reads to know
+    whether it is over them.
+
+    The cause was not a hard problem badly solved, which is what made it last:
+    find_region walked its table of oblast nicknames in DICTIONARY order and
+    returned the first stem that appeared anywhere in the sentence.
+    "полтавщин" sits above "сумщин" in that table, so Poltava won every time
+    -- and would have won wherever in the sentence it appeared.
+    """
+
+    def test_the_region_a_report_is_over_beats_the_one_it_is_heading_for(self):
+        for text, want in (
+            ("БпЛА на Сумщині курсом на Полтавщину", "Сумська область"),
+            ("БпЛА на Одещині курсом на Миколаївщину", "Одеська область"),
+            ("БпЛА на Київщині курсом на Житомирщину", "Київська область"),
+            ("Шахеди на Харківщині у напрямку Дніпропетровщини",
+             "Харківська область"),
+        ):
+            assert reports.read(text)["place"] == want, text
+
+    def test_it_is_position_in_the_sentence_and_not_the_table(self):
+        # The same two oblasts, the other way round. A table-order rule gives
+        # the same answer to both of these; a sentence-order rule does not.
+        first = reports.read("БпЛА на Сумщині курсом на Полтавщину")["place"]
+        second = reports.read("БпЛА на Полтавщині курсом на Сумщину")["place"]
+        assert first == "Сумська область"
+        assert second == "Полтавська область"
+
+    def test_the_destination_is_still_read(self):
+        # Fixing the position must not lose the course. The arrow is drawn
+        # from the bearing between the two.
+        got = reports.read("БпЛА на Сумщині у напрямку Полтави")
+        assert got["place"] == "Сумська область"
+        assert got["toward"]
+
+    def test_a_single_region_is_unaffected(self):
+        for text, want in (("БпЛА на Донеччині", "Донецька область"),
+                           ("Вибухи на Харківщині", "Харківська область"),
+                           ("БпЛА на Сумщині", "Сумська область")):
+            assert reports.find_region(text) == want, text
+
+    def test_a_longer_nickname_beats_a_shorter_one_inside_it(self):
+        # Some stems contain others. A first-match rule can answer a nickname
+        # with a different region entirely.
+        assert reports.oblast_named("Донеччині") == "Донецька область"
+        assert reports.oblast_named("Сумщиною") == "Сумська область"
+
+    def test_a_word_that_is_no_oblast_is_none(self):
+        assert reports.oblast_named("Кременчук") is None
+        assert reports.oblast_named("") is None
+        assert reports.oblast_named(None) is None
+
+    def test_a_headed_digest_is_about_the_place_in_its_body(self):
+        """The shape that makes find_place ask the phrase rather than the text.
+
+        These digests are written as a province header and then a line about
+        somewhere else: "Полтавщина: БпЛА над Сумщиною". The earliest region
+        in the text is the header, and the drone is over the one in the
+        sentence -- so the phrase that names a place has to be asked what IT
+        says, not handed the text-wide answer.
+        """
+        got = reports.read("Полтавщина: БпЛА над Сумщиною")
+        assert got["place"] == "Сумська область"

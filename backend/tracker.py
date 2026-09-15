@@ -1059,9 +1059,21 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     # centred on an oblast is not the shape of any province and reads as a
     # blast radius -- a claim about ground nobody made.
     out["bbox"] = list(here["bbox"]) if is_region(here) and here.get("bbox") else None
+    # Whether the report named a REGION, which is a question about the match
+    # and not about what this app happens to have fetched.
+    #
+    # It used to be answered by "did an outline arrive": region_scope was set
+    # only when out["shape"] was there. So a report located to an oblast whose
+    # boundary had not been fetched yet counted as a point, and was drawn as
+    # one -- a mark sitting on the arithmetic centre of a province, which is
+    # the "dot icons that make no sense" in the middle of an oblast label.
+    #
+    # The outline decides whether an AREA can be drawn, and hasArea() asks it
+    # separately. It has nothing to do with how precisely the report located
+    # anything, and conflating the two made the drawing depend on a fetch.
     out["region_scope"] = (
         "covers" if MOTION.get(item["kind"], "track") == "still" else "located"
-    ) if out["shape"] else None
+    ) if is_region(here) else None
     # Kept meaning what it always meant: the whole region is under this.
     out["region_wide"] = out["region_scope"] == "covers"
     out["placed"] = True
@@ -2364,6 +2376,10 @@ DEMO_NEPTUN = (
 
 DEMO_WITH_PICTURES = "Nikopol"
 
+# The region the demo pretends it has no boundary for. See below.
+DEMO_WITHOUT_AN_OUTLINE = "Вінницька область"
+DEMO_WITHOUT_AN_OUTLINE_EN = "Vinnytsia oblast"
+
 DEMO_SEED = [
     # kind, place, toward, course, count, summary
     ("drone", "Nikopol", "Kherson", None, 2,
@@ -2382,6 +2398,11 @@ DEMO_SEED = [
     # region" band is drawn at all in the build with no network.
     ("drone", "Kharkiv oblast", None, None, 3,
      "Three drones over Kharkiv oblast"),
+    # Located to the one oblast the demo has no outline for, so the offline
+    # build exercises a region-level report with no boundary -- the case that
+    # used to be drawn as a point on the province's centroid.
+    ("drone", "Vinnytsia oblast", None, None, 2,
+     "Two drones over Vinnytsia oblast"),
     # A missile with a named destination, so the demo exercises a heading
     # computed between two places rather than read off a compass word.
     ("missile", "Ochakiv", "Odesa", None, 1,
@@ -2549,9 +2570,23 @@ def _demo_place(name: str, lat: float, lon: float, half: float) -> dict[str, Any
         "bbox": [lat - half, lat + half, lon - half, lon + half],
         # Through the same door the live boundaries come through, so the demo
         # exercises that path rather than a copy of it.
-        "shape": (neptun.shape_for(name) or _demo_ring(lat, lon, half)
-                  if region else None),
+        "shape": _demo_outline(name, lat, lon, half) if region else None,
     }
+
+
+def _demo_outline(name: str, lat: float, lon: float, half: float) -> Any:
+    """A region's boundary in the demo, or None for the one that has none.
+
+    One region has none deliberately. Everything else here hands back an
+    outline for every province, which meant the offline build always took the
+    happy path and could not reach a report located to a region whose
+    boundary has not arrived -- the case that used to be drawn as a mark on
+    the province's arithmetic centre. Three drawing bugs have now reached a
+    screenshot because the demo could not reach the case they were in.
+    """
+    if name == DEMO_WITHOUT_AN_OUTLINE or name == DEMO_WITHOUT_AN_OUTLINE_EN:
+        return None
+    return neptun.shape_for(name) or _demo_ring(lat, lon, half)
 
 
 def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
@@ -2581,7 +2616,7 @@ def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
         "kind": "administrative" if region else "town",
         "category": "boundary" if region else "place",
         "bbox": [lat - half, lat + half, lon - half, lon + half],
-        "shape": _demo_ring(lat, lon, half) if region else None,
+        "shape": _demo_outline(name, lat, lon, half) if region else None,
     }
 
 
@@ -2643,9 +2678,16 @@ def demo() -> dict[str, Any]:
     # them -- but they go in through neptun.remember_shapes() and out through
     # neptun.shape_for(), which is the same path the live boundaries take.
     # The alternative was a demo in which the whole feature was invisible.
+    # One region deliberately left without one, because the demo could
+    # otherwise not reach the case that produced the dots in the middle of
+    # provinces: a report located to an oblast whose boundary has not been
+    # fetched yet. With an outline for every region the offline build always
+    # took the happy path, and "a mark on a province centroid" was a thing
+    # only the live map could show.
     neptun.remember_shapes({
         name.casefold(): _demo_ring(lat, lon, places.WIDE.get(name, 1.0))
         for name, (lat, lon) in places.REGIONS.items()
+        if name != DEMO_WITHOUT_AN_OUTLINE
     })
 
     events, alerts = [], []
