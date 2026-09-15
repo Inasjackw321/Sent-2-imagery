@@ -31,7 +31,7 @@
 // the count and the group's average trajectory.
 
 import { api } from './api.js';
-import { $, el, download, toast } from './ui.js';
+import { $, el, handOver, toast } from './ui.js';
 import { drawShot } from './trackershot.js';
 
 // How often to ask for new reports. The backend keeps its own floor under
@@ -1658,10 +1658,13 @@ async function saveShot() {
       return;
     }
     const when = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
-    download(blob, `air-${when}.png`);
-    toast(`Saved ${marks.length} mark${marks.length === 1 ? '' : 's'}`
-      + (bordersFailed ? ` — without borders: ${bordersFailed}` : ''),
-    bordersFailed ? 'warn' : '');
+    const went = await handOver(blob, `air-${when}.png`, 'Air tracker');
+    if (went === 'cancelled') return;
+    const how = went === 'shared'
+      ? `${marks.length} mark${marks.length === 1 ? '' : 's'} — pick Save Image`
+      : `Saved ${marks.length} mark${marks.length === 1 ? '' : 's'}`;
+    toast(how + (bordersFailed ? ` — without borders: ${bordersFailed}` : ''),
+      bordersFailed ? 'warn' : '');
   } catch (err) {
     toast(`The picture could not be made: ${err.message}`, 'warn');
   } finally {

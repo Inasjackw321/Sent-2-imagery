@@ -79,6 +79,41 @@ export async function withBusy(text, fn) {
   finally { busy(false); }
 }
 
+/**
+ * Hand a file to the person, by whichever route their device actually has.
+ *
+ * A download is the wrong verb on a phone. An <a download> saves into Files,
+ * which is not where anybody looks for a picture -- "the image doesn't save
+ * to photos" is exactly what that feels like, and it is not a bug in the
+ * picture. The share sheet is the route that offers "Save Image", and on iOS
+ * it is the only one.
+ *
+ * So: share where sharing a file is possible, download where it is not.
+ * Returns which happened, so the caller can say so rather than claiming a
+ * save that went somewhere else.
+ *
+ * Called straight from the click handler's own promise chain. The share sheet
+ * needs the user gesture that started it and a browser will refuse one that
+ * arrives too long afterwards, which is why the picture is built before this
+ * is reached rather than inside it.
+ */
+export async function handOver(blob, filename, title = '') {
+  const type = blob.type || 'image/png';
+  try {
+    const file = new File([blob], filename, { type });
+    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title });
+      return 'shared';
+    }
+  } catch (err) {
+    // Cancelling the share sheet is not a failure and must not fall through
+    // to a download -- the person said no.
+    if (err?.name === 'AbortError') return 'cancelled';
+  }
+  download(blob, filename);
+  return 'downloaded';
+}
+
 export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = el('a', { href: url, download: filename });

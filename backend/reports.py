@@ -65,9 +65,31 @@ from . import places
 # guessing at them would be exactly the invention this module refuses to make
 # elsewhere. So these reports are identified and listed, and placed only if
 # the model is available to read them properly.
+# Posts that name a weapon and are not a report of one in the air.
+#
+# These were drawing a purple missile arrow over a town for saying that air
+# defence works, or that debris had been found, or that there was nothing up.
+# Each is a sentence with "ракета" or "missile" in it and no missile in it.
+#
+# Narrow on purpose. A wider "anything about air defence" would swallow "ППО
+# збила ракету над Києвом", which is a real event -- an interception -- and
+# belongs to the explosion pattern below rather than to nothing.
+NOT_A_REPORT = re.compile(
+    r"протиракетн|anti-?missile|missile\s+defen[cs]e"
+    r"|\bno\s+(?:missiles?|drones?|uavs?|threats?)\b",
+    re.I)
+
 KIND_WORDS: tuple[tuple[str, str], ...] = (
     ("explosion",
-     r"вибух|прильот|приліт|уражен|збит|сбит|взрыв|падіння уламк"
+     # "ракетний удар по Одесі" is a strike that has landed, not a missile
+     # on its way -- and it is how these posts are written. Without it the
+     # commonest strike sentence in the language drew an inbound missile.
+     # "збито" is the form these posts use most, but "ППО збила ракету" is
+     # the other one and the stem "збит" does not reach it. Both spelt out.
+     r"вибух|прильот|приліт|уражен|збит|збив|збил|сбит|сбил|взрыв"
+     r"|ракетн\w*\s+удар|ракетный\s+удар|удар\w*\s+по\s"
+     # Debris is by definition something that has come down.
+     r"|уламк|обломк|\bdebris\b"
      # Word boundaries on every English term, and they are not decoration:
      # "blast" without one is inside "Oblast", so before this every report
      # naming a Ukrainian region was filed as an explosion.
@@ -94,7 +116,16 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      # as a DRONE, so a warning being lifted put a drone in the air.
      r"|\balert (?:is )?(?:over|cleared|lifted)\b|\ball clear\b"
      r"|\b(?:threat|alert|alarm) (?:has been |is )?(?:cleared|lifted|over)\b"
-     r"|\bno longer\b.{0,20}\b(?:threat|alert)\b"),
+     r"|\bno longer\b.{0,20}\b(?:threat|alert)\b"
+     # "No threats currently" is a stand-down, and the alert pattern below
+     # matches the bare word "threats" -- so without this it raised a warning
+     # for a post saying there was none. Exactly the failure all_clear exists
+     # for, in English: "відбій тривоги" contains "тривога" the same way.
+     #
+     # Only the words about the WARNING state. "No missiles in the air" is
+     # about objects rather than about an alert, and lifting warnings on the
+     # strength of it would be a stronger act than the sentence supports.
+     r"|\bno\s+(?:current\s+)?(?:threats?|alerts?|alarms?)\b"),
     ("alert",
      r"повітряна тривога|тривога|воздушная тревога"
      r"|угроза|опасность|ракетная опасность|внимание|небезпек\w*"
@@ -705,6 +736,15 @@ def find_kind(text: str) -> str:
     low = text.lower()
     for kind, pattern in KIND_WORDS:
         if re.search(pattern, low):
+            # Checked here rather than before the loop, so an interception --
+            # "ППО збила ракету над Києвом" -- still reaches the explosion
+            # pattern above it. Only the kinds that would put an OBJECT in the
+            # air are second-guessed; a post about air defence working names a
+            # weapon and reports nothing flying.
+            if kind in ("cruise", "ballistic", "drone", "jet_drone", "recon",
+                        "kab", "aircraft", "helicopter") \
+                    and NOT_A_REPORT.search(low):
+                return "unknown"
             return kind
     return "unknown"
 

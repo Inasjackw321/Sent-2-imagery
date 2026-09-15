@@ -1297,3 +1297,66 @@ class TestThePositionIsNotTheDestination:
         """
         got = reports.read("Полтавщина: БпЛА над Сумщиною")
         assert got["place"] == "Сумська область"
+
+
+class TestNamingAWeaponIsNotReportingOne:
+    """The purple marks that popped up for no reason.
+
+    Each of these is a sentence with "ракета" or "missile" in it and no
+    missile in it, and each was drawing a purple arrow over a town: air
+    defence working, debris found, a strike that had already landed, or
+    nothing being up at all.
+    """
+
+    def test_air_defence_working_is_not_a_missile(self):
+        for text in ("Протиракетна оборона працює",
+                     "Anti-missile systems active",
+                     "anti missile defence over Kyiv",
+                     "Missile defense engaged"):
+            assert reports.find_kind(text) == "unknown", text
+
+    def test_nothing_in_the_air_is_not_something_in_the_air(self):
+        for text in ("No missiles in the air", "no drones reported",
+                     "No UAVs over the region"):
+            assert reports.find_kind(text) == "unknown", text
+
+    def test_no_threats_is_a_stand_down_rather_than_a_warning(self):
+        # The alert pattern matches the bare word "threats", so this raised a
+        # warning for a post saying there was none -- the same failure
+        # all_clear exists for, in English.
+        for text in ("No threats currently", "No alerts in force",
+                     "no alarm for Kursk Oblast"):
+            assert reports.find_kind(text) == "all_clear", text
+
+    def test_a_strike_that_landed_is_not_a_missile_in_flight(self):
+        # "ракетний удар по Одесі" is how these posts say a strike happened,
+        # and it is the commonest strike sentence in the language.
+        for text in ("Ракетний удар по Одесі", "Ракетный удар по Харькову",
+                     "Ракетна атака: удари по Дніпру"):
+            assert reports.find_kind(text) == "explosion", text
+
+    def test_debris_has_by_definition_come_down(self):
+        for text in ("Уламки ракети впали на Харківщині",
+                     "Missile debris found near Kharkiv",
+                     "обломки БПЛА"):
+            assert reports.find_kind(text) == "explosion", text
+
+    def test_an_interception_still_reaches_the_explosion_pattern(self):
+        """The guard must not swallow this one.
+
+        "ППО збила ракету над Києвом" names air defence AND a missile, and it
+        is a real event. It is checked after the kind has been decided, so an
+        interception is caught by the explosion pattern above and never
+        reaches the second-guessing at all -- which is why that check is
+        inside the loop rather than before it.
+        """
+        for text in ("ППО збила ракету над Києвом", "Збито БпЛА над Києвом",
+                     "Сбили беспилотник"):
+            assert reports.find_kind(text) == "explosion", text
+
+    def test_a_real_missile_report_is_untouched(self):
+        for text, want in (("Крилата ракета курсом на Київ", "cruise"),
+                           ("Missile heading north over Belgorod", "cruise"),
+                           ("Балістика на Дніпропетровщині", "ballistic"),
+                           ("Ракетна небезпека для Дніпра", "alert")):
+            assert reports.find_kind(text) == want, text

@@ -719,23 +719,37 @@ def borrow_course(events: list[dict[str, Any]],
     ones that lack their own, and marked as borrowed -- course_from is
     "group", the popup says so, and the arrow is drawn hollow.
 
-    It is an inference and it is labelled as one. What it is not is invented:
-    every degree of it came from a report, just not from that mark's own.
+    Only within a KIND, which is the whole of what makes the inference stand
+    up. A mass is whatever is within sixty kilometres of whatever else, so a
+    guided bomb sitting near a Shahed stream was in that stream's group and
+    was given its bearing -- an orange arrow pointing the way the drones were
+    going. A KAB is released from an aircraft near the line and glides tens of
+    kilometres; a Shahed crosses an oblast at a fifth of the speed on its own
+    errand. They are not one group going one way, and the sentence this
+    function rests on -- "things reported together like that are usually one
+    group" -- is only true of things of the same kind.
     """
     by_id = {str(e.get("id")): e for e in events}
     lent = 0
     for mass in masses:
-        course = mass.get("course")
-        if course is None:
-            continue
-        for ident in mass.get("ids", ()):
-            event = by_id.get(str(ident))
-            if event is None or event.get("heading") is not None:
+        members = [by_id[str(i)] for i in mass.get("ids", ()) if str(i) in by_id]
+        for kind in {m.get("kind") for m in members}:
+            same = [m for m in members if m.get("kind") == kind]
+            stated = [m["heading"] for m in same
+                      if m.get("heading") is not None
+                      and m.get("course_from") != "group"]
+            if not stated:
                 continue
-            event["heading"] = course
-            event["course_from"] = "group"
-            event["course_from_count"] = mass.get("course_from_count")
-            lent += 1
+            course = mean_bearing(stated)
+            if course is None:
+                continue
+            for event in same:
+                if event.get("heading") is not None:
+                    continue
+                event["heading"] = course
+                event["course_from"] = "group"
+                event["course_from_count"] = len(stated)
+                lent += 1
     return lent
 
 

@@ -3093,6 +3093,26 @@ class TestTheDrawingMoves:
         assert "region only" in text
         assert "if (regionOnly(event)) vague += 1;" in text
 
+    def test_the_picture_is_offered_to_the_share_sheet(self):
+        """A download is the wrong verb on a phone.
+
+        An <a download> saves into Files, which is not where anybody looks for
+        a picture -- "the image doesn\u2019t save to photos" is what that
+        feels like, and it is not a fault in the picture. The share sheet is
+        the route that offers "Save Image", and on iOS it is the only one.
+        """
+        ui = (pathlib.Path(__file__).resolve().parent.parent
+              / "frontend" / "js" / "ui.js").read_text(encoding="utf-8")
+        assert "export async function handOver" in ui
+        assert "navigator.canShare" in ui and "navigator.share" in ui
+        # And it still works where sharing a file is not possible.
+        block = ui[ui.index("export async function handOver"):]
+        block = block[:block.index("\n}")]
+        assert "download(blob, filename)" in block
+        assert "AbortError" in block, "cancelling is not a failure"
+        text = self.source()
+        assert "await handOver(blob," in text
+
     def test_the_picture_leaves_the_warnings_out(self):
         block = self.source()
         block = block[block.index("async function saveShot"):]
@@ -3493,3 +3513,75 @@ class TestADotOnlyWhereSomebodyGaveAPosition:
                  if e["kind"] != "alert" and e.get("heading") is None
                  and not e.get("area_only") and e.get("region_scope") != "located"]
         assert drawn, "the demo draws no courseless mark at a real position"
+
+
+class TestACourseIsLentWithinAKindOnly:
+    """The orange arrows pointing the way the drones were going.
+
+    A mass is whatever is within sixty kilometres of whatever else, so a
+    guided bomb near a Shahed stream was in that stream's group and was given
+    its bearing. A KAB is released from an aircraft near the line and glides
+    tens of kilometres; a Shahed crosses an oblast at a fifth of the speed on
+    its own errand. They are not one group going one way, and the sentence
+    this rests on -- "things reported together are usually one group" -- is
+    only true of things of the same kind.
+    """
+
+    def near(self, kind, heading, i):
+        return {"id": f"{kind}{i}", "kind": kind, "lat": 47.8 + i * 0.05,
+                "lon": 35.1 + i * 0.05, "seen": i, "heading": heading,
+                "course_from": "stated" if heading is not None else None}
+
+    def test_a_drone_lends_to_a_drone(self):
+        marks = [self.near("drone", 270.0, 0), self.near("drone", 275.0, 1),
+                 self.near("drone", None, 2)]
+        tracker.borrow_course(marks, tracker.massed(marks, least=2))
+        assert marks[2]["heading"] == pytest.approx(272.5, abs=0.6)
+        assert marks[2]["course_from"] == "group"
+
+    def test_a_drone_does_not_lend_to_a_bomb_or_a_missile(self):
+        marks = [self.near("drone", 270.0, 0), self.near("drone", 275.0, 1),
+                 self.near("bomb", None, 2), self.near("missile", None, 3)]
+        tracker.borrow_course(marks, tracker.massed(marks, least=2))
+        assert marks[2]["heading"] is None
+        assert marks[3]["heading"] is None
+
+    def test_a_missile_lends_to_a_missile_in_the_same_group(self):
+        # The rule is same-kind, not drones-only.
+        marks = [self.near("missile", 90.0, 0), self.near("missile", 95.0, 1),
+                 self.near("missile", None, 2), self.near("drone", None, 3)]
+        tracker.borrow_course(marks, tracker.massed(marks, least=2))
+        assert marks[2]["heading"] is not None
+        assert marks[3]["heading"] is None
+
+    def test_a_borrowed_course_is_never_lent_on(self):
+        """Across polls, which is the only way it can happen.
+
+        Marks persist between polls with the course they were lent, and
+        borrow_course runs again over them. Without excluding the borrowed
+        ones from the pool, one stated course spreads outwards a mass at a
+        time -- mark A lends to B, then B lends to C two hundred kilometres
+        away -- and the popup's "averaged from the N that reported a course"
+        becomes a fiction. Only what somebody actually stated is ever lent.
+        """
+        first = [self.near("drone", 270.0, 0), self.near("drone", None, 1)]
+        tracker.borrow_course(first, tracker.massed(first, least=2))
+        assert first[1]["course_from"] == "group"
+
+        # A second poll: the stated mark has gone, the borrowed one remains,
+        # and a new mark with no course turns up beside it.
+        later = [dict(first[1]), self.near("drone", None, 2)]
+        tracker.borrow_course(later, tracker.massed(later, least=2))
+        assert later[1]["heading"] is None, "a borrowed course was lent on"
+
+    def test_the_count_is_of_the_ones_that_actually_stated_it(self):
+        marks = [self.near("drone", 270.0, 0), self.near("drone", 274.0, 1),
+                 self.near("drone", None, 2)]
+        tracker.borrow_course(marks, tracker.massed(marks, least=2))
+        assert marks[2]["course_from_count"] == 2
+
+    def test_a_group_flying_apart_lends_nothing(self):
+        marks = [self.near("drone", 0.0, 0), self.near("drone", 180.0, 1),
+                 self.near("drone", None, 2)]
+        tracker.borrow_course(marks, tracker.massed(marks, least=2))
+        assert marks[2]["heading"] is None
