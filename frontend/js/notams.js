@@ -181,11 +181,24 @@ function paintDock(got) {
       n.wide ? `${Math.round(n.radius_km)} km — too wide to draw as a circle`
         : 'no position'))));
 
-  note.textContent = state
-    ? state
-    : `${got?.source ?? 'FAA NOTAM API'} — a NOTAM is a notice to aircraft, `
-      + 'not a report of anything in the air. Circles are a radius around a '
-      + 'point, not a surveyed boundary.';
+  if (state) {
+    note.textContent = state;
+    return;
+  }
+  // What was actually asked, and of whom. "It does not work" is otherwise
+  // unanswerable from the outside: an empty map means "nothing is closed" and
+  // "nothing was asked" and they look identical. This is the one line that
+  // tells them apart -- and it was not there when the layer was silently
+  // asking for a radius four times wider than the service accepts.
+  const asked = (got?.asked ?? []).join(', ');
+  note.textContent = `${got?.source ?? 'FAA NOTAM API'} — a NOTAM is a notice `
+    + 'to aircraft, not a report of anything in the air. Circles are a radius '
+    + 'around a point, not a surveyed boundary.'
+    + (asked ? ` Asked: ${asked}.` : '')
+    + (got?.partial ? ' This view is wider than one query covers — zoom in for'
+      + ' the rest.' : '')
+    + (got?.capped ? ` ${got.total} notices exist here; the first few hundred`
+      + ' were read.' : '');
 }
 
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g,

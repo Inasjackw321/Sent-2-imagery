@@ -750,70 +750,19 @@ function areaFor(event) {
   });
 }
 
-/**
- * Where a track has been REPORTED, drawn as a line that fades into the past.
- *
- * Every point in it is a position the source gave at a time it gave it.
- * Nothing is interpolated between them and nothing is extended past the last
- * one -- which is the difference between a trail and a predicted path, and
- * this map only has grounds to draw the first.
- *
- * Drawn as separate legs rather than one polyline because the whole point is
- * that the old end is fainter than the new end, and a polyline takes one
- * opacity. Twenty legs is cheap; the alternative is an SVG gradient per track,
- * which is a lot of machinery for a line.
- *
- * Returns null where there is nothing to draw: one point is a position, not a
- * path, and an areaOnly track has no positions at all -- only the middles of
- * provinces, which a line between would be a flight nobody reported.
- */
-function trailFor(event) {
-  const path = Array.isArray(event.trail) ? event.trail : [];
-  if (path.length < 2 || event.area_only) return null;
-  const colour = colourOf(event);
-  const legs = [];
-  for (let i = 1; i < path.length; i += 1) {
-    // Oldest leg faintest. The newest is still well under the mark's own
-    // weight, so the trail reads as history rather than as another object.
-    const through = i / (path.length - 1);
-    legs.push(L.polyline([[path[i - 1][0], path[i - 1][1]],
-                          [path[i][0], path[i][1]]], {
-      pane: 'trackerArea',
-      renderer: areaInk,
-      interactive: false,
-      className: 'ao-trail',
-      color: colour,
-      weight: 1 + through * 1.6,
-      opacity: 0.08 + through * 0.5,
-    }));
-  }
-  return legs;
-}
-
-/**
- * The part of the track nobody has confirmed: from the last reported position
- * to where the thing has been reckoned to since.
- *
- * Dashed, and drawn apart from the trail proper, because the difference
- * between the two is the whole of what makes this honest. The solid legs are
- * places a source said something was. This one is arithmetic. A viewer who
- * learns nothing else about this layer can still see where the reporting
- * stopped and the reckoning started, without opening anything.
- */
-function liveLegFor(event) {
-  if (event.area_only || !(driftKm(event) > 0)) return null;
-  const at = positionOf(event);
-  return L.polyline([[event.origin_lat, event.origin_lon], [at.lat, at.lon]], {
-    pane: 'trackerArea',
-    renderer: areaInk,
-    interactive: false,
-    className: 'ao-trail is-reckoned',
-    color: colourOf(event),
-    weight: 1.8,
-    opacity: 0.5,
-    dashArray: '3 5',
-  });
-}
+// No tracks, and that is a decision rather than an omission.
+//
+// There were two lines behind every mark: the legs joining the positions a
+// source had actually given, and a dashed tail for the part reckoned since
+// the last of them. Both were honest and both are gone, because on a map
+// carrying forty marks they were the noisiest thing in the frame -- twenty
+// legs per track, crossing each other, drawn under arrows two dozen pixels
+// wide. Asked for as "just the icons", and the icons are what is being
+// looked at.
+//
+// Nothing is lost that was not also said elsewhere: the mark still moves,
+// the popup still says how far it has been carried and from when, and the
+// arrow still points along the course.
 
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
@@ -982,11 +931,6 @@ function reconcile(events) {
       }
       held.event = event;
       held.marker.setLatLng(where);
-      // The reckoned tail is rebuilt rather than moved: a fresh report can
-      // turn drift on or off -- a track that stopped reporting a speed, or
-      // started -- and moving a line that should no longer exist would
-      // leave it on the map until the mark itself expired.
-      refreshLive(held);
       age(held);
       continue;
     }
@@ -997,11 +941,7 @@ function reconcile(events) {
     marker.addTo(layer);
     const area = hasArea(event) ? areaFor(event) : null;
     area?.addTo(areas);
-    const trail = trailFor(event);
-    trail?.forEach((leg) => leg.addTo(areas));
-    const live = liveLegFor(event);
-    live?.addTo(areas);
-    const made = { event, marker, area, trail, live };
+    const made = { event, marker, area };
     drawn.set(id, made);
     age(made);
   }
@@ -1009,8 +949,6 @@ function reconcile(events) {
     if (alive.has(id)) continue;
     layer.removeLayer(held.marker);
     if (held.area) areas.removeLayer(held.area);
-    held.trail?.forEach((leg) => areas.removeLayer(leg));
-    if (held.live) areas.removeLayer(held.live);
     drawn.delete(id);
   }
   declump();
@@ -1234,18 +1172,6 @@ function shift(held, el, dx, dy) {
   el.classList.toggle('is-moved', Boolean(dx || dy));
 }
 
-/** Put the reckoned tail back in step with the report just received. */
-function refreshLive(held) {
-  if (held.live) {
-    areas.removeLayer(held.live);
-    held.live = null;
-  }
-  const leg = liveLegFor(held.event);
-  if (!leg) return;
-  leg.addTo(areas);
-  held.live = leg;
-}
-
 // How often the moving marks are carried along, in milliseconds.
 //
 // A second. Fast enough that a Shahed at 180 km/h moves about fifty metres a
@@ -1273,8 +1199,6 @@ function slide() {
     const at = positionOf(held.event);
     if (!(at.carried > 0)) continue;
     held.marker.setLatLng([at.lat, at.lon]);
-    held.live?.setLatLngs([[held.event.origin_lat, held.event.origin_lon],
-      [at.lat, at.lon]]);
     moved = true;
   }
   // Only when something actually moved. On a map of warnings and nothing in

@@ -157,6 +157,119 @@ class TestWhetherItApplies:
             2026, 1, 1, tzinfo=dt.timezone.utc).timestamp()
 
 
+class TestAskingForSomethingTheServiceWillAnswer:
+    """Why the layer showed nothing.
+
+    A map of Ukraine is an 850-kilometre circle -- four hundred and sixty
+    nautical miles -- and their API refuses a locationRadius past a hundred.
+    So every request at the zoom anybody actually uses this map at was
+    rejected before it was read, and the layer was doing the right thing with
+    the answer it got: the answer was "no".
+
+    The fix is both a cap and a better query. A country-sized view is one or
+    two flight information regions, and a notice that closes a whole FIR is
+    filed against the FIR rather than against a point in it.
+    """
+
+    def asked(self, monkeypatch, box):
+        seen = []
+
+        def watch(params):
+            seen.append(params)
+            return {"items": [], "totalCount": 0}
+
+        monkeypatch.setattr(notams, "_ask", watch)
+        notams.forget()
+        notams.over(*box)
+        return seen
+
+    def test_a_country_sized_view_asks_by_region(self, monkeypatch):
+        seen = self.asked(monkeypatch, (22.0, 44.0, 40.4, 52.5))
+        assert seen, "nothing was asked at all"
+        assert all("icaoLocation" in p for p in seen)
+        codes = {p["icaoLocation"] for p in seen}
+        assert "UKBV" in codes and "UKLV" in codes
+
+    def test_it_never_asks_for_a_radius_the_service_refuses(self, monkeypatch):
+        """Against the number in their documentation, not against our own.
+
+        Asserting `<= MOST_NM` proved nothing: raising MOST_NM raises the cap
+        AND the thing it is checked against, so the test passed with the cap
+        set to the very value that was being rejected. A hundred nautical
+        miles is their limit and it is written here as a hundred.
+        """
+        assert notams.MOST_NM <= 100.0
+        # Anywhere, at any zoom, including the corner of the world with no
+        # region in the table.
+        for box in ((22.0, 44.0, 40.4, 52.5), (-120.0, 20.0, -100.0, 40.0),
+                    (-10.0, -60.0, 60.0, 60.0), (30.2, 50.2, 30.8, 50.6)):
+            for params in self.asked(monkeypatch, box):
+                if "locationRadius" in params:
+                    assert params["locationRadius"] <= 100, box
+
+    def test_a_view_with_no_known_region_falls_back_to_a_radius(self, monkeypatch):
+        seen = self.asked(monkeypatch, (-120.0, 20.0, -100.0, 40.0))
+        assert len(seen) == 1
+        assert "locationRadius" in seen[0]
+
+    def test_and_says_so_when_that_leaves_part_of_it_unasked(self, monkeypatch):
+        monkeypatch.setattr(notams, "_ask",
+                            lambda params: {"items": [], "totalCount": 0})
+        notams.forget()
+        wide = notams.over(-120.0, 20.0, -100.0, 40.0)
+        assert wide["partial"] is True
+        notams.forget()
+        small = notams.over(-110.2, 29.8, -109.8, 30.2)
+        assert small["partial"] is False
+
+    def test_it_says_what_it_asked(self):
+        # "It does not work" is otherwise unanswerable from the outside:
+        # nothing closed and nothing asked look identical on a map.
+        got = notams.demo()
+        assert got["asked"]
+
+    def test_the_regions_a_view_touches_are_nearest_first(self):
+        """So a cap that bites drops the edges rather than the middle.
+
+        Checked over Odesa rather than over Kyiv, because Kyiv's region is
+        first in the table anyway -- that test passed with the sort deleted
+        and was measuring the order the table happens to be written in.
+        """
+        over_odesa = notams.firs_over(29.0, 45.0, 34.0, 50.0)
+        codes = [c for c, _ in over_odesa]
+        assert codes[0] == "UKOV"
+        # Kyiv's region is first in the table and further from this view, so
+        # a table-order answer would put it ahead of Odesa's.
+        assert codes.index("UKOV") < codes.index("UKBV")
+
+    def test_a_view_over_one_region_asks_about_one(self):
+        assert [c for c, _ in notams.firs_over(29.5, 50.0, 30.5, 51.0)] == ["UKBV"]
+
+    def test_the_number_of_regions_asked_about_is_bounded(self):
+        # Half of Europe is not a reason to make thirty requests.
+        assert len(notams.firs_over(-10.0, 35.0, 60.0, 70.0)) <= notams.MOST_FIRS
+
+    def test_every_region_in_the_table_is_a_four_letter_icao_code(self):
+        for code, name, south, west, north, east in notams.FIRS:
+            assert len(code) == 4 and code.isupper(), code
+            assert name, code
+            assert -90 <= south < north <= 90, code
+            assert -180 <= west < east <= 180, code
+
+    def test_one_notice_filed_against_two_regions_is_kept_once(self, monkeypatch):
+        # A FIR boundary runs through plenty of them, and the same number
+        # arriving twice would draw two circles on one point.
+        one = {"properties": {"coreNOTAMData": {"notam": {
+            "number": "A9/26", "location": "UKBV", "coordinates": "5020N03030E",
+            "radius": 10, "effectiveStart": "2026-01-01T00:00:00Z",
+            "effectiveEnd": "PERM", "text": "SAME NOTICE, TWO REGIONS"}}}}
+        monkeypatch.setattr(notams, "_ask",
+                            lambda params: {"items": [one], "totalCount": 1})
+        notams.forget()
+        got = notams.over(22.0, 44.0, 40.4, 52.5)
+        assert len(got["notams"]) == 1
+
+
 class TestTheCircleThatCoversTheView:
     """Their API asks for a circle and a map shows a rectangle."""
 

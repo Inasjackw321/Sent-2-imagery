@@ -866,26 +866,6 @@ REGION_KINDS = ("administrative", "state", "region", "province", "county",
                 "district", "governorate", "emirate", "country")
 
 
-def ahead(lat: float, lon: float, bearing: float, km: float) -> tuple[float, float]:
-    """The point km away on a bearing. The inverse of bearing(), on a sphere.
-
-    Used by the DEMO only, to walk a track backwards along its own course so
-    the offline build has a trail to draw. Nothing on the live path invents a
-    position: a trail there is only ever the positions a feed actually gave.
-    """
-    angle = km / EARTH_KM
-    course = math.radians(bearing)
-    was = math.radians(lat)
-    sin_lat = (math.sin(was) * math.cos(angle)
-               + math.cos(was) * math.sin(angle) * math.cos(course))
-    now_lat = math.asin(max(-1.0, min(1.0, sin_lat)))
-    now_lon = math.radians(lon) + math.atan2(
-        math.sin(course) * math.sin(angle) * math.cos(was),
-        math.cos(angle) - math.sin(was) * math.sin(now_lat))
-    return (round(math.degrees(now_lat), 4),
-            round((math.degrees(now_lon) + 540) % 360 - 180, 4))
-
-
 def is_region(place: dict[str, Any]) -> bool:
     """Whether a match is an area in its own right rather than a spot in one."""
     if place.get("category") == "boundary":
@@ -1566,7 +1546,6 @@ def reset() -> None:
     """Forget everything read so far. For tests and for starting over."""
     global _counter, _state, _last_poll, _polling
     with _lock:
-        _trails.clear()
         _dismissed.clear()
         _seen.clear()
         _events.clear()
@@ -1601,57 +1580,7 @@ def _remember_sources(seen_now: dict[str, dict[str, Any]]) -> None:
 # ATTRIBUTION below carries the link itself.
 NEPTUN_SOURCE = "neptun.in.ua"
 
-# Where each NEPTUN track has been REPORTED, oldest first: [lat, lon, when].
-#
-# Every point in here is a position their feed gave for that track at a time
-# it gave it. Nothing is interpolated between them and nothing is extended
-# past the last one -- a trail is a record of where a thing was said to be,
-# which is a different claim from a predicted path and the only one this app
-# is in a position to make.
-#
-# Kept here rather than on the event because the events are rebuilt from the
-# snapshot on every poll: the track is the same track, and its history has to
-# outlive the mark that represents it.
-_trails: dict[str, list[list[float]]] = {}
-
 # Whether the one-off catch-up has run this session.
-
-# How long a trail is. Their snapshot updates every few seconds and this app
-# polls every thirty, so twenty points is about ten minutes of flight -- long
-# enough to read the direction of travel off the shape, short enough that a
-# busy night is not a plate of spaghetti.
-TRAIL_POINTS = 20
-
-# And how old a point may be before it is dropped, whatever the count. A trail
-# that outlives its own mark is a line to nowhere.
-TRAIL_MINUTES = 30.0
-
-
-def remember_where(ident: str, lat: float, lon: float, when: float) -> list[list[float]]:
-    """Add a reported position to a track's trail and return the whole of it."""
-    path = _trails.setdefault(ident, [])
-    # The same position reported again is not a new point. Their snapshot is
-    # polled far more often than a track actually moves, so without this a
-    # stationary track accumulates twenty identical points and draws nothing.
-    if path and abs(path[-1][0] - lat) < 1e-4 and abs(path[-1][1] - lon) < 1e-4:
-        path[-1][2] = when
-        return path
-    path.append([lat, lon, when])
-    oldest = when - TRAIL_MINUTES * 60
-    path[:] = [point for point in path if point[2] >= oldest][-TRAIL_POINTS:]
-    return path
-
-
-def forget_trails(keep: set[str] | None = None) -> int:
-    """Drop the trails of tracks that are no longer in the snapshot."""
-    if keep is None:
-        gone = len(_trails)
-        _trails.clear()
-        return gone
-    stale = [ident for ident in _trails if ident not in keep]
-    for ident in stale:
-        del _trails[ident]
-    return len(stale)
 
 
 # How far back the catch-up reads on a cold start.
@@ -1827,12 +1756,6 @@ def take_neptun() -> tuple[int, int]:
             continue
         drawn += 1
         _record_neptun(track, now)
-    # A track gone from the snapshot has ended, and its trail goes with it.
-    # Only when there WAS a snapshot: on a poll where the tracks were not due,
-    # every trail on the map would otherwise be thrown away as ended.
-    if tracks is not None:
-        forget_trails(alive)
-
     raised = 0
     for alert in declared or ():
         ident = f"NP-alert-{alert.get('key') or alert['name']}"
@@ -1908,12 +1831,6 @@ def _record_neptun(track: dict[str, Any], now: float) -> None:
         # and it is what lets the mark move between snapshots instead of
         # sitting still for thirty seconds and then jumping. See project().
         "confirmed_at": track["confirmed_at"],
-        # Where this track has been reported, oldest first. An areaOnly track
-        # gets none: its positions are province centroids, so a line joining
-        # them would be a path between two middles-of-nowhere drawn as though
-        # something had flown it.
-        "trail": ([] if area_only
-                  else remember_where(ident, track["lat"], track["lon"], now)),
         "seen": now,
         "channel": NEPTUN_SOURCE,
         "text": track["summary"] or "",
@@ -2759,19 +2676,6 @@ def demo() -> dict[str, Any]:
             {**raw, "confirmedAt": _demo_stamp(now - 90)})
         if not track:
             continue
-        # A few earlier positions, so the demo can show a trail at all.
-        #
-        # Walked BACKWARDS along the track's own stated course from where it
-        # is now, which is the one place in this app that makes up a position
-        # -- and it is the demo, whose whole contract is that its reports are
-        # invented. The live path never does this: a trail there is only ever
-        # positions the feed actually gave.
-        if track["heading"] is not None and not track["area_only"]:
-            back = (track["heading"] + 180) % 360
-            for step in range(4, 0, -1):
-                was = ahead(track["lat"], track["lon"], back, step * 14.0)
-                remember_where(f"NP-{track['id']}", was[0], was[1],
-                               epoch - 240 - step * 90)
         _record_neptun(track, epoch - 240)
     with _lock:
         # Aged like everything else in here. Without this they sat on the map

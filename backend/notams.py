@@ -86,6 +86,45 @@ DEFAULT_NM = 5.0
 # as a disc pretending to be a boundary.
 MOST_KM = 400.0
 
+# The furthest their radius query will go, in nautical miles.
+#
+# This is why the layer showed nothing. A map of Ukraine is an 850-kilometre
+# circle -- four hundred and sixty nautical miles -- and their API refuses a
+# locationRadius past a hundred, so every request at the zoom anybody
+# actually uses this map at was rejected before it was read. The layer was
+# doing the right thing with the answer it got, and the answer was "no".
+MOST_NM = 100.0
+
+# The flight information regions this app's subject is in, as rough boxes.
+#
+# Asking by FIR rather than by radius is both the fix for the cap above and
+# the better query: a country-sized view is one or two of these instead of a
+# grid of circles, and a notice that closes a whole FIR is FILED against that
+# FIR rather than against a point in it.
+#
+# The boxes are approximate and only ever used to decide which FIR to ask
+# about. Nothing is drawn from them, so a box that is too generous costs one
+# extra request and a box that is too mean costs a missed region -- never a
+# mark in the wrong place. Same for the codes: a wrong one comes back empty,
+# which the panel says, rather than coming back wrong.
+FIRS: tuple[tuple[str, str, float, float, float, float], ...] = (
+    # code,  name,          south, west,  north, east
+    ("UKBV", "Kyiv",         48.3,  28.0,  52.4,  35.6),
+    ("UKLV", "Lviv",         47.7,  22.1,  51.6,  28.6),
+    ("UKOV", "Odesa",        44.9,  28.0,  48.8,  33.6),
+    ("UKDV", "Dnipro",       46.4,  33.0,  50.6,  40.3),
+    ("UKFV", "Simferopol",   43.3,  32.0,  46.3,  36.7),
+    ("UMMV", "Minsk",        51.2,  23.0,  56.3,  33.0),
+    ("UUWV", "Moscow",       51.8,  30.0,  60.2,  45.5),
+    ("URRV", "Rostov",       43.5,  36.0,  52.6,  48.5),
+    ("LUUU", "Chisinau",     45.4,  26.6,  48.6,  30.2),
+    ("LRBB", "Bucharest",    43.5,  20.2,  48.4,  29.8),
+    ("EPWW", "Warsaw",       48.9,  14.1,  55.0,  24.3),
+)
+
+# A bound on how many of them one view asks about.
+MOST_FIRS = 8
+
 
 class NotamError(RuntimeError):
     pass
@@ -266,31 +305,30 @@ def _ask(params: dict[str, Any]) -> dict[str, Any]:
     return got if isinstance(got, dict) else {}
 
 
-def around(lat: float, lon: float, radius_km: float) -> dict[str, Any]:
-    """Every notice in force within a radius of a point.
+def firs_over(west: float, south: float, east: float,
+              north: float) -> list[tuple[str, str]]:
+    """Which flight information regions a rectangle touches, nearest first.
 
-    A circle rather than the map's rectangle, because that is the query their
-    API takes. The caller passes the circle that covers what is on screen,
-    which is a little more than the screen and never less.
+    Nearest to the middle of the view first, so a cap that bites drops the
+    edges rather than the thing being looked at.
     """
-    radius_nm = max(1.0, min(500.0, radius_km / NM_KM))
-    key = f"{round(lat, 2)}/{round(lon, 2)}/{round(radius_nm)}"
-    now = time.time()
-    with _lock:
-        held = _cache.get(key)
-        if held and now - held[0] < KEEP_SECONDS:
-            return held[1]
+    lat = (south + north) / 2
+    lon = (west + east) / 2
+    touching = []
+    for code, name, fs, fw, fn, fe in FIRS:
+        if fw > east or fe < west or fs > north or fn < south:
+            continue
+        away = _apart(lat, lon, (fs + fn) / 2, (fw + fe) / 2)
+        touching.append((away, code, name))
+    touching.sort()
+    return [(code, name) for _, code, name in touching[:MOST_FIRS]]
 
-    found: list[dict[str, Any]] = []
+
+def _walk(params: dict[str, Any], found: list[dict[str, Any]]) -> int:
+    """Read every page of one query into `found`. Returns their total."""
     total = 0
     for page in range(1, MOST_PAGES + 1):
-        got = _ask({
-            "locationLongitude": round(lon, 4),
-            "locationLatitude": round(lat, 4),
-            "locationRadius": round(radius_nm),
-            "pageSize": PER_PAGE,
-            "pageNum": page,
-        })
+        got = _ask({**params, "pageSize": PER_PAGE, "pageNum": page})
         items = got.get("items")
         if not isinstance(items, list):
             break
@@ -301,16 +339,72 @@ def around(lat: float, lon: float, radius_km: float) -> dict[str, Any]:
         total = int(_number(got.get("totalCount")) or 0) or total
         if len(items) < PER_PAGE:
             break
+    return total
 
-    live = [n for n in found if in_force(n, now)]
+
+def over(west: float, south: float, east: float,
+         north: float) -> dict[str, Any]:
+    """Every notice in force over a rectangle.
+
+    By flight information region where the view is in one this knows, and by
+    radius otherwise. The FIR query is the important half: their radius query
+    stops at a hundred nautical miles, and a map of a country is four or five
+    times that, so asking by radius at any useful zoom was asking for a
+    refusal.
+    """
+    now = time.time()
+    regions = firs_over(west, south, east, north)
+    key = ("fir:" + ",".join(code for code, _ in regions)) if regions else (
+        f"box:{round(west, 1)}/{round(south, 1)}/{round(east, 1)}/{round(north, 1)}")
+    with _lock:
+        held = _cache.get(key)
+        if held and now - held[0] < KEEP_SECONDS:
+            return held[1]
+
+    found: list[dict[str, Any]] = []
+    total = 0
+    asked: list[str] = []
+    short = False
+    if regions:
+        for code, name in regions:
+            total += _walk({"icaoLocation": code}, found)
+            asked.append(f"{code} ({name})")
+    else:
+        lat, lon, radius_km = bounds_circle(west, south, east, north)
+        wanted_nm = radius_km / NM_KM
+        # Their cap, honoured rather than discovered: asking for more is a
+        # rejected request, and a rejected request looks like an empty sky.
+        short = wanted_nm > MOST_NM
+        total = _walk({
+            "locationLongitude": round(lon, 4),
+            "locationLatitude": round(lat, 4),
+            "locationRadius": round(max(1.0, min(MOST_NM, wanted_nm))),
+        }, found)
+        asked.append(f"{round(min(MOST_NM, wanted_nm))} NM around "
+                     f"{lat:.2f},{lon:.2f}")
+
+    # One notice can be filed against two adjacent FIRs, so the same number
+    # arrives twice. Kept once, and the first reading wins.
+    seen: dict[str, dict[str, Any]] = {}
+    for one in found:
+        seen.setdefault(one["id"], one)
+    live = [n for n in seen.values() if in_force(n, now)]
+
     answer = {
         "notams": [n for n in live if n["placed"]],
         "unplaced": [n for n in live if not n["placed"]],
         "count": len(live),
         # How many their service says there are, so a page cap that bites is
         # visible rather than looking like a quiet sky.
-        "total": total or len(found),
-        "capped": total > len(found) if total else False,
+        "total": total or len(seen),
+        "capped": total > len(seen) if total else False,
+        # Which query was actually made. "It does not work" is otherwise
+        # unanswerable from the outside, and this is the one fact that
+        # separates "nothing is closed" from "nothing was asked".
+        "asked": asked,
+        # True when the view is wider than one radius query can cover and no
+        # FIR was known for it, so part of it was not looked at.
+        "partial": short,
         "source": "FAA NOTAM API",
     }
     with _lock:
@@ -425,5 +519,7 @@ def demo() -> dict[str, Any]:
         "count": len(live),
         "total": len(live),
         "capped": False,
+        "asked": ["demo — nothing was asked of anybody"],
+        "partial": False,
         "source": "demo — invented notices",
     }

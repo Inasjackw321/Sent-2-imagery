@@ -347,9 +347,8 @@ def airspace_notices(
                 "capped": False, "configured": False,
                 "source": "FAA NOTAM API",
                 "problem": "no FAA key is set, so no notices can be fetched"}
-    lat, lon, radius = notams.bounds_circle(west, south, east, north)
     try:
-        return {**notams.around(lat, lon, radius), "configured": True}
+        return {**notams.over(west, south, east, north), "configured": True}
     except notams.NotamError as exc:
         raise _fail(exc)
 

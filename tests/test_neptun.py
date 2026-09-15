@@ -596,97 +596,45 @@ class TestTheDemoShowsTheFeed:
         assert rows == drawn
 
 
-class TestTheTrail:
-    """Where a track has BEEN, which is not where it is going.
+class TestNoTracksAreDrawn:
+    """The lines behind the marks are gone, and the machinery with them.
 
-    Every point is a position their feed gave at a time it gave it. Nothing is
-    interpolated between them and nothing is extended past the last one --
-    which is the whole difference between a trail and a predicted path, and
-    this app only has grounds to draw the first.
+    There were two: the legs joining the positions a source had actually
+    given, and a dashed tail for the part reckoned since the last of them.
+    Both were honest. On a map carrying forty marks they were also the
+    noisiest thing in the frame -- twenty legs per track, crossing each other,
+    under arrows two dozen pixels wide.
+
+    Removed rather than switched off. The trail was kept in a dict outside the
+    events, rebuilt on every poll and pruned by age; keeping all of that to
+    feed a drawing nobody makes is the kind of thing that rots.
     """
 
-    def setup_method(self):
-        tracker.reset()
-
-    def teardown_method(self):
-        tracker.reset()
-
-    def fly(self, monkeypatch, *lons, ident="t1"):
-        for lon in lons:
-            track = neptun.read_threat({**ONE_THREAT, "id": ident, "lon": lon})
-            monkeypatch.setattr(neptun, "threats", lambda t=track: [t])
-            monkeypatch.setattr(neptun, "alerts", lambda: [])
-            tracker.take_neptun()
-        return tracker.current()["events"][0]
-
-    def test_it_collects_the_positions_that_were_reported(self, monkeypatch):
-        got = self.fly(monkeypatch, 30.0, 30.5, 31.0)
-        assert [round(p[1], 1) for p in got["trail"]] == [30.0, 30.5, 31.0]
-
-    def test_the_same_position_twice_is_not_two_points(self, monkeypatch):
-        # Their snapshot is polled far more often than a track actually moves,
-        # so without this a stationary track collects twenty identical points
-        # and draws nothing at all.
-        got = self.fly(monkeypatch, 30.0, 30.0, 30.0, 30.5)
-        assert len(got["trail"]) == 2
-
-    def test_it_is_bounded(self, monkeypatch):
-        got = self.fly(monkeypatch, *[30.0 + i * 0.2 for i in range(40)])
-        assert len(got["trail"]) <= tracker.TRAIL_POINTS
-
-    def test_an_area_only_track_gets_none(self, monkeypatch):
-        """Its positions are province centroids, not places.
-
-        A line joining two of those would be a flight between two
-        middles-of-nowhere, drawn as though something had flown it.
-        """
+    def test_no_trail_is_sent_with_a_track(self, monkeypatch):
         monkeypatch.setattr(neptun, "threats",
-                            lambda: [neptun.read_threat(area_only())])
+                            lambda: [neptun.read_threat(ONE_THREAT)])
         monkeypatch.setattr(neptun, "alerts", lambda: [])
+        tracker.reset()
         tracker.take_neptun()
-        tracker.take_neptun()
-        assert tracker.current()["events"][0]["trail"] == []
+        got = tracker.current()["events"][0]
+        assert "trail" not in got
 
-    def test_a_track_that_ends_takes_its_trail_with_it(self, monkeypatch):
-        # Otherwise a line hangs on the map with nothing at the end of it.
-        self.fly(monkeypatch, 30.0, 30.5)
-        assert tracker._trails
-        monkeypatch.setattr(neptun, "threats", lambda: [])
-        monkeypatch.setattr(neptun, "alerts", lambda: [])
-        tracker.take_neptun()
-        assert not tracker._trails
+    def test_the_machinery_behind_it_is_gone_too(self):
+        for name in ("_trails", "remember_where", "forget_trails",
+                     "TRAIL_POINTS", "TRAIL_MINUTES", "ahead"):
+            assert not hasattr(tracker, name), name
 
-    def test_two_tracks_keep_their_own(self, monkeypatch):
-        first = neptun.read_threat({**ONE_THREAT, "id": "a", "lon": 30.0})
-        second = neptun.read_threat({**ONE_THREAT, "id": "b", "lon": 35.0})
-        monkeypatch.setattr(neptun, "threats", lambda: [first, second])
-        monkeypatch.setattr(neptun, "alerts", lambda: [])
-        tracker.take_neptun()
-        moved = neptun.read_threat({**ONE_THREAT, "id": "a", "lon": 30.5})
-        monkeypatch.setattr(neptun, "threats", lambda: [moved, second])
-        tracker.take_neptun()
-        # Keyed by id: both tracks are over the same town in their example,
-        # so keying by place collapsed them and the test compared one trail
-        # with itself.
-        trails = {e["id"]: e["trail"] for e in tracker.current()["events"]}
-        assert len(trails) == 2
-        assert sorted(len(v) for v in trails.values()) == [1, 2]
+    def test_the_demo_sends_none_either(self):
+        assert not [e for e in tracker.demo()["events"] if e.get("trail")]
 
-    def test_the_demo_has_one_to_look_at(self):
-        # Walked backwards along the track's own stated course, which is the
-        # one place in this app that makes up a position -- and it is the
-        # demo, whose contract is that its reports are invented.
-        got = [e for e in tracker.demo()["events"]
-               if e.get("by") == "neptun" and len(e.get("trail") or []) > 1]
-        assert got, "the offline build cannot show a trail"
+    def test_the_marks_still_move(self):
+        # The trail is what went; the movement is not. A mark with a source's
+        # own course and speed is still carried along from the last position
+        # that source confirmed.
+        moving = [e for e in tracker.demo()["events"]
+                  if e.get("drift_minutes") is not None]
+        assert moving
 
-    def test_the_live_path_never_invents_one(self, monkeypatch):
-        # ahead() exists for the demo. A trail on a real track is only ever
-        # the positions the feed gave, so one poll is one point.
-        monkeypatch.setattr(tracker, "ahead", lambda *a, **k: (
-            _ for _ in ()).throw(AssertionError("the live path must not")))
-        got = self.fly(monkeypatch, 30.0)
-        assert len(got["trail"]) == 1
 
 
 class TestTheirSpeed:
@@ -1316,25 +1264,6 @@ class TestOneRefusalDoesNotLoseTheOther:
         assert drawn == len(tracks)
         assert [e for e in tracker.current()["events"]
                 if e.get("by") == "neptun" and e["kind"] != "alert"]
-
-    def test_a_trail_is_not_thrown_away_when_the_snapshot_was_not_due(
-            self, monkeypatch):
-        # forget_trails() treats "not in the snapshot" as "this track has
-        # ended". With no snapshot at all that would end every track there is.
-        monkeypatch.setattr(neptun, "threats",
-                            lambda: [neptun.read_threat(ONE_THREAT)])
-        monkeypatch.setattr(neptun, "alerts", lambda: [])
-        tracker.take_neptun()
-        tracker.take_neptun()
-        kept = len(tracker._trails)
-        assert kept
-
-        monkeypatch.setattr(neptun, "threats", lambda: (_ for _ in ()).throw(
-            neptun.TooSoon("not due")))
-        monkeypatch.setattr(neptun, "alerts",
-                            lambda: neptun.read_alerts(DECLARED))
-        tracker.take_neptun()
-        assert len(tracker._trails) == kept
 
     def test_both_refused_is_still_a_skip(self, monkeypatch):
         # Neither was due: nothing is cleared, nothing is drawn, and the

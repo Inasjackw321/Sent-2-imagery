@@ -2984,23 +2984,35 @@ class TestTheDrawingMoves:
         assert "Date.now() - feedAt" in block
         assert "event.drift_minutes" in block
 
-    def test_the_reckoned_part_of_a_track_is_drawn_apart_from_the_reported(self):
-        # The solid legs are positions somebody reported. The dashed one is
-        # this app's arithmetic, and a viewer can see the difference without
-        # opening anything.
-        text = self.source()
-        assert "function liveLegFor" in text
-        block = text[text.index("function liveLegFor"):]
-        block = block[:block.index("\n}")]
-        assert "dashArray" in block
+    def test_nothing_draws_a_track_behind_a_mark(self):
+        """The lines are gone, and the machinery with them.
 
-    def test_an_area_only_track_is_never_carried_anywhere(self):
-        # "Without extrapolation." Their rule, and the backend keeps it by
-        # sending no anchor -- but the reckoned tail checks it too, because
-        # that line would otherwise be drawn from a province's centroid.
-        block = self.source()
-        block = block[block.index("function liveLegFor"):]
-        assert "event.area_only" in block[:block.index("\n}")]
+        There were two: the legs joining the positions a source had given,
+        and a dashed tail for the part reckoned since the last of them. Both
+        were honest, and on a map carrying forty marks both were the noisiest
+        thing in the frame -- twenty legs per track, crossing each other,
+        under arrows two dozen pixels wide.
+
+        Removed rather than switched off, on both ends: a drawing nothing can
+        reach is one nobody would notice breaking, and a trail kept in the
+        backend to feed a drawing nobody makes is the kind of thing that rots.
+        """
+        text = self.source()
+        for gone in ("function trailFor", "function liveLegFor",
+                     "function refreshLive", "ao-trail", "held.trail",
+                     "held.live"):
+            assert gone not in text, gone
+        css = (pathlib.Path(__file__).resolve().parent.parent
+               / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
+        assert ".ao-trail" not in css
+
+    def test_the_marks_still_move(self):
+        # The trail is what went. A mark with a source's own course and speed
+        # is still carried along, and the popup still says how far and from
+        # when -- which is where that claim belonged all along.
+        text = self.source()
+        assert "function slide()" in text
+        assert "Carried " in text
 
     def test_no_number_is_drawn_on_a_mark(self):
         """Said twice from the other side of the screen, and gone.
@@ -3609,6 +3621,18 @@ class TestTheClosedAirspaceLayer:
         assert "got.configured === false" in text
         block = text[text.index("function paintDock"):]
         assert "Not available" in block
+
+    def test_it_says_what_it_asked_and_of_whom(self):
+        """The line that separates "nothing is closed" from "nothing was asked".
+
+        An empty map means both and looks the same for both, which is exactly
+        how the layer sat there showing nothing while every request it made
+        was being rejected for asking a radius four times wider than the
+        service accepts.
+        """
+        text = self.source()
+        assert "got?.asked" in text
+        assert "got?.partial" in text
 
     def test_a_closure_is_not_coloured_like_a_threat(self):
         # Amber is a warning, purple a missile, yellow a drone. A NOTAM is a
