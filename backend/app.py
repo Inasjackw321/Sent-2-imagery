@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, copernicus, fires, gazetteer, mtg, notams,
+    aisstream, composite, config, copernicus, fires, gazetteer, mtg,
     ollama, passes, seismic, service, stac, tracker, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
@@ -325,29 +325,6 @@ def tracker_events() -> dict:
         answer = tracker.current()
         answer["state"] = str(exc)
         return answer
-
-
-@app.get("/api/notams")
-def airspace_notices(
-    west: float = Query(..., ge=-180, le=180),
-    south: float = Query(..., ge=-90, le=90),
-    east: float = Query(..., ge=-180, le=180),
-    north: float = Query(..., ge=-90, le=90),
-) -> dict:
-    """The NOTAMs in force over a rectangle: which airspace is closed, and when.
-
-    No key is needed. There are two ways in and the keyless one is the
-    default -- see backend/notams.py. A key makes it the documented API
-    instead, which is better, and not having one is no longer the difference
-    between a layer and a message saying to go and register.
-    """
-    if config.DEMO_MODE:
-        return {**notams.demo(), "configured": True}
-    try:
-        return {**notams.over(west, south, east, north),
-                "configured": notams.configured()}
-    except notams.NotamError as exc:
-        raise _fail(exc)
 
 
 @app.get("/api/tracker/outlines")

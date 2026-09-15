@@ -84,6 +84,9 @@ MESSAGES = f"{BASE}/api/v1/messages"
 ATTRIBUTION = {
     "text": "Дані: Карта повітряних тривог — NEPTUN",
     "english": "Data: Ukraine air-alert map — NEPTUN",
+    # For a picture, where there is no room for a link and nobody can click
+    # one anyway. Says who supplied it, which is the part that has to travel.
+    "picture": "Data supplied by NEPTUN — neptun.in.ua",
     "url": f"{BASE}/",
     # Theirs, verbatim in substance: an aggregator, not an official alert
     # system. Anything about human safety has to say so.

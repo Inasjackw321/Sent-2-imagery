@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend import neptun, notams
+from backend import neptun
 
 
 @pytest.fixture(autouse=True)
@@ -34,29 +34,3 @@ def no_neptun_network(monkeypatch):
     neptun.forget()
     yield
     neptun.forget()
-
-
-@pytest.fixture(autouse=True)
-def no_notam_network(monkeypatch):
-    """And no test reaches the FAA either.
-
-    Same reasoning as above and the same shape: stubbed at _ask, the single
-    point where this module touches the network, so an endpoint added later
-    is caught by the same stub rather than quietly escaping it.
-    """
-    def refuse(*a, **kw):
-        raise notams.NotamError("the test suite does not reach the network")
-
-    monkeypatch.setattr(notams, "unstubbed_ask", notams._ask, raising=False)
-    monkeypatch.setattr(notams, "_ask", refuse)
-    # Every way in. There are three sources now -- a keyed API, a keyless
-    # search and DINS -- and stubbing only the first would let the others
-    # reach the network the moment no key was set, which is the default.
-    # _prime too: it fetches a page before the post and swallows its own
-    # failures, so an unstubbed one would be a silent twenty-second wait.
-    monkeypatch.setattr(notams, "_ask_search", refuse)
-    monkeypatch.setattr(notams, "_ask_dins", refuse)
-    monkeypatch.setattr(notams, "_prime", lambda force=False: None)
-    notams.forget()
-    yield
-    notams.forget()

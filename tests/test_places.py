@@ -195,3 +195,56 @@ class TestRegionsAreDrawnTheSizeTheyAre:
         # Which is how it arrives, since that channel posts in English.
         got = places.lookup("Bashkortostan republic")
         assert got["bbox"][1] - got["bbox"][0] > places.OBLAST_HALF * 2
+
+
+class TestTheWordTheRussianSideActuallyWrites:
+    """"Belgorod region" and "Belgorod oblast" are the same province.
+
+    The alias table is keyed with "oblast" because that is the spelling this
+    reader was first shown. The channel that covers the Russian side posts in
+    English and writes "region" -- so on a night of real posts, seventeen of
+    twenty-one warnings missed the table entirely and went to the gazetteer,
+    over the network, one at a time, to ask about a name OpenStreetMap holds
+    in Russian anyway.
+    """
+
+    ENGLISH = (
+        "Belgorod region", "Bryansk region", "Kursk region", "Voronezh region",
+        "Rostov region", "Saratov region", "Volgograd region", "Lipetsk region",
+        "Tula region", "Moscow region", "Leningrad region", "Penza region",
+        "Tambov region", "Oryol region", "Smolensk region",
+        "Nizhny Novgorod region",
+    )
+
+    def test_every_one_of_them_resolves_without_the_network(self):
+        missed = [name for name in self.ENGLISH if not places.lookup(name)]
+        assert missed == [], missed
+
+    def test_and_lands_on_the_russian_name(self):
+        # Which is the point: the outline is then asked for by the name
+        # OpenStreetMap holds, rather than by an English one it does not.
+        assert places.lookup("Belgorod region")["name"] == "Белгородская область"
+        assert places.lookup("Rostov region")["name"] == "Ростовская область"
+
+    def test_the_other_words_for_the_same_thing(self):
+        assert (places.lookup("Krasnodar territory")
+                == places.lookup("Krasnodar krai"))
+        assert places.lookup("Sumy province") == places.lookup("Sumy oblast")
+
+    def test_ukrainian_regions_get_the_same_courtesy(self):
+        assert places.lookup("Kharkiv region") == places.lookup("Kharkiv oblast")
+
+    def test_only_a_trailing_type_word_is_folded(self):
+        """A word inside a name is part of the name.
+
+        "Republic of Tatarstan" must not have its middle rewritten, and a
+        place called only "Region" is not a province of anywhere.
+        """
+        assert places._fold("Republic of Tatarstan") == "republic of tatarstan"
+        assert places._fold("region") == "region"
+        assert places._fold("Tatarstan republic") == "tatarstan republic"
+
+    def test_the_russian_words_are_left_alone(self):
+        # "область" IS the name's own word rather than a translation of one,
+        # and folding those together would collapse names that differ.
+        assert places._fold("Белгородская область") == "белгородская область"

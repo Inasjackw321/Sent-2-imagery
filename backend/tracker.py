@@ -1277,7 +1277,13 @@ def _record(item: dict[str, Any], message: dict[str, Any],
     if placed["kind"] == LIFTED:
         took_down = 0
         if placed["placed"]:
-            took_down = lift_alerts(placed["lat"], placed["lon"])
+            # As far as the thing it named reaches, and never less than the
+            # floor. A stand-down for a province calls off that province: if
+            # it only reached ninety kilometres from the centroid, the corners
+            # of a big region kept a warning nobody had left standing.
+            took_down = lift_alerts(
+                placed["lat"], placed["lon"],
+                max(LIFT_WITHIN_KM, float(placed.get("area_km") or 0.0)))
         _counter += 1
         _alerts.append({
             "id": f"AO{_counter:04d}",
@@ -1375,6 +1381,14 @@ def _record(item: dict[str, Any], message: dict[str, Any],
 # been placed at the province centre and the all-clear at its capital, and both
 # are the same warning. Matching on the name alone would miss that; matching
 # on the whole country would lift warnings elsewhere.
+#
+# A FLOOR rather than the whole rule, though -- see _record, which widens it
+# to the region the stand-down actually names. Ninety kilometres is about
+# half a Ukrainian oblast and it was written for those. The Russian side's
+# subjects are nothing like that size: Rostov oblast is four hundred
+# kilometres across and Bashkortostan is the size of Britain, so a stand-down
+# posted for one of those reached a fraction of the province it was calling
+# off and the warning stayed up over the rest of it.
 LIFT_WITHIN_KM = 90.0
 
 

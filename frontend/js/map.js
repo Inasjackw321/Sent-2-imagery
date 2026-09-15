@@ -11,7 +11,6 @@ import { store, emit, on } from './store.js';
 import { $, $$, toast, fmt, el } from './ui.js';
 import { copyRegion, saveRegion, WATERMARK } from './capture.js';
 import { initFires, POPUP } from './fires.js';
-import { initNotams } from './notams.js';
 import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
 import { initMTG } from './mtg.js';
@@ -149,7 +148,6 @@ export function initMap() {
   bindPassLookup();
   initDayNight(map);
   initFires(map);
-  initNotams(map);
   initClouds(map);
   initRadar(map);
   initMTG(map);

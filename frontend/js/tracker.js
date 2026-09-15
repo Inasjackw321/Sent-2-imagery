@@ -1574,7 +1574,7 @@ async function saveShot() {
       },
       marks,
       outlines: await regionOutlines(),
-      credit: feed?.attribution?.english ?? 'Data: NEPTUN — neptun.in.ua',
+      credit: feed?.attribution?.picture ?? 'Data supplied by NEPTUN — neptun.in.ua',
     });
     const blob = await new Promise((done) => canvas.toBlob(done, 'image/png'));
     if (!blob) {

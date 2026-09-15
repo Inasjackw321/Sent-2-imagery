@@ -3142,10 +3142,31 @@ class TestTheDrawingMoves:
                 / "frontend" / "js" / "trackershot.js").read_text(encoding="utf-8")
         assert "WATERMARK" in shot
         assert "from './capture.js'" in shot, "the watermark is defined once"
-        assert "credit" in shot
+        assert "Data supplied by NEPTUN" in shot
         block = self.source()
         block = block[block.index("async function saveShot"):]
-        assert "attribution" in block[:block.index("\n}")]
+        said = block[:block.index("\n}")]
+        assert "attribution" in said
+        assert "Data supplied by NEPTUN" in said
+
+    def test_the_credit_cannot_go_missing_from_a_picture(self):
+        """It used to be droppable, and the one picture that dropped it was
+        the worst one to drop it from.
+
+        stamp() returned early on an empty credit, and the credit came from
+        the feed -- so a picture taken before the first feed arrived, or while
+        it was down, went out carrying NEPTUN's tracks with their name
+        nowhere on it. That is the case the licence is about.
+        """
+        shot = (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "trackershot.js").read_text(encoding="utf-8")
+        block = shot[shot.index("function stamp("):]
+        block = block[:block.index("\n}")]
+        assert "if (!credit) return;" not in block
+        assert "credit || CREDIT" in block
+        # And the fallback is the real credit rather than an empty string.
+        line = shot[shot.index("const CREDIT ="):]
+        assert "NEPTUN" in line[:line.index(";")]
 
     def test_the_picture_uses_the_same_artwork_as_the_map(self):
         # Two copies of a dozen paths would have drifted apart the first time
@@ -3599,87 +3620,65 @@ class TestACourseIsLentWithinAKindOnly:
         assert marks[2]["heading"] is None
 
 
-class TestTheClosedAirspaceLayer:
-    """Checked against the source text, the way the other page code is.
+class TestAStandDownReachesTheRegionItNames:
+    """Ninety kilometres is half a Ukrainian oblast. It is not half of Russia.
 
-    The arithmetic is in backend/notams.py and tested there. What matters here
-    is the two things a layer like this gets wrong: saying nothing when it has
-    not asked, and drawing a closure as though it were a threat.
+    The lift radius was a single number written for the provinces this app
+    started with. The Russian side's subjects are nothing like that size --
+    Rostov oblast is four hundred kilometres across, Bashkortostan is the
+    size of Britain -- so a stand-down posted for one of those reached a
+    fraction of the province it was calling off, and the warning stayed up
+    over the rest of it until it timed out an hour later.
     """
 
-    def source(self):
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "frontend" / "js" / "notams.js").read_text(encoding="utf-8")
+    def setup_method(self):
+        tracker.reset()
 
-    def test_nothing_asked_is_said_rather_than_shown_as_an_empty_sky(self):
-        """An empty list and "nobody was asked" are different facts.
+    def warn(self, lat, lon, ident):
+        tracker._events.append({
+            "id": ident, "kind": "alert", "lat": lat, "lon": lon,
+            "seen": time.time(), "place": ident, "count": 1,
+        })
 
-        A layer that showed the first for the second would be telling
-        somebody the airspace is open when it had not asked anybody. It used
-        to be the missing key that triggered this; there is a keyless way in
-        now, so what it watches for is every source refusing.
+    def test_a_big_region_lifts_its_whole_self(self):
+        # A warning at the far edge of a three-hundred-kilometre region, and
+        # the stand-down posted for the region as a whole.
+        self.warn(50.0, 36.0, "near")
+        self.warn(52.5, 36.0, "far")      # ~278 km from the stand-down
+        took = tracker.lift_alerts(50.0, 36.0, 300.0)
+        assert took == 2
+        assert tracker._events == []
+
+    def test_but_the_floor_still_applies_to_a_small_one(self):
+        self.warn(50.0, 36.0, "here")
+        self.warn(52.5, 36.0, "far away")
+        # A point report carries no region extent, so the floor decides and
+        # the far one keeps its warning.
+        took = tracker.lift_alerts(50.0, 36.0)
+        assert took == 1
+        assert [e["id"] for e in tracker._events] == ["far away"]
+
+    def test_the_record_widens_it_to_what_was_named(self):
+        """The wiring, not the arithmetic.
+
+        lift_alerts can take a radius; what matters is that the stand-down
+        path passes the named region's extent rather than leaving the floor
+        to cover a province four times its size.
         """
-        text = self.source()
-        assert "(got.asked ?? []).length === 0" in text
-        assert "got.trouble" in text
-        block = text[text.index("function paintDock"):]
-        assert "Not available" in block
+        text = (pathlib.Path(__file__).resolve().parent.parent
+                / "backend" / "tracker.py").read_text(encoding="utf-8")
+        block = text[text.index("def _record("):]
+        block = block[:block.index("\n    _counter += 1\n    ident =")]
+        assert "max(LIFT_WITHIN_KM" in block
+        assert 'placed.get("area_km")' in block
 
-    def test_a_region_that_refused_is_named_rather_than_missing(self):
-        # Five regions answering and one refusing is a better map than no
-        # map, and the one that refused has to be visible or the gap looks
-        # like quiet airspace.
-        text = self.source()
-        assert "Not answered:" in text
-
-    def test_it_says_what_it_asked_and_of_whom(self):
-        """The line that separates "nothing is closed" from "nothing was asked".
-
-        An empty map means both and looks the same for both, which is exactly
-        how the layer sat there showing nothing while every request it made
-        was being rejected for asking a radius four times wider than the
-        service accepts.
-        """
-        text = self.source()
-        assert "got?.asked" in text
-        assert "got?.partial" in text
-
-    def test_a_closure_is_not_coloured_like_a_threat(self):
-        # Amber is a warning, purple a missile, yellow a drone. A NOTAM is a
-        # rule rather than a threat and must not read as one.
-        text = self.source()
-        colour = text[text.index("const INK ="):]
-        colour = colour[:colour.index(";")]
-        for threat in ("#ffb020", "#a855f7", "#ffd400", "#ff3b30"):
-            assert threat not in colour, threat
-
-    def test_a_fir_wide_closure_is_not_drawn_as_a_disc(self):
-        # A radius of hundreds of miles is a boundary. A circle that size
-        # washes over half a continent while claiming to be its edge, so it
-        # is listed instead -- see the row list below.
-        block = self.source()
-        block = block[block.index("function paint("):]
-        block = block[:block.index("\n}")]
-        assert "if (notice.wide) continue;" in block
-
-    def test_it_draws_an_outline_rather_than_a_wash(self):
-        block = self.source()
-        block = block[block.index("function paint("):]
-        block = block[:block.index("\n}")]
-        assert "dashArray" in block
-        assert "fillOpacity: 0.06" in block
-
-    def test_the_ones_it_cannot_draw_are_still_listed(self):
-        # A FIR-wide closure and one with no position are both in force, and
-        # a layer that silently dropped them would be saying the sky is open.
-        text = self.source()
-        assert "shown.filter((n) => n.wide)" in text
-        assert "got?.unplaced" in text
-
-    def test_the_circles_get_a_real_renderer(self):
-        # The map is built with preferCanvas, and a canvas-rendered circle is
-        # pixels: no element, so the dashed outline applies to nothing. The
-        # same lesson the tracker's areas learnt.
-        block = self.source()
-        assert "L.svg({ pane: 'notams' })" in block
-        assert "renderer: ink," in block
+    def test_a_lift_touches_nothing_but_warnings(self):
+        # A drone reported five minutes ago is still a drone, and a warning
+        # being called off says nothing about it.
+        tracker._events.append({
+            "id": "drone", "kind": "drone", "lat": 50.0, "lon": 36.0,
+            "seen": time.time(), "place": "somewhere", "count": 1,
+        })
+        self.warn(50.0, 36.0, "warning")
+        assert tracker.lift_alerts(50.0, 36.0, 500.0) == 1
+        assert [e["id"] for e in tracker._events] == ["drone"]

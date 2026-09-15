@@ -1360,3 +1360,128 @@ class TestNamingAWeaponIsNotReportingOne:
                            ("Балістика на Дніпропетровщині", "ballistic"),
                            ("Ракетна небезпека для Дніпра", "alert")):
             assert reports.find_kind(text) == want, text
+
+
+class TestTheRussianSideStandsDown:
+    """A warning being LIFTED must not raise one, or put a drone in the air.
+
+    Every failure here has the same shape and it is the worst shape this
+    reader has: the post says the danger is over and the map says it has just
+    started. The region stays shaded, and the next stand-down re-arms it.
+    """
+
+    def kind(self, text):
+        got = reports.read(text)
+        return (got or {}).get("kind")
+
+    def test_the_russian_stand_down_is_not_a_drone(self):
+        """"Отбой опасности БПЛА" is the commonest post on that channel.
+
+        It was written as отбой+тревоги and отбой+угрозы, and this phrase is
+        neither -- so it fell past the all-clear into the drone pattern on
+        the word БПЛА. A warning being called off put an aircraft over the
+        region it was called off for.
+        """
+        assert self.kind("Отбой опасности БПЛА в Ростовской области") == "all_clear"
+        assert self.kind("Отбой ракетной опасности в Курской области") == "all_clear"
+        assert self.kind("Отбой воздушной тревоги в Белгородской области") == "all_clear"
+        assert self.kind("Відбій тривоги у Харківській області") == "all_clear"
+
+    def test_cancelled_is_a_stand_down_in_english(self):
+        for said in ("Air raid alert cancelled in Voronezh region",
+                     "UAV threat canceled in Belgorod region",
+                     "Missile danger called off in Rostov region",
+                     "Air alert deactivated in Kursk region",
+                     "UAV danger lifted in Tula region"):
+            assert self.kind(said) == "all_clear", said
+
+    def test_the_noun_and_the_verb_need_not_be_neighbours(self):
+        # How the channel actually writes it.
+        assert self.kind(
+            "The UAV danger in Rostov region has been cancelled") == "all_clear"
+        assert self.kind(
+            "Cancellation of the UAV danger in Belgorod region") == "all_clear"
+
+    def test_but_a_warning_is_still_a_warning(self):
+        # The stand-down patterns must not swallow the thing they are the
+        # opposite of. A pattern that read every "UAV danger" as a stand-down
+        # would empty the map during a raid.
+        for said in ("Air raid alert in Belgorod region",
+                     "UAV threat declared in Voronezh region",
+                     "Missile danger in Rostov region",
+                     "Threat of UAV attack in Lipetsk region",
+                     "Опасность БПЛА объявлена в Воронежской области"):
+            assert self.kind(said) == "alert", said
+
+    def test_the_gap_does_not_reach_across_a_full_stop(self):
+        """The noun and the verb have to be in the same sentence.
+
+        Without that bound, a warning in one sentence and the word "cleared"
+        in an unrelated one join into a stand-down nobody posted -- and this
+        is the shape that happens: a raid post says what is in the air and
+        then says what was done about the wreckage.
+
+        What this does NOT claim is that a post containing a real stand-down
+        clause reads as a warning. "The previous alert was lifted" IS a
+        stand-down in its own right, and a reader looking at one post at a
+        time has nothing to tell it which clause the post is about.
+        """
+        assert self.kind(
+            "UAV threat in Belgorod region. Two drones were shot down and "
+            "the debris cleared.") != "all_clear"
+        assert self.kind(
+            "Missile danger in Rostov region! The runway was cleared "
+            "earlier.") != "all_clear"
+
+
+class TestTheRepublicsAreNamed:
+    """Twenty-odd Russian regions put their type word first.
+
+    "Республика Татарстан" is not "adjective + область", which is the only
+    shape the full-name pattern knew -- so "в Республике Татарстан" came back
+    as the place "Республике": the word "republic" on its own, in the dative,
+    with the republic's actual name dropped. No gazetteer holds that, so every
+    warning over one of them was unplaceable.
+    """
+
+    def where(self, text):
+        got = reports.read(text)
+        return (got or {}).get("place") or (got or {}).get("region")
+
+    def test_the_name_survives(self):
+        assert self.where(
+            "Воздушная тревога в Республике Татарстан") == "Республика Татарстан"
+        assert self.where(
+            "Опасность БПЛА в Республике Башкортостан") == "Республика Башкортостан"
+
+    def test_in_whichever_case_the_post_wrote_it(self):
+        # Only the type word declines; the name after it does not.
+        assert self.where(
+            "Отбой опасности БПЛА над Республикой Крым") == "Республика Крым"
+
+    def test_a_two_word_republic_keeps_both_words(self):
+        assert self.where(
+            "Опасность БПЛА в Республике Марий Эл") == "Республика Марий Эл"
+
+    def test_the_adjective_form_still_works(self):
+        # "Удмуртская Республика" puts the type word last and goes through
+        # the other pattern. Both have to keep working.
+        assert self.where("Опасность БПЛА в Удмуртской Республике")
+
+    def test_a_lowercase_word_after_it_is_not_a_republic_name(self):
+        """The type word may be written either way; the NAME may not.
+
+        Case-insensitivity on the whole pattern would let the capture run on
+        into ordinary lowercase words, so "в республике сегодня" would name a
+        republic called "Сегодня" and put a warning wherever the gazetteer
+        decided that was. Only a capitalised word is a name.
+        """
+        assert reports.REPUBLIC_RU.search("отбой в республике сегодня") is None
+        assert reports.REPUBLIC_RU.search("в Республике Татарстан")
+
+    def test_the_name_is_one_the_table_holds(self):
+        from backend import places
+        for said in ("Воздушная тревога в Республике Татарстан",
+                     "Опасность БПЛА в Республике Башкортостан",
+                     "Опасность БПЛА в Республике Мордовия"):
+            assert places.lookup(self.where(said)), said

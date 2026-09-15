@@ -24,6 +24,16 @@ const TALLEST = 2000;
 // enough that forty of them over a country do not merge.
 const MARK_PX = 44;
 
+// What the picture says about whose data it is.
+//
+// NEPTUN ask one thing in return for their feed: a visible credit beside the
+// data. A picture is the data travelling somewhere this app's panel does not
+// follow it, so the credit travels with it -- and it is spelt out here rather
+// than only passed in, because a credit that depends on the feed having
+// answered is a credit that vanishes on exactly the picture taken while the
+// feed was down.
+const CREDIT = 'Data supplied by NEPTUN — neptun.in.ua';
+
 const INK = '#0b0e13';
 const BORDER = 'rgba(255, 255, 255, 0.16)';
 const LAND = 'rgba(255, 255, 255, 0.022)';
@@ -144,12 +154,13 @@ export async function drawShot({ bounds, marks, outlines, credit }) {
 /**
  * The mark in the corner, and the credit beside it.
  *
- * The credit is not decoration and not optional. NEPTUN ask one thing in
- * return for their feed -- a visible link beside the data -- and a picture
- * carrying their tracks is the data, travelling somewhere this app's panel
- * does not follow it. So it goes on the picture.
+ * The credit is not decoration and not optional, which is why it cannot be
+ * left out: an empty one falls back to CREDIT rather than to nothing. It used
+ * to return early on a missing credit, so a picture taken before the first
+ * feed arrived went out with NEPTUN's data on it and their name nowhere.
  */
 function stamp(ctx, frame, credit) {
+  const said = credit || CREDIT;
   const size = Math.max(16, Math.round(frame.width * 0.019));
   const pad = Math.round(size * 0.9);
 
@@ -161,12 +172,11 @@ function stamp(ctx, frame, credit) {
   ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
   ctx.fillText(WATERMARK, frame.width - pad, frame.height - pad);
 
-  if (!credit) return;
   const small = Math.max(11, Math.round(size * 0.62));
   ctx.font = `500 ${small}px system-ui, -apple-system, Segoe UI, sans-serif`;
   ctx.textAlign = 'left';
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-  ctx.fillText(credit, pad + 2, frame.height - pad + 2);
+  ctx.fillText(said, pad + 2, frame.height - pad + 2);
   ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-  ctx.fillText(credit, pad, frame.height - pad);
+  ctx.fillText(said, pad, frame.height - pad);
 }

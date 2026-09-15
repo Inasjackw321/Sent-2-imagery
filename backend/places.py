@@ -668,6 +668,30 @@ ALIASES: dict[str, str] = {
 }
 
 
+# The English type words that mean the same administrative thing, folded to
+# one of them.
+#
+# This is the whole of why the Russian side's warnings kept missing. The
+# channel posts in English and writes "Belgorod region"; every alias below is
+# keyed "Belgorod oblast", because that is the spelling the reader was first
+# shown. The two are the same province and one of them resolved instantly
+# while the other went to the gazetteer, over the network, at a second
+# apiece, to ask about a name OpenStreetMap holds in Russian anyway.
+#
+# Seventeen of twenty-one Russian regions in a night of real posts came out on
+# the wrong side of that. Rather than write every row twice -- which is a
+# second list to forget to update -- the word is normalised here, in the one
+# place both the table and the lookup pass through.
+#
+# The Russian-language forms are not touched: "область" IS the word, and
+# folding it would collapse names that are actually different.
+SAME_WORD = {
+    "region": "oblast", "province": "oblast", "oblast": "oblast",
+    "kray": "krai", "krai": "krai", "territory": "krai",
+    "republic": "republic", "okrug": "okrug", "district": "okrug",
+}
+
+
 def _fold(name: Any) -> str:
     """A name in the form the tables are keyed by."""
     text = " ".join(str(name or "").split())
@@ -675,7 +699,15 @@ def _fold(name: Any) -> str:
     # uses a fourth. Normalised so "Слов'янськ" matches whichever arrives.
     for odd in ("’", "ʼ", "`", "´"):
         text = text.replace(odd, "'")
-    return text.casefold()
+    text = text.casefold()
+    # Only a TRAILING type word, and only when something comes before it. A
+    # place called "Region" on its own is not a province of anywhere, and a
+    # word in the middle of a name -- "Republic of Tatarstan" -- is part of
+    # the name rather than a suffix on it.
+    head, _, tail = text.rpartition(" ")
+    if head and tail in SAME_WORD:
+        return f"{head} {SAME_WORD[tail]}"
+    return text
 
 
 def _index() -> dict[str, dict[str, Any]]:

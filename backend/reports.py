@@ -109,13 +109,37 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
     # warning at the moment one was lifted. Same ordering reason as jet_drone
     # before drone.
     ("all_clear",
-     r"відбій\s+(?:повітряної\s+)?тривог|відбій\s+загроз|отбой\s+"
-     r"(?:воздушной\s+)?тревог|отбой\s+угроз|\ball[- ]clear\b"
+     # "Отбой" on its own, and that is deliberate. It was written as
+     # отбой+тревоги and отбой+угрозы, which left out the phrase the Russian
+     # side uses most: "Отбой опасности БПЛА". That fell past this pattern
+     # into "drone" -- so the moment a warning was LIFTED, a drone appeared in
+     # the air over the region. In these channels the word has no other use;
+     # the same goes for its Ukrainian twin.
+     r"\bвідбій\b|\bотбой\b"
+     # And the other way of saying it: the alert was cancelled rather than
+     # stood down.
+     r"|отмен\w*\s+(?:воздушн\w*\s+)?(?:тревог|угроз|опасност)"
+     r"|скасуванн\w*\s+(?:повітряної\s+)?тривог|\ball[- ]clear\b"
      # "UAV alert cleared" / "missile threat lifted" -- how the Russian radar
      # channels write a stand-down in English. Without these the post was read
      # as a DRONE, so a warning being lifted put a drone in the air.
      r"|\balert (?:is )?(?:over|cleared|lifted)\b|\ball clear\b"
-     r"|\b(?:threat|alert|alarm) (?:has been |is )?(?:cleared|lifted|over)\b"
+     # The words can be a clause apart -- "The UAV danger in Rostov region has
+     # been cancelled" -- so the noun and the verb are not required to be
+     # neighbours. Bounded, because a gap this cannot see the end of would
+     # eventually join two unrelated sentences and lift a warning nobody
+     # lifted.
+     #
+     # "danger" is in the noun list because the Russian side writes it that
+     # way more often than "threat", and it was in neither this pattern nor
+     # the one below it -- so "UAV danger cancelled" read as a drone.
+     r"|\b(?:threat|alert|alarm|danger|warning)s?\b[^.!?]{0,48}?"
+     r"\b(?:cancell?ed|call(?:ed)? off|stood down|lifted|cleared|"
+     r"deactivated|removed|over)\b"
+     # And the same pair the other way round, which is how a headline writes
+     # it: "Cancellation of the UAV danger in Belgorod region".
+     r"|\b(?:cancell?ation|lifting|removal)\s+of\b[^.!?]{0,24}?"
+     r"\b(?:threat|alert|alarm|danger|warning)s?\b"
      r"|\bno longer\b.{0,20}\b(?:threat|alert)\b"
      # "No threats currently" is a stand-down, and the alert pattern below
      # matches the bare word "threats" -- so without this it raised a warning
@@ -338,6 +362,25 @@ LEAD = re.compile(
 REGION_EN = re.compile(
     r"\b([A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?)\s+"
     r"((?i:oblast|region|district|governorate|province|emirate|krai|republic))\b")
+
+# The same word order in Cyrillic: "в Республике Татарстан", "Республика
+# Башкортостан", "над Республикой Крым".
+#
+# A federal subject that is a republic puts its type word FIRST, so
+# OBLAST_FULL above -- which wants an adjective in front of the type word --
+# matches none of them. Nothing else did either, so "Воздушная тревога в
+# Республике Татарстан" came back as the place "Республике": the word
+# "republic" on its own, in the dative, with the republic's actual name
+# dropped. Twenty-odd Russian regions are named this way and every warning
+# over one of them was unplaceable.
+#
+# Only the type word declines; the name after it does not, so what is
+# captured is already the form a gazetteer holds.
+# Case-insensitive on the TYPE WORD ONLY, the same care REGION_EN takes: with
+# re.I on the whole pattern, [А-ЯЁ] matches lowercase too and the capture
+# would run on into the rest of the sentence.
+REPUBLIC_RU = re.compile(
+    r"\b(?i:республик\w*)\s+([А-ЯЁ][а-яё'’\-]+(?:\s+[А-ЯЁ][а-яё'’\-]+)?)")
 
 # The other word order: "Emirate of Dubai", "Governorate of Baghdad". Common
 # outside the post-Soviet channels and it reads backwards to the pattern above.
@@ -719,6 +762,9 @@ def find_region(text: str) -> str | None:
         else:
             ending = "ька" if ukrainian else "кая"
         return f"{head}{hiss}{ending} {word}"
+    republic = REPUBLIC_RU.search(text)
+    if republic:
+        return f"Республика {republic.group(1)}"
     english = REGION_EN.search(text)
     if english:
         name = _trim_en(_tidy(english.group(1)))
