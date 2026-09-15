@@ -276,17 +276,17 @@ function label(event) {
 
 /** The drawing for one kind of thing, pointing where it is going.
  *
- * Three shapes, because there are three things being said and drawing them
- * alike was the bug in the picture that prompted this: a jet drone flying past
- * a town on a course north was drawn as a starburst -- the mark for something
- * that has come down -- because it had a compass course and no named
- * destination, and only a destination counted as movement.
+ * Different shapes for different things being said, because drawing them
+ * alike was the bug in the picture that prompted this: a jet drone flying
+ * past a town on a course north was drawn as something that had come down,
+ * because it had a compass course and no named destination and only a
+ * destination counted as movement.
  *
  *   arrow    it is flying, and this is the way. Rotated to the course.
  *   ring     it is on station over here, going round. The gap in the ring
  *            turns with it, so it reads as circling rather than as a dot.
- *   burst    it is not flying: a strike, or something brought down.
- *   chevron  a warning about a place, which is not an object at all.
+ *   dot      it is in the air and nothing said which way.
+ *   warning  a warning about a place, which is not an object at all.
  */
 // The drawings, one per kind, on an 18-unit grid with north up.
 //
@@ -347,40 +347,18 @@ const SLIM_KINDS = new Set(['missile']);
 const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
   fill="none" stroke="${c}" stroke-width="1.7" stroke-linejoin="round"/>`;
 
-// The number the report gave, on the mark -- but only where the drawing
-// cannot show it.
+// No number on a mark. It was a plate reading "3" on the arrow, and before
+// that it was three arrows; both are gone for the same reason, said twice
+// from the other side of the screen: the count is the least dependable thing
+// in a report and it was being drawn as though it were the most definite.
 //
-// This used to go on every mark of a group, and it was wrong for the reason
-// the drawing was going to change: a report of three drones would be three
-// arrows, and putting "×3" on each of them says nine.
-//
-// That drawing is gone -- see untold() -- and this is how a group is said
-// again. A plate reading "3" is a claim that the report said three. Three
-// arrows on the map is a claim that there are three things there, which is a
-// stronger statement than the count can support and which clumped into one
-// smudge at any zoom a country fits in.
-//
-// Counter-rotated, because the arrow it sits on is rotated to its course and
-// a rotated numeral is unreadable at this size.
-function countPlate(n, colour, turn) {
-  if (!(n > 1)) return '';
-  const wide = n > 99;
-  const back = turn == null ? '' : ` transform="rotate(${(-turn).toFixed(1)} 9 9)"`;
-  return `<g class="ao-count-plate"${back}>
-      <rect x="${wide ? 8.6 : 9.6}" y="0" rx="3.4" ry="3.4"
-            width="${wide ? 9.4 : 7.8}" height="7.4"
-            fill="rgba(13,16,21,.92)" stroke="${colour}" stroke-width="0.9"/>
-      <text x="${(wide ? 8.6 + 4.7 : 9.6 + 3.9).toFixed(1)}" y="4.0"
-            text-anchor="middle" dominant-baseline="central" fill="${colour}"
-            style="font: 700 5.4px system-ui, sans-serif"
-            >${n > 999 ? '999' : n}</text></g>`;
-}
+// NEPTUN draw no number either. A triangle says a thing was reported there,
+// which is what is actually known. How many the report claimed is still in
+// the popup, where it can be read with the sentence it came from instead of
+// floating on the map as a fact.
 
 function glyph(event, colour, facing) {
   const motion = motionOf(event);
-  // How many the report said, as a number on the mark. Zero for the common
-  // case of one object, which needs no saying. See untold().
-  const unsaid = untold(event);
   // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
   // one number here: the artwork scales rather than being redrawn, and the
   // anchor below moves with it.
@@ -405,11 +383,6 @@ function glyph(event, colour, facing) {
              stroke-linecap="round"/>
        <circle cx="9" cy="13.2" r="1.05" fill="rgba(13,16,21,.9)"/>`);
   }
-  if (motion === 'still') {
-    return svg('burst',
-      `<path d="M9 0.5 L11 6.4 L17.5 5 L13 9.4 L17.5 13.8 L11 12.4
-                L9 17.5 L7 12.4 L0.5 13.8 L5 9.4 L0.5 5 L7 6.4 Z" fill="${colour}"/>`);
-  }
   if (motion === 'orbit') {
     return svg('ring',
       `<path d="M9 2.2 A6.8 6.8 0 1 1 4.2 4.2" fill="none" stroke="${colour}"
@@ -427,7 +400,7 @@ function glyph(event, colour, facing) {
       `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
                stroke-width="1.6"/>`
       + `<circle cx="9" cy="9" r="2" fill="${colour}"/>`
-      + countPlate(unsaid, colour, null));
+      );
   }
   // Solid when the course came from the report, hollow when it was borrowed
   // from the group. Both are arrows and both point somewhere real; the weight
@@ -437,8 +410,7 @@ function glyph(event, colour, facing) {
   const slim = SLIM_KINDS.has(event.kind);
   const shape = `${slim ? 'missile' : 'arrow'}${borrowed ? '-borrowed' : ''}`;
   const draw = borrowed ? BORROWED : (slim ? SLIM : ARROW);
-  return svg(shape, draw(colour) + countPlate(unsaid, colour, facing),
-             facing);
+  return svg(shape, draw(colour), facing);
 }
 
 /** One marker: its glyph, and its label underneath. */
@@ -449,22 +421,13 @@ function icon(event, facing) {
   // worth recording and is not a reason to take cover, and drawing it like
   // one teaches people to ignore the signal that matters. So it keeps its
   // colour and loses the pulsing halo and the label plate.
-  const loud = (event.kind === 'alert' || event.kind === 'explosion')
-    && !event.advisory;
-  // The halo is a circle, and on a strike a circle round the mark is the one
-  // thing that has been asked for twice not to be there -- it reads as a
-  // blast radius whatever it is meant as. So a strike keeps the label and the
-  // weight and loses the ring: the glow that makes it findable follows the
-  // star's own outline instead, which says "look here" without saying "this
-  // far". A warning keeps its halo; a warning IS about an area, and the ring
-  // agrees with the shaded province underneath it.
-  const ringed = loud && event.kind !== 'explosion';
+  const loud = event.kind === 'alert' && !event.advisory;
   return L.divIcon({
-    // Warnings and strikes are the two things somebody scanning this map is
-    // looking for, and at the zoom it gets used at a 24-pixel glyph in a
-    // colour was disappearing into the basemap. They get a pulsing halo
-    // behind them and a label with a background, which is the difference
-    // between something you can find and something you have to hunt for.
+    // A warning is the thing somebody scanning this map is looking for, and
+    // at the zoom it gets used at a 24-pixel glyph in a colour was
+    // disappearing into the basemap. It gets a pulsing halo behind it and a
+    // label with a background, which is the difference between something you
+    // can find and something you have to hunt for.
     className: `ao-pin${loud ? ` is-loud is-${event.kind}` : ''}`
       + (event.advisory ? ' is-advisory' : '')
       + (event.area_only ? ' is-area-only' : ''),
@@ -485,11 +448,8 @@ function icon(event, facing) {
     //
     // Warnings and strikes keep theirs, because those ARE a statement about a
     // place and the words are the statement.
-    html: (ringed ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
-      + (loud && !ringed
-        ? `<span class="ao-flare" style="color:${colour}">`
-          + `${glyph(event, colour, facing)}</span>`
-        : `${glyph(event, colour, facing)}`)
+    html: (loud ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
+      + `${glyph(event, colour, facing)}`
       + (loud
         ? `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`
         : ''),
@@ -884,12 +844,6 @@ function liveLegFor(event) {
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
   && Number.isFinite(event.origin_lat)
-  // A strike is a point. The circle that used to go round it was sized from
-  // the accuracy of the position, which is a statement about how well the
-  // place is known and was read as how far the blast went -- so the mark said
-  // something nobody had reported, in the one place on this map where getting
-  // that wrong matters most. The star is the mark; it needs no ring.
-  && event.kind !== 'explosion'
   // A warning is drawn as an area only when there is a real region to draw.
   // Anything else — a rectangle round its extent, a circle on its centre —
   // is a claim about ground nobody made.
@@ -942,7 +896,6 @@ const GROUPS = [
   { key: 'drones', label: 'Drones', kinds: ['drone', 'jet_drone'] },
   { key: 'missiles', label: 'Missiles', kinds: ['missile', 'bomb'] },
   { key: 'aircraft', label: 'Aircraft', kinds: ['aircraft', 'unknown'] },
-  { key: 'strikes', label: 'Strikes', kinds: ['explosion'] },
   { key: 'warnings', label: 'Warnings', kinds: ['alert'] },
 ];
 
@@ -1029,7 +982,8 @@ function reconcile(events) {
     const at = positionOf(event);
 
     // One marker per report, at the position the report gave. The several
-    // objects of one report are the number on the mark -- see untold().
+    // objects of one report are one mark; how many were claimed is in the
+    // popup and not on the map.
     const id = event.id;
     alive.add(id);
     const held = drawn.get(id);
@@ -1268,33 +1222,6 @@ function compass(deg) {
 }
 
 /**
- * The number to write on a mark, or 0 for none.
- *
- * On the mark, as a plate, rather than as that many marks on the map.
- *
- * This went the other way first. A report of three drones was drawn as three
- * arrows a kilometre apart, on the reasoning that three things are in the air
- * and one arrow with a "3" beside it hides how much is up there. Two things
- * were wrong with it.
- *
- * The count is not reliable enough to carry that. A drawing of N objects is a
- * statement that there are N objects; a plate reading "3" is a statement that
- * the report said three, which is the thing actually known. When the number
- * is soft, the softer drawing is the truthful one.
- *
- * And it clumped. A group had to be spread out to be countable at all, and at
- * any zoom a country fits in, six arrows 1.2 km apart are one smudge with six
- * arrowheads -- next to NEPTUN's own map, which draws one triangle for the
- * same track. The individual icons that matter are individual TRACKS, and
- * there are as many of those as the feed sends; they do not have to be
- * manufactured out of a count field as well.
- */
-function untold(event) {
-  const said = Number(event.count) || 1;
-  return said > 1 ? said : 0;
-}
-
-/**
  * Fade a marker towards the end of its life.
  *
  * Applied as element opacity rather than as the circle's own fill, because
@@ -1476,14 +1403,12 @@ function paintDock() {
   // Objects, not reports: each mark is one drone or one missile, so this is
   // the number in the air, which is what the line is read for.
   const n = drawn.size;
-  const strikes = [...drawn.values()].filter((h) => h.event.kind === 'explosion').length;
   const grouped = concentrated ? (masses?.length ?? 0) : 0;
   const missed = (feed?.reports?.unplaced ?? 0);
   count.textContent = n || grouped
     ? [
       grouped ? `${grouped} mass${grouped === 1 ? '' : 'es'}` : null,
       `${n} on the map`,
-      strikes ? `${strikes} struck` : null,
       // Said here rather than three paragraphs down in the note. "Four on the
       // map" beside a list of eight reports reads as the map being broken;
       // "four on the map, 3 unplaced" says what actually happened.
@@ -1633,11 +1558,12 @@ function paintDock() {
         + 'not the same as an unknown direction: something on station is not '
         + 'going anywhere.');
     }
-    lines.push(`Strikes are held for `
-      + `${Math.round((feed?.keep?.explosion ?? 1500) / 60)} hours and warnings `
-      + `for ${Math.round((feed?.keep?.alert ?? 60))} minutes, both fading as `
-      + `they age; things in flight go after ${feed?.keep_minutes ?? 20} `
-      + 'minutes, when the report has stopped describing anything current.');
+    lines.push('Warnings are held for '
+      + `${Math.round((feed?.keep?.alert ?? 90))} minutes, fading as they age; `
+      + `things in flight go after ${feed?.keep_minutes ?? 20} minutes, when `
+      + 'the report has stopped describing anything current. Strikes are not '
+      + 'drawn at all — a report of explosions names a city, not a place, and '
+      + 'a star on a city centroid claimed a precision nobody gave.');
   }
   if (concentrated) {
     lines.push(`Concentrate: groups within ${feed?.mass_within_km ?? 60} km of `

@@ -530,13 +530,21 @@ class TestTheOutputFitsWhatConsumesIt:
         from backend import tracker
         for kind, _ in reports.KIND_WORDS:
             folded = tracker.fold_kind(kind)
-            # LIFTED is the one kind that is not drawn on purpose. "Відбій
-            # тривоги" is a report that a warning has ENDED, and the reader
-            # has to tell it apart from "тривога" -- which it contains -- or
-            # the map raises an alert at the moment one is lifted. It goes to
-            # tracker.lift_alerts() instead of to a marker.
-            assert folded in tracker.KINDS or folded == tracker.LIFTED, (
-                f"{kind} -> {folded}")
+            # Two kinds are read and not drawn, both on purpose, and both
+            # still have to survive the fold as THEMSELVES.
+            #
+            # LIFTED: "відбій тривоги" is a report that a warning has ENDED,
+            # and the reader has to tell it apart from "тривога" -- which it
+            # contains -- or the map raises an alert at the moment one is
+            # lifted. It goes to tracker.lift_alerts(), not to a marker.
+            #
+            # NOT_DRAWN: an explosion is recognised and then dropped. It has
+            # to keep its own name through the fold precisely BECAUSE it is
+            # not in KINDS -- anything unrecognised falls through to
+            # "unknown", which would put a grey ring in the sky over a
+            # report that explosions had been heard.
+            assert (folded in tracker.KINDS or folded == tracker.LIFTED
+                    or folded in tracker.NOT_DRAWN), f"{kind} -> {folded}"
             # And not silently thrown away: a kind the reader identified must
             # not come out the other side as "unknown".
             assert folded != "unknown" or kind == "unknown", \
@@ -546,7 +554,8 @@ class TestTheOutputFitsWhatConsumesIt:
             # all-clear is drawn by REMOVING a warning rather than by adding
             # a mark, so it has wording and no drawing.
             assert (tracker.fold_kind(kind) in tracker.KINDS
-                    or tracker.fold_kind(kind) == tracker.LIFTED), kind
+                    or tracker.fold_kind(kind) == tracker.LIFTED
+                    or tracker.fold_kind(kind) in tracker.NOT_DRAWN), kind
 
     def test_every_course_it_can_return_is_one_the_map_can_read(self):
         from backend import tracker

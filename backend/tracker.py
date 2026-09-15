@@ -139,14 +139,15 @@ ALERT_MINUTES = 90
 # page is inside the window.
 #
 # Age still matters; it is just applied at the right end. Each kind has its
-# own keep time (a drone twenty minutes, a warning ninety, a strike twenty-five
-# hours) and _expire() enforces it against the post's own timestamp. So reading
-# a strike from four hours ago puts it on the map where it belongs, and reading
-# a drone from four hours ago costs one dict lookup and then nothing.
+# own keep time (a drone twenty minutes, a warning ninety) and _expire()
+# enforces it against the post's own timestamp. So reading a warning from an
+# hour ago puts it on the map where it belongs, and reading a drone from four
+# hours ago costs one dict lookup and then nothing.
 #
-# Derived rather than written down, so it cannot fall behind the keep times:
-# raising how long strikes are held automatically reads back far enough to
-# find them.
+# Derived rather than written down, so it cannot fall behind the keep times.
+# It fell from twenty-five hours to ninety minutes when strikes stopped being
+# drawn, which is exactly the point of deriving it: the longest-lived kind
+# left decides how far back there is any reason to read.
 def _lookback_minutes() -> int:
     return max([KEEP_MINUTES, ALERT_MINUTES, *KEEP.values()])
 
@@ -251,19 +252,6 @@ KINDS = {
     # folding it into either would be saying something the report did not.
     "aircraft":  {"colour": "#7dffcf", "label": "Aircraft",
                   "motion": "track", "rank": 3},
-    # Moved off purple, which is the missile colour now. A strike is a star
-    # rather than an arrow, so shape already tells them apart, but two things
-    # this different should not share a hue.
-    "explosion": {"colour": "#ff2d9a", "label": "Explosion",
-                  "motion": "still", "rank": 7,
-                  # Twenty-five hours. A strike is a fact about a place rather
-                  # than a guess about one, so nothing about it decays, and a
-                  # night's damage read together is most of why anyone opens
-                  # this layer. Twenty-five rather than twenty-four so that a
-                  # strike reported at nine in the morning is still there at
-                  # nine the next morning, rather than going while somebody is
-                  # looking at it.
-                  "keep": 1500},
     "alert":     {"colour": "#ffb020", "label": "Air alert",
                   "motion": "still", "rank": 1,
                   # An hour and a half. An alert for a city runs about that
@@ -299,14 +287,12 @@ NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "
 
 # How many marks and reports to hold at once.
 #
-# Raised with the strike retention. A day of strikes is a great many more marks
-# than an evening of them, and the cap drops the oldest -- so a cap sized for
-# six hours would quietly stop being a day for anybody having a bad week, and
-# the map would look complete while missing the beginning of it.
-#
-# Cheap to raise: strikes are excluded from the clustering, which is the only
-# thing here that is worse than linear, and six hundred marks measured a 16.7
-# ms median frame with concentrate mode on.
+# Generous rather than tuned. A heavy night is hundreds of tracks, the cap
+# drops the oldest, and a cap sized for a quiet night would quietly stop being
+# a heavy one -- the map would look complete while missing the beginning of
+# it. Cheap to leave high: six hundred marks measured a 16.7 ms median frame
+# with concentrate mode on, and that is the only thing here worse than
+# linear.
 MAX_EVENTS = 1200
 MAX_ALERTS = 600
 
@@ -511,11 +497,29 @@ FOLD = {
 LIFTED = "all_clear"
 
 
+# Read, understood, and not drawn.
+#
+# A strike used to be a star on the map, held for twenty-five hours. It is
+# gone, because the position was never good enough to earn a point on a map.
+# It is read out of a sentence like "вибухи в Харкові" -- explosions in
+# Kharkiv -- which names a city of a million people and sometimes a district,
+# and the star went on the city's centroid as though somebody had given a
+# grid reference. Beside NEPTUN's map, which draws no strikes at all, it was
+# the least trustworthy thing on the screen and it was also the loudest.
+#
+# Still folded here rather than dropped from the vocabulary, and that is the
+# point of this list existing at all. "Вибух" has to keep being recognised AS
+# an explosion; a kind the reader no longer has a name for falls through to
+# "unknown" and gets drawn as a grey ring in the sky, which would be a worse
+# claim than the one just removed.
+NOT_DRAWN = ("explosion",)
+
+
 def fold_kind(kind: Any) -> str:
     """A kind as this app draws it, whatever the reader called it."""
     name = str(kind or "unknown").lower().strip().replace("-", "_")
     name = FOLD.get(name, name)
-    if name == LIFTED:
+    if name == LIFTED or name in NOT_DRAWN:
         return name
     return name if name in KINDS else "unknown"
 
@@ -526,6 +530,11 @@ def _clean(item: Any) -> dict[str, Any] | None:
         return None
 
     kind = fold_kind(item.get("kind"))
+    # Nothing to draw and nothing to say: see NOT_DRAWN. Dropped here, at the
+    # one gate every reading of every source goes through, so there is no
+    # second path that could still let one onto the map.
+    if kind in NOT_DRAWN:
+        return None
 
     count = item.get("count")
     count = int(count) if isinstance(count, (int, float)) and 1 <= count <= 999 else 1
@@ -621,9 +630,8 @@ def separation(lat: float, lon: float, to_lat: float, to_lon: float) -> float:
 #   long straggling chains -- is the correct behaviour here, because that is
 #   what a corridor of drones is.
 #
-#   Things in flight only. An explosion is a fact about a place; six of them
-#   in a city are six strikes, not one blurry strike, and a circle over the
-#   top would hide exactly the detail that matters. Alerts are areas already.
+#   Things in flight only. Alerts are areas already, and a circle drawn over
+#   a province that is shaded anyway says nothing the shading did not.
 
 # How close two marks have to be to belong to the same mass. Oblast-scale: far
 # enough that a group crossing one province holds together, near enough that
@@ -2313,6 +2321,8 @@ DEMO_NEPTUN = (
      "explanationShort": "КАБ у напрямку Вовчанська"},
 )
 
+DEMO_WITH_PICTURES = "Nikopol"
+
 DEMO_SEED = [
     # kind, place, toward, course, count, summary
     ("drone", "Nikopol", "Kherson", None, 2,
@@ -2338,17 +2348,12 @@ DEMO_SEED = [
     # And one with a course and no destination, which is the other way a
     # heading arrives. Two objects, so the trailing line is drawn as well.
     ("missile", "Nikopol", None, "W", 2, "Two missiles past Nikopol, heading west"),
-    ("explosion", "Kherson", None, None, 1, "Explosions reported in Kherson"),
-    # Twenty hours old: four fifths of the way through a strike's
-    # twenty-five, so the demo shows a faded one beside a fresh one and the
-    # long retention is visible rather than only asserted. Four hours -- what
-    # this was when a strike lasted six -- now looks brand new.
-    ("explosion", "Zaporizhzhia", None, None, 1,
-     "Strike reported in Zaporizhzhia yesterday evening", 1200),
-    # And one in between, so the fade has three points on it rather than two.
-    ("explosion", "Kharkiv", None, None, 1,
-     "Strike reported in Kharkiv overnight", 660),
-    ("alert", "Kharkiv", None, None, 1, "Air raid warning for Kharkiv"),
+    # One report deliberately old, so the demo shows a faded mark beside a
+    # fresh one and the fade has more than one point on it. The three strikes
+    # that used to do this job are gone with the kind; a warning is now the
+    # longest-lived thing on the map and so the one worth watching age.
+    ("alert", "Kharkiv", None, None, 1, "Air raid warning for Kharkiv", 70),
+    ("alert", "Dnipro", None, None, 1, "Air raid warning for Dnipro", 35),
     # A warning covering a whole region rather than a town, so the demo shows
     # the boundary being drawn instead of a circle over the middle of it.
     ("alert", "Kyiv oblast", None, None, 1, "Air raid warning across Kyiv oblast"),
@@ -2619,11 +2624,14 @@ def demo() -> dict[str, Any]:
         })
         if not placed["placed"]:
             continue
-        # Pictures on the strikes, because that is where they matter and
-        # where a real feed has them.
+        # Pictures on one report, because a real feed carries them and a
+        # feature whose only demonstration needs a network is a feature
+        # nobody checks. It used to be the strikes, which is where a channel
+        # actually puts them; with those gone it is this one row, named
+        # explicitly so it cannot quietly stop being any row at all.
         shots = ([_demo_photo(f"{place} · 1", "#5a3550"),
                   _demo_photo(f"{place} · 2", "#3a4a62")]
-                 if kind == "explosion" else [])
+                 if place == DEMO_WITH_PICTURES else [])
         event = {**placed, "id": ident, "oblast": oblast,
                  "origin_lat": placed["lat"], "origin_lon": placed["lon"],
                  "seen": seen, "channel": "demo", "region": "Ukraine",

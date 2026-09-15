@@ -219,15 +219,15 @@ class TestCompassCourses:
         assert got["heading"] != 0.0
         assert got["dest_km"] is not None
 
-    def test_a_strike_is_given_no_course_however_the_sentence_reads(self):
-        # A strike happened where it happened. "Вибух у Києві, БпЛА курсом на
-        # Львів" is two facts, and carrying the drone's bearing onto the
-        # explosion would draw an arrow for something on the ground.
-        got = tracker._clean({"kind": "explosion", "place": "Kyivia",
+    def test_a_warning_is_given_no_course_however_the_sentence_reads(self):
+        # A warning is about a place. "Тривога у Києві, БпЛА курсом на Львів"
+        # is two facts, and carrying the drone's bearing onto the warning
+        # would draw an arrow for something that is not an object.
+        got = tracker._clean({"kind": "alert", "place": "Kyivia",
                               "course": "N", "toward": "Lviv", "count": 1,
-                              "summary": "boom", "region": None})
+                              "summary": "alert", "region": None})
         assert got["course"] is None and got["toward"] is None
-        read = reports.read("Вибухи у Харкові курсом на північ")
+        read = reports.read("Повітряна тривога у Харкові курсом на північ")
         assert read["course"] is None and read["toward"] is None
 
 
@@ -257,27 +257,28 @@ class TestKindsAndHowTheyLast:
         assert tracker.KEEP == {
             k: v.get("keep", tracker.KEEP_MINUTES) for k, v in tracker.KINDS.items()}
 
-    def test_a_strike_stays_far_longer_than_anything_in_flight(self):
-        # The whole point of the per-kind clock: where a strike happened is
-        # still true six hours later, and a report of a drone crossing an
-        # oblast is not.
-        assert tracker.KEEP["explosion"] >= 6 * tracker.KEEP["drone"]
+    def test_a_warning_stays_far_longer_than_anything_in_flight(self):
+        # The whole point of the per-kind clock: a warning declared over an
+        # oblast is still in force an hour later, and a report of a drone
+        # crossing that oblast is not.
+        assert tracker.KEEP["alert"] >= 4 * tracker.KEEP["drone"]
         for kind in ("drone", "jet_drone", "missile", "aircraft"):
-            assert tracker.KEEP[kind] < tracker.KEEP["explosion"], kind
-
-    def test_a_strike_outranks_everything_in_the_stream(self):
-        assert tracker.KINDS["explosion"]["rank"] == max(
-            look["rank"] for look in tracker.KINDS.values())
+            assert tracker.KEEP[kind] < tracker.KEEP["alert"], kind
 
     def test_only_the_things_that_do_not_fly_stand_still(self):
         for name in tracker.NOT_AIRBORNE:
             assert tracker.MOTION[name] == "still", name
-        assert set(tracker.NOT_AIRBORNE) == {"explosion", "alert"}
+        # One, now that strikes are not drawn. A warning is a statement about
+        # a region rather than an object with a course.
+        assert set(tracker.NOT_AIRBORNE) == {"alert"}
 
     def test_the_kinds_are_the_differences_worth_drawing(self):
-        # Eight. Written out rather than derived, because which distinctions
+        # Seven. Written out rather than derived, because which distinctions
         # this map makes is a decision somebody took and not whatever happens
         # to be in the table.
+        #
+        # "explosion" left. It is still READ -- see NOT_DRAWN and the class
+        # below -- and it is no longer something the map draws.
         #
         # "bomb" joined when NEPTUN's feed did. A KAB is released from an
         # aircraft near the line and glides tens of kilometres; folding it
@@ -286,7 +287,7 @@ class TestKindsAndHowTheyLast:
         # "how long have I got".
         assert set(tracker.KINDS) == {
             "drone", "jet_drone", "missile", "bomb", "aircraft",
-            "explosion", "alert", "unknown"}
+            "alert", "unknown"}
 
     def test_every_removed_kind_folds_somewhere_real(self):
         for was, becomes in tracker.FOLD.items():
@@ -320,7 +321,12 @@ class TestKindsAndHowTheyLast:
                      "Повітряна тривога", "Гелікоптер у повітрі"):
             raw = reports.find_kind(text)
             folded = tracker.fold_kind(raw)
-            assert folded in tracker.KINDS, f"{text!r}: {raw} -> {folded}"
+            # Somewhere to put it: a kind the map draws, or one it has
+            # deliberately decided not to. What must never happen is the
+            # third thing -- falling through to "unknown", which is a grey
+            # ring in the sky over a sentence that said something specific.
+            assert folded in tracker.KINDS or folded in tracker.NOT_DRAWN, \
+                f"{text!r}: {raw} -> {folded}"
             if raw != "unknown":
                 assert folded != "unknown", \
                     f"{text!r} read as {raw} and then thrown away"
@@ -441,15 +447,6 @@ class TestPlacing:
         got = tracker.place_event(one(toward="Kyivia"), "ua", lookup=same)
         assert got["heading"] is None and got["dest_km"] is None
 
-    def test_a_strike_does_not_travel_however_the_report_reads(self):
-        # "Explosions in Kherson, drones heading for Mykolaiv" is one message.
-        # The strike is where it is; only the airborne thing has a course.
-        got = tracker.place_event(
-            one(kind="explosion", place="Nikopolia", toward="Khersonia"),
-            "ua", lookup=gazetteer)
-        assert got["placed"] is True
-        assert got["heading"] is None
-
     def test_an_air_alert_does_not_travel_either(self):
         got = tracker.place_event(
             one(kind="alert", place="Nikopolia", toward="Khersonia"), "ua", lookup=gazetteer)
@@ -457,17 +454,16 @@ class TestPlacing:
 
 
 class TestHowLongThingsStay:
-    """A strike does not move, so nothing about it decays.
+    """A warning does not move, so it decays differently.
 
-    The twenty-minute default is about dead reckoning, not about news: a
-    position extrapolated from one report gets worse every second. That
-    reasoning applies to something in flight and to nothing else. Where a
-    strike happened is where it happened, and that is as true six hours later
-    as it was at the time.
+    The twenty-minute default is about a position going stale, not about
+    news: a report of a drone over an oblast stops describing anything
+    current very quickly. A warning is a statement that stands until it is
+    lifted, so it is held for as long as one usually runs.
     """
 
-    def test_a_strike_is_held_for_hours(self):
-        assert tracker.keep_minutes("explosion") >= 180
+    def test_a_warning_is_held_for_longer_than_an_hour(self):
+        assert tracker.keep_minutes("alert") >= 60
 
     def test_things_in_flight_still_go_quickly(self):
         for kind in ("drone", "jet_drone", "missile", "aircraft", "unknown"):
@@ -476,59 +472,66 @@ class TestHowLongThingsStay:
     def test_a_kind_that_says_nothing_gets_the_default(self):
         assert tracker.keep_minutes("nothing like this") == tracker.KEEP_MINUTES
 
-    def test_an_old_strike_is_kept_and_an_old_drone_is_not(self):
+    def test_an_hour_old_warning_is_kept_and_an_hour_old_drone_is_not(self):
         now = time.time()
-        old = now - 3 * 3600
-        assert tracker._alive({"kind": "explosion", "seen": old}, now) is True
+        old = now - 3600
+        assert tracker._alive({"kind": "alert", "seen": old}, now) is True
         assert tracker._alive({"kind": "drone", "seen": old}, now) is False
 
-    def test_a_strike_does_go_eventually(self):
+    def test_a_warning_does_go_eventually(self):
         now = time.time()
-        gone = now - (tracker.keep_minutes("explosion") + 1) * 60
-        assert tracker._alive({"kind": "explosion", "seen": gone}, now) is False
+        gone = now - (tracker.keep_minutes("alert") + 1) * 60
+        assert tracker._alive({"kind": "alert", "seen": gone}, now) is False
 
     def test_a_report_never_leaves_the_list_while_its_marker_is_on_the_map(self):
-        # A burst over a town with nothing in the panel to explain it is worse
-        # than either on its own, and the alert window is shorter than a
-        # strike's life, so the stream has to stretch to cover it.
+        # A mark on the map with nothing in the panel to explain it is worse
+        # than either problem on its own, so the stream has to stretch to
+        # cover the longest-lived mark there is.
         for kind in tracker.KINDS:
             held = max(tracker.ALERT_MINUTES, tracker.keep_minutes(kind))
             assert held >= tracker.keep_minutes(kind), kind
 
-    def test_expiry_keeps_the_strike_and_drops_the_drone(self):
+    def test_expiry_keeps_the_warning_and_drops_the_drone(self):
         now = time.time()
         tracker.reset()
         try:
             with tracker._lock:
                 tracker._events.extend([
-                    {"kind": "explosion", "seen": now - 3 * 3600, "heading": None,
+                    {"kind": "alert", "seen": now - 3600, "heading": None,
                      "origin_lat": 50.0, "origin_lon": 30.0},
-                    {"kind": "drone", "seen": now - 3 * 3600, "heading": None,
+                    {"kind": "drone", "seen": now - 3600, "heading": None,
                      "origin_lat": 50.0, "origin_lon": 30.0},
                 ])
                 tracker._alerts.extend([
-                    {"kind": "explosion", "seen": now - 3 * 3600, "placed": True},
-                    {"kind": "drone", "seen": now - 3 * 3600, "placed": True},
+                    {"kind": "alert", "seen": now - 3600, "placed": True},
+                    {"kind": "drone", "seen": now - 3600, "placed": True},
                 ])
                 tracker._expire(now)
-                assert [e["kind"] for e in tracker._events] == ["explosion"]
-                assert [a["kind"] for a in tracker._alerts] == ["explosion"]
+                # The MARKERS differ: a warning is held for ninety minutes
+                # and a drone for twenty.
+                assert [e["kind"] for e in tracker._events] == ["alert"]
+                # The ROWS do not, and that is the rule working rather than
+                # failing: the stream is held for max(ALERT_MINUTES, keep),
+                # so a report always outlives its own marker. A drone whose
+                # mark has gone still has the line that explains where it
+                # went.
+                assert [a["kind"] for a in tracker._alerts] == ["alert", "drone"]
         finally:
             tracker.reset()
 
-    def test_the_demo_shows_a_fresh_strike_and_an_old_one(self):
+    def test_the_demo_shows_a_fresh_mark_and_an_old_one(self):
         # Otherwise the build with no network only ever draws markers at full
-        # strength, and whether an old strike reads as old cannot be checked.
+        # strength, and whether an old mark reads as old cannot be checked.
         ages = sorted(e["age_minutes"] for e in tracker.demo()["events"]
-                      if e["kind"] == "explosion")
+                      if e["kind"] == "alert")
         assert len(ages) >= 2
-        assert ages[0] < 30 and ages[-1] > 120
+        assert ages[0] < 30 and ages[-1] > 60
 
     def test_the_lifetimes_reach_the_browser(self):
         # The browser fades a marker against its OWN lifetime, so it needs the
         # table rather than the one default.
         for feed in (tracker.demo(), tracker.current()):
-            assert feed["keep"]["explosion"] > feed["keep"]["drone"]
+            assert feed["keep"]["alert"] > feed["keep"]["drone"]
             assert set(feed["keep"]) == set(tracker.KINDS)
 
 
@@ -642,10 +645,10 @@ class TestRegionWideAlerts:
                                 lookup=self.looks_up(kind="city", category="place"))
         assert got["region_scope"] is None
 
-    def test_a_strike_reported_across_a_region_does_shade_it(self):
-        # "вибухи на Київщині" says explosions somewhere in the oblast and
-        # does not say where. The region is the honest extent of that.
-        got = tracker.place_event(one(kind="explosion", place="Kyivia oblast"),
+    def test_a_warning_across_a_region_shades_it(self):
+        # "тривога на Київщині" says the whole oblast is under it, and the
+        # region is the honest extent of that.
+        got = tracker.place_event(one(kind="alert", place="Kyivia oblast"),
                                 "ua", lookup=self.looks_up())
         assert got["region_wide"] is True
 
@@ -701,7 +704,6 @@ class TestEveryKindIsDrawable:
     """
 
     def source(self):
-        import pathlib
         return (pathlib.Path(__file__).resolve().parent.parent
                 / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
 
@@ -720,7 +722,7 @@ class TestEveryKindIsDrawable:
     def test_a_drone_and_a_missile_are_not_the_same_colour(self):
         # The whole weight of distinguishing them rests here now.
         drone = tracker.KINDS["drone"]["colour"]
-        for kind in ("missile", "aircraft", "explosion", "alert"):
+        for kind in ("missile", "aircraft", "alert"):
             assert tracker.KINDS[kind]["colour"] != drone, kind
 
     def test_a_missile_is_not_drawn_like_a_drone(self):
@@ -772,11 +774,10 @@ class TestEveryKindIsDrawable:
         assert apart("drone", "missile") >= 60
 
     def test_the_kinds_drawn_by_behaviour_are_still_drawn_that_way(self):
-        # Strikes burst, warnings are a triangle over their area. Those read
-        # by what they are rather than by a direction, and neither is an
-        # arrow: an arrow on a strike would be pointing somewhere for no
-        # reason.
-        for name in ("explosion", "alert"):
+        # A warning is a triangle over its area. It reads by what it is
+        # rather than by a direction, and it is not an arrow: an arrow on a
+        # warning would be pointing somewhere for no reason.
+        for name in ("alert",):
             assert tracker.MOTION[name] == "still", name
         # And everything else is in the air and gets an arrow.
         for name in ("drone", "jet_drone", "missile", "aircraft", "unknown"):
@@ -1413,13 +1414,15 @@ class TestPictures:
         with pytest.raises(tracker.TrackerError):
             tracker.fetch_photo("https://cdn4.cdn-telegram.org/file/a.png")
 
-    def test_the_demo_has_pictures_on_its_strikes(self):
+    def test_the_demo_has_pictures_on_a_report(self):
         # A feature whose only demonstration needs a network is a feature
-        # nobody checks.
-        strikes = [e for e in tracker.demo()["events"] if e["kind"] == "explosion"]
-        assert strikes
-        for strike in strikes:
-            assert strike["photos"], strike["place"]
+        # nobody checks. It used to be the strikes, which is where a channel
+        # actually puts them; with those gone one row is named explicitly so
+        # it cannot quietly stop being any row at all.
+        shown = [e for e in tracker.demo()["events"] if e.get("photos")]
+        assert shown, "the demo demonstrates the picture path on nothing"
+        for event in shown:
+            assert event["place"] == tracker.DEMO_WITH_PICTURES
 
     def test_the_demo_pictures_are_obviously_not_photographs(self):
         # The single worst thing in this app to get wrong would be a
@@ -1430,26 +1433,71 @@ class TestPictures:
                 assert "demo" in shot
 
 
-class TestHowLongAStrikeStays:
-    """A day, not an evening."""
+class TestStrikesAreReadAndNotDrawn:
+    """Explosions come off the map, and stay recognised.
 
-    def test_a_strike_is_held_for_at_least_a_day(self):
-        assert tracker.KEEP["explosion"] >= 24 * 60
+    A strike was a star held for twenty-five hours. It is gone because the
+    position was never good enough to earn a point on a map: it is read out of
+    "вибухи в Харкові" -- explosions in Kharkiv -- which names a city of a
+    million people, and the star went on the city centroid as though somebody
+    had given a grid reference. Next to NEPTUN's map, which draws no strikes
+    at all, it was the least trustworthy thing on the screen and also the
+    loudest.
 
-    def test_and_a_little_more_than_a_day(self):
-        # Exactly twenty-four hours means a strike reported at nine in the
-        # morning disappears at nine the next morning, while somebody is
-        # looking at it and just as they go to compare it with today.
-        assert tracker.KEEP["explosion"] > 24 * 60
+    The half that must NOT change is the reading. "Вибух" has to keep being
+    recognised as an explosion, because a kind the reader has no name for
+    falls through to "unknown" -- which would draw a grey ring in the sky over
+    a report that explosions had been heard. That is a worse claim than the
+    one just removed, and it is what these tests are mostly about.
+    """
 
-    def test_a_strike_from_yesterday_evening_is_still_drawn(self):
-        now = time.time()
-        strike = {"kind": "explosion", "seen": now - 20 * 3600}
-        assert tracker._alive(strike, now)
+    def setup_method(self):
+        tracker.reset()
 
-    def test_a_strike_from_two_days_ago_is_not(self):
-        now = time.time()
-        assert not tracker._alive({"kind": "explosion", "seen": now - 48 * 3600}, now)
+    def teardown_method(self):
+        tracker.reset()
+
+    def test_it_is_not_a_kind_the_map_draws(self):
+        assert "explosion" not in tracker.KINDS
+        assert "explosion" in tracker.NOT_DRAWN
+
+    def test_the_reader_still_recognises_one(self):
+        assert reports.find_kind("Вибухи в Одесі") == "explosion"
+
+    def test_and_it_survives_the_fold_as_itself(self):
+        # Not "unknown". This is the whole reason NOT_DRAWN exists rather
+        # than the entry simply being deleted.
+        assert tracker.fold_kind("explosion") == "explosion"
+        assert tracker.fold_kind("Explosion") == "explosion"
+
+    def test_it_is_dropped_at_the_gate_every_source_goes_through(self):
+        assert tracker._clean({"kind": "explosion", "place": "Харків",
+                               "summary": "boom"}) is None
+
+    def test_a_post_about_explosions_puts_nothing_on_the_map(self):
+        tracker._record_all([{"id": "p/1", "channel": "x", "region": "Ukraine",
+                              "countries": "ua",
+                              "text": "Вибухи в Харкові"}]) \
+            if hasattr(tracker, "_record_all") else None
+        for got in reports.read_all("Вибухи в Харкові"):
+            item = tracker._clean({**got, "id": "p/1"})
+            assert item is None, got
+
+    def test_nothing_in_the_demo_is_one(self):
+        assert not [e for e in tracker.demo()["events"]
+                    if e["kind"] == "explosion"]
+        assert not [a for a in tracker.demo()["alerts"]
+                    if a["kind"] == "explosion"]
+
+    def test_the_reading_window_shrank_with_it(self):
+        """Derived, so it fell on its own when the longest keep time went.
+
+        It was twenty-five hours because a strike was held that long. Nothing
+        is held that long now, and reading a day of channel history to find
+        marks that expire in ninety minutes would be work for nobody.
+        """
+        assert tracker.LOOKBACK_MINUTES == max(tracker.KEEP.values())
+        assert tracker.LOOKBACK_MINUTES <= 120
 
     def test_the_report_outlives_its_own_marker_never_the_other_way(self):
         # A marker on the map with no row in the panel to explain it is worse
@@ -1457,13 +1505,6 @@ class TestHowLongAStrikeStays:
         for kind in tracker.KINDS:
             held = max(tracker.ALERT_MINUTES, tracker.keep_minutes(kind))
             assert held >= tracker.keep_minutes(kind), kind
-
-    def test_the_cap_has_room_for_a_day_of_them(self):
-        # The cap drops the oldest, so one sized for an evening would quietly
-        # stop being a day for anybody having a bad week -- and the map would
-        # look complete while missing the beginning of it.
-        assert tracker.MAX_EVENTS >= 1000
-        assert tracker.MAX_ALERTS >= 500
 
     def test_nothing_in_flight_is_held_anywhere_near_as_long(self):
         for kind, motion in tracker.MOTION.items():
@@ -1549,12 +1590,12 @@ class TestGivingEachMarkADirection:
         assert got["heading"] is None
         assert got["course_from"] is None
 
-    def test_a_strike_is_given_no_course_at_all(self):
-        # Replaces the recon case, which no longer exists. The rule is about
-        # motion rather than about the kind: something that is not travelling
-        # has no course, and a strike is a place rather than a direction.
+    def test_a_warning_is_given_no_course_at_all(self):
+        # The rule is about motion rather than about the kind: something that
+        # is not travelling has no course, and a warning is a place rather
+        # than a direction.
         got = tracker.place_event(
-            {"kind": "explosion", "place": "Nikopolia", "course": 90.0,
+            {"kind": "alert", "place": "Nikopolia", "course": 90.0,
              "count": 1, "summary": ""}, "ua", lookup=fake_find)
         assert got["heading"] is None
 
@@ -1700,9 +1741,6 @@ class TestWarningsLastAnHour:
         # A warning is not a position that decays, so the twenty-minute
         # default was wrong for it -- just less dramatically than for a strike.
         assert tracker.KEEP["alert"] > tracker.KEEP["drone"]
-
-    def test_and_shorter_than_a_strike(self):
-        assert tracker.KEEP["alert"] < tracker.KEEP["explosion"]
 
     def test_an_alert_from_fifty_minutes_ago_is_still_drawn(self):
         now = time.time()
@@ -1937,7 +1975,7 @@ class TestReadingByRule:
     def test_the_map_fills_with_no_model_anywhere(self, monkeypatch):
         tracker.reset()
         self.feed(monkeypatch, ["Шахед над Нікополем курсом на північ",
-                                "Вибухи у Харкові"])
+                                "Повітряна тривога у Харкові"])
         got = tracker.poll()
         assert got["count"] == 2
         assert all(e["by"] == "rules" for e in got["events"])
@@ -2072,19 +2110,22 @@ class TestWhatEachChannelActuallyDid:
         monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
         return tracker.poll()
 
-    def strikes_at(self, monkeypatch, *ages):
-        """The same, but reporting strikes -- which are held for a day.
+    def warnings_at(self, monkeypatch, *ages):
+        """The same, but reporting warnings -- the longest-lived mark there is.
 
         A drone is held for twenty minutes, so a test written with drones
         cannot tell "not read" from "read and expired", and would pass with
-        the read window set to anything at all.
+        the read window set to anything at all. This used to use strikes,
+        which were held for a day; they are not drawn at all now, so the
+        longest-lived kind is a warning at ninety minutes.
         """
         tracker.reset()
         now = dt.datetime.now(dt.timezone.utc)
         monkeypatch.setattr(tracker, "_fetch_channel", lambda channel: [
             {"id": f"{channel}/{i}", "channel": channel,
              "when": (now - dt.timedelta(minutes=old)).isoformat(),
-             "text": "Вибух у Кременчуці", "photos": [], "link": None}
+             "text": "Повітряна тривога у Кременчуці",
+             "photos": [], "link": None}
             for i, old in enumerate(ages)])
         monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
         return tracker.poll()
@@ -2102,24 +2143,24 @@ class TestWhatEachChannelActuallyDid:
         assert got["count"] == 0
 
     def test_the_boundary_is_the_window(self, monkeypatch):
-        # Tested with a strike rather than a drone, because a drone an hour
+        # Tested with a warning rather than a drone, because a drone an hour
         # old is read and then immediately expired by its own keep time --
         # which would make this pass whatever the window was.
-        inside = self.strikes_at(monkeypatch, tracker.LOOKBACK_MINUTES - 5)
-        outside = self.strikes_at(monkeypatch, tracker.LOOKBACK_MINUTES + 5)
+        inside = self.warnings_at(monkeypatch, tracker.LOOKBACK_MINUTES - 5)
+        outside = self.warnings_at(monkeypatch, tracker.LOOKBACK_MINUTES + 5)
         assert inside["count"] == len(tracker.CHANNELS)
         assert outside["count"] == 0
 
-    def test_a_strike_from_hours_ago_is_on_the_map_from_a_cold_start(self):
+    def test_a_warning_already_running_is_drawn_from_a_cold_start(self):
         """The failure this whole change was about.
 
-        Strikes are held for twenty-five hours. With a twenty-minute read
-        window a freshly opened app could only ever show one from the last
-        twenty minutes, so the other twenty-four hours and forty minutes of
-        the feature were unreachable on every start -- which is every start,
-        for a page somebody opens to see what has happened.
+        A warning is held for ninety minutes. With a twenty-minute read
+        window a freshly opened app could only ever show one declared in the
+        last twenty, so a warning that had been running for half an hour --
+        the ordinary case, and the one somebody opens the page to see -- was
+        unreachable on every start.
         """
-        assert tracker.LOOKBACK_MINUTES >= tracker.KEEP["explosion"]
+        assert tracker.LOOKBACK_MINUTES >= tracker.KEEP["alert"]
 
     def test_an_old_post_is_read_by_rule_even_outside_the_model_batch(
             self, monkeypatch):
@@ -2137,7 +2178,8 @@ class TestWhatEachChannelActuallyDid:
             {"id": f"{channel}/{i}", "channel": channel,
              "when": (dt.datetime.now(dt.timezone.utc)
                       - dt.timedelta(minutes=i % 10)).isoformat(),
-             "text": "Вибух у Кременчуці", "photos": [], "link": None}
+             "text": "Повітряна тривога у Кременчуці",
+             "photos": [], "link": None}
             for i in range(many)])
         monkeypatch.setattr(tracker.gazetteer, "find", fake_find)
         got = tracker.poll()
@@ -2218,13 +2260,6 @@ class TestConcentrateMode:
             got = tracker.massed(self.marks(
                 (50.0, 30.0), (50.0 + degrees, 30.0), (50.0 + 2 * degrees, 30.0)))
             assert len(got) == expect, km
-
-    def test_strikes_are_never_massed(self):
-        # Six explosions in a city are six strikes, not one blurry strike, and
-        # a circle over the top would hide the detail that matters most.
-        got = tracker.massed(self.marks(
-            (50.4, 30.5), (50.42, 30.52), (50.44, 30.54), kind="explosion"))
-        assert got == []
 
     def test_alerts_are_never_massed(self):
         got = tracker.massed(self.marks(
@@ -2500,7 +2535,7 @@ class TestAWarningThatHasEnded:
                         {"id": "c/1", "channel": "c"}, "ua")
         tracker._record(one(kind="alert", place="Харків", summary="Alert"),
                         {"id": "c/2", "channel": "c"}, "ua")
-        tracker._record(one(kind="explosion", place="Київ", summary="Boom"),
+        tracker._record(one(kind="missile", place="Київ", summary="Missile"),
                         {"id": "c/3", "channel": "c"}, "ua")
         tracker._record(one(kind="drone", place="Київ", summary="Drone"),
                         {"id": "c/4", "channel": "c"}, "ua")
@@ -2511,7 +2546,9 @@ class TestAWarningThatHasEnded:
 
         left = tracker.current()["events"]
         kinds = sorted(e["kind"] for e in left)
-        assert kinds == ["alert", "drone", "explosion"]
+        # The things in flight over Kyiv are untouched: an all-clear takes
+        # down the WARNING, not the reports it was about.
+        assert kinds == ["alert", "drone", "missile"]
         # The one left standing is Kharkiv's, four hundred kilometres away.
         alert = next(e for e in left if e["kind"] == "alert")
         assert tracker.separation(alert["lat"], alert["lon"],
@@ -2632,10 +2669,9 @@ class TestWarningsAreColouredByWhatTheyWarnAbout:
         assert got[0]["cause"] is None
 
     def test_nothing_but_a_warning_carries_a_cause(self):
-        # A drone in the air IS a drone; a cause there would say the same
-        # thing twice, and on a strike it would colour the crater by whatever
-        # made it.
-        for text in ("Шахед над Нікополем", "Вибухи у Харкові"):
+        # A drone in the air IS a drone, so a cause there would say the same
+        # thing twice.
+        for text in ("Шахед над Нікополем", "Балістика на Дніпропетровщині"):
             got = self.one(text)["events"]
             assert got[0].get("cause") is None, text
 
@@ -2651,8 +2687,8 @@ class TestTakingAMarkOffByHand:
     """Somebody watching this knows things the feed does not.
 
     A drone was shot down and the channel has not said so; a warning is stale;
-    a report was plainly a duplicate. Until now the only answer was to wait
-    out the keep time, which for a strike is twenty-five hours.
+    a report was plainly a duplicate. Without this the only answer is to wait
+    out the keep time, which for a warning is an hour and a half.
 
     The care here is all about what a dismissal is NOT. It hides a mark; it
     does not edit what a channel said. The report stays in the stream, marked,
@@ -2665,7 +2701,7 @@ class TestTakingAMarkOffByHand:
                             lambda name, countries="": places.lookup(name))
         tracker.reset()
         for i, (kind, place) in enumerate([("drone", "Суми"),
-                                           ("explosion", "Харків"),
+                                           ("missile", "Харків"),
                                            ("alert", "Сумська область")]):
             item = tracker._clean({
                 "kind": kind, "place": place, "id": f"p/{i}", "count": 1,
@@ -2683,12 +2719,12 @@ class TestTakingAMarkOffByHand:
         assert not [e for e in left if e["kind"] == "drone"]
         assert len(left) == 2
 
-    def test_a_strike_can_be_taken_off(self, monkeypatch):
+    def test_a_missile_can_be_taken_off(self, monkeypatch):
         got = self.some(monkeypatch)
-        strike = next(e for e in got["events"] if e["kind"] == "explosion")
-        tracker.dismiss(strike["id"])
+        rocket = next(e for e in got["events"] if e["kind"] == "missile")
+        tracker.dismiss(rocket["id"])
         assert not [e for e in tracker.current()["events"]
-                    if e["kind"] == "explosion"]
+                    if e["kind"] == "missile"]
 
     def test_a_warning_can_be_cancelled(self, monkeypatch):
         got = self.some(monkeypatch)
@@ -2788,14 +2824,14 @@ class TestWarningsAreOutlinesOfRegions:
         assert south < places.REGIONS["Сумська область"][0] < north
 
     def test_a_town_carries_none(self, monkeypatch):
-        # A strike in a town is a point in it. A rectangle round one would
-        # claim the damage followed the municipal border.
+        # A drone over a town is a point in it. A rectangle round one would
+        # claim the report had named the municipal border.
         monkeypatch.setattr(tracker.gazetteer, "find",
                             lambda name, countries="": places.lookup(name))
         tracker.reset()
         item = tracker._clean({
-            "kind": "explosion", "place": "Харків", "id": "e/1", "count": 1,
-            "summary": "boom", "region": None, "toward": None,
+            "kind": "drone", "place": "Харків", "id": "e/1", "count": 1,
+            "summary": "drone", "region": None, "toward": None,
             "course": None, "cause": None})
         tracker._record(item, {"id": "e/1", "channel": "x",
                                "region": "Ukraine"}, "ua")
@@ -2893,7 +2929,6 @@ class TestTheDrawingMoves:
     """
 
     def source(self):
-        import pathlib
         return (pathlib.Path(__file__).resolve().parent.parent
                 / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
 
@@ -2946,64 +2981,34 @@ class TestTheDrawingMoves:
         block = block[block.index("function liveLegFor"):]
         assert "event.area_only" in block[:block.index("\n}")]
 
-    def test_a_strike_is_not_drawn_inside_a_circle(self):
-        # The circle was sized from how well the position was known and read
-        # as how far the blast went -- a claim nobody made, in the place
-        # where getting it wrong matters most.
-        block = self.source()
-        block = block[block.index("const hasArea"):]
-        assert "event.kind !== 'explosion'" in block[:block.index(";\n")]
+    def test_no_number_is_drawn_on_a_mark(self):
+        """Said twice from the other side of the screen, and gone.
 
-    def test_a_strike_has_no_ring_around_it(self):
-        # Twice asked for, and right both times: the halo is a circle, and a
-        # circle round a strike reads as how far the blast went whatever it
-        # is meant as. The glow that keeps it findable follows the star's own
-        # outline instead.
-        text = self.source()
-        assert "const ringed = loud && event.kind !== 'explosion';" in text
-        assert "ringed ? `<span class=\"ao-halo\"" in text
-        assert "ao-flare" in text
-
-    def test_the_glow_that_replaces_it_takes_the_kind_own_colour(self):
-        # From the kinds table, inline, rather than a second copy of the
-        # colour in the stylesheet that could drift from the mark it belongs to.
-        text = self.source()
-        assert 'class="ao-flare" style="color:${colour}"' in text
-        css = (pathlib.Path(__file__).resolve().parent.parent
-               / "frontend" / "css" / "app.css").read_text(encoding="utf-8")
-        block = css[css.index(".ao-flare {"):]
-        assert "currentColor" in block[:block.index("}")]
-
-    def test_a_report_is_one_mark_however_many_it_counted(self):
-        """The reverse of what this drew for a while, and on purpose.
-
-        A report of three drones was drawn as three arrows spread a kilometre
-        apart. Two things were wrong with it. The count is the least reliable
-        number in a report, and a drawing of N objects is a stronger claim
-        than "the report said N" -- so when the number is soft the softer
-        drawing is the truthful one. And it clumped: at any zoom a country
-        fits in, six arrows 1.2 km apart are one smudge with six arrowheads,
-        beside NEPTUN's own map drawing a single triangle for that track.
-
-        The individual icons worth having are individual TRACKS, and there
-        are as many of those as the feed sends.
+        It was three arrows for a report of three drones; then a plate
+        reading "3" on one arrow; now nothing. Both drawings claimed the
+        count was firm, and it is the least dependable thing in a report.
+        NEPTUN draw no number either. How many the report claimed is in the
+        popup, with the sentence it came from.
         """
         text = self.source()
-        assert "const drawnCount" not in text
-        assert "function nudge" not in text
-        assert "MOST_SHOWN" not in text
+        assert "function countPlate" not in text
+        assert "function untold" not in text
+        assert "ao-count-plate" not in text
 
-    def test_the_number_goes_on_the_mark_instead(self):
-        block = self.source()
-        block = block[block.index("function untold"):]
-        block = block[:block.index("\n}")]
-        assert "said > 1 ? said : 0" in block
+    def test_the_count_is_still_said_in_the_popup(self):
+        # Removed from the map, not from the app. What the report claimed is
+        # worth reading; it is just not worth drawing as a fact.
+        text = self.source()
+        assert "reported together" in text
 
-    def test_one_object_gets_no_number(self):
-        # The common case, and saying "1" on it adds nothing.
-        block = self.source()
-        block = block[block.index("function countPlate"):]
-        assert "if (!(n > 1)) return '';" in block[:block.index("\n}")]
+    def test_nothing_draws_a_strike_any_more(self):
+        # Removed with the kind. A burst glyph nothing can reach is a drawing
+        # that cannot be trusted, because nothing would notice it breaking.
+        text = self.source()
+        assert "explosion" not in text.replace(
+            "a report of explosions names a city", "")
+        assert "data-shape=\"burst\"" not in text
+        assert "ao-flare" not in text
 
     def test_a_hidden_group_is_not_drawn(self):
         # Asked for as "just show drones and missiles". A group per button

@@ -734,20 +734,27 @@ class TestCatchingUpOnTheLastHalfHour:
         return tracker.catch_up()
 
     def test_recent_messages_become_marks(self, monkeypatch):
-        made = self.said(monkeypatch, ("Вибухи у Харкові", 5),
+        made = self.said(monkeypatch, ("Повітряна тривога у Харкові", 5),
                          ("Шахед над Нікополем курсом на північ", 10))
         assert made == 2
         assert len(tracker.current()["events"]) == 2
 
+    def test_a_message_about_explosions_makes_no_mark(self, monkeypatch):
+        # Read, recognised, and dropped: see tracker.NOT_DRAWN. This is the
+        # aggregator path rather than the channel one, and it has to agree.
+        assert self.said(monkeypatch, ("Вибухи у Харкові", 5)) == 0
+        assert tracker.current()["events"] == []
+
     def test_older_ones_are_left_alone(self, monkeypatch):
         stale = tracker.CATCH_UP_MINUTES + 20
-        assert self.said(monkeypatch, ("Вибухи у Харкові", stale)) == 0
+        assert self.said(monkeypatch,
+                         ("Повітряна тривога у Харкові", stale)) == 0
 
     def test_the_window_is_about_half_an_hour(self):
         assert 15 <= tracker.CATCH_UP_MINUTES <= 60
 
     def test_a_message_is_read_once(self, monkeypatch):
-        self.said(monkeypatch, ("Вибухи у Харкові", 5))
+        self.said(monkeypatch, ("Повітряна тривога у Харкові", 5))
         before = len(tracker.current()["events"])
         tracker.catch_up()
         assert len(tracker.current()["events"]) == before
@@ -755,7 +762,7 @@ class TestCatchingUpOnTheLastHalfHour:
     def test_it_is_credited_to_the_channel_that_wrote_it(self, monkeypatch):
         # Their feed carries the channel's own name. Crediting the aggregator
         # would lose which channel actually said it.
-        self.said(monkeypatch, ("Вибухи у Харкові", 5))
+        self.said(monkeypatch, ("Повітряна тривога у Харкові", 5))
         assert tracker.current()["alerts"][0]["channel"] == "kpszsu"
 
     def test_a_message_feed_that_is_down_is_not_a_failure(self, monkeypatch):

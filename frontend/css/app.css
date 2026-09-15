@@ -1670,17 +1670,6 @@ body.is-walled { overflow: hidden; }
   70%  { transform: scale(1.6);  opacity: 0; }
   100% { transform: scale(1.6);  opacity: 0; }
 }
-/* A strike has no ring at all -- see icon(). Its glow follows the star's own
-   points instead, so the mark is as findable as a warning without drawing a
-   circle that reads as how far the blast went. */
-.ao-flare {
-  display: block; position: relative;
-  /* currentColor, and the colour is set inline from the kind's own entry, so
-     the glow cannot drift from the mark it belongs to. */
-  filter: drop-shadow(0 0 3px rgba(0, 0, 0, .95))
-          drop-shadow(0 0 6px currentColor)
-          drop-shadow(0 0 13px currentColor);
-}
 
 /* The glyph itself, over the halo and with an outline so it reads on light
    terrain as well as dark water. */
