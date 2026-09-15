@@ -31,7 +31,8 @@
 // the count and the group's average trajectory.
 
 import { api } from './api.js';
-import { $, el } from './ui.js';
+import { $, el, download, toast } from './ui.js';
+import { drawShot } from './trackershot.js';
 
 // How often to ask for new reports. The backend keeps its own floor under
 // this, so several open tabs cost one read of the channels between them.
@@ -358,15 +359,20 @@ const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
 // the popup, where it can be read with the sentence it came from instead of
 // floating on the map as a fact.
 
-function glyph(event, colour, facing) {
+/**
+ * The drawing for one mark, as its parts: what it is, what to paint, and how
+ * far round to turn it.
+ *
+ * Separated from glyph() so the picture export can use the same artwork. It
+ * cannot use the finished <svg>, because the rotation there is a CSS
+ * transform on the element and CSS does not apply to an SVG rasterised
+ * through an Image -- the export turns the canvas instead. Two copies of a
+ * dozen paths was the alternative, and they would have drifted apart the
+ * first time one of them was changed.
+ */
+export function glyphParts(event, colour, facing) {
   const motion = motionOf(event);
-  // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
-  // one number here: the artwork scales rather than being redrawn, and the
-  // anchor below moves with it.
-  const svg = (shape, body, turn) =>
-    `<svg class="ao-glyph" data-shape="${shape}" width="${GLYPH}" height="${GLYPH}"
-          viewBox="0 0 18 18"${turn == null ? '' : ` style="transform: rotate(${turn.toFixed(1)}deg)"`}>`
-    + `${body}</svg>`;
+  const svg = (shape, body, turn = null) => ({ shape, body, turn });
 
   if (event.kind === 'alert') {
     // A filled warning triangle with a glow behind it, sitting in the middle
@@ -410,6 +416,18 @@ function glyph(event, colour, facing) {
   const borrowed = event.course_from === 'group';
   const shape = `arrow${borrowed ? '-borrowed' : ''}`;
   return svg(shape, (borrowed ? BORROWED : ARROW)(colour), facing);
+}
+
+/** One mark as an <svg> element, rotated by CSS to its course. */
+function glyph(event, colour, facing) {
+  // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
+  // one number here: the artwork scales rather than being redrawn, and the
+  // anchor moves with it.
+  const { shape, body, turn } = glyphParts(event, colour, facing);
+  return `<svg class="ao-glyph" data-shape="${shape}" width="${GLYPH}"`
+    + ` height="${GLYPH}" viewBox="0 0 18 18"`
+    + `${turn == null ? '' : ` style="transform: rotate(${turn.toFixed(1)}deg)"`}>`
+    + `${body}</svg>`;
 }
 
 /** One marker: its glyph, and its label underneath. */
@@ -942,6 +960,9 @@ function reconcile(events) {
     // missiles on the map" and "missiles switched off" are different things
     // and confusing them is how a filter becomes a lie.
     if (!isShown(event)) continue;
+    // Located to a province and no finer, so there is no point to draw it
+    // at. Listed in the panel instead -- see regionOnly().
+    if (regionOnly(event)) continue;
     const at = positionOf(event);
 
     // One marker per report, at the position the report gave. The several
@@ -1020,6 +1041,28 @@ function reconcile(events) {
 const floats = (event) => event.kind === 'alert'
   || Boolean(event.area_only)
   || event.region_scope === 'located';
+
+/**
+ * Whether this report names a region and nothing finer.
+ *
+ * Such a report has no point on the map that means anything. Its lat/lon is
+ * the middle of a province -- NEPTUN's own words for it are "there is no dot"
+ * -- and drawing a mark there puts an object in a field outside Lutsk because
+ * that is where the arithmetic centre of Volyn oblast happens to fall.
+ *
+ * It used to be drawn anyway, with the province faintly shaded behind it to
+ * say what the mark really meant. That shading is gone: it was a warning
+ * nobody had declared. What was left was the dot on its own, in the middle of
+ * an oblast, with nothing around it -- "random drones", which is exactly what
+ * it looks like and, for once, exactly what it was.
+ *
+ * So it is not drawn. It is still read, still counted and still in the panel
+ * list, which is where a report that cannot be put anywhere belongs. A
+ * warning is the exception and stays: a warning IS about the whole region, so
+ * the region is its true extent rather than a stand-in for one.
+ */
+const regionOnly = (event) => event.kind !== 'alert'
+  && (Boolean(event.area_only) || event.region_scope === 'located');
 
 // How much air to leave between two marks, in pixels.
 //
@@ -1468,7 +1511,15 @@ function buildDock() {
           class: 'ao-find', id: 'trackerFind', type: 'button',
           title: 'Move the map to fit everything currently drawn',
           onclick: fitToMarks,
-        }, 'Find')),
+        }, 'Find'),
+        // A picture of what is in the air, of whatever is on screen. Frame it
+        // first -- the airspace buttons below put a whole country in view --
+        // and this takes that view.
+        el('button', {
+          class: 'ao-find', id: 'trackerShot', type: 'button',
+          title: 'Save a picture of the marks in view — no warnings, watermarked',
+          onclick: saveShot,
+        }, 'Image')),
       // One country's sky at a time. With warnings in Tatarstan and drones
       // over Volyn, "fit everything" is a view four thousand kilometres wide
       // in which neither is readable.
@@ -1538,6 +1589,86 @@ function toggle() {
   paintDock();
 }
 
+// The province borders, fetched once and kept. They change about never and
+// they are a few hundred kilobytes, which is why they are not in the feed.
+let borders = null;
+let bordersFailed = '';
+
+async function regionOutlines() {
+  if (borders) return borders;
+  try {
+    const got = await api.trackerOutlines();
+    borders = got.outlines ?? [];
+    bordersFailed = '';
+  } catch (err) {
+    // A picture with no borders is still a picture of the marks, so this
+    // does not stop the export -- but it is SAID, because the first version
+    // swallowed it and the first version was also asking for this with the
+    // wrong HTTP method. A silent fallback turned a plain mistake into a
+    // picture of arrows floating on black, which looks like a design choice.
+    borders = [];
+    bordersFailed = err.message;
+  }
+  return borders;
+}
+
+/**
+ * Save a picture of what is in the air.
+ *
+ * What goes in it: every mark currently drawn inside the view, EXCEPT the
+ * warnings -- neither the shaded provinces nor their triangles. That is what
+ * was asked for and it is also what makes the picture readable: a warning
+ * covers a tenth of the country and the arrows are the subject.
+ *
+ * The extent is whatever is on screen, so "an area" is a zoom and "the whole
+ * country" is the Airspace button next to this one. One control rather than
+ * two, and the framing is already a thing this panel can do.
+ */
+async function saveShot() {
+  const button = $('#trackerShot');
+  if (!map || !button) return;
+  button.disabled = true;
+  try {
+    const view = map.getBounds();
+    const marks = [];
+    for (const held of drawn.values()) {
+      const event = held.event;
+      if (event.kind === 'alert') continue;
+      const at = held.marker.getLatLng();
+      if (!view.contains(at)) continue;
+      const parts = glyphParts(event, colourOf(event), positionOf(event).facing);
+      marks.push({ lat: at.lat, lon: at.lng, ...parts });
+    }
+    if (!marks.length) {
+      toast('Nothing in view to put in a picture', 'warn');
+      return;
+    }
+    const canvas = await drawShot({
+      bounds: {
+        north: view.getNorth(), south: view.getSouth(),
+        west: view.getWest(), east: view.getEast(),
+      },
+      marks,
+      outlines: await regionOutlines(),
+      credit: feed?.attribution?.english ?? 'Data: NEPTUN — neptun.in.ua',
+    });
+    const blob = await new Promise((done) => canvas.toBlob(done, 'image/png'));
+    if (!blob) {
+      toast('The picture could not be saved', 'warn');
+      return;
+    }
+    const when = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    download(blob, `air-${when}.png`);
+    toast(`Saved ${marks.length} mark${marks.length === 1 ? '' : 's'}`
+      + (bordersFailed ? ` — without borders: ${bordersFailed}` : ''),
+    bordersFailed ? 'warn' : '');
+  } catch (err) {
+    toast(`The picture could not be made: ${err.message}`, 'warn');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /** How many reports arrived, and how many of them could be placed. */
 function tally() {
   const got = feed?.reports ?? { placed: 0, unplaced: 0 };
@@ -1570,10 +1701,28 @@ function paintDock() {
   const n = drawn.size;
   const grouped = concentrated ? (masses?.length ?? 0) : 0;
   const missed = (feed?.reports?.unplaced ?? 0);
+
+  // Counted once, up here, because three things below read them: the count
+  // line, the group buttons and the note. Counted over everything the feed
+  // sent rather than over what is drawn, so a switched-off group still says
+  // how much is being held back -- a button reading "Missiles" that turns
+  // out to have been hiding nine of them is the failure this prevents.
+  const perGroup = new Map();
+  let vague = 0;
+  for (const event of feed?.events ?? []) {
+    const key = groupOf(event.kind);
+    perGroup.set(key, (perGroup.get(key) ?? 0) + 1);
+    if (regionOnly(event)) vague += 1;
+  }
+
   count.textContent = n || grouped
     ? [
       grouped ? `${grouped} mass${grouped === 1 ? '' : 'es'}` : null,
       `${n} on the map`,
+      // Read, placed to a province, and not drawn -- see regionOnly(). Said
+      // here because "twelve on the map" beside a list of twenty reports
+      // reads as the map being broken, and this is the difference.
+      vague ? `${vague} region only` : null,
       // Said here rather than three paragraphs down in the note. "Four on the
       // map" beside a list of eight reports reads as the map being broken;
       // "four on the map, 3 unplaced" says what actually happened.
@@ -1584,16 +1733,6 @@ function paintDock() {
   const find = $('#trackerFind');
   if (find) find.disabled = !(n || grouped);
 
-  // Which groups are switched on, and how many of each arrived -- counted
-  // over everything the feed sent rather than over what is drawn, so a
-  // switched-off group still says how much is being held back. A button
-  // reading "Missiles" that turns out to have been hiding nine of them is
-  // the failure this number prevents.
-  const perGroup = new Map();
-  for (const event of feed?.events ?? []) {
-    const key = groupOf(event.kind);
-    perGroup.set(key, (perGroup.get(key) ?? 0) + 1);
-  }
   for (const button of document.querySelectorAll('.ao-show')) {
     const key = button.dataset.group;
     const had = perGroup.get(key) ?? 0;
@@ -1681,6 +1820,12 @@ function paintDock() {
   if (got.total) {
     lines.push(`${got.placed} of ${got.total} reports placed`
       + (got.unplaced ? `; ${got.unplaced} named nowhere a map knows.` : '.'));
+  }
+  if (vague) {
+    lines.push(`${vague} report${vague === 1 ? ' names' : 's name'} a province `
+      + 'and nothing finer, so there is no point to draw — the position such '
+      + 'a report carries is the middle of the province, which is a field '
+      + 'nobody reported anything over. They are in the list above.');
   }
   if (n) {
     // Still no claim of tracking, and now there is more to say about it: a

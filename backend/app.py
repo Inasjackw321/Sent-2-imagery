@@ -327,6 +327,18 @@ def tracker_events() -> dict:
         return answer
 
 
+@app.get("/api/tracker/outlines")
+def tracker_outlines() -> dict[str, Any]:
+    """The region boundaries, for the page to draw a map of its own.
+
+    Not in the tracker feed, and that is the point of a separate endpoint:
+    this is a few hundred kilobytes of borders that change about never, and
+    the feed is fetched every thirty seconds. Asked for once, when somebody
+    exports a picture.
+    """
+    return {"outlines": tracker.outlines()}
+
+
 @app.get("/api/tracker/photo")
 def tracker_photo(u: str = Query(..., max_length=600)):
     """One picture from a Telegram post, fetched here rather than by the page.

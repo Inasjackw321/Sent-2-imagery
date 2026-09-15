@@ -420,6 +420,21 @@ def outline(name: str, countries: str = "") -> Any | None:
     return learned.get("shape") if learned else None
 
 
+def outlines() -> list[tuple[str, Any]]:
+    """Every boundary learned so far, as (name, shape).
+
+    For drawing a map out of what this app already knows. Russia's provinces
+    only ever come from here -- there is no published boundary file for them
+    the way NEPTUN publish one for Ukraine -- so without this an exported
+    picture would have half a border region on it.
+    """
+    with _lock:
+        got = [(key.split("|", 1)[-1], place["shape"])
+               for key, place in _known.items()
+               if place and place.get("shape")]
+    return got
+
+
 def improve_later(name: str, countries: str, urgent: bool = False) -> bool:
     """Ask for a region's real outline in the background. Never blocks.
 

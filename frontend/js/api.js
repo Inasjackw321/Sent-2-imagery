@@ -66,4 +66,7 @@ export const api = {
   probe: (body) => request('/api/probe', { body }),
   render: (body) => request('/api/render', { body }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
+  // The province borders, for drawing a picture with no map tiles in it.
+  // Asked for once, when somebody exports one -- see trackershot.js.
+  trackerOutlines: () => request('/api/tracker/outlines', { method: 'GET' }),
 };

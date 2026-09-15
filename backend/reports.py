@@ -114,6 +114,23 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      r"баліст|баллист|іскандер|искандер|кинжал|кинджал"
      r"|\bballistic\b|\biskander\b|\bkinzhal\b"
      r"|بالستي|בליסטי|بالستیک"),
+    # Guided bombs, which the reader had no name for at all. NEPTUN send them
+    # as "kab" and the map has drawn them since, but a channel writing "КАБ на
+    # Вовчанськ" produced nothing -- find_kind returned "unknown" and read()
+    # gives up on an unknown kind, so the report was dropped whole.
+    #
+    # Above "cruise" because neither pattern can match the other's words, and
+    # a reader is better served by the specific one being tried first. A KAB
+    # glides tens of kilometres from an aircraft near the line; drawing it as
+    # a missile would answer "how long have I got" with the wrong number.
+    ("kab",
+     # The endings matter: "КАБи", "КАБів", "КАБами" are how these posts
+     # actually write it, and a bare \bкаб\b matches none of them. Spelt out
+     # rather than as \w*, which would swallow "кабель" and "кабінет".
+     r"\bкаб(?:и|ів|ам|ами|ах|ах|ом|у|а)?\b|\bкаб-\d+\b"
+     r"|керован\w*\s+авіабомб|управляем\w*\s+авиабомб"
+     r"|коригован\w*\s+авіабомб|\bумпк\b"
+     r"|\bguided\s+(?:aerial\s+)?bombs?\b|\bglide\s+bombs?\b|\bkabs?\b"),
     ("cruise",
      # The bare word, which was in no pattern at all: "Ракети на Львівщину"
      # was read as nothing and produced no mark. Safe below "alert", which
@@ -121,7 +138,16 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      # warnings ABOUT missiles rather than reports of them.
      r"ракет\w*|ракети|"
      r"крилат|крылат|калібр|калибр|х-101|x-101|х-555|онікс|оникс"
-     r"|\bcruise missiles?\b|\bkalibr\b|\bonyx\b"
+     # "Швидкісна ціль" and its Russian twin are what both sides call a
+     # missile before anybody has identified which one. The phrase is
+     # unambiguous in these channels and it was read as nothing.
+     r"|швидкісн\w*\s+ціл|высокоскоростн\w*\s+цел"
+     # And the bare English word. "Cruise missile" was covered and "missile"
+     # was not, so the Russian-side channel -- which posts in English -- had
+     # every plain missile report dropped. Safe below "alert", which takes
+     # "Missile Alert" first: there the weapon says what the warning is
+     # about, and find_cause reads it for that.
+     r"|\bmissiles?\b|\bcruise missiles?\b|\bkalibr\b|\bonyx\b"
      r"|صاروخ|صواريخ|טיל|טילים|موشک"),
     ("recon",
      r"розвідувальн|разведыват|орлан|zala|supercam|суперкам|"
@@ -791,6 +817,10 @@ SAYS = {
     # line that says nothing about the one fact in it, which is that the
     # warning ENDED. It is the commonest post on the Russian radar channel.
     "all_clear": "All clear",
+    # Two names for one thing, and both are needed. "kab" is what the reader
+    # returns, "bomb" is what the map calls it after tracker.FOLD; a line is
+    # written from the reader's name, before the fold.
+    "kab": "Guided bomb",
     "bomb": "Guided bomb",
     "unknown": "Unidentified",
 }

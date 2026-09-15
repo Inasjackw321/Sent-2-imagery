@@ -479,6 +479,11 @@ def read_course(value: Any) -> float | None:
 # information is still being extracted, and putting a kind back is a line in
 # this table rather than a re-derivation.
 FOLD = {
+    # The reader's name for a guided bomb, onto the map's. NEPTUN send "kab"
+    # and this map has drawn a "bomb" since; the reader had no name for one
+    # at all until now, and without this line its new name folds to "unknown"
+    # and a KAB is a grey ring in the sky.
+    "kab": "bomb",
     "recon": "drone",
     "cruise": "missile",
     "ballistic": "missile",
@@ -1695,6 +1700,42 @@ def catch_up() -> int:
                               "region": "Ukraine"}, "ua,ru"):
                 made += 1
     return made
+
+
+# A ceiling on the boundaries handed to the page for drawing its own map.
+# Twenty-five oblasts, a hundred and change raions, and whatever Russia has
+# been learned -- generous, and bounded so a runaway index cannot be sent.
+MOST_OUTLINES = 400
+
+
+def outlines() -> list[dict[str, Any]]:
+    """Every region boundary this app knows, for drawing a map with no tiles.
+
+    Two sources, because they cover different halves of this layer. NEPTUN
+    publish Ukraine's oblasts and raions; Russia's come one at a time from
+    the gazetteer as warnings are drawn over them.
+
+    De-duplicated by identity rather than by name, which is the cheap and
+    correct thing: neptun.index_shapes files the SAME object under a region's
+    key and under each of its names, so a name-based pass would send a
+    province's border two or three times.
+    """
+    out: list[dict[str, Any]] = []
+    already: list[Any] = []
+
+    def keep(name: str, shape: Any) -> None:
+        if not shape or len(out) >= MOST_OUTLINES:
+            return
+        if any(shape is seen for seen in already):
+            return
+        already.append(shape)
+        out.append({"name": name, "shape": shape})
+
+    for name, shape in neptun.shapes().items():
+        keep(name, shape)
+    for name, shape in gazetteer.outlines():
+        keep(name, shape)
+    return out
 
 
 def take_neptun() -> tuple[int, int]:

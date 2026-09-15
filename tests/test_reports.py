@@ -1171,3 +1171,58 @@ class TestWhereItIsVersusWhereItIsGoing:
         # lowercase words is past the limit, so nothing is found -- and a
         # report with no place, no destination and no course is not a report.
         assert reports.read("БпЛА над одним двома трьома чотирма Харковом") is None
+
+
+class TestTheKindsThatHadNoName:
+    """Reports the reader dropped whole, because it could not name them.
+
+    find_kind returning "unknown" makes read() give up, so a post naming a
+    weapon this had no pattern for produced nothing at all -- not a grey
+    mark, not a row in the panel, nothing. Two of those were common enough
+    to matter, and both showed up the same way on the map: everything in the
+    air was a drone, because drones were what could be read.
+    """
+
+    def test_a_guided_bomb_is_read(self):
+        # The map has drawn a "bomb" since NEPTUN started sending them; the
+        # reader had no word for one at all.
+        for text in ("КАБ у напрямку Вовчанська", "КАБи по Харківщині",
+                     "КАБів на Сумщині", "керовані авіабомби по Куп'янську",
+                     "Guided bombs over Vovchansk", "glide bomb on Kherson"):
+            assert reports.find_kind(text) == "kab", text
+
+    def test_and_folds_to_the_kind_the_map_draws(self):
+        from backend import tracker
+        assert tracker.fold_kind("kab") == "bomb"
+
+    def test_a_cable_is_not_a_guided_bomb(self):
+        # "КАБ" needs its endings to be matched -- КАБи, КАБів, КАБами -- and
+        # the lazy way to get those is \\w*, which swallows кабель and кабінет.
+        for text in ("кабель у Харкові", "кабінет міністрів",
+                     "кабіна пілота"):
+            assert reports.find_kind(text) != "kab", text
+
+    def test_a_bare_english_missile_is_read(self):
+        # The Russian-side channel posts in English. "Cruise missile" was
+        # covered and "missile" was not, so every plain missile report from
+        # it was dropped.
+        assert reports.find_kind("Missile heading north over Belgorod") == "cruise"
+        assert reports.find_kind("Two missiles inbound") == "cruise"
+
+    def test_a_missile_alert_is_still_a_warning_and_not_a_missile(self):
+        # "alert" is tried before the weapon words on purpose: there the
+        # weapon says what the warning is ABOUT, and find_cause reads it.
+        assert reports.find_kind("Voronezh Oblast Missile Alert") == "alert"
+        assert reports.find_cause("Voronezh Oblast Missile Alert") == "missile"
+
+    def test_a_high_speed_target_is_a_missile(self):
+        # What both sides call one before anybody has identified which.
+        assert reports.find_kind("Швидкісна ціль курсом на Кривий Ріг") == "cruise"
+        assert reports.find_kind("высокоскоростная цель") == "cruise"
+
+    def test_these_now_reach_the_map_with_a_course(self):
+        # The point of the whole change: something other than a drone, with
+        # an arrow on it.
+        got = reports.read("Missile heading north over Belgorod Oblast")
+        assert got["course"] == "N"
+        assert got["place"]

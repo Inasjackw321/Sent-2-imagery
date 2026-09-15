@@ -3041,6 +3041,70 @@ class TestTheDrawingMoves:
         assert "region_scope === 'located' ? 0.05" not in block
         assert "L.geoJSON" in block
 
+    def test_a_report_that_names_only_a_province_is_not_drawn(self):
+        """The "random drones".
+
+        Such a report's lat/lon is the arithmetic centre of a province --
+        NEPTUN's own words are "there is no dot" -- so the mark went in a
+        field outside Lutsk because that is where the middle of Volyn oblast
+        falls. It used to have the province faintly shaded behind it to say
+        what it meant; that shading was a warning nobody declared and is
+        gone, which left the dot on its own in the middle of nowhere.
+        """
+        text = self.source()
+        block = text[text.index("const regionOnly ="):]
+        block = block[:block.index(";\n")]
+        assert "event.kind !== 'alert'" in block
+        assert "event.area_only" in block
+        assert "event.region_scope === 'located'" in block
+        assert "if (regionOnly(event)) continue;" in text
+
+    def test_a_warning_is_the_exception_and_still_shows(self):
+        # A warning IS about the whole region, so the region is its true
+        # extent rather than a stand-in for a position nobody gave.
+        block = self.source()
+        block = block[block.index("const regionOnly ="):]
+        assert "event.kind !== 'alert'" in block[:block.index(";\n")]
+
+    def test_the_panel_says_how_many_are_being_held_back(self):
+        # "Twelve on the map" beside a list of twenty reports reads as the map
+        # being broken. This is the difference between that and a filter.
+        text = self.source()
+        assert "region only" in text
+        assert "if (regionOnly(event)) vague += 1;" in text
+
+    def test_the_picture_leaves_the_warnings_out(self):
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        block = block[:block.index("\n}")]
+        assert "if (event.kind === 'alert') continue;" in block
+
+    def test_the_picture_carries_the_watermark_and_the_credit(self):
+        """NEPTUN's credit is a condition of use, not decoration.
+
+        A picture carrying their tracks is the data, travelling somewhere
+        this app's panel does not follow it -- so the credit has to be on the
+        picture itself.
+        """
+        shot = (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "trackershot.js").read_text(encoding="utf-8")
+        assert "WATERMARK" in shot
+        assert "from './capture.js'" in shot, "the watermark is defined once"
+        assert "credit" in shot
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        assert "attribution" in block[:block.index("\n}")]
+
+    def test_the_picture_uses_the_same_artwork_as_the_map(self):
+        # Two copies of a dozen paths would have drifted apart the first time
+        # one of them was changed.
+        text = self.source()
+        assert "export function glyphParts" in text
+        assert "glyphParts(event, colourOf(event)" in text
+        shot = (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "trackershot.js").read_text(encoding="utf-8")
+        assert "part.body" in shot
+
     def test_marks_are_kept_off_each_other(self):
         text = self.source()
         assert "function declump" in text
@@ -3282,3 +3346,69 @@ class TestAWarningAndATrackOnOneCentroid:
         for event in self.marks():
             assert event["region_scope"] in ("covers", "located"), event["kind"]
             assert event["shape"], "no region to be about"
+
+
+class TestTheBordersForAPictureOfItsOwn:
+    """Outlines the page can draw a map from, with no tiles involved.
+
+    The map's own tiles come from another origin and Leaflet loads them
+    without asking to read the pixels back, so a canvas that has drawn one
+    cannot be exported at all. The picture draws its own map instead, and
+    this is what it draws it from.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+        gaz.forget()
+
+    def teardown_method(self):
+        tracker.reset()
+        neptun.forget()
+        gaz.forget()
+
+    SHAPE = {"type": "Polygon",
+             "coordinates": [[[33.0, 50.0], [34.0, 50.0], [34.0, 51.0],
+                              [33.0, 50.0]]]}
+
+    def test_it_carries_the_boundaries_neptun_publish(self):
+        neptun.remember_shapes({"сумська область": self.SHAPE})
+        got = tracker.outlines()
+        assert [o["shape"] for o in got] == [self.SHAPE]
+
+    def test_one_region_filed_under_several_names_comes_out_once(self):
+        # index_shapes files the SAME object under a region's key and under
+        # each of its names, so a pass keyed on names would send a province's
+        # border two or three times.
+        neptun.remember_shapes({
+            "sumska": self.SHAPE, "сумська область": self.SHAPE,
+            "sumy oblast": self.SHAPE})
+        assert len(tracker.outlines()) == 1
+
+    def test_two_different_regions_both_come_out(self):
+        other = {"type": "Polygon",
+                 "coordinates": [[[30.0, 50.0], [31.0, 50.0], [31.0, 51.0],
+                                  [30.0, 50.0]]]}
+        neptun.remember_shapes({"a": self.SHAPE, "b": other})
+        assert len(tracker.outlines()) == 2
+
+    def test_russia_comes_from_the_gazetteer(self):
+        # There is no published boundary file for Russia's provinces the way
+        # NEPTUN publish one for Ukraine, so without this half a border
+        # region would have no outline in the picture at all.
+        gaz.remember("Брянская область", "ru",
+                     {"name": "Брянская область", "lat": 52.9, "lon": 33.5,
+                      "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
+                      "shape": self.SHAPE})
+        assert [o["shape"] for o in tracker.outlines()] == [self.SHAPE]
+
+    def test_it_is_bounded(self):
+        many = {f"r{i}": {"type": "Polygon",
+                          "coordinates": [[[i / 100, 50.0], [1 + i / 100, 50.0],
+                                           [1 + i / 100, 51.0], [i / 100, 50.0]]]}
+                for i in range(tracker.MOST_OUTLINES + 50)}
+        neptun.remember_shapes(many)
+        assert len(tracker.outlines()) == tracker.MOST_OUTLINES
+
+    def test_nothing_known_is_an_empty_list_rather_than_a_failure(self):
+        assert tracker.outlines() == []
