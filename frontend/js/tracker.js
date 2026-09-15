@@ -326,23 +326,20 @@ function label(event) {
 // removed for.
 const ARROW = (c) => `<path d="M9 1.4 L15.6 15.6 L2.4 15.6 Z" fill="${c}"/>`;
 
-// The same arrow, narrower and longer, for the things that are not drones.
+// A missile is drawn with the same arrow. Asked for, and the reasoning that
+// put a narrower one there has weakened since.
 //
-// Not a reinstated silhouette: it says nothing about an airframe, only that
-// this is a missile rather than a drone -- which is the one distinction in
-// these reports that always matters and that a viewer must never have to
-// guess at. Colour alone was carrying it and was not carrying it well enough:
-// red and orange-red are 58 apart out of 765, which is fine beside each other
-// and not fine across a map.
-const SLIM = (c) => `<path d="M9 0.6 L13 16.8 L5 16.8 Z" fill="${c}"/>`;
-
-// Which kinds get the slim arrow. Missiles, and nothing else.
+// The slim arrow was added when a drone was #ff3b30 and a cruise missile
+// #ff6a3b -- 58 apart out of a possible 765, fine side by side in a key and
+// not fine across a map -- so the shape was carrying a distinction the
+// palette could not. The palette can now: a drone is amber and a missile is
+// purple, which is not a pair anybody confuses. What is left is that two
+// arrow shapes at twenty pixels read as two kinds of aircraft, which is an
+// airframe claim these reports do not support.
 //
-// One entry now rather than two: cruise and ballistic were folded into one
-// "missile", because the difference matters enormously in life and not at all
-// on this map -- both are inbound, both are drawn at the same place, and one
-// kind that is always right beats two that are sometimes swapped.
-const SLIM_KINDS = new Set(['missile']);
+// One arrow, then, pointing where the thing is going, and colour says what it
+// is. The colour distance is held by a test, because the whole weight of the
+// distinction now rests there.
 
 // The same arrow as an outline, for a course borrowed from the group around it
 // rather than stated for that mark. Hollow because the difference is worth
@@ -411,10 +408,8 @@ function glyph(event, colour, facing) {
   // is the difference between an observation and an inference, and it is on
   // the map rather than only in the popup because that is where it is read.
   const borrowed = event.course_from === 'group';
-  const slim = SLIM_KINDS.has(event.kind);
-  const shape = `${slim ? 'missile' : 'arrow'}${borrowed ? '-borrowed' : ''}`;
-  const draw = borrowed ? BORROWED : (slim ? SLIM : ARROW);
-  return svg(shape, draw(colour), facing);
+  const shape = `arrow${borrowed ? '-borrowed' : ''}`;
+  return svg(shape, (borrowed ? BORROWED : ARROW)(colour), facing);
 }
 
 /** One marker: its glyph, and its label underneath. */
@@ -697,86 +692,43 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
  * oblast to a dot.
  */
 function areaFor(event) {
-  // The shaded province takes the warning's cause colour too, so the outline
-  // and the triangle inside it agree about what is being warned against.
+  // Only ever a warning, and only ever one with a real outline -- see
+  // hasArea(). The branches that used to be here for a track located to a
+  // region, for a circle round an extent and for a bounding box are gone
+  // with the drawings they served; an unreachable branch is one nobody
+  // would notice breaking.
+  //
+  // The shaded province takes the warning's cause colour, so the outline and
+  // the triangle inside it agree about what is being warned against.
   const colour = colourOf(event);
-  const style = {
+  return L.geoJSON({ type: 'Feature', geometry: event.shape, properties: {} }, {
     pane: 'trackerArea',
     renderer: areaInk,
     interactive: false,
-    className: `ao-area ao-area-${event.kind}`
+    className: `ao-area ao-area-alert`
       + (event.region_scope ? ` is-region is-${event.region_scope}` : ''),
-    color: colour,
-    // A warning covering a region is the loudest thing this layer draws, so
-    // it gets the heaviest line. At the zoom a whole country fits in, a
-    // one-pixel stroke was simply not visible.
-    weight: event.region_wide ? 3 : 1.5,
-    opacity: event.region_scope === 'located' ? 0.4
-      : event.region_wide ? 0.95 : 0.6,
-    // The dash pattern is NOT set here. It lives in the stylesheet, on
-    // .ao-area-alert, and a CSS stroke-dasharray overrides the presentation
-    // attribute Leaflet would write -- so setting it in both places would
-    // leave a dead value here that looks like it is doing something.
-    fillColor: colour,
-    // Warnings are an OUTLINE, not a wash.
-    //
-    // They were filled at 0.3, and at the size of an oblast that is a solid
-    // slab of colour over a tenth of the country -- it hid the basemap under
-    // it, it hid the marks inside it, and where two overlapped the map turned
-    // to mud. The dashed border already says "this province is under a
-    // warning" and says it without covering up the thing a reader is looking
-    // at, which is what is actually flying over that province.
-    //
-    // Strikes keep their fill: those are small and the fill is what makes them
-    // findable.
-    // A warning fills its region.
-    //
-    // It was an outline only, because a filled BOUNDING BOX was covering a
-    // third of the country in a shape no province has. With the rectangles
-    // gone the fill is the right drawing again -- a province under a warning
-    // reading as a state of that province from across a room is most of what
-    // this layer is for, and an outline alone does not do it at country zoom.
-    //
-    // A track located only to a region is still barely tinted: that outline
-    // says how precisely something was located, not that the province is
-    // under anything, and filling it would say the second.
-    fillOpacity: event.region_scope === 'located' ? 0.05
-      : event.kind === 'alert' ? 0.42
-        : event.region_wide ? 0.2 : 0.18,
-  };
-
-  // A warning covering a whole region gets that region's actual outline. A
-  // circle over the middle of an oblast both misses ground the warning covers
-  // and covers ground it does not, and at the size of a province that is not
-  // a rounding error -- it is most of a country's worth of wrong.
-  if (event.shape) {
-    return L.geoJSON({ type: 'Feature', geometry: event.shape, properties: {} }, {
-      pane: 'trackerArea',
-      renderer: areaInk,
-      interactive: false,
-      style,
-    });
-  }
-
-  // A warning with no boundary gets NO AREA AT ALL.
-  //
-  // It used to get the region's extent as a dotted rectangle, and a screen
-  // full of those is what "the map looks wrong" meant: ten dashed boxes in a
-  // country made of jagged borders, none of them the shape of anything, each
-  // one covering ground the warning does not cover and missing ground it
-  // does. A rectangle is not a cautious version of a province — it is a
-  // different and wrong claim about where a warning applies.
-  //
-  // So the triangle stands alone until the real outline arrives, which for
-  // NEPTUN's own alerts is immediate (their alert keys index their boundary
-  // files) and for anything else is the next poll or two. A mark with no
-  // shading says "a warning here, area not drawn"; a rectangle says "this
-  // rectangle", and only one of those is true.
-  if (event.kind === 'alert') return null;
-
-  return L.circle([event.origin_lat, event.origin_lon], {
-    ...style,
-    radius: Math.max(1500, (event.area_km ?? 8) * 1000),
+    style: {
+      color: colour,
+      // A warning covering a region is the loudest thing this layer draws,
+      // so it gets the heaviest line. At the zoom a whole country fits in, a
+      // one-pixel stroke was simply not visible.
+      weight: event.region_wide ? 3 : 1.5,
+      opacity: event.region_wide ? 0.95 : 0.6,
+      // The dash pattern is NOT set here. It lives in the stylesheet, on
+      // .ao-area-alert, and a CSS stroke-dasharray overrides the presentation
+      // attribute Leaflet would write -- so setting it in both places would
+      // leave a dead value here that looks like it is doing something.
+      fillColor: colour,
+      // A warning fills its region.
+      //
+      // It was an outline only for a while, because a filled BOUNDING BOX was
+      // covering a third of the country in a shape no province has. With the
+      // rectangles gone the fill is the right drawing again: a province under
+      // a warning reading as a state of that province from across a room is
+      // most of what this layer is for, and an outline alone does not do it
+      // at the zoom a country fits in.
+      fillOpacity: 0.42,
+    },
   });
 }
 
@@ -848,14 +800,21 @@ function liveLegFor(event) {
 /** Whether this report is about an area rather than something passing over. */
 const hasArea = (event) => event.placed !== false
   && Number.isFinite(event.origin_lat)
-  // A warning is drawn as an area only when there is a real region to draw.
-  // Anything else — a rectangle round its extent, a circle on its centre —
-  // is a claim about ground nobody made.
-  && (event.kind === 'alert'
-    ? Boolean(event.shape)
-    // Either it covers ground, or the report only located it to a region --
-    // both are worth drawing, and they are drawn differently.
-    : motionOf(event) === 'still' || Boolean(event.shape));
+  // A WARNING, and nothing else, and only when there is a real region to
+  // draw. A rectangle round an extent or a circle on a centre is a claim
+  // about ground nobody made.
+  //
+  // "Nothing else" is the part that changed, and it was drawing a warning
+  // nobody had declared. A track located only to a region used to shade that
+  // region too -- faintly, in the kind's own colour, meaning "this is how
+  // precisely anybody knows where it is". On the screen that is a yellow
+  // province with a dashed border, which is exactly what a drone warning
+  // looks like, and no viewer was ever going to read the difference between
+  // 0.05 fill and 0.42 as the difference between "somewhere in here" and
+  // "take cover". So a drone over an oblast is now a mark and no more, and a
+  // coloured province means a warning was declared.
+  && event.kind === 'alert'
+  && Boolean(event.shape);
 
 /**
  * Move the map so that everything drawn is on screen.

@@ -673,3 +673,92 @@ class StillRunning:
 
     def is_alive(self):
         return True
+
+
+class TestTheOutlineIsPickedOutOfTheAnswer:
+    """Why a Russian province could never shade, however often it was asked.
+
+    Nominatim answers "Калужская область" with the same place twice: a
+    `place`/`state` NODE, which is a single point with no polygon, and the
+    `boundary`/`administrative` relation, which carries the border. Both pass
+    this module's filter and the node often ranks first, so taking the first
+    acceptable candidate returned an oblast with no shape -- permanently,
+    because the answer never changed and retrying got the same one.
+
+    Invisible for Ukraine, whose outlines come from NEPTUN's boundary file and
+    never go through here. So it looked like something this app did in one
+    country and not in the other.
+    """
+
+    OUTLINE = {"type": "Polygon",
+               "coordinates": [[[33.5, 53.2], [37.3, 53.2], [37.3, 55.4],
+                                [33.5, 55.4], [33.5, 53.2]]]}
+
+    def node(self):
+        return {"lat": "54.5", "lon": "36.2", "display_name": "Калужская область",
+                "category": "place", "type": "state",
+                "boundingbox": ["53.2", "55.4", "33.5", "37.3"],
+                "geojson": {"type": "Point", "coordinates": [36.2, 54.5]}}
+
+    def relation(self):
+        return {"lat": "54.51", "lon": "36.21",
+                "display_name": "Калужская область",
+                "category": "boundary", "type": "administrative",
+                "boundingbox": ["53.2", "55.4", "33.5", "37.3"],
+                "geojson": self.OUTLINE}
+
+    def test_the_one_with_the_border_wins_even_when_it_is_second(self):
+        got = gazetteer.read_place([self.node(), self.relation()])
+        assert got["shape"] == self.OUTLINE
+
+    def test_and_when_it_is_first(self):
+        got = gazetteer.read_place([self.relation(), self.node()])
+        assert got["shape"] == self.OUTLINE
+
+    def test_a_place_with_no_outline_anywhere_is_still_answered(self):
+        # The ordinary case, and it must not have changed: a town has no
+        # polygon worth drawing and is still a perfectly good answer.
+        got = gazetteer.read_place([{
+            "lat": "49.07", "lon": "33.42", "display_name": "Кременчук",
+            "category": "place", "type": "city",
+            "boundingbox": ["49.0", "49.1", "33.3", "33.5"]}])
+        assert got["name"] == "Кременчук"
+        assert got["shape"] is None
+
+    def test_having_an_outline_does_not_get_a_refused_place_accepted(self):
+        """The refusals come first, and they have to stay first.
+
+        озеро Кагул is the lake this module exists because of: it was
+        Nominatim's confident best answer for a mangled town name, four
+        hundred kilometres away in another oblast. A lake has a polygon and a
+        town usually does not, so a preference for outlines that ran before
+        the filter would hand the map exactly that failure back.
+        """
+        lake = {"lat": "45.0", "lon": "28.0", "display_name": "озеро Кагул",
+                "category": "natural", "type": "water",
+                "geojson": {"type": "Polygon",
+                            "coordinates": [[[28, 45], [28.1, 45],
+                                             [28.1, 45.1], [28, 45]]]}}
+        town = {"lat": "49.85", "lon": "31.08", "display_name": "Кагарлик",
+                "category": "place", "type": "town",
+                "boundingbox": ["49.8", "49.9", "31.0", "31.2"]}
+        assert gazetteer.read_place([lake, town])["name"] == "Кагарлик"
+
+    def test_nothing_acceptable_is_still_nothing(self):
+        assert gazetteer.read_place([{
+            "lat": "45.0", "lon": "28.0", "display_name": "озеро Кагул",
+            "category": "natural", "type": "water"}]) is None
+        assert gazetteer.read_place([]) is None
+        assert gazetteer.read_place("not a list") is None
+
+    def test_an_outline_too_big_to_draw_is_not_preferred_over_a_usable_answer(self):
+        # read_shape refuses a polygon past MAX_POINTS, so such a candidate
+        # counts as having no outline rather than as having a bad one.
+        huge = {"lat": "54.5", "lon": "36.2", "display_name": "Калужская область",
+                "category": "boundary", "type": "administrative",
+                "boundingbox": ["53.2", "55.4", "33.5", "37.3"],
+                "geojson": {"type": "Polygon",
+                            "coordinates": [[[0, 0]] * (gazetteer.MAX_POINTS + 10)]}}
+        got = gazetteer.read_place([self.node(), huge])
+        assert got is not None
+        assert got["shape"] is None

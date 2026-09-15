@@ -725,27 +725,30 @@ class TestEveryKindIsDrawable:
         for kind in ("missile", "aircraft", "alert"):
             assert tracker.KINDS[kind]["colour"] != drone, kind
 
-    def test_a_missile_is_not_drawn_like_a_drone(self):
-        """The one distinction nobody may have to guess at.
+    def test_a_missile_is_drawn_like_a_drone_now(self):
+        """One arrow for everything in flight, asked for and defensible.
 
-        Colour alone was carrying it and was not carrying it well enough: a
-        drone is #ff3b30 and a cruise missile #ff6a3b, which is 58 apart out
-        of a possible 765 -- fine side by side in a key, not fine across a
-        map. So missiles get a narrower arrow as well.
+        A slim arrow was added for missiles when a drone was #ff3b30 and a
+        cruise missile #ff6a3b -- 58 apart out of 765, fine beside each other
+        in a key and not fine across a map -- so the shape was carrying a
+        distinction the palette could not. The palette can now: amber against
+        purple is not a pair anybody confuses.
 
-        Found by the test below when the silhouettes came out, which is the
-        whole reason that test exists: removing the shapes moved the entire
-        burden onto the palette, and the palette was not ready for it.
+        What is left without it is that two arrow shapes at twenty pixels
+        read as two kinds of aircraft, which is an airframe claim these
+        reports do not support.
         """
         text = self.source()
-        assert "const SLIM =" in text
-        assert "SLIM_KINDS" in text
-        block = text[text.index("const SLIM_KINDS"):]
-        named = block[:block.index("]")]
-        for kind in ("missile",):
-            assert kind in named, kind
-        for kind in ("drone", "jet_drone"):
-            assert kind not in named, f"{kind} is not a missile"
+        assert "const SLIM " not in text
+        assert "SLIM_KINDS" not in text
+        # And the one arrow is still pointed along the course, and is still
+        # CALLED an arrow -- the shape name is what the drawing is known by in
+        # the page, so a missile quietly keeping the old name would be a lie
+        # told to anybody reading the marks rather than the source.
+        block = text[text.index("  const borrowed = event.course_from"):]
+        block = block[:block.index("\n}")]
+        assert "const shape = `arrow" in block
+        assert "facing" in block
 
     def test_the_colours_within_one_shape_are_far_enough_apart(self):
         # Distinct strings are not enough: two near-identical reds would pass
@@ -761,17 +764,15 @@ class TestEveryKindIsDrawable:
                        zip(rgb(tracker.KINDS[one]["colour"]),
                            rgb(tracker.KINDS[other]["colour"])))
 
-        # Everything drawn as a wide arrow, and everything drawn as a slim one.
-        wide = ("drone", "aircraft", "unknown")
-        slim = ("missile",)
-        for family in (wide, slim):
-            for i, one in enumerate(family):
-                for other in family[i + 1:]:
-                    assert apart(one, other) >= 60, \
-                        f"{one} and {other} share a shape and are too close"
-        # And a drone against a missile, which is the pairing that matters
-        # most: different shape AND a usable colour gap.
-        assert apart("drone", "missile") >= 60
+        # Everything in flight shares one arrow now, so the palette is the
+        # whole of the distinction and every pair of them has to hold the gap
+        # -- not just the pairs that happened to share a drawing.
+        flying = tuple(name for name, look in tracker.KINDS.items()
+                       if look["motion"] == "track")
+        for i, one in enumerate(flying):
+            for other in flying[i + 1:]:
+                assert apart(one, other) >= 60, \
+                    f"{one} and {other} are one shape and too close in colour"
 
     def test_the_kinds_drawn_by_behaviour_are_still_drawn_that_way(self):
         # A warning is a triangle over its area. It reads by what it is
@@ -3009,6 +3010,36 @@ class TestTheDrawingMoves:
             "a report of explosions names a city", "")
         assert "data-shape=\"burst\"" not in text
         assert "ao-flare" not in text
+
+    def test_only_a_warning_colours_a_region(self):
+        """The warning nobody declared.
+
+        A track located only to a region used to shade that region too --
+        faintly, in the kind's own colour, meaning "this is how precisely
+        anybody knows where it is". On the screen that is a yellow province
+        with a dashed border, which is what a drone warning looks like, and no
+        viewer was going to read the difference between 0.05 fill and 0.42 as
+        the difference between "somewhere in here" and "take cover".
+        """
+        block = self.source()
+        block = block[block.index("const hasArea"):]
+        block = block[:block.index(";\n")]
+        assert "event.kind === 'alert'" in block
+        assert "Boolean(event.shape)" in block
+        # Not "or something else as well".
+        assert "motionOf" not in block
+        assert "region_scope" not in block
+
+    def test_the_drawings_that_served_the_other_areas_are_gone(self):
+        # A circle round an extent, a bounding box, a faint tint for a located
+        # region: all unreachable now, and an unreachable branch is one nobody
+        # would notice breaking.
+        block = self.source()
+        block = block[block.index("function areaFor"):]
+        block = block[:block.index("\n}\n")]
+        assert "L.circle" not in block
+        assert "region_scope === 'located' ? 0.05" not in block
+        assert "L.geoJSON" in block
 
     def test_marks_are_kept_off_each_other(self):
         text = self.source()

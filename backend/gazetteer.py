@@ -230,52 +230,79 @@ def read_shape(raw: Any) -> dict[str, Any] | None:
 def read_place(found: Any) -> dict[str, Any] | None:
     """The best usable result out of whatever Nominatim sent back.
 
-    "Usable" is doing the work: the first result is taken only if it is a
-    settlement or an administrative area. Anything else is passed over, and if
-    nothing in the list qualifies the answer is None.
+    "Usable" is doing the work: a result is taken only if it is a settlement
+    or an administrative area. Anything else is passed over, and if nothing in
+    the list qualifies the answer is None.
+
+    Among the ones that do qualify, the first with a real outline wins, and
+    that is not a preference -- it is a fix.
+
+    Nominatim answers a query like "Калужская область" with the same place in
+    two representations: a `place`/`state` NODE, which is a single point with
+    no polygon, and the `boundary`/`administrative` relation, which has the
+    province's actual border on it. Both pass the filter above and the node
+    often ranks first, so taking the first acceptable candidate returned an
+    oblast with no shape -- permanently, however many times it was asked,
+    because the answer never changed.
+
+    On the map that was a warning triangle standing alone over a province that
+    never shaded. It was invisible for Ukraine, whose outlines come from
+    NEPTUN's boundary file and never go through here, and so it looked like a
+    thing this app did in one country and not the other.
+
+    Only candidates that already passed the filter are considered, so this
+    chooses between representations of a place rather than between places.
     """
     if not isinstance(found, list):
         return None
-    for candidate in found:
-        if not isinstance(candidate, dict):
-            continue
-        try:
-            lat, lon = float(candidate["lat"]), float(candidate["lon"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            continue
-        category = str(candidate.get("category") or candidate.get("class") or "")[:40]
-        if category and category not in ACCEPTED:
-            continue
-        # And what sort of place. See ACCEPTED_TYPES: "place" covers seas and
-        # islets as well as towns, and a drone reported over a town does not
-        # belong in the middle of the Sea of Azov.
-        kind = str(candidate.get("type") or "")[:40].lower()
-        if kind and kind not in ACCEPTED_TYPES:
-            continue
-        return {
-            "lat": lat,
-            "lon": lon,
-            "name": str(candidate.get("display_name") or "")[:200] or None,
-            "category": category or None,
-            # How big the place is, as Nominatim measured it. Carried because
-            # a report is about an area, not a point: a strike in a village
-            # and an air alert over an oblast are the same shape of statement
-            # about two things a hundred kilometres different in size, and
-            # only the gazetteer knows which is which.
-            "bbox": read_bbox(candidate.get("boundingbox")),
-            # The real outline, where the place has one. A warning covering an
-            # oblast is about that oblast, and a circle over the middle of it
-            # both misses ground the warning covers and covers ground it does
-            # not. The boundary is the thing the report actually named.
-            "shape": read_shape(candidate.get("geojson")),
-            # An oblast and a street corner are both "a place" and should not
-            # be drawn as though they were equally precise. The caller decides
-            # what to do about it; this only reports what was matched.
-            "kind": str(candidate.get("type") or category or "")[:40] or None,
-        }
-    return None
+    usable = [read_one(c) for c in found if isinstance(c, dict)]
+    usable = [c for c in usable if c]
+    if not usable:
+        return None
+    for candidate in usable:
+        if candidate.get("shape"):
+            return candidate
+    return usable[0]
+
+
+def read_one(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """One of Nominatim's results, if it is a kind of place a report can mean."""
+    try:
+        lat, lon = float(candidate["lat"]), float(candidate["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    category = str(candidate.get("category") or candidate.get("class") or "")[:40]
+    if category and category not in ACCEPTED:
+        return None
+    # And what sort of place. See ACCEPTED_TYPES: "place" covers seas and
+    # islets as well as towns, and a drone reported over a town does not
+    # belong in the middle of the Sea of Azov.
+    kind = str(candidate.get("type") or "")[:40].lower()
+    if kind and kind not in ACCEPTED_TYPES:
+        return None
+    return {
+        "lat": lat,
+        "lon": lon,
+        "name": str(candidate.get("display_name") or "")[:200] or None,
+        "category": category or None,
+        # How big the place is, as Nominatim measured it. Carried because
+        # a report is about an area, not a point: a strike in a village
+        # and an air alert over an oblast are the same shape of statement
+        # about two things a hundred kilometres different in size, and
+        # only the gazetteer knows which is which.
+        "bbox": read_bbox(candidate.get("boundingbox")),
+        # The real outline, where the place has one. A warning covering an
+        # oblast is about that oblast, and a circle over the middle of it
+        # both misses ground the warning covers and covers ground it does
+        # not. The boundary is the thing the report actually named.
+        "shape": read_shape(candidate.get("geojson")),
+        # An oblast and a street corner are both "a place" and should not
+        # be drawn as though they were equally precise. The caller decides
+        # what to do about it; this only reports what was matched.
+        "kind": str(candidate.get("type") or category or "")[:40] or None,
+    }
 
 
 def find(name: str, countries: str = "") -> dict[str, Any] | None:
