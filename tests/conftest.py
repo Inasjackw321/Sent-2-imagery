@@ -1,6 +1,6 @@
 """Test-wide defaults.
 
-One thing only: no test reaches neptun.in.ua.
+One thing only: no test reaches anybody else's server.
 
 The tracker reads that feed on every poll, and dozens of tests call poll().
 Left alone they would each make a real request -- slow, dependent on somebody
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend import neptun
+from backend import neptun, notams
 
 
 @pytest.fixture(autouse=True)
@@ -34,3 +34,21 @@ def no_neptun_network(monkeypatch):
     neptun.forget()
     yield
     neptun.forget()
+
+
+@pytest.fixture(autouse=True)
+def no_notam_network(monkeypatch):
+    """And no test reaches the FAA either.
+
+    Same reasoning as above and the same shape: stubbed at _ask, the single
+    point where this module touches the network, so an endpoint added later
+    is caught by the same stub rather than quietly escaping it.
+    """
+    def refuse(params):
+        raise notams.NotamError("the test suite does not reach the network")
+
+    monkeypatch.setattr(notams, "unstubbed_ask", notams._ask, raising=False)
+    monkeypatch.setattr(notams, "_ask", refuse)
+    notams.forget()
+    yield
+    notams.forget()

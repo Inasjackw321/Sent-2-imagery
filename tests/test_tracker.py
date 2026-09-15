@@ -3585,3 +3585,67 @@ class TestACourseIsLentWithinAKindOnly:
                  self.near("drone", None, 2)]
         tracker.borrow_course(marks, tracker.massed(marks, least=2))
         assert marks[2]["heading"] is None
+
+
+class TestTheClosedAirspaceLayer:
+    """Checked against the source text, the way the other page code is.
+
+    The arithmetic is in backend/notams.py and tested there. What matters here
+    is the two things a layer like this gets wrong: saying nothing when it has
+    not asked, and drawing a closure as though it were a threat.
+    """
+
+    def source(self):
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "notams.js").read_text(encoding="utf-8")
+
+    def test_no_key_is_said_rather_than_shown_as_an_empty_sky(self):
+        """An empty list and "there is no key" are different facts.
+
+        A layer that showed the first for the second would be telling somebody
+        the airspace is open when it has not asked anybody.
+        """
+        text = self.source()
+        assert "got.configured === false" in text
+        block = text[text.index("function paintDock"):]
+        assert "Not available" in block
+
+    def test_a_closure_is_not_coloured_like_a_threat(self):
+        # Amber is a warning, purple a missile, yellow a drone. A NOTAM is a
+        # rule rather than a threat and must not read as one.
+        text = self.source()
+        colour = text[text.index("const INK ="):]
+        colour = colour[:colour.index(";")]
+        for threat in ("#ffb020", "#a855f7", "#ffd400", "#ff3b30"):
+            assert threat not in colour, threat
+
+    def test_a_fir_wide_closure_is_not_drawn_as_a_disc(self):
+        # A radius of hundreds of miles is a boundary. A circle that size
+        # washes over half a continent while claiming to be its edge, so it
+        # is listed instead -- see the row list below.
+        block = self.source()
+        block = block[block.index("function paint("):]
+        block = block[:block.index("\n}")]
+        assert "if (notice.wide) continue;" in block
+
+    def test_it_draws_an_outline_rather_than_a_wash(self):
+        block = self.source()
+        block = block[block.index("function paint("):]
+        block = block[:block.index("\n}")]
+        assert "dashArray" in block
+        assert "fillOpacity: 0.06" in block
+
+    def test_the_ones_it_cannot_draw_are_still_listed(self):
+        # A FIR-wide closure and one with no position are both in force, and
+        # a layer that silently dropped them would be saying the sky is open.
+        text = self.source()
+        assert "shown.filter((n) => n.wide)" in text
+        assert "got?.unplaced" in text
+
+    def test_the_circles_get_a_real_renderer(self):
+        # The map is built with preferCanvas, and a canvas-rendered circle is
+        # pixels: no element, so the dashed outline applies to nothing. The
+        # same lesson the tracker's areas learnt.
+        block = self.source()
+        assert "L.svg({ pane: 'notams' })" in block
+        assert "renderer: ink," in block
