@@ -543,3 +543,133 @@ class TestALearnedOutlineIsActuallyUsed:
         finally:
             gazetteer._ask = original
         assert asked == []
+
+
+class TestAnOutlineIsAskedForMoreThanOnce:
+    """One failed request used to mean no outline until the process restarted.
+
+    A name went into _asked_for_shapes when it was queued and never came out,
+    so Nominatim being down for a minute, one rate-limit, or one answer that
+    happened to arrive without a polygon left that region flat for the day.
+
+    On the map it did not look like a fetch that failed. It looked like a
+    permanent difference between two halves of the layer -- Ukraine's
+    warnings shaded their province and Russia's did not -- because Ukraine's
+    outlines come from NEPTUN's boundary file and never touch this queue.
+    """
+
+    def setup_method(self):
+        gazetteer.forget()
+        self.original = gazetteer._ask
+        # The background worker is a real thread, and it races the calls to
+        # _improve() below for the same queue. Telling improve_later that one
+        # is already running keeps the draining in this test's hands, which
+        # is the only way to assert what the SECOND ask returns.
+        self.worker = gazetteer._improver
+        gazetteer._improver = StillRunning()
+
+    def teardown_method(self):
+        gazetteer._ask = self.original
+        gazetteer._improver = self.worker
+        gazetteer.forget()
+
+    def test_a_failed_ask_can_be_asked_again(self):
+        assert gazetteer.improve_later("Брянская область", "ru") is True
+        # Queued, so a second ask now is refused -- that part is unchanged.
+        assert gazetteer.improve_later("Брянская область", "ru") is False
+        gazetteer._try_again("Брянская область", "ru")
+        assert gazetteer.improve_later("Брянская область", "ru") is True
+
+    def test_an_answer_with_no_polygon_counts_as_a_failure(self):
+        # Nominatim does not always return the same candidate for a name, so
+        # an answer without a shape is worth another ask rather than a
+        # verdict on the name.
+        gazetteer.improve_later("Курская область", "ru")
+        gazetteer._try_again("Курская область", "ru")
+        assert gazetteer.improve_later("Курская область", "ru") is True
+
+    def test_it_gives_up_eventually(self):
+        # A name that has failed this many times probably has no polygon, and
+        # asking forever would be a request every poll for something that is
+        # not going to arrive.
+        for _ in range(gazetteer.MOST_SHAPE_TRIES):
+            gazetteer.improve_later("Нигдеевская область", "ru")
+            gazetteer._try_again("Нигдеевская область", "ru")
+        assert gazetteer.improve_later("Нигдеевская область", "ru") is False
+
+    def test_a_success_clears_the_count(self):
+        """A region that failed and then arrived starts again from zero.
+
+        Taken right to the edge on purpose: failed MOST_SHAPE_TRIES - 1
+        times, so one more strike would be the one that gives up on it.
+
+        Checked on the tally itself rather than through improve_later, which
+        answers False afterwards for a different and correct reason -- the
+        outline is known now, so there is nothing to queue. That refusal
+        would hide whether the count was cleared.
+        """
+        shape = {"type": "Polygon", "coordinates": [[[39.0, 51.0], [40.0, 51.0],
+                                                     [40.0, 52.0], [39.0, 51.0]]]}
+        for _ in range(gazetteer.MOST_SHAPE_TRIES - 1):
+            gazetteer._try_again("Воронежская область", "ru")
+        gazetteer._ask = lambda name, countries="": {
+            "name": name, "lat": 51.6, "lon": 39.2, "category": "boundary",
+            "bbox": [50.5, 52.5, 38.0, 41.0], "shape": shape}
+        gazetteer.improve_later("Воронежская область", "ru")
+        gazetteer._improve()
+        assert gazetteer.outline("Воронежская область", "ru") == shape
+
+        assert gazetteer._key("Воронежская область", "ru") \
+            not in gazetteer._shape_tries
+        assert gazetteer.stats()["outlines_given_up"] == 0
+
+    def test_a_region_given_up_on_is_visible_rather_than_silent(self):
+        for _ in range(gazetteer.MOST_SHAPE_TRIES):
+            gazetteer._try_again("Нигдеевская область", "ru")
+        assert gazetteer.stats()["outlines_given_up"] == 1
+
+    def test_the_worker_retries_a_failed_ask(self):
+        """The whole loop, not just the bookkeeping.
+
+        Two answers: the first raises, the second carries a polygon. With the
+        old behaviour the name was spent after the first and the outline was
+        never learned.
+        """
+        shape = {"type": "Polygon", "coordinates": [[[33.0, 52.0], [34.0, 52.0],
+                                                     [34.0, 53.0], [33.0, 52.0]]]}
+        answers = [GazetteerErrorRaiser(), {
+            "name": "Брянская область", "lat": 52.9, "lon": 33.5,
+            "category": "boundary", "bbox": [52.0, 53.8, 31.0, 35.5],
+            "shape": shape}]
+
+        def flaky(name, countries=""):
+            answer = answers.pop(0)
+            if isinstance(answer, GazetteerErrorRaiser):
+                raise gazetteer.GazetteerError("the gazetteer is rate limiting")
+            return answer
+
+        gazetteer._ask = flaky
+        monkey = gazetteer.IMPROVE_EVERY
+        gazetteer.IMPROVE_EVERY = 0.0
+        try:
+            gazetteer.improve_later("Брянская область", "ru")
+            gazetteer._improve()
+            assert gazetteer.outline("Брянская область", "ru") is None
+            # The next poll asks for every region it draws, and this one is
+            # now askable again.
+            assert gazetteer.improve_later("Брянская область", "ru") is True
+            gazetteer._improve()
+            assert gazetteer.outline("Брянская область", "ru") == shape
+        finally:
+            gazetteer.IMPROVE_EVERY = monkey
+
+
+class GazetteerErrorRaiser:
+    """A marker for "this answer should raise". Not an exception itself."""
+
+
+class StillRunning:
+    """Stands in for a live outline worker, so no real thread is started."""
+
+    def is_alive(self):
+        return True

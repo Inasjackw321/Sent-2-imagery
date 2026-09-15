@@ -1806,6 +1806,22 @@ body.is-walled { overflow: hidden; }
   border-color: rgba(255, 255, 255, .32);
 }
 
+/* The show/hide row. On is the resting state, because everything is on until
+   somebody says otherwise -- so "off" is what has to look different, and it
+   looks struck through rather than merely dimmer: a dim chip on a dark panel
+   reads as disabled, which would say the button does not work rather than
+   that the group is hidden. */
+.ao-shows { margin-top: 2px; }
+.ao-show.is-off {
+  color: var(--ink-faint);
+  background: transparent;
+  border-style: dashed;
+  text-decoration: line-through;
+}
+/* A group with nothing in it right now. Still clickable -- the next poll may
+   bring some -- but it should not look like something is being withheld. */
+.ao-show.is-empty { opacity: .55; }
+
 /* A row is a target and a dismiss button, not one button. */
 .ao-row {
   display: flex;

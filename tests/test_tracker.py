@@ -2974,24 +2974,69 @@ class TestTheDrawingMoves:
         block = css[css.index(".ao-flare {"):]
         assert "currentColor" in block[:block.index("}")]
 
-    def test_each_object_of_a_report_is_its_own_mark(self):
-        # A report of three drones is three drones. The count badge that used
-        # to go on each of them said nine.
-        text = self.source()
-        assert "countPlate(event.count" not in text
-        block = text[text.index("function untold"):]
-        block = block[:block.index("\n}")]
-        assert "index === 0" in block
-        assert "MOST_SHOWN" in block
+    def test_a_report_is_one_mark_however_many_it_counted(self):
+        """The reverse of what this drew for a while, and on purpose.
 
-    def test_a_wave_too_big_to_draw_still_says_its_number(self):
-        # The one thing the arrows cannot say: past MOST_SHOWN the drawing
-        # stops and the difference between twenty-four and forty would exist
-        # nowhere on the map.
+        A report of three drones was drawn as three arrows spread a kilometre
+        apart. Two things were wrong with it. The count is the least reliable
+        number in a report, and a drawing of N objects is a stronger claim
+        than "the report said N" -- so when the number is soft the softer
+        drawing is the truthful one. And it clumped: at any zoom a country
+        fits in, six arrows 1.2 km apart are one smudge with six arrowheads,
+        beside NEPTUN's own map drawing a single triangle for that track.
+
+        The individual icons worth having are individual TRACKS, and there
+        are as many of those as the feed sends.
+        """
+        text = self.source()
+        assert "const drawnCount" not in text
+        assert "function nudge" not in text
+        assert "MOST_SHOWN" not in text
+
+    def test_the_number_goes_on_the_mark_instead(self):
         block = self.source()
         block = block[block.index("function untold"):]
         block = block[:block.index("\n}")]
-        assert "said > MOST_SHOWN ? said : 0" in block
+        assert "said > 1 ? said : 0" in block
+
+    def test_one_object_gets_no_number(self):
+        # The common case, and saying "1" on it adds nothing.
+        block = self.source()
+        block = block[block.index("function countPlate"):]
+        assert "if (!(n > 1)) return '';" in block[:block.index("\n}")]
+
+    def test_a_hidden_group_is_not_drawn(self):
+        # Asked for as "just show drones and missiles". A group per button
+        # rather than one combined mode, so "only drones" is sayable too.
+        text = self.source()
+        assert "const GROUPS = [" in text
+        assert "if (!isShown(event)) continue;" in text
+
+    def test_every_kind_the_backend_has_falls_into_a_group(self):
+        # A kind added to the backend table and not here would silently stop
+        # being drawable the moment anybody touched a filter button.
+        text = self.source()
+        block = text[text.index("const GROUPS = ["):]
+        block = block[:block.index("\n];")]
+        for kind in tracker.KINDS:
+            assert f"'{kind}'" in block, f"{kind} is in no group"
+
+    def test_a_mass_of_hidden_kinds_goes_with_them(self):
+        # Concentrate mode replaces forty marks with one shape. If the shape
+        # stayed when its kinds were switched off, the filter would appear to
+        # do nothing in the one mode where that is hardest to spot.
+        text = self.source()
+        block = text[text.index("function drawMasses"):]
+        assert "showing.has(groupOf(kind))" in block[:block.index("\n}")]
+
+    def test_switching_a_group_off_does_not_hide_it_from_the_counts(self):
+        # "No missiles on the map" and "missiles switched off" are different
+        # things, and a filter that confuses them is a filter that lies.
+        text = self.source()
+        block = text[text.index("function toggleGroup"):]
+        assert "reconcile(" in block[:block.index("\n}")]
+        # Counted over the whole feed rather than over what is drawn.
+        assert "for (const event of feed?.events ?? []) {" in text
 
 
 class TestRussiaIsDrawnLikeUkraine:

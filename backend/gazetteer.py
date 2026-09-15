@@ -348,7 +348,27 @@ def find(name: str, countries: str = "") -> dict[str, Any] | None:
 # one-a-second gate, so more than one worker would only queue harder.
 _wanted: list[tuple[str, str]] = []
 _asked_for_shapes: set[str] = set()
+_shape_tries: dict[str, int] = {}
 _improver: threading.Thread | None = None
+
+# How many times an outline is asked for before giving up on it.
+#
+# More than once, and that is the whole point of the number. This used to be
+# once and once only: a name went into _asked_for_shapes when it was queued
+# and never came out, so a single failed request -- Nominatim down for a
+# minute, one rate-limit, one answer that happened to arrive without a
+# polygon -- meant that region had no outline for the life of the process.
+#
+# On the map that looked like a permanent difference between two halves of
+# the layer rather than like a fetch that failed. Ukraine hid it, because
+# Ukraine's outlines come from NEPTUN's boundary file and never touch this
+# queue at all; every Russian region does, so every Russian warning was one
+# unlucky request away from being a triangle on a dot for the rest of the day.
+#
+# Four, spread across polls, because a name that has failed four times is
+# probably a name Nominatim has no polygon for, and asking forever would be a
+# request every thirty seconds for something that is not going to arrive.
+MOST_SHAPE_TRIES = 4
 
 
 def outline(name: str, countries: str = "") -> Any | None:
@@ -430,13 +450,35 @@ def _improve() -> None:
             found = _ask(name, countries)
         except GazetteerError:
             # It is down, or it is rate limiting. The mark is already on the
-            # map from the built-in centre and stays there; the outline can
-            # wait for another night.
+            # map from the built-in centre and stays there, and this name goes
+            # back in the hat: see _try_again.
+            _try_again(name, countries)
             continue
         if not found or not found.get("shape"):
+            # An answer with no polygon in it. Might be this name, might be
+            # this moment -- Nominatim does not always return the same
+            # candidate -- so it is worth a few more asks before giving up.
+            _try_again(name, countries)
             continue
         with _lock:
             _known[_key(name, countries)] = found
+            _shape_tries.pop(_key(name, countries), None)
+
+
+def _try_again(name: str, countries: str) -> None:
+    """Let a failed outline be asked for again on a later poll.
+
+    Taking the name back out of _asked_for_shapes is what makes the retry
+    possible: improve_later refuses anything already in there, and every poll
+    asks again for every region it draws, so simply forgetting that this one
+    was asked is enough to have it re-queued next time round.
+    """
+    key = _key(name, countries)
+    with _lock:
+        tries = _shape_tries.get(key, 0) + 1
+        _shape_tries[key] = tries
+        if tries < MOST_SHAPE_TRIES:
+            _asked_for_shapes.discard(key)
 
 
 def shapes_wanted() -> int:
@@ -455,7 +497,17 @@ def remember(name: str, countries: str, place: dict[str, Any] | None) -> None:
 
 def stats() -> dict[str, Any]:
     with _lock:
-        return {"remembered": len(_known), "lookups": _calls}
+        return {
+            "remembered": len(_known),
+            "lookups": _calls,
+            # Outlines still being chased, and the ones given up on. Worth
+            # being able to see: "the warnings in Russia are not filling in"
+            # is otherwise indistinguishable from "this app does not do that
+            # there", and one of those is a bug and the other is a feature.
+            "outlines_wanted": len(_wanted),
+            "outlines_given_up": sum(1 for n in _shape_tries.values()
+                                     if n >= MOST_SHAPE_TRIES),
+        }
 
 
 def forget() -> None:
@@ -468,4 +520,5 @@ def forget() -> None:
         # already "done" and never made.
         _wanted.clear()
         _asked_for_shapes.clear()
+        _shape_tries.clear()
         _calls = 0

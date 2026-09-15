@@ -115,11 +115,10 @@ export function initTracker(leafletMap) {
 
 /** Where you get to going `km` along a bearing, on a sphere.
  *
- * Two callers: nudge(), which trails the several objects of one report behind
- * the place it named, and positionOf(), which carries a track along from the
- * last position its source confirmed. Done on a great circle rather than by
- * adding degrees, because adding degrees puts the line at the wrong angle and
- * gets worse the further north you are, and these reports are all from fifty
+ * One caller: positionOf(), which carries a track along from the last
+ * position its source confirmed. Done on a great circle rather than by adding
+ * degrees, because adding degrees puts the line at the wrong angle and gets
+ * worse the further north you are, and these reports are all from fifty
  * degrees up.
  */
 function advance(lat, lon, heading, km) {
@@ -352,14 +351,14 @@ const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
 // cannot show it.
 //
 // This used to go on every mark of a group, and it was wrong for the reason
-// the drawing changed: a report of three drones is drawn as three drones now,
-// and putting "×3" on each of them says nine. Each glyph IS one object, and a
-// row of three arrows is the count, said in the medium the map is made of.
+// the drawing was going to change: a report of three drones would be three
+// arrows, and putting "×3" on each of them says nine.
 //
-// It survives for the one case the arrows cannot say: a wave bigger than
-// MOST_SHOWN, where the drawing stops at twenty-four and the report said
-// forty. There the plate goes on the leading mark alone, carrying the whole
-// number, because the alternative is losing sixteen drones silently.
+// That drawing is gone -- see untold() -- and this is how a group is said
+// again. A plate reading "3" is a claim that the report said three. Three
+// arrows on the map is a claim that there are three things there, which is a
+// stronger statement than the count can support and which clumped into one
+// smudge at any zoom a country fits in.
 //
 // Counter-rotated, because the arrow it sits on is rotated to its course and
 // a rotated numeral is unreadable at this size.
@@ -377,12 +376,11 @@ function countPlate(n, colour, turn) {
             >${n > 999 ? '999' : n}</text></g>`;
 }
 
-function glyph(event, colour, facing, index = 0) {
+function glyph(event, colour, facing) {
   const motion = motionOf(event);
-  // How many the report said, where the drawing cannot say it itself. Zero
-  // -- and so no plate -- on every mark but the leading one, and on every
-  // group small enough to be drawn one glyph per object. See countPlate.
-  const unsaid = untold(event, index);
+  // How many the report said, as a number on the mark. Zero for the common
+  // case of one object, which needs no saying. See untold().
+  const unsaid = untold(event);
   // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
   // one number here: the artwork scales rather than being redrawn, and the
   // anchor below moves with it.
@@ -444,7 +442,7 @@ function glyph(event, colour, facing, index = 0) {
 }
 
 /** One marker: its glyph, and its label underneath. */
-function icon(event, facing, index = 0) {
+function icon(event, facing) {
   const colour = colourOf(event);
   // "Surveillance, not a signal to hide." NEPTUN's words about advisory
   // tracks, and their argument is the right one: a MiG-31K taking off is
@@ -490,8 +488,8 @@ function icon(event, facing, index = 0) {
     html: (ringed ? `<span class="ao-halo" style="background:${colour}"></span>` : '')
       + (loud && !ringed
         ? `<span class="ao-flare" style="color:${colour}">`
-          + `${glyph(event, colour, facing, index)}</span>`
-        : `${glyph(event, colour, facing, index)}`)
+          + `${glyph(event, colour, facing)}</span>`
+        : `${glyph(event, colour, facing)}`)
       + (loud
         ? `<span class="ao-tag" style="color:${colour}">${label(event)}</span>`
         : ''),
@@ -519,11 +517,10 @@ function popup(event) {
       + (event.dest_km ? `, ${Math.round(event.dest_km)} km away` : ''));
   }
   if (event.count > 1) {
-    const shown = Math.min(MOST_SHOWN, Number(event.count) || 1);
-    rows.push(`${Number(event.count)} reported together, drawn as `
-      + `${shown} mark${shown === 1 ? '' : 's'} spread a couple of kilometres `
-      + 'apart to be countable — the report gave one position, not '
-      + `${shown} of them.`);
+    rows.push(`<b>${Number(event.count)} reported together</b>, drawn as one `
+      + 'mark with the number on it — the report gave one position, not '
+      + `${Number(event.count)} of them, and how many were counted is the `
+      + 'least reliable thing in it.');
   }
   rows.push(`${since(event.age_minutes ?? 0)} since the report`);
   // Where the arrow's direction came from. Three different claims, and the
@@ -929,6 +926,47 @@ const AIRSPACE = {
   ru: { name: 'Russia', bounds: [[43.5, 27.0], [61.0, 60.0]] },
 };
 
+// What can be shown, and hidden, one group at a time.
+//
+// Asked for as "just show drones and missiles", and built as a group per
+// button rather than a single drones-and-missiles mode, because the useful
+// question differs by the minute: on a night of Shaheds the warnings are
+// noise, and on a quiet night with one alert the warnings are the whole of
+// what you came for. Buttons that each turn one group off answer both, and
+// answer "only drones" as well, which one combined mode would not.
+//
+// Grouped by what a reader is actually asking to see, and the groups are
+// kinds from the backend's own table rather than a second list of names: a
+// kind added there and not here would silently stop being drawable.
+const GROUPS = [
+  { key: 'drones', label: 'Drones', kinds: ['drone', 'jet_drone'] },
+  { key: 'missiles', label: 'Missiles', kinds: ['missile', 'bomb'] },
+  { key: 'aircraft', label: 'Aircraft', kinds: ['aircraft', 'unknown'] },
+  { key: 'strikes', label: 'Strikes', kinds: ['explosion'] },
+  { key: 'warnings', label: 'Warnings', kinds: ['alert'] },
+];
+
+// Which groups are on. Everything, until somebody says otherwise.
+const showing = new Set(GROUPS.map((g) => g.key));
+
+const groupOf = (kind) =>
+  GROUPS.find((g) => g.kinds.includes(kind))?.key ?? 'aircraft';
+
+/** Whether this report's kind is one of the groups currently switched on. */
+const isShown = (event) => showing.has(groupOf(event.kind));
+
+/** Turn one group on or off, and redraw without refetching. */
+function toggleGroup(key) {
+  if (showing.has(key)) showing.delete(key);
+  else showing.add(key);
+  // No fetch: the events are already here, so the switch is instant. Marks
+  // that go are removed by reconcile's own sweep -- anything not in `alive`
+  // this pass comes off the map with its area and its trails.
+  reconcile(feed?.events ?? []);
+  drawMasses();
+  paintDock();
+}
+
 /** Put one country's airspace on the screen, marks and all. */
 function showAirspace(which) {
   const want = AIRSPACE[which];
@@ -983,54 +1021,51 @@ function reconcile(events) {
 
   for (const event of events) {
     if (inAMass.has(event.id)) continue;
+    // Hidden groups are simply not drawn. Not filtered out of the feed --
+    // the panel list and the counts still say what arrived, because "no
+    // missiles on the map" and "missiles switched off" are different things
+    // and confusing them is how a filter becomes a lie.
+    if (!isShown(event)) continue;
     const at = positionOf(event);
 
-    // One marker per object. A report of three drones is three things in the
-    // air, and drawing it as a single marker with a count beside it meant the
-    // map never showed how much was up there -- which is the first thing
-    // anyone looks at it for.
-    for (let n = 0; n < drawnCount(event); n += 1) {
-      const id = `${event.id}#${n}`;
-      alive.add(id);
-      const held = drawn.get(id);
-      const where = nudge(at, event, n);
-      if (held) {
-        // A fresh report for something already on the map: the course or the
-        // kind may have changed, so the icon is rebuilt only when it differs.
-        if (held.event.heading !== event.heading || held.event.kind !== event.kind) {
-          held.marker.setIcon(icon(event, at.facing, n));
-        }
-        held.event = event;
-        held.marker.setLatLng(where);
-        // The reckoned tail is rebuilt rather than moved: a fresh report can
-        // turn drift on or off -- a track that stopped reporting a speed, or
-        // started -- and moving a line that should no longer exist would
-        // leave it on the map until the mark itself expired.
-        refreshLive(held);
-        age(held);
-        continue;
+    // One marker per report, at the position the report gave. The several
+    // objects of one report are the number on the mark -- see untold().
+    const id = event.id;
+    alive.add(id);
+    const held = drawn.get(id);
+    const where = [at.lat, at.lon];
+    if (held) {
+      // A fresh report for something already on the map: the course or the
+      // kind may have changed, so the icon is rebuilt only when it differs.
+      if (held.event.heading !== event.heading
+          || held.event.kind !== event.kind
+          || held.event.count !== event.count) {
+        held.marker.setIcon(icon(event, at.facing));
       }
-      const marker = L.marker(where, {
-        icon: icon(event, at.facing, n), pane: 'tracker', keyboard: false,
-      });
-      marker.bindPopup(() => popup(event));
-      marker.addTo(layer);
-      // One area per report, not per object: the ground a strike covers does
-      // not multiply with how many things caused it.
-      const area = (n === 0 && hasArea(event)) ? areaFor(event) : null;
-      area?.addTo(areas);
-      // The trail, on the first mark of a report only: a report drawn as
-      // three marks a couple of kilometres apart has one history, not three.
-      const trail = n === 0 ? trailFor(event) : null;
-      trail?.forEach((leg) => leg.addTo(areas));
-      // The reckoned tail, on the first mark only for the same reason: one
-      // report has one history, however many objects it named.
-      const live = n === 0 ? liveLegFor(event) : null;
-      live?.addTo(areas);
-      const made = { event, marker, area, trail, live, index: n };
-      drawn.set(id, made);
-      age(made);
+      held.event = event;
+      held.marker.setLatLng(where);
+      // The reckoned tail is rebuilt rather than moved: a fresh report can
+      // turn drift on or off -- a track that stopped reporting a speed, or
+      // started -- and moving a line that should no longer exist would
+      // leave it on the map until the mark itself expired.
+      refreshLive(held);
+      age(held);
+      continue;
     }
+    const marker = L.marker(where, {
+      icon: icon(event, at.facing), pane: 'tracker', keyboard: false,
+    });
+    marker.bindPopup(() => popup(event));
+    marker.addTo(layer);
+    const area = hasArea(event) ? areaFor(event) : null;
+    area?.addTo(areas);
+    const trail = trailFor(event);
+    trail?.forEach((leg) => leg.addTo(areas));
+    const live = liveLegFor(event);
+    live?.addTo(areas);
+    const made = { event, marker, area, trail, live };
+    drawn.set(id, made);
+    age(made);
   }
   for (const [id, held] of drawn) {
     if (alive.has(id)) continue;
@@ -1048,7 +1083,6 @@ function refreshLive(held) {
     areas.removeLayer(held.live);
     held.live = null;
   }
-  if (held.index !== 0) return;
   const leg = liveLegFor(held.event);
   if (!leg) return;
   leg.addTo(areas);
@@ -1080,7 +1114,7 @@ function slide() {
   for (const held of drawn.values()) {
     const at = positionOf(held.event);
     if (!(at.carried > 0)) continue;
-    held.marker.setLatLng(nudge(at, held.event, held.index));
+    held.marker.setLatLng([at.lat, at.lon]);
     held.live?.setLatLngs([[held.event.origin_lat, held.event.origin_lon],
       [at.lat, at.lon]]);
   }
@@ -1109,6 +1143,13 @@ function drawMasses() {
   if (!concentrated || !masses.length) return;
 
   for (const mass of masses) {
+    // A mass of nothing but hidden kinds goes with them. Otherwise switching
+    // warnings off in concentrate mode left the shape that stands for forty
+    // of them sitting on an empty map, which is the filter failing in the
+    // one mode where it is hardest to notice.
+    if (!Object.keys(mass.kinds ?? {}).some((kind) => showing.has(groupOf(kind)))) {
+      continue;
+    }
     const colour = feed?.kinds?.[Object.keys(mass.kinds)[0]]?.colour ?? '#ff3b30';
     // One arrow, big, pointed along the group's own trajectory, with the
     // count on it. That is the whole of concentrate mode now.
@@ -1226,77 +1267,31 @@ function compass(deg) {
   return points[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
 }
 
-// The most objects one report will be drawn as. A channel occasionally
-// reports a wave in the dozens, and past this many the marks stop being
-// countable and start being a smear -- at which point one per object has
-// stopped serving the purpose it exists for.
-const MOST_SHOWN = 24;
-
-const drawnCount = (event) =>
-  Math.max(1, Math.min(MOST_SHOWN, Number(event.count) || 1));
-
 /**
- * The number to write on the nth mark of a report, or 0 for none.
+ * The number to write on a mark, or 0 for none.
  *
- * Nothing, almost always. A report of three drones is three arrows and the
- * arrows are the count; a number beside each of them would read as nine.
+ * On the mark, as a plate, rather than as that many marks on the map.
  *
- * The exception is a wave larger than the drawing can show. Past MOST_SHOWN
- * the marks stop at twenty-four however many were reported, and then the
- * difference between twenty-four and forty exists nowhere on the map. So the
- * leading mark -- and only that one -- carries the whole reported number.
+ * This went the other way first. A report of three drones was drawn as three
+ * arrows a kilometre apart, on the reasoning that three things are in the air
+ * and one arrow with a "3" beside it hides how much is up there. Two things
+ * were wrong with it.
+ *
+ * The count is not reliable enough to carry that. A drawing of N objects is a
+ * statement that there are N objects; a plate reading "3" is a statement that
+ * the report said three, which is the thing actually known. When the number
+ * is soft, the softer drawing is the truthful one.
+ *
+ * And it clumped. A group had to be spread out to be countable at all, and at
+ * any zoom a country fits in, six arrows 1.2 km apart are one smudge with six
+ * arrowheads -- next to NEPTUN's own map, which draws one triangle for the
+ * same track. The individual icons that matter are individual TRACKS, and
+ * there are as many of those as the feed sends; they do not have to be
+ * manufactured out of a count field as well.
  */
-function untold(event, index) {
+function untold(event) {
   const said = Number(event.count) || 1;
-  return index === 0 && said > MOST_SHOWN ? said : 0;
-}
-
-// How far apart to draw objects reported together, in kilometres.
-//
-// Small, and deliberately smaller than the accuracy of the position they came
-// from: a report locates a group to a town or an oblast, so nudging them a
-// couple of kilometres apart adds nothing to the error that was already
-// there. It is a way of making them countable, not a claim that anybody knows
-// they are three kilometres apart.
-const APART_KM = 1.2;
-
-/**
- * Where the nth object of a group is drawn.
- *
- * In a line along the reported course, not a ring around the point.
- *
- * A ring was the first version and it was wrong twice over. It put marks
- * upwind of the position as often as downwind, so half of a group of six sat
- * on the far side of the place they were reported over; and a rosette is a
- * shape nothing in the air makes. Six drones reported together over one town
- * are a stream, and drawn as a short line along their own course they read as
- * one -- which is both the truer picture and the easier one to count.
- *
- * The line runs backwards from the reported point rather than forwards. The
- * report is the front of what was seen, so extrapolating ahead of it would be
- * putting marks where nothing has been reported at all; trailing them behind
- * says "these came through here", which is what was actually said.
- *
- * Spacing halved as well, to 1.2 km, which is comfortably inside the accuracy
- * of a position given as a town name. It makes them countable without
- * claiming anybody knows the interval.
- */
-function nudge(at, event, index) {
-  if (index === 0 || drawnCount(event) < 2) return [at.lat, at.lon];
-  const course = event.heading;
-  if (course == null) {
-    // No course to trail along, so a tight ring is all that is left -- and
-    // with no direction claimed, a ring makes no claim either.
-    const step = (360 * ((index - 1) % 8)) / 8;
-    const ring = Math.floor((index - 1) / 8) + 1;
-    return advance(at.lat, at.lon, step, APART_KM * ring);
-  }
-  // Behind, in a line, with a slight stagger so a long stream does not become
-  // one arrow drawn twelve times in the same pixels at low zoom.
-  const back = (course + 180) % 360;
-  const along = advance(at.lat, at.lon, back, APART_KM * index);
-  const side = (index % 2 ? 1 : -1) * Math.ceil(index / 6) * APART_KM * 0.45;
-  return side ? advance(along[0], along[1], (course + 90) % 360, side) : along;
+  return said > 1 ? said : 0;
 }
 
 /**
@@ -1385,6 +1380,15 @@ function buildDock() {
       // One country's sky at a time. With warnings in Tatarstan and drones
       // over Volyn, "fit everything" is a view four thousand kilometres wide
       // in which neither is readable.
+      // What to draw. Each button turns one group off and on again.
+      el('div', { class: 'ao-airspace ao-shows' },
+        el('span', { class: 'ao-airspace-what' }, 'Show'),
+        ...GROUPS.map((group) => el('button', {
+          class: 'ao-country ao-show', type: 'button',
+          'data-group': group.key,
+          title: `Show or hide ${group.label.toLowerCase()}`,
+          onclick: () => toggleGroup(group.key),
+        }, group.label))),
       el('div', { class: 'ao-airspace' },
         el('span', { class: 'ao-airspace-what' }, 'Airspace'),
         ...Object.entries(AIRSPACE).map(([code, what]) => el('button', {
@@ -1489,6 +1493,25 @@ function paintDock() {
       : 'Nothing on the map';
   const find = $('#trackerFind');
   if (find) find.disabled = !(n || grouped);
+
+  // Which groups are switched on, and how many of each arrived -- counted
+  // over everything the feed sent rather than over what is drawn, so a
+  // switched-off group still says how much is being held back. A button
+  // reading "Missiles" that turns out to have been hiding nine of them is
+  // the failure this number prevents.
+  const perGroup = new Map();
+  for (const event of feed?.events ?? []) {
+    const key = groupOf(event.kind);
+    perGroup.set(key, (perGroup.get(key) ?? 0) + 1);
+  }
+  for (const button of document.querySelectorAll('.ao-show')) {
+    const key = button.dataset.group;
+    const had = perGroup.get(key) ?? 0;
+    button.classList.toggle('is-off', !showing.has(key));
+    button.classList.toggle('is-empty', had === 0);
+    const group = GROUPS.find((g) => g.key === key);
+    button.textContent = had ? `${group.label} ${had}` : group.label;
+  }
 
   // The recent reports, newest first, the mapped ones clickable.
   //
