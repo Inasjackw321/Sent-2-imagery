@@ -107,6 +107,10 @@ export function initTracker(leafletMap) {
   // in a popup Leaflet rebuilds on each open, or in the panel list which is
   // repainted on every poll.
   map.getContainer().addEventListener('click', onDismissClick);
+  // What overlaps what is a question about pixels, so it is a different
+  // question at every zoom: two marks 30 km apart are one blob at country
+  // zoom and a finger apart three levels in.
+  map.on('zoomend', declump);
   areas = L.layerGroup([], { pane: 'trackerArea' });
   buildDock();
 }
@@ -1029,6 +1033,203 @@ function reconcile(events) {
     if (held.live) areas.removeLayer(held.live);
     drawn.delete(id);
   }
+  declump();
+}
+
+// ── Keeping marks off each other ───────────────────────────────
+
+/**
+ * Whether this mark is AT somewhere, or merely about somewhere.
+ *
+ * The distinction the whole of declump() rests on, and it is a real one
+ * rather than a convenience.
+ *
+ * A drone reported over Myrhorod is at Myrhorod. Its position is the report;
+ * move it and the map says something nobody said.
+ *
+ * A warning for Poltava oblast is not at any point. It is drawn at the
+ * region's centroid because a label has to go somewhere, and the centroid is
+ * a point nobody reported -- the warning covers the shaded province, which is
+ * what actually carries the meaning. The same is true of a track located only
+ * to a region: NEPTUN's own word for it is that "there is no dot".
+ *
+ * So the second kind may be moved to stay legible and the first may not. That
+ * is what fixes the picture this came from -- a drone arrow sitting on top of
+ * a warning triangle -- and it fixes it by moving the thing that was never
+ * claiming to be there.
+ */
+const floats = (event) => event.kind === 'alert'
+  || Boolean(event.area_only)
+  || event.region_scope === 'located';
+
+// How much air to leave between two marks, in pixels.
+//
+// In pixels rather than kilometres because that is what overlapping IS: two
+// marks 30 km apart are one blob at country zoom and a finger apart three
+// levels in, and a distance in kilometres would fix one and not the other.
+const AIR_PX = 3;
+
+// Where a crowded mark tries to go, in order: straight up first, then the
+// diagonals, then sideways and down. Up first because a warning carries its
+// label underneath it, so lifting it takes the label off the mark as well.
+const OUT = 30;
+const WAYS_OUT = [
+  [0, -1], [1, -1], [-1, -1], [1, 0], [-1, 0], [1, 1], [-1, 1], [0, 1],
+];
+
+/** Do these two rectangles touch, with a little air allowed for? */
+const clashes = (a, b) => !(a.right + AIR_PX <= b.left
+  || b.right + AIR_PX <= a.left
+  || a.bottom + AIR_PX <= b.top
+  || b.bottom + AIR_PX <= a.top);
+
+const slid = (box, dx, dy) => ({
+  left: box.left + dx, right: box.right + dx,
+  top: box.top + dy, bottom: box.bottom + dy,
+});
+
+/**
+ * What one mark actually covers on screen, label and all.
+ *
+ * Measured rather than assumed, and that is the whole of why this works. The
+ * first version reserved a 24-pixel square around each glyph, which is what
+ * an arrow looks like -- and it left the complaint exactly where it was,
+ * because a WARNING is a triangle with a plate reading "Air alert" under it,
+ * three times as wide and half as far again down the screen. The drone was
+ * never on the triangle. It was on the label.
+ *
+ * Reading the real rectangles also covers what nobody would think to assume:
+ * an arrow rotated to its course sweeps a box half again as wide as itself,
+ * and the plate's width depends on the words in it.
+ */
+function footprint(el) {
+  const glyph = el.querySelector('svg.ao-glyph');
+  const tag = el.querySelector('.ao-tag');
+  const first = (glyph ?? el).getBoundingClientRect();
+  const box = {
+    left: first.left, right: first.right,
+    top: first.top, bottom: first.bottom,
+  };
+  if (tag) {
+    const label = tag.getBoundingClientRect();
+    box.left = Math.min(box.left, label.left);
+    box.right = Math.max(box.right, label.right);
+    box.top = Math.min(box.top, label.top);
+    box.bottom = Math.max(box.bottom, label.bottom);
+  }
+  return box;
+}
+
+/**
+ * Move the marks that are in the way of other marks.
+ *
+ * Screen-space, and applied as a margin on the icon rather than by changing
+ * the marker's position, so the mark still belongs to its own coordinates --
+ * its popup, its area and its trail all stay where they were. Only the
+ * drawing shifts.
+ *
+ * Marks that are AT their position are placed first and never move. What is
+ * left goes in the first free spot it can find near where it belongs.
+ *
+ * Two passes over the DOM rather than one interleaved read-and-write: every
+ * margin is cleared, then every rectangle is read, then every margin is set.
+ * Interleaving them would make the browser lay the page out again between
+ * each pair, and would measure some marks with last poll's offset still on.
+ */
+function declump() {
+  if (!map || !drawn.size) return;
+  const held = [...drawn.values()];
+
+  // Clear, so what is measured is where each mark actually belongs.
+  const parts = [];
+  for (const one of held) {
+    const el = one.marker.getElement?.();
+    if (!el) continue;
+    el.style.marginLeft = '';
+    el.style.marginTop = '';
+    parts.push([one, el]);
+  }
+  // Read.
+  const boxes = new Map();
+  for (const [one, el] of parts) boxes.set(one, footprint(el));
+
+  const taken = [];
+  const free = (box, dx, dy) => {
+    const want = slid(box, dx, dy);
+    return !taken.some((other) => clashes(want, other));
+  };
+  // How much room a spot has: the smallest gap to anything already placed,
+  // for choosing between spots when none of them is actually free.
+  const room = (box, dx, dy) => {
+    const want = slid(box, dx, dy);
+    let worst = Infinity;
+    for (const other of taken) {
+      const gap = Math.max(other.left - want.right, want.left - other.right,
+                           other.top - want.bottom, want.top - other.bottom);
+      worst = Math.min(worst, gap);
+    }
+    return worst;
+  };
+
+  // Pinned first, in whatever order: they are immovable, so the order among
+  // them changes nothing.
+  const put = new Map();
+  for (const [one] of parts) {
+    if (floats(one.event)) continue;
+    put.set(one, [0, 0]);
+    taken.push(boxes.get(one));
+  }
+  // Then the floating ones, in a fixed order so the picture does not
+  // reshuffle itself every poll. By id, which is stable across polls.
+  const loose = parts.filter(([one]) => floats(one.event));
+  loose.sort(([a], [b]) => String(a.event.id).localeCompare(String(b.event.id)));
+  for (const [one] of loose) {
+    const box = boxes.get(one);
+    let to = null;
+    if (free(box, 0, 0)) {
+      to = [0, 0];
+    } else {
+      for (const ring of [1, 2, 3]) {
+        for (const [dx, dy] of WAYS_OUT) {
+          const spot = [dx * OUT * ring, dy * OUT * ring];
+          if (free(box, spot[0], spot[1])) {
+            to = spot;
+            break;
+          }
+        }
+        if (to) break;
+      }
+    }
+    if (!to) {
+      // Nowhere free. Take the emptiest spot rather than giving up: on a busy
+      // cluster everything is crowded by something, and the one with the most
+      // air around it is still better than sitting on top of another mark.
+      // Its own point is in the running, so it only moves if moving helps.
+      let best = -Infinity;
+      for (const [dx, dy] of [[0, 0], ...WAYS_OUT.map(([x, y]) => [x * OUT, y * OUT])]) {
+        const air = room(box, dx, dy);
+        if (air > best) {
+          best = air;
+          to = [dx, dy];
+        }
+      }
+    }
+    put.set(one, to);
+    taken.push(slid(box, to[0], to[1]));
+  }
+  // Write.
+  for (const [one, el] of parts) shift(one, el, ...(put.get(one) ?? [0, 0]));
+}
+
+/** Nudge one mark's drawing by a pixel offset, leaving its position alone. */
+function shift(held, el, dx, dy) {
+  held.dx = dx;
+  held.dy = dy;
+  el.style.marginLeft = dx ? `${dx}px` : '';
+  el.style.marginTop = dy ? `${dy}px` : '';
+  // Said on the element so it can be seen in a browser, and so the moved
+  // ones are findable without reading this function.
+  el.classList.toggle('is-moved', Boolean(dx || dy));
 }
 
 /** Put the reckoned tail back in step with the report just received. */
@@ -1065,13 +1266,18 @@ const DRIFT_MS = 1000;
  */
 function slide() {
   if (!enabled || !feed) return;
+  let moved = false;
   for (const held of drawn.values()) {
     const at = positionOf(held.event);
     if (!(at.carried > 0)) continue;
     held.marker.setLatLng([at.lat, at.lon]);
     held.live?.setLatLngs([[held.event.origin_lat, held.event.origin_lon],
       [at.lat, at.lon]]);
+    moved = true;
   }
+  // Only when something actually moved. On a map of warnings and nothing in
+  // flight this is the whole cost of the tick, once a second, forever.
+  if (moved) declump();
 }
 
 /**

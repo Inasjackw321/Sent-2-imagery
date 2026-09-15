@@ -3010,6 +3010,66 @@ class TestTheDrawingMoves:
         assert "data-shape=\"burst\"" not in text
         assert "ao-flare" not in text
 
+    def test_marks_are_kept_off_each_other(self):
+        text = self.source()
+        assert "function declump" in text
+        assert "function footprint" in text
+
+    def test_what_may_move_is_what_was_never_at_a_point(self):
+        """The rule the whole thing rests on.
+
+        A drone reported over Myrhorod is AT Myrhorod; move it and the map
+        says something nobody said. A warning for Poltava oblast is not at any
+        point -- it is drawn at the region's centroid because a label has to
+        go somewhere -- and neither is a track located only to a region, which
+        is NEPTUN's "there is no dot". So the second kind yields and the first
+        does not.
+        """
+        text = self.source()
+        block = text[text.index("const floats ="):]
+        block = block[:block.index(";\n")]
+        assert "event.kind === 'alert'" in block
+        assert "event.area_only" in block
+        assert "event.region_scope === 'located'" in block
+
+    def test_a_reported_position_is_placed_first_and_never_moved(self):
+        block = self.source()
+        block = block[block.index("function declump"):]
+        block = block[:block.index("\n}")]
+        assert "if (floats(one.event)) continue;" in block
+        assert "put.set(one, [0, 0]);" in block
+
+    def test_the_footprint_is_measured_rather_than_assumed(self):
+        """Why the first attempt did not fix the complaint.
+
+        It reserved a 24-pixel square around each glyph, which is what an
+        arrow looks like. A warning is a triangle with a plate reading "Air
+        alert" under it -- three times as wide, and half again as far down the
+        screen. The drone was never on the triangle; it was on the label.
+        """
+        block = self.source()
+        block = block[block.index("function footprint"):]
+        block = block[:block.index("\n}")]
+        assert "getBoundingClientRect" in block
+        assert "ao-tag" in block
+
+    def test_the_position_itself_is_left_alone(self):
+        # A margin on the icon, not a different latlng: the popup, the shaded
+        # region and the trail all still belong to the place the report named.
+        block = self.source()
+        block = block[block.index("function shift"):]
+        block = block[:block.index("\n}")]
+        assert "marginLeft" in block and "marginTop" in block
+        assert "setLatLng" not in block
+
+    def test_it_is_redone_whenever_the_picture_changes(self):
+        # Three things change what overlaps what: a new feed, a zoom (a pixel
+        # is a different number of kilometres), and a mark drifting along.
+        text = self.source()
+        assert "map.on('zoomend', declump);" in text
+        assert "  declump();\n}" in text
+        assert "if (moved) declump();" in text
+
     def test_a_hidden_group_is_not_drawn(self):
         # Asked for as "just show drones and missiles". A group per button
         # rather than one combined mode, so "only drones" is sayable too.
@@ -3159,3 +3219,35 @@ class TestRememberingWhatHasBeenRead:
             tracker.mark_seen(f"np-msg/{i}")
         assert "np-msg/0" not in tracker._seen
         assert f"np-msg/{tracker.MOST_SEEN + 499}" in tracker._seen
+
+
+class TestAWarningAndATrackOnOneCentroid:
+    """The collision the map kept producing, made reachable offline.
+
+    A track located only to a region is drawn at that region's centroid. A
+    warning for the same region is drawn at the same centroid. Neither is
+    really there, and they land on top of each other every time -- which is
+    the picture this arrived as: a drone arrow sitting on a warning triangle.
+
+    The offline build could not reach it, so the demo carries both.
+    """
+
+    def marks(self):
+        return [e for e in tracker.demo()["events"]
+                if str(e.get("place")) == "Kharkiv oblast"]
+
+    def test_the_demo_has_both(self):
+        kinds = sorted(e["kind"] for e in self.marks())
+        assert kinds == ["alert", "drone"]
+
+    def test_and_they_are_on_the_same_point(self):
+        spots = {(round(e["lat"], 4), round(e["lon"], 4)) for e in self.marks()}
+        assert len(spots) == 1, "the collision this exists to show is not there"
+
+    def test_neither_of_them_claims_to_be_at_it(self):
+        # Which is what makes moving one of them honest. The warning covers
+        # the region; the drone is located to it. The centroid is a place to
+        # put a label, not a position either of them reported.
+        for event in self.marks():
+            assert event["region_scope"] in ("covers", "located"), event["kind"]
+            assert event["shape"], "no region to be about"

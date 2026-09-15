@@ -2353,6 +2353,13 @@ DEMO_SEED = [
     # that used to do this job are gone with the kind; a warning is now the
     # longest-lived thing on the map and so the one worth watching age.
     ("alert", "Kharkiv", None, None, 1, "Air raid warning for Kharkiv", 70),
+    # A warning over the SAME oblast a drone above is located to, so both land
+    # on that region's centroid -- which is the picture this arrived as: a
+    # drone arrow sitting on top of a warning triangle, because neither is
+    # really at that point and both are drawn there. Without this row the
+    # offline build cannot reach the case at all. See declump() in the page.
+    ("alert", "Kharkiv oblast", None, None, 1,
+     "Air raid warning across Kharkiv oblast", 20),
     ("alert", "Dnipro", None, None, 1, "Air raid warning for Dnipro", 35),
     # A warning covering a whole region rather than a town, so the demo shows
     # the boundary being drawn instead of a circle over the middle of it.
