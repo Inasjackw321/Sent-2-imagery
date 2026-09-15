@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from backend import notams
 
 # Their documented shape, with the fields this reads.
@@ -514,3 +516,217 @@ class TestTheOtherSpellings:
         assert notams._count({"totalCount": 7}) == 7
         assert notams._count({"totalNotamCount": 9}) == 9
         assert notams._count({}) == 0
+
+
+RAW_PAGE = """<html><body>
+<b>UKBV</b>
+<pre>A1234/26 NOTAMN
+Q) UKBV/QRTCA/IV/BO/W/000/999/5020N03030E030
+A) UKBV B) 2601150000 C) PERM
+E) AIRSPACE CLOSED TO ALL CIVIL TRAFFIC. RWY 09/27 &amp; TWY A.
+F) SFC
+G) FL660</pre>
+<pre>A1235/26 NOTAMN
+Q) UKBV/QXXXX/IV/BO/W/000/999/
+A) UKBV B) 2601150000 C) PERM
+E) NO POSITION IN THIS ONE</pre>
+<pre>A1236/26 NOTAMN
+Q) UKBV/QRTCA/IV/BO/W/000/999/4950N02400E012
+A) UKBV B) 2001010000 C) 2001020000
+E) ALREADY EXPIRED</pre>
+</body></html>"""
+
+
+class TestTheRawForm:
+    """DINS hands back a page of raw ICAO NOTAMs rather than JSON.
+
+    Every fact a mark needs -- where, how big, when, what it says -- lives in
+    that text, and getting any of them wrong is a closure drawn in the wrong
+    place or shown when it is over.
+    """
+
+    def one(self, which=0):
+        blocks = notams.PRE.findall(RAW_PAGE)
+        return notams.read_raw(notams._untag(blocks[which]), "UKBV")
+
+    def test_the_position_comes_off_the_q_line(self):
+        got = self.one()
+        assert got["id"] == "A1234/26"
+        assert got["location"] == "UKBV"
+        assert round(got["lat"], 4) == 50.3333
+        assert round(got["lon"], 4) == 30.5
+        assert got["placed"] is True
+
+    def test_the_radius_is_nautical_miles(self):
+        # 030 on the Q-line is thirty nautical miles, not thirty kilometres.
+        # Read as kilometres the closure is a bit over half its real size.
+        assert self.one()["radius_km"] == 55.56
+
+    def test_the_text_is_the_e_line_and_stops_at_the_next_one(self):
+        said = self.one()["text"]
+        assert said.startswith("AIRSPACE CLOSED TO ALL CIVIL TRAFFIC")
+        # The F) and G) lines are levels, not part of what the notice says.
+        assert "SFC" not in said and "FL660" not in said
+        # And the page's escaping is undone rather than shown to anybody.
+        assert "&" in said and "&amp;" not in said
+
+    def test_the_dates_are_the_ten_digit_form(self):
+        import datetime as dt
+        got = self.one()
+        assert got["from"] == dt.datetime(
+            2026, 1, 15, tzinfo=dt.timezone.utc).timestamp()
+        # PERM is no end at all, which is not an end in the past.
+        assert got["to"] is None
+        assert notams.in_force(got, got["from"] + 86_400) is True
+
+    def test_a_notice_with_no_coordinate_is_listed_not_placed(self):
+        got = self.one(1)
+        assert got["id"] == "A1235/26"
+        assert got["placed"] is False
+        assert got["lat"] is None
+        assert got["why_unplaced"]
+
+    def test_an_expired_one_is_read_and_then_excluded(self):
+        import time
+        got = self.one(2)
+        assert got["placed"] is True
+        assert notams.in_force(got, time.time()) is False
+
+    def test_a_coordinate_in_the_text_is_not_read_as_the_position(self):
+        # A run of digits shaped like a coordinate turns up in E) lines as
+        # bearings and boundary lists. Reading one as the position puts the
+        # closure somewhere nobody filed it.
+        got = notams.read_raw(
+            "A1239/26 NOTAMN\nQ) UKBV/QRTCA/IV/BO/W/000/999/\n"
+            "A) UKBV B) 2601150000 C) PERM\n"
+            "E) AREA BOUNDED BY 5020N03030E THEN 5100N03100E")
+        assert got["placed"] is False
+
+    def test_rubbish_is_refused_rather_than_guessed_at(self):
+        assert notams.read_raw("") is None
+        assert notams.read_raw("nothing here at all") is None
+        # A number but nothing said: a mark with no text is a dot nobody can
+        # act on.
+        assert notams.read_raw("A1234/26 NOTAMN\nA) UKBV") is None
+
+
+class TestWhenOneDoorCloses:
+    """Search refused every region with a 403. DINS is why that is survivable."""
+
+    def setup_method(self):
+        notams.forget()
+
+    def test_dins_is_asked_when_search_refuses(self, monkeypatch):
+        def refuse(*a, **kw):
+            raise notams.NotamError("NOTAM Search refused the request (403)")
+
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        monkeypatch.setattr(notams, "_ask_dins", lambda code: RAW_PAGE)
+        got = notams.over(28.0, 48.3, 35.6, 52.4)
+        assert got["trouble"] == []
+        assert [n["id"] for n in got["notams"]] == ["A1234/26"]
+        assert [n["id"] for n in got["unplaced"]] == ["A1235/26"]
+        assert "DINS" in got["source"]
+
+    def test_and_both_refusals_are_named_when_both_refuse(self, monkeypatch):
+        def refuse_search(*a, **kw):
+            raise notams.NotamError("NOTAM Search refused the request (403)")
+
+        def refuse_dins(*a, **kw):
+            raise notams.NotamError("DINS refused the request (403)")
+
+        monkeypatch.setattr(notams, "_ask_search", refuse_search)
+        monkeypatch.setattr(notams, "_ask_dins", refuse_dins)
+        got = notams.over(28.0, 48.3, 35.6, 52.4)
+        assert got["notams"] == []
+        assert got["trouble"]
+        assert "Search refused" in got["trouble"][0]
+        assert "DINS refused" in got["trouble"][0]
+
+    def test_dins_is_not_asked_when_search_answers(self, monkeypatch):
+        rang = []
+        monkeypatch.setattr(notams, "_ask_search",
+                            lambda code, offset=0: {"notamList": [],
+                                                    "totalNotamCount": 0})
+        monkeypatch.setattr(notams, "_ask_dins",
+                            lambda code: rang.append(code) or RAW_PAGE)
+        got = notams.over(28.0, 48.3, 35.6, 52.4)
+        assert rang == []
+        assert got["source"] == "FAA NOTAM Search"
+
+    def test_a_page_with_no_notices_in_it_is_a_failure_not_an_empty_sky(
+            self, monkeypatch):
+        monkeypatch.setattr(notams, "_ask_dins", lambda code: "<html>no</html>")
+        with pytest.raises(notams.NotamError):
+            notams._walk_dins("UKBV", [])
+
+    def test_a_quiet_region_is_not_reported_as_a_failure(self, monkeypatch):
+        # A FIR with nothing filed against it is a real and common answer.
+        # Reporting it as a failure put "DINS answered a page with no
+        # notices in it" against five quiet regions at once.
+        def refuse(*a, **kw):
+            raise notams.NotamError("NOTAM Search refused the request (403)")
+
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        monkeypatch.setattr(
+            notams, "_ask_dins",
+            lambda code: RAW_PAGE if code == "UKBV" else
+            "<html><body>No NOTAMs found</body></html>")
+        got = notams.over(28.0, 48.3, 35.6, 52.4)
+        assert got["trouble"] == []
+        assert len(got["asked"]) > 1, "the quiet regions were not counted"
+        assert [n["id"] for n in got["notams"]] == ["A1234/26"]
+
+    def test_but_a_page_it_cannot_read_still_is_one(self, monkeypatch):
+        monkeypatch.setattr(notams, "_ask_dins",
+                            lambda code: "<html><body>???</body></html>")
+        with pytest.raises(notams.NotamError):
+            notams._walk_dins("UKBV", [])
+
+    def test_search_is_asked_once_per_view_not_once_per_region(self,
+                                                               monkeypatch):
+        tried = []
+
+        def refuse(location, offset=0):
+            tried.append(location)
+            raise notams.NotamError("NOTAM Search refused the request (403)")
+
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        monkeypatch.setattr(notams, "_ask_dins", lambda code: RAW_PAGE)
+        got = notams.over(22.0, 44.0, 40.4, 52.5)
+        assert len(got["asked"]) > 1, "this view should span several regions"
+        assert len(tried) == 1, f"asked a refusing service {len(tried)} times"
+
+    def test_and_a_later_view_tries_it_again(self, monkeypatch):
+        # For this view rather than for ten minutes: a service having a
+        # moment should cost one slow view, not an afternoon of never
+        # asking it again.
+        tried = []
+
+        def refuse(location, offset=0):
+            tried.append(location)
+            raise notams.NotamError("NOTAM Search refused the request (403)")
+
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        monkeypatch.setattr(notams, "_ask_dins", lambda code: RAW_PAGE)
+        notams.over(22.0, 44.0, 40.4, 52.5)
+        notams.forget()
+        notams.over(22.0, 44.0, 40.4, 52.5)
+        assert len(tried) == 2
+
+    def test_dins_does_not_claim_notices_are_missing(self, monkeypatch):
+        # A notice filed against two adjacent FIRs is read twice and kept
+        # once. Counting reads as "how many there are" made the panel say
+        # notices had been left out when none had.
+        def refuse(*a, **kw):
+            raise notams.NotamError("NOTAM Search refused the request (403)")
+
+        monkeypatch.setattr(notams, "_ask_search", refuse)
+        monkeypatch.setattr(notams, "_ask_dins", lambda code: RAW_PAGE)
+        got = notams.over(22.0, 44.0, 40.4, 52.5)
+        assert got["capped"] is False
+        # Three distinct notices, served for every region in the view. One of
+        # them has expired, so two are live -- and "total" is the set, not
+        # three times however many regions were asked.
+        assert got["total"] == 3
+        assert got["count"] == 2

@@ -11,15 +11,30 @@ closed.
 Where they come from
 --------------------
 
-The FAA's NOTAM API, which serves ICAO NOTAMs worldwide rather than only
-American ones, and is the only free source of the whole set that does not
-require a device-code OAuth dance. It wants a client id and secret, both free
-to obtain, and both read from the environment and held in memory -- never
-written anywhere, the same rule the rest of this app's keys follow.
+Three places, all of them the FAA, which publishes ICAO NOTAMs worldwide
+rather than only American ones. In the order they are tried:
 
-With no key the layer says so and draws nothing. That is deliberate: a NOTAM
-layer that quietly shows an empty map is indistinguishable from a sky with
-nothing closed in it, and those are very different facts.
+  Their documented API, if FAA_CLIENT_ID and FAA_CLIENT_SECRET are set. Free
+  to obtain, read from the environment and held in memory -- never written
+  anywhere, the same rule the rest of this app's keys follow. Still the best
+  source: documented, paged, stable.
+
+  NOTAM Search, with no key -- the endpoint behind their public search page.
+  Asked for the way that page asks: session cookie first, its own headers,
+  and a second attempt if the session has gone stale.
+
+  DINS, with no key -- their other public front door, the one flight crews
+  use. It answers with a page rather than JSON, so the raw ICAO text is
+  parsed out of it. Slower and plainer, and reached for only when Search
+  refuses.
+
+The point of the last two is that the layer works without anybody registering
+for anything, and keeps working when one door closes. Whichever answered is
+named in the panel, because they do not carry quite the same set.
+
+When none of them answers, the layer says which refused and draws nothing. A
+NOTAM layer that quietly shows an empty map is indistinguishable from a sky
+with nothing closed in it, and those are very different facts.
 
 What this module is careful about
 ---------------------------------
@@ -53,9 +68,9 @@ import requests
 
 from . import config
 
-# Two ways in, and the keyless one is the default.
+# Three ways in, and the two keyless ones are the default.
 #
-# The documented API wants a client id and secret. They are free and they are
+# The documented API wants a client id and secret. They are free and it is
 # still the better source -- documented, stable, paged -- so a key is used
 # when there is one. But requiring anybody to go and register before a layer
 # shows anything at all is the difference between a feature and a promise,
@@ -64,11 +79,39 @@ from . import config
 #
 # So the second is the FAA's own NOTAM Search, which is what their public
 # search page talks to. No key, same notices, worldwide by ICAO location. It
-# is not a documented API and it can change under us, which is exactly why
-# read_notam below accepts several shapes and why every attempt records what
-# it was told rather than failing silently.
+# is not a documented API and it can change under us -- and it did, refusing
+# every region with a 403 -- which is exactly why read_notam below accepts
+# several shapes, why every attempt records what it was told rather than
+# failing silently, and why there is a third.
 API = "https://external-api.faa.gov/notamapi/v1/notams"
 SEARCH = "https://notams.aim.faa.gov/notamSearch/search"
+SEARCH_PAGE = "https://notams.aim.faa.gov/notamSearch/"
+
+# And a third, for when the second one says no.
+#
+# NOTAM Search refused every region with a 403. That is what a server says to
+# a client it does not think is its own page, and the fix is either to look
+# like that page (done below) or to ask somebody else. Both, here, because a
+# layer that depends on one undocumented endpoint staying friendly is a layer
+# that breaks again next month.
+#
+# DINS is the FAA's other public front door -- the one flight crews use -- and
+# it answers by ICAO location with no key. It hands back a web page rather
+# than JSON, with the raw ICAO NOTAM text in it, which read_raw() below parses
+# from the Q-line. Less convenient, considerably harder to turn off.
+DINS = "https://www.notams.faa.gov/dinsQueryWeb/queryRetrievalMapAction.do"
+
+# What a browser sends, for the two hosts that only answer browsers.
+#
+# This is not pretending to be somebody else's software for the sake of it:
+# their search page posts these, and the endpoint checks. Sending only a
+# User-Agent got a 403 from every region in the table.
+BROWSERY = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/126.0.0.0 Safari/537.36"),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 # Kept under the old name so nothing that reached for it breaks.
 BASE = API
@@ -152,6 +195,12 @@ _lock = threading.Lock()
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _session = requests.Session()
 _session.headers.update({"User-Agent": config.USER_AGENT})
+
+# A separate one for the keyless pages, because they want a cookie jar and a
+# browser's headers and the documented API wants neither.
+_browser = requests.Session()
+_browser.headers.update(BROWSERY)
+_primed = 0.0
 
 
 def configured() -> bool:
@@ -413,17 +462,204 @@ def _search_form(location: str, offset: int) -> dict[str, str]:
     }
 
 
-def _ask_search(location: str, offset: int = 0) -> dict[str, Any]:
-    """The keyless one: what their public search page talks to."""
+def _prime(force: bool = False) -> None:
+    """Load the search page first, so the post arrives with its session.
+
+    Their endpoint is the back half of a page, not an API, and it answers a
+    post that arrives out of nowhere with a 403 -- which is exactly what the
+    layer was showing for every region. A browser gets the page, is given a
+    session cookie, and posts with it; this does the same. A failure here is
+    swallowed on purpose: the post is still worth attempting, and its answer
+    is the one worth reporting.
+    """
+    global _primed
+    now = time.time()
+    if not force and now - _primed < KEEP_SECONDS:
+        return
     try:
-        resp = _session.post(SEARCH, data=_search_form(location, offset),
-                             timeout=TIMEOUT, headers={
-                                 "Accept": "application/json",
-                                 "X-Requested-With": "XMLHttpRequest",
-                             })
+        _browser.get(SEARCH_PAGE, timeout=TIMEOUT)
+    except requests.RequestException:
+        pass
+    _primed = now
+
+
+def _ask_search(location: str, offset: int = 0) -> dict[str, Any]:
+    """The keyless one: what their public search page talks to.
+
+    Twice on a refusal, because the likeliest cause of one is a session that
+    has gone stale, and re-fetching the page is how a browser recovers from
+    the same thing without the person at it ever knowing.
+    """
+    last: NotamError | None = None
+    for go in range(2):
+        _prime(force=go > 0)
+        try:
+            resp = _browser.post(SEARCH, data=_search_form(location, offset),
+                                 timeout=TIMEOUT, headers={
+                                     "Accept": "application/json, text/javascript, */*; q=0.01",
+                                     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                                     "X-Requested-With": "XMLHttpRequest",
+                                     "Referer": SEARCH_PAGE,
+                                     "Origin": "https://notams.aim.faa.gov",
+                                 })
+        except requests.RequestException as exc:
+            raise NotamError(f"NOTAM Search could not be reached: {exc}") from exc
+        try:
+            return _read_json(resp, "NOTAM Search")
+        except NotamError as exc:
+            if resp.status_code not in (401, 403):
+                raise
+            last = exc
+    raise last
+
+
+# A raw ICAO NOTAM, as DINS prints it:
+#
+#   A1234/26 NOTAMN
+#   Q) UKBV/QRTCA/IV/BO/W/000/999/5020N03030E030
+#   A) UKBV B) 2601150000 C) PERM
+#   E) AIRSPACE CLOSED TO ALL CIVIL TRAFFIC
+#
+# The position lives on the end of the Q-line: an eleven-character coordinate
+# and a three-digit radius in nautical miles, run together with no separator.
+RAW_ID = re.compile(r"\b([A-Z]\d{4}/\d{2})\b")
+RAW_QLINE = re.compile(r"\bQ\)\s*(.+?)(?=\n\s*[A-G]\)|\Z)", re.S)
+RAW_Q = re.compile(r"(\d{4}(?:\d{2})?[NS]\d{5}(?:\d{2})?[EW])(\d{3})?\b")
+RAW_A = re.compile(r"\bA\)\s*([A-Z]{4})")
+RAW_B = re.compile(r"\bB\)\s*(\d{10})")
+RAW_C = re.compile(r"\bC\)\s*(\d{10}|PERM|UFN)")
+RAW_E = re.compile(r"\bE\)\s*(.+?)(?=\n\s*[A-G]\)|\Z)", re.S)
+TAGS = re.compile(r"<[^>]+>")
+# How their page says a location has nothing filed against it.
+NOTHING = re.compile(r"no\s+notams?\b|not\s+found|no\s+data", re.I)
+PRE = re.compile(r"<pre[^>]*>(.*?)</pre>", re.S | re.I)
+
+
+def _stamp(digits: str) -> float | None:
+    """"2601150000" -- the ten-digit form the B) and C) lines carry."""
+    try:
+        return dt.datetime.strptime(digits, "%y%m%d%H%M").replace(
+            tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def read_raw(text: str, where: str | None = None) -> dict[str, Any] | None:
+    """One raw ICAO NOTAM as something this map can draw, or None.
+
+    Same output shape as read_notam(), so everything downstream -- the
+    in-force filter, the de-duplication, the drawing -- is the one code path
+    regardless of which of the three sources the notice came from.
+    """
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not body:
+        return None
+    ident = RAW_ID.search(body)
+    if not ident:
+        return None
+
+    said = RAW_E.search(body)
+    said = _text(said.group(1), 2000) if said else None
+    if not said:
+        # No E) line means either a shape this cannot read or a notice with
+        # nothing in it. Either way there is nothing to put in a popup, and a
+        # mark with no text is a dot nobody can act on.
+        return None
+
+    # Only ever off the Q-line. A coordinate-shaped run of digits in the E)
+    # text is a bearing or a runway, and reading one as a position is how a
+    # closure ends up in the wrong country.
+    qline = RAW_QLINE.search(body)
+    spot = RAW_Q.search(" ".join(qline.group(1).split())) if qline else None
+    place = read_coord(spot.group(1)) if spot else None
+    nm = _number(spot.group(2)) if spot and spot.group(2) else None
+    km = (nm if nm and nm > 0 else DEFAULT_NM) * NM_KM
+
+    began = RAW_B.search(body)
+    ends = RAW_C.search(body)
+    at = RAW_A.search(body)
+    return {
+        "id": ident.group(1),
+        "location": _text(at.group(1) if at else where, 12),
+        "text": said,
+        "classification": None,
+        "kind": None,
+        "lat": place[0] if place else None,
+        "lon": place[1] if place else None,
+        "radius_km": round(km, 2),
+        "wide": km > MOST_KM,
+        "from": _stamp(began.group(1)) if began else None,
+        # "PERM" and "UFN" both mean no end, which _stamp cannot parse and
+        # in_force() reads correctly as still true.
+        "to": _stamp(ends.group(1)) if ends else None,
+        "placed": place is not None,
+        "why_unplaced": None if place else
+                        "the notice carries no position this can read",
+    }
+
+
+def _ask_dins(location: str) -> str:
+    """DINS, the other keyless door. Hands back a page, not JSON."""
+    try:
+        resp = _browser.post(DINS, timeout=TIMEOUT, data={
+            "retrieveLocId": location,
+            "reportType": "Raw",
+            "actionType": "notamRetrievalByICAOs",
+            "submit": "View NOTAMs",
+        }, headers={
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": "https://www.notams.faa.gov/dinsQueryWeb/",
+            "Origin": "https://www.notams.faa.gov",
+        })
     except requests.RequestException as exc:
-        raise NotamError(f"NOTAM Search could not be reached: {exc}") from exc
-    return _read_json(resp, "NOTAM Search")
+        raise NotamError(f"DINS could not be reached: {exc}") from exc
+    if resp.status_code in (401, 403):
+        raise NotamError(f"DINS refused the request ({resp.status_code})")
+    if not resp.ok:
+        raise NotamError(f"DINS answered {resp.status_code}")
+    return resp.text or ""
+
+
+def _walk_dins(location: str, found: list[dict[str, Any]]) -> int:
+    """Every notice on one DINS page into `found`. Returns nought, always.
+
+    Nought because the number this returns is "how many their service says
+    there are", which is what the panel compares against what was drawn to
+    say whether a page cap bit. DINS states no such number -- it hands over
+    the lot -- and returning how many were READ instead made the count wrong
+    in the one way that matters: a notice filed against two adjacent FIRs is
+    read twice and kept once, so the sum came out higher than the set and the
+    panel said notices were missing when none were.
+
+    Their page puts each notice in its own <pre>. Tags are stripped rather
+    than parsed: the thing wanted here is the text between them, and a real
+    HTML parse would be a dependency and an attack surface for no gain.
+    """
+    page = _ask_dins(location)
+    blocks = PRE.findall(page)
+    if not blocks:
+        # A region with nothing closed in it is a real and common answer, and
+        # it is not a failure -- reporting it as one put "DINS answered a page
+        # with no notices in it" against five quiet FIRs at once. Their page
+        # says so in words, so that is what is checked; a page that says
+        # neither is a shape this cannot read, which IS worth saying.
+        if NOTHING.search(page):
+            return 0
+        raise NotamError("DINS answered a page this cannot read")
+    for block in blocks:
+        one = read_raw(_untag(block), location)
+        if one:
+            found.append(one)
+    return 0
+
+
+def _untag(html: str) -> str:
+    text = TAGS.sub("", html)
+    for code, char in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                       ("&quot;", '"'), ("&#39;", "'"), ("&nbsp;", " ")):
+        text = text.replace(code, char)
+    return text
 
 
 def firs_over(west: float, south: float, east: float,
@@ -502,6 +738,59 @@ def _walk_search(location: str, found: list[dict[str, Any]]) -> int:
     return total
 
 
+def _region(code: str, found: list[dict[str, Any]], used: list[str],
+            shut: set[str]) -> int:
+    """One region, through whichever source will answer for it.
+
+    The fallback is the point of this function. A layer built on a single
+    undocumented endpoint is a layer that shows an empty sky the day that
+    endpoint decides it does not like non-browser clients -- which is what
+    happened, with a 403 from every region at once. Falling through to DINS
+    costs one extra request on a bad day and is the difference between a map
+    and an apology.
+
+    Both failures are carried in the message when both fail, because "which
+    of them said no" is the fact the next fix starts from.
+    """
+    if configured():
+        out = _walk({"icaoLocation": code}, found)
+        if "FAA NOTAM API" not in used:
+            used.append("FAA NOTAM API")
+        return out
+    # A door slammed once in this view stays shut for the rest of it. Without
+    # this, a view over eight regions asked Search eight times -- sixteen,
+    # with its retry -- to be refused eight times before falling through to
+    # DINS each time: half a minute of waiting to learn what the first
+    # refusal already said.
+    #
+    # For THIS VIEW rather than for ten minutes, deliberately. A service
+    # having a moment should cost one slow view, not an afternoon of quietly
+    # never asking it again.
+    was: NotamError | None = None
+    if "search" in shut:
+        was = NotamError("NOTAM Search refused the request")
+    else:
+        try:
+            out = _walk_search(code, found)
+        except NotamError as exc:
+            was = exc
+            shut.add("search")
+    if was is None:
+        if "FAA NOTAM Search" not in used:
+            used.append("FAA NOTAM Search")
+        return out
+    try:
+        out = _walk_dins(code, found)
+    except NotamError as also:
+        raise NotamError(f"{was}; and {also}") from also
+    if "DINS" not in used:
+        used.append("DINS")
+    return out
+    if "FAA NOTAM Search" not in used:
+        used.append("FAA NOTAM Search")
+    return out
+
+
 def over(west: float, south: float, east: float,
          north: float) -> dict[str, Any]:
     """Every notice in force over a rectangle.
@@ -526,17 +815,17 @@ def over(west: float, south: float, east: float,
     asked: list[str] = []
     trouble: list[str] = []
     short = False
+    used: list[str] = []
+    shut: set[str] = set()
     if regions:
         for code, name in regions:
-            # The keyed API where there is a key, the keyless search where
-            # there is not. One region failing is not the whole view failing:
-            # five regions answering and one refusing is a better map than no
-            # map, and the one that refused is named in the panel.
+            # Three doors, tried in order of how much this trusts them: the
+            # documented API where there is a key, then their search page's
+            # endpoint, then DINS. One region failing is not the whole view
+            # failing -- five answering and one refusing is a better map than
+            # no map -- and the one that refused is named in the panel.
             try:
-                if configured():
-                    total += _walk({"icaoLocation": code}, found)
-                else:
-                    total += _walk_search(code, found)
+                total += _region(code, found, used, shut)
                 asked.append(f"{code} ({name})")
             except NotamError as exc:
                 trouble.append(f"{code}: {exc}")
@@ -556,6 +845,7 @@ def over(west: float, south: float, east: float,
             "locationLatitude": round(lat, 4),
             "locationRadius": round(max(1.0, min(MOST_NM, wanted_nm))),
         }, found)
+        used.append("FAA NOTAM API")
         asked.append(f"{round(min(MOST_NM, wanted_nm))} NM around "
                      f"{lat:.2f},{lon:.2f}")
 
@@ -585,7 +875,11 @@ def over(west: float, south: float, east: float,
         # True when the view is wider than one radius query can cover and no
         # FIR was known for it, so part of it was not looked at.
         "partial": short,
-        "source": "FAA NOTAM API" if configured() else "FAA NOTAM Search",
+        # Which of the three actually answered, rather than which one was
+        # meant to. They do not carry the same set, so a map fed by DINS
+        # because Search refused is a different map and should say so.
+        "source": " and ".join(used) if used else (
+            "FAA NOTAM API" if configured() else "FAA NOTAM Search"),
     }
     with _lock:
         # An answer that got nothing from anybody is not worth keeping for ten
@@ -600,12 +894,16 @@ def over(west: float, south: float, east: float,
 
 def forget() -> None:
     """Drop what is cached. For tests and for starting over."""
+    global _primed
     with _lock:
         _cache.clear()
+    _primed = 0.0
 
 
 def status() -> dict[str, Any]:
-    return {"configured": configured(), "source": "FAA NOTAM API",
+    return {"configured": configured(),
+            "source": "FAA NOTAM API" if configured() else
+                      "FAA NOTAM Search, then DINS",
             "cached": len(_cache)}
 
 
