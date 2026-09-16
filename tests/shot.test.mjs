@@ -93,8 +93,17 @@ const SOURCE = readFileSync(
   'utf8');
 
 test('the picture is actually drawn from the tightened frame', () => {
-  assert.ok(SOURCE.includes('framing(closeIn(bounds, marks))'),
+  assert.ok(/framing\(closeIn\(bounds,/.test(SOURCE),
     'drawShot frames the whole view again');
+});
+
+test('the frame takes in the warnings, not only the marks', () => {
+  // A country whose only activity is a shaded province would otherwise crop
+  // to nothing at all -- which is how picking Russia came back with "nothing
+  // in that area" on a night of two alerts and no drones.
+  const block = SOURCE.slice(SOURCE.indexOf('export async function drawShot'));
+  const head = block.slice(0, block.indexOf('drawLand('));
+  assert.match(head, /spread\(warnings\)/, 'warnings do not reach the framing');
 });
 
 test('a mark is small enough to say where it is', () => {
@@ -194,7 +203,8 @@ test('a kind keeps the colour it was first seen with', () => {
     { label: 'Drone', colour: '#ffd400' },
     { label: 'Drone', colour: '#ff3b30' },
   ]);
-  assert.deepEqual(keys, [{ label: 'Drone', colour: '#ffd400' }]);
+  assert.deepEqual(keys,
+    [{ label: 'Drone', colour: '#ffd400', area: false }]);
 });
 
 test('the key lists each kind once, in the order it appears', () => {
@@ -430,4 +440,75 @@ test('the land is filled before anything is stroked over it', () => {
   const body = block.slice(0, block.indexOf('\n}'));
   assert.ok(body.indexOf('ctx.fillStyle = LAND;') < body.indexOf('BORDER_SHADOW'),
     'a province fill is painted over its neighbour\'s border');
+});
+
+// ── Warnings in the picture ────────────────────────────────────
+//
+// They used to be left out entirely -- asked for that way, back when a
+// warning was a triangle sitting on a centroid and the picture was about the
+// arrows. A warning is a shaded province now, and leaving it out meant a
+// country whose only activity is warnings had nothing to draw at all:
+// picking Russia on a night of two alerts and no drones produced "nothing in
+// that area" and no picture.
+
+const REGION = {
+  type: 'Polygon',
+  coordinates: [[[36, 50], [38, 50], [38, 52], [36, 52], [36, 50]]],
+};
+
+test('a warning is enough to make a picture on its own', () => {
+  // The Russia case. The frame has to find the warnings, or it crops to
+  // nothing and the export refuses.
+  const view = { north: 61, south: 43.5, west: 27, east: 60 };
+  const points = [];
+  for (const ring of REGION.coordinates) {
+    for (const [lon, lat] of ring) points.push({ lat, lon });
+  }
+  const got = closeIn(view, points);
+  assert.ok(got.north > 52 && got.south < 50, 'the warning is not in frame');
+  assert.ok(got.east - got.west < 20, 'the crop is still the whole box');
+});
+
+test('the key tells a thing in the air from a state of the ground', () => {
+  // A yellow dot beside "Drone" and a yellow dot beside "Drone warning" are
+  // the same swatch for two quite different claims.
+  const keys = legendKeys(
+    [{ label: 'Drone', colour: '#ffd400' }],
+    [{ label: 'Drone warning', colour: '#ffd400' }]);
+  assert.deepEqual(keys.map((k) => k.label), ['Drone', 'Drone warning']);
+  assert.equal(keys[0].area, false);
+  assert.equal(keys[1].area, true);
+});
+
+test('a warning alone still gets a key', () => {
+  const keys = legendKeys([], [{ label: 'Missile warning', colour: '#ff3b30' }]);
+  assert.deepEqual(keys.map((k) => k.label), ['Missile warning']);
+});
+
+test('the warned ground is drawn under the marks, not over them', () => {
+  // A wash painted over an arrow is an arrow nobody can see.
+  const block = SOURCE.slice(SOURCE.indexOf('export async function drawShot'));
+  const body = block.slice(0, block.indexOf('return canvas;'));
+  assert.ok(body.indexOf('drawWarnings(') < body.indexOf('await drawMarks('),
+    'the warnings are painted over the marks');
+  assert.ok(body.indexOf('drawLand(') < body.indexOf('drawWarnings('),
+    'the land is painted over the warnings');
+});
+
+test('a warned province is filled and edged in its own colour', () => {
+  const block = SOURCE.slice(SOURCE.indexOf('function drawWarnings'));
+  const body = block.slice(0, block.indexOf('\n}\n'));
+  assert.match(body, /ctx\.fillStyle = warning\.colour;/);
+  assert.match(body, /ctx\.strokeStyle = warning\.colour;/);
+  // Lighter than the map's wash: there are no tiles under this one to fight,
+  // and a heavy fill buries the province's name and any mark standing on it.
+  const alpha = Number(/globalAlpha = ([\d.]+);/.exec(body)[1]);
+  assert.ok(alpha > 0.1 && alpha <= 0.35, `warned ground at ${alpha}`);
+});
+
+test('the heading counts warnings as well as tracks', () => {
+  const block = SOURCE.slice(SOURCE.indexOf('function drawFurniture'));
+  const body = block.slice(0, block.indexOf('\n}'));
+  assert.match(body, /warnings\?\.length/);
+  assert.match(body, /'warning' : 'warnings'/);
 });

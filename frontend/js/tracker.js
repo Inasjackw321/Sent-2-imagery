@@ -918,6 +918,13 @@ export function learnUkraine(outlines) {
   return rings;
 }
 
+/** What a warning is called in a picture's key: drone, missile, or neither. */
+function warningLabel(event) {
+  if (event.cause === 'drone') return 'Drone warning';
+  if (event.cause === 'missile') return 'Missile warning';
+  return 'Air alert';
+}
+
 /** Whether a drawn record belongs to the country asked for. */
 function belongsTo(held, which, box) {
   const at = spotOf(held);
@@ -1851,22 +1858,42 @@ async function saveShot(where) {
   try {
     const view = where ?? map.getBounds();
     const marks = [];
+    const warnings = [];
     for (const held of drawn.values()) {
       const event = held.event;
-      if (event.kind === 'alert') continue;
       const at = spotOf(held);
       if (!view.contains(at)) continue;
       const colour = colourOf(event);
+      const label = feed?.kinds?.[event.kind]?.label ?? 'Unidentified';
+
+      // A warning is its province, the same as on the map.
+      //
+      // It used to be left out of the picture entirely -- asked for that
+      // way, back when a warning was a triangle sitting on a centroid and
+      // the picture was about the arrows. It is a shaded region now, and
+      // leaving it out meant a country whose only activity is warnings had
+      // nothing to draw at all: picking Russia on a night of two alerts and
+      // no drones produced "nothing in that area" and no picture.
+      if (event.kind === 'alert') {
+        if (event.shape) {
+          warnings.push({ shape: event.shape, colour, label: warningLabel(event) });
+          continue;
+        }
+        // No boundary known, so it falls back to the same triangle the map
+        // draws -- a warning left out because its outline had not arrived
+        // is still a warning nobody was told about.
+      }
+
       const parts = glyphParts(event, colour, positionOf(event).facing);
       // The colour and the word for it, so the picture can carry a key.
       // Without them a viewer has a yellow dot and a purple one and no way
       // to learn that one is a drone and the other a missile.
       marks.push({
         lat: at.lat, lon: at.lng, ...parts, colour,
-        label: feed?.kinds?.[event.kind]?.label ?? 'Unidentified',
+        label: event.kind === 'alert' ? warningLabel(event) : label,
       });
     }
-    if (!marks.length) {
+    if (!marks.length && !warnings.length) {
       toast('Nothing in that area to put in a picture', 'warn');
       return;
     }
@@ -1876,6 +1903,7 @@ async function saveShot(where) {
         west: view.getWest(), east: view.getEast(),
       },
       marks,
+      warnings,
       outlines: await regionOutlines(),
       credit: feed?.attribution?.picture ?? 'Data supplied by NEPTUN — neptun.in.ua',
       at: new Date(),
@@ -1888,9 +1916,13 @@ async function saveShot(where) {
     const when = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
     const went = await handOver(blob, `air-${when}.png`, 'Air tracker');
     if (went === 'cancelled') return;
-    const how = went === 'shared'
-      ? `${marks.length} mark${marks.length === 1 ? '' : 's'} — pick Save Image`
-      : `Saved ${marks.length} mark${marks.length === 1 ? '' : 's'}`;
+    const bits = [];
+    if (marks.length) bits.push(`${marks.length} mark${marks.length === 1 ? '' : 's'}`);
+    if (warnings.length) {
+      bits.push(`${warnings.length} warning${warnings.length === 1 ? '' : 's'}`);
+    }
+    const what = bits.join(' and ');
+    const how = went === 'shared' ? `${what} — pick Save Image` : `Saved ${what}`;
     toast(how + (bordersFailed ? ` — without borders: ${bordersFailed}` : ''),
       bordersFailed ? 'warn' : '');
   } catch (err) {

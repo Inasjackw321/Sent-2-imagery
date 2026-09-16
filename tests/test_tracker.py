@@ -3125,11 +3125,45 @@ class TestTheDrawingMoves:
         text = self.source()
         assert "await handOver(blob," in text
 
-    def test_the_picture_leaves_the_warnings_out(self):
+    def test_the_picture_carries_the_warnings_too(self):
+        """It used to leave them out, and that was asked for -- back when a
+        warning was a triangle on a centroid and the picture was about the
+        arrows.
+
+        A warning is a shaded province now. Leaving it out meant a country
+        whose only activity is warnings had nothing to draw at all: picking
+        Russia on a night of two alerts and no drones produced "nothing in
+        that area" and no picture.
+        """
         block = self.source()
         block = block[block.index("async function saveShot"):]
         block = block[:block.index("\n}")]
-        assert "if (event.kind === 'alert') continue;" in block
+        assert "if (event.kind === 'alert') continue;" not in block
+        assert "warnings.push({ shape: event.shape" in block
+        assert "warnings," in block, "they are collected and not handed over"
+
+    def test_a_warning_with_no_boundary_is_still_in_the_picture(self):
+        # It falls back to the same triangle the map draws. A warning left
+        # out because its outline had not arrived is still a warning nobody
+        # was told about.
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        block = block[:block.index("\n}")]
+        # From the alert branch to the glyph that draws whatever is left.
+        # Exactly ONE way out of it: the one for a warning that HAS a
+        # boundary. A second would drop the ones that do not, which is the
+        # warning most worth not dropping -- its region is unknown, so the
+        # triangle is all anybody gets.
+        span = block[block.index("if (event.kind === 'alert') {"):
+                     block.index("const parts = glyphParts")]
+        assert span.count("continue;") == 1, span.count("continue;")
+        assert "glyphParts(event, colour" in block
+
+    def test_the_picture_is_made_when_there_are_only_warnings(self):
+        # The Russia case, which is the whole of why this changed.
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        assert "if (!marks.length && !warnings.length) {" in block
 
     def test_the_picture_carries_the_watermark_and_the_credit(self):
         """NEPTUN's credit is a condition of use, not decoration.

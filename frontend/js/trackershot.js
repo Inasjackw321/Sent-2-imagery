@@ -264,8 +264,11 @@ function walkRings(shape, each) {
  * `marks` are already the ones to show: the caller decides what a warning is
  * and leaves them out, because the caller is the thing that knows.
  */
-export async function drawShot({ bounds, marks, outlines, credit, at }) {
-  const frame = framing(closeIn(bounds, marks));
+export async function drawShot({ bounds, marks, warnings, outlines, credit, at }) {
+  // The frame has to take in the warnings too, or a picture of a country
+  // whose only activity is a shaded province crops to nothing at all.
+  const frame = framing(closeIn(bounds, [...(marks ?? []),
+                                         ...spread(warnings)]));
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
@@ -279,12 +282,65 @@ export async function drawShot({ bounds, marks, outlines, credit, at }) {
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, frame.width, frame.height);
 
-  const bands = bandSizes(frame, marks);
+  const bands = bandSizes(frame, marks, warnings);
   drawLand(ctx, frame, outlines);
+  // Under the names and the marks: a warning is the ground's state, and the
+  // things in the air are drawn on top of it.
+  drawWarnings(ctx, frame, warnings);
   nameRegions(ctx, frame, outlines, bands, marks);
   await drawMarks(ctx, frame, marks);
-  drawFurniture(ctx, frame, marks, credit, at, bands);
+  drawFurniture(ctx, frame, marks, warnings, credit, at, bands);
   return canvas;
+}
+
+/** The corners of each warning, as points the framing can fit around. */
+function spread(warnings) {
+  const points = [];
+  for (const warning of warnings ?? []) {
+    walkRings(warning.shape, (ring) => {
+      for (const [lon, lat] of ring) points.push({ lat, lon });
+    });
+  }
+  return points;
+}
+
+/**
+ * The warned provinces, filled in their own colour.
+ *
+ * The same drawing the map makes, for the same reason: a warning covers a
+ * province, and a province reading as a state of that province from across a
+ * room is most of what this layer is for. Yellow or red, from the caller,
+ * which took it from the same table the map does.
+ */
+function drawWarnings(ctx, frame, warnings) {
+  ctx.lineJoin = 'round';
+  for (const warning of warnings ?? []) {
+    const paths = [];
+    walkRings(warning.shape, (ring) => {
+      const path = new Path2D();
+      ring.forEach(([lon, lat], i) => {
+        const [x, y] = frame.at(lat, lon);
+        if (i === 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      });
+      path.closePath();
+      paths.push(path);
+    });
+    // Lighter than the map's 0.42: on a picture there are no tiles under it
+    // to fight, and a wash that heavy buries the province's own name and any
+    // mark standing on it.
+    ctx.fillStyle = warning.colour;
+    ctx.globalAlpha = 0.3;
+    for (const path of paths) ctx.fill(path);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = warning.colour;
+    ctx.lineWidth = 2.2;
+    // Dashed, the same as the map, because the boundary is the province's
+    // and the warning is a state of it rather than a surveyed edge.
+    ctx.setLineDash([14, 9]);
+    for (const path of paths) ctx.stroke(path);
+    ctx.setLineDash([]);
+  }
 }
 
 /**
@@ -295,13 +351,13 @@ export async function drawShot({ bounds, marks, outlines, credit, at }) {
  * ends up printed underneath it, which is how "сумська" came out sitting in
  * the timestamp.
  */
-function bandSizes(frame, marks) {
+function bandSizes(frame, marks, warnings) {
   const unit = Math.max(13, Math.round(frame.width * 0.0135));
   return {
     unit,
     pad: Math.round(unit * 1.5),
     head: unit * 3.6,
-    foot: unit * (legendKeys(marks).length ? 4.6 : 3.4),
+    foot: unit * (legendKeys(marks, warnings).length ? 4.6 : 3.4),
   };
 }
 
@@ -551,10 +607,10 @@ async function drawMarks(ctx, frame, marks) {
  * to return early on a missing credit, so a picture taken before the first
  * feed arrived went out with NEPTUN's data on it and their name nowhere.
  */
-function drawFurniture(ctx, frame, marks, credit, at, bands) {
+function drawFurniture(ctx, frame, marks, warnings, credit, at, bands) {
   const said = credit || CREDIT;
   const { unit, pad, head, foot } = bands;
-  const keys = legendKeys(marks);
+  const keys = legendKeys(marks, warnings);
 
   // The bands. Faded rather than edged, so they sit over the map without
   // looking like two more rectangles drawn on it.
@@ -571,11 +627,15 @@ function drawFurniture(ctx, frame, marks, credit, at, bands) {
 
   // How many, under it.
   const n = marks?.length ?? 0;
+  const w = warnings?.length ?? 0;
+  const counted = [
+    n ? `${n} ${n === 1 ? 'track' : 'tracks'}` : null,
+    w ? `${w} ${w === 1 ? 'warning' : 'warnings'}` : null,
+  ].filter(Boolean).join(' · ') || 'nothing in the air';
   ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
   ctx.font = `500 ${Math.round(unit * 0.8)}px system-ui, -apple-system, `
     + 'Segoe UI, sans-serif';
-  ctx.fillText(`${n} ${n === 1 ? 'track' : 'tracks'}`, pad,
-    Math.round(unit * 3.1));
+  ctx.fillText(counted, pad, Math.round(unit * 3.1));
 
   // When, right. A picture of moving things with no time on it is a picture
   // somebody will read as current a day later.
@@ -596,10 +656,24 @@ function drawFurniture(ctx, frame, marks, credit, at, bands) {
     let x = pad;
     const y = frame.height - Math.round(unit * 2.9);
     for (const key of keys) {
-      ctx.beginPath();
-      ctx.arc(x + unit * 0.3, y, unit * 0.3, 0, Math.PI * 2);
       ctx.fillStyle = key.colour;
-      ctx.fill();
+      if (key.area) {
+        // A patch of ground, drawn the way the ground is drawn: a washed
+        // square inside its own dashed edge.
+        const side = unit * 0.62;
+        ctx.globalAlpha = 0.35;
+        ctx.fillRect(x, y - side / 2, side, side);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = key.colour;
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([3, 2]);
+        ctx.strokeRect(x, y - side / 2, side, side);
+        ctx.setLineDash([]);
+      } else {
+        ctx.beginPath();
+        ctx.arc(x + unit * 0.3, y, unit * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
       ctx.fillText(key.label, x + unit * 0.85, y + 1);
       x += unit * 0.85 + ctx.measureText(key.label).width + unit * 1.1;
@@ -633,13 +707,19 @@ function band(ctx, frame, top, height, upward) {
 }
 
 /** The kinds in this picture, each once, in the order they first appear. */
-export function legendKeys(marks) {
+export function legendKeys(marks, warnings) {
   const seen = new Map();
-  for (const mark of marks ?? []) {
-    if (!mark?.label || !mark?.colour || seen.has(mark.label)) continue;
-    seen.set(mark.label, { label: mark.label, colour: mark.colour });
-  }
-  return [...seen.values()].slice(0, 5);
+  const add = (one, area) => {
+    if (!one?.label || !one?.colour || seen.has(one.label)) return;
+    // Whether this is a thing in the air or a state of the ground. Drawn
+    // differently in the key, because a yellow dot beside "Drone" and a
+    // yellow dot beside "Drone warning" are the same swatch for two quite
+    // different claims.
+    seen.set(one.label, { label: one.label, colour: one.colour, area });
+  };
+  for (const mark of marks ?? []) add(mark, false);
+  for (const warning of warnings ?? []) add(warning, true);
+  return [...seen.values()].slice(0, 6);
 }
 
 /** "16 Sep 2026 · 11:48 UTC". Spelt out, because 09/16 is two dates. */
