@@ -1528,6 +1528,26 @@ body.is-walled { overflow: hidden; }
 }
 .ao-find:hover { color: var(--ink); border-color: rgba(255,255,255,.3); }
 .ao-find:disabled { opacity: .35; cursor: default; }
+
+/* Which area a picture covers. Opens under the Image button. */
+.ao-where {
+  display: grid; gap: 4px; margin-top: 6px;
+  padding: 7px; border-radius: 9px;
+  background: rgba(0,0,0,.35); border: 1px solid var(--line);
+}
+.ao-where-what {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.ao-where-pick {
+  text-align: left; cursor: pointer; font: inherit; font-size: 11.5px;
+  padding: 5px 8px; border-radius: 7px; color: var(--ink-dim);
+  background: rgba(255,255,255,.04); border: 1px solid transparent;
+}
+.ao-where-pick:hover {
+  color: var(--ink); background: rgba(255,255,255,.09);
+  border-color: rgba(255,255,255,.18);
+}
 .ao-note, .ao-hint { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
 .ao-hint a { color: #7cc4ff; }
 

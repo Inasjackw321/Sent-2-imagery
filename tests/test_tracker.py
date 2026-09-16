@@ -3857,3 +3857,82 @@ class TestAWarningIsItsRegion:
                       "held.marker.setLatLng"):
             assert reach not in rest, reach
         assert "if (held.marker) return held.marker.getLatLng();" in text
+
+
+class TestPickingWhatThePictureCovers:
+    """The Image button used to photograph whatever was on screen.
+
+    Which made taking a picture of somewhere else a matter of panning there,
+    taking it, and panning back -- losing the view you were watching, which
+    on a busy night is the thing you were actually doing.
+    """
+
+    def source(self):
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
+
+    def test_the_button_asks_before_it_takes_anything(self):
+        text = self.source()
+        block = text[text.index("id: 'trackerShot'"):]
+        block = block[:block.index("}, 'Image')")]
+        assert "onclick: askWhere," in block
+        assert "onclick: saveShot" not in block
+
+    def test_the_area_is_an_argument_rather_than_the_screen(self):
+        text = self.source()
+        assert "async function saveShot(where)" in text
+        assert "const view = where ?? map.getBounds();" in text
+
+    def test_what_it_offers(self):
+        """The four that get asked for: what I am looking at, one country,
+        all of it, or a box I draw."""
+        block = self.source()
+        block = block[block.index("function askWhere()"):]
+        block = block[:block.index("\nfunction closeWhere")]
+        assert "'This view'" in block
+        assert "Object.entries(AIRSPACE)" in block, "the countries are not offered"
+        assert "'Everything'" in block
+        assert "'Draw an area…'" in block
+
+    def test_the_countries_come_from_the_one_table(self):
+        # A second list of countries here is one to forget to update.
+        text = self.source()
+        assert "const AIRSPACE = {" in text
+        block = text[text.index("function askWhere()"):]
+        block = block[:block.index("\nfunction closeWhere")]
+        assert "'Ukraine'" not in block and "'Russia'" not in block
+
+    def test_everything_means_every_mark_not_every_country(self):
+        block = self.source()
+        block = block[block.index("function everything()"):]
+        block = block[:block.index("\n}")]
+        assert "for (const held of drawn.values())" in block
+        # Including the shaded provinces, which reach past their centroids.
+        assert "held.area?.getBounds?.()" in block
+        # And it never hands back an empty box.
+        assert "map.getBounds()" in block
+
+    def test_drawing_a_box_takes_the_map_off_the_mouse(self):
+        """Otherwise the first pull pans the map instead of drawing, which
+        reads as the mode not having started."""
+        block = self.source()
+        block = block[block.index("function drawArea()"):]
+        assert "map.dragging.disable();" in block
+        assert "map.dragging.enable();" in block
+        assert "map.boxZoom.disable();" in block
+
+    def test_and_can_be_left_without_taking_anything(self):
+        block = self.source()
+        block = block[block.index("function drawArea()"):]
+        assert "'Escape'" in block
+        assert "map.off('mousedown', begin);" in block, "the handlers leak"
+        assert "pane.style.cursor = '';" in block
+
+    def test_a_click_is_not_an_area(self):
+        # Taking the whole view on a stray click would be a picture nobody
+        # asked for, saved to their photos.
+        block = self.source()
+        block = block[block.index("function done(e)"):]
+        block = block[:block.index("\n  }")]
+        assert "span < 20" in block
+        assert "return;" in block

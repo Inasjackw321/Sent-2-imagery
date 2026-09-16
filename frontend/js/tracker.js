@@ -1497,9 +1497,10 @@ function buildDock() {
         // and this takes that view.
         el('button', {
           class: 'ao-find', id: 'trackerShot', type: 'button',
-          title: 'Save a picture of the marks in view — no warnings, watermarked',
-          onclick: saveShot,
+          title: 'Save a picture — pick the area it covers',
+          onclick: askWhere,
         }, 'Image')),
+      el('div', { class: 'ao-where', id: 'trackerWhere', hidden: true }),
       // One country's sky at a time. With warnings in Tatarstan and drones
       // over Volyn, "fit everything" is a view four thousand kilometres wide
       // in which neither is readable.
@@ -1600,16 +1601,132 @@ async function regionOutlines() {
  * was asked for and it is also what makes the picture readable: a warning
  * covers a tenth of the country and the arrows are the subject.
  *
- * The extent is whatever is on screen, so "an area" is a zoom and "the whole
- * country" is the Airspace button next to this one. One control rather than
- * two, and the framing is already a thing this panel can do.
+ * The area comes from the chooser -- see askWhere(). It used to be whatever
+ * happened to be on screen, which made taking a picture of somewhere else a
+ * matter of panning there first, losing the view you were watching.
  */
-async function saveShot() {
+/**
+ * Which area the picture covers.
+ *
+ * It used to be whatever was on screen and nothing else, so photographing
+ * somewhere you were not looking meant panning there, taking the picture,
+ * and panning back -- losing the view you were watching, which on a busy
+ * night is the thing you were actually doing.
+ *
+ * Four answers, and they are the four that get asked for: what I am looking
+ * at, one country, all of it, or a box I draw. The drawn box is the general
+ * case and the other three are there because they are what people want most
+ * of the time and dragging a rectangle round a country is tedious.
+ */
+function askWhere() {
+  const dock = $('#trackerWhere');
+  if (!dock || !map) return;
+  if (!dock.hidden) { closeWhere(); return; }
+
+  const pick = (label, hint, fn) => el('button', {
+    class: 'ao-where-pick', type: 'button', title: hint,
+    onclick: () => { closeWhere(); fn(); },
+  }, label);
+
+  dock.replaceChildren(
+    el('div', { class: 'ao-where-what' }, 'Picture of…'),
+    pick('This view', 'The area on screen now', () => saveShot()),
+    ...Object.entries(AIRSPACE).map(([key, what]) =>
+      pick(what.name, `All of ${what.name}`,
+        () => saveShot(L.latLngBounds(what.bounds)))),
+    pick('Everything', 'Every mark on the map, wherever it is',
+      () => saveShot(everything())),
+    pick('Draw an area…', 'Drag a box on the map', drawArea),
+  );
+  dock.hidden = false;
+}
+
+function closeWhere() {
+  const dock = $('#trackerWhere');
+  if (dock) dock.hidden = true;
+}
+
+/** A box round every mark drawn, however far apart they are. */
+function everything() {
+  const points = [];
+  for (const held of drawn.values()) {
+    const at = spotOf(held);
+    points.push([at.lat, at.lng]);
+    const box = held.area?.getBounds?.();
+    if (box?.isValid?.()) points.push(box.getSouthWest(), box.getNorthEast());
+  }
+  return points.length ? L.latLngBounds(points) : map.getBounds();
+}
+
+/**
+ * Drag a box on the map, and photograph what is in it.
+ *
+ * Leaflet's own drag is turned off for the duration -- otherwise the first
+ * pull pans the map instead of drawing anything, which reads as the mode not
+ * having started. Escape, or a right-click, leaves without taking anything.
+ */
+function drawArea() {
+  if (!map) return;
+  // The toast fades on its own timer; there is nothing to take back.
+  toast('Drag a box on the map — Escape to cancel', '');
+  const pane = map.getContainer();
+  pane.style.cursor = 'crosshair';
+  map.dragging.disable();
+  map.boxZoom.disable();
+
+  let from = null;
+  let band = null;
+
+  const stop = () => {
+    pane.style.cursor = '';
+    map.dragging.enable();
+    map.boxZoom.enable();
+    if (band) { band.remove(); band = null; }
+    map.off('mousedown', begin);
+    map.off('mousemove', pull);
+    map.off('mouseup', done);
+    map.off('contextmenu', cancel);
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { stop(); } };
+  const cancel = (e) => { L.DomEvent.stop(e); stop(); };
+
+  function begin(e) {
+    from = e.latlng;
+    band = L.rectangle(L.latLngBounds(from, from), {
+      pane: 'trackerArea',
+      color: '#9fd0ff', weight: 1.4, dashArray: '6 5',
+      fillColor: '#9fd0ff', fillOpacity: 0.08, interactive: false,
+    }).addTo(map);
+  }
+  function pull(e) {
+    if (from && band) band.setBounds(L.latLngBounds(from, e.latlng));
+  }
+  function done(e) {
+    if (!from) return;
+    const box = L.latLngBounds(from, e.latlng);
+    stop();
+    // A click rather than a drag: no area was chosen, so nothing is taken.
+    // Taking the whole view instead would be a picture nobody asked for.
+    const span = map.latLngToContainerPoint(box.getNorthEast())
+      .distanceTo(map.latLngToContainerPoint(box.getSouthWest()));
+    if (span < 20) { toast('No area drawn — nothing taken', 'warn'); return; }
+    saveShot(box);
+  }
+
+  map.on('mousedown', begin);
+  map.on('mousemove', pull);
+  map.on('mouseup', done);
+  map.on('contextmenu', cancel);
+  document.addEventListener('keydown', onKey);
+}
+
+async function saveShot(where) {
   const button = $('#trackerShot');
   if (!map || !button) return;
   button.disabled = true;
   try {
-    const view = map.getBounds();
+    const view = where ?? map.getBounds();
     const marks = [];
     for (const held of drawn.values()) {
       const event = held.event;
@@ -1627,7 +1744,7 @@ async function saveShot() {
       });
     }
     if (!marks.length) {
-      toast('Nothing in view to put in a picture', 'warn');
+      toast('Nothing in that area to put in a picture', 'warn');
       return;
     }
     const canvas = await drawShot({

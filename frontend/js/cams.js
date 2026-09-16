@@ -26,6 +26,7 @@ export const CAMS = [
     id: 'dubai-marina',
     name: 'Dubai Marina',
     place: 'Dubai, United Arab Emirates',
+    tz: 'Asia/Dubai',
     lat: 25.0805, lon: 55.1403,
     precision: 'district',
     src: 'https://ipcamlive.com/player/player.php?alias=60902b0a40947&mute=1',
@@ -35,6 +36,7 @@ export const CAMS = [
     id: 'moscow-progress-city',
     name: 'Progress City',
     place: 'Moscow, Russia',
+    tz: 'Europe/Moscow',
     lat: 55.7558, lon: 37.6173,
     precision: 'city',
     src: 'https://rtsp.me/embed/2EeYnYti/',
@@ -44,6 +46,7 @@ export const CAMS = [
     id: 'moscow-earthcam',
     name: 'Moscow HD',
     place: 'Moscow, Russia',
+    tz: 'Europe/Moscow',
     lat: 55.7520, lon: 37.6175,
     precision: 'city',
     // EarthCam serves a page, not a player, and refuses to be framed by
@@ -67,48 +70,56 @@ export const CAMS = [
   // than anything a frame can display, and need a player.
   {
     id: 'gibraltar-bay', name: 'Bay of Gibraltar', place: 'Gibraltar',
+    tz: 'Europe/Gibraltar',
     lat: 36.1390, lon: -5.3413, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1645095187/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'europa-point', name: 'Europa Point', place: 'Gibraltar',
+    tz: 'Europe/Gibraltar',
     lat: 36.1153, lon: -5.3495, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1644919197/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'tarifa-strait', name: 'Strait of Gibraltar', place: 'Tarifa, Spain',
+    tz: 'Europe/Madrid',
     lat: 36.0519, lon: -5.6481, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1499427214/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'hampton-roads', name: 'Hampton Roads', place: 'Norfolk, Virginia, USA',
+    tz: 'America/New_York',
     lat: 36.9626, lon: -76.2700, precision: 'given position',
     kind: 'hls', src: 'https://media-sfs4.vdotcameras.com/rtplive/HamptonRoads782/playlist_sfm4s.m3u8',
     host: 'vdotcameras.com',
   },
   {
     id: 'temryuk', name: 'Taman peninsula', place: 'Temryuk, Russia',
+    tz: 'Europe/Moscow',
     lat: 45.3281, lon: 37.2623, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793909890/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'oresund', name: 'Øresund', place: 'Denmark',
+    tz: 'Europe/Copenhagen',
     lat: 55.5753, lon: 12.8264, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1638710999/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'panama-canal', name: 'Panama Canal', place: 'Panama City, Panama',
+    tz: 'America/Panama',
     lat: 8.9966, lon: -79.5917, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1511843094/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'bosphorus', name: 'Bosphorus', place: 'Istanbul, Türkiye',
+    tz: 'Europe/Istanbul',
     lat: 41.0800, lon: 29.0517, precision: 'given position',
     kind: 'hls', src: 'https://601a43eea2819.streamlock.net/hls/268.stream/playlist.m3u8',
     host: 'streamlock.net',
@@ -123,18 +134,21 @@ export const CAMS = [
   // that owns it rather than the one it points at.
   {
     id: 'hrubieszow-border', name: 'Hrubieszów area', place: 'Lublin Voivodeship, Poland',
+    tz: 'Europe/Warsaw',
     lat: 51.1000, lon: 23.5000, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1670155377/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'zamosc', name: 'Zamość', place: 'Lublin Voivodeship, Poland',
+    tz: 'Europe/Warsaw',
     lat: 50.7166, lon: 23.2532, precision: 'given position',
     kind: 'still', src: 'https://imageserver.webcamera.pl/miniaturki/zamosc.jpg',
     host: 'webcamera.pl',
   },
   {
     id: 'lubaczow-border', name: 'Lubaczów area', place: 'Subcarpathian Voivodeship, Poland',
+    tz: 'Europe/Warsaw',
     lat: 50.1575, lon: 23.1216, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793906876/original.jpg',
     host: 'windy.com',
@@ -144,18 +158,21 @@ export const CAMS = [
   // so the position is exact and the label is a best reading of where that is.
   {
     id: 'kingisepp', name: 'Kingisepp', place: 'Leningrad Oblast, Russia',
+    tz: 'Europe/Moscow',
     lat: 59.3750, lon: 28.5965, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1744011569/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'lomonosov', name: 'Lomonosov', place: 'Gulf of Finland, Russia',
+    tz: 'Europe/Moscow',
     lat: 59.9104, lon: 29.7756, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1623730451/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'ndbc-44014', name: 'NOAA buoy 44014', place: '64 NM east of Virginia Beach, USA',
+    tz: 'America/New_York',
     lat: 36.6030, lon: -74.8370, precision: 'given position',
     // The buoy's own camera: a six-panel panorama of the horizon, remade
     // hourly. A stable URL, so it needs no date arithmetic.
@@ -164,6 +181,7 @@ export const CAMS = [
   },
   {
     id: 'kinmen-air', name: 'Kinmen air quality', place: 'Kinmen, Taiwan',
+    tz: 'Asia/Taipei',
     lat: 24.4321, lon: 118.3123, precision: 'given position',
     // The address carries the minute it was taken, so a fixed one is a
     // photograph of a moment rather than a camera. The template is filled in
@@ -180,12 +198,14 @@ export const CAMS = [
   // and about a dozen from the mainland opposite.
   {
     id: 'baengnyeong-east', name: 'Baengnyeong east', place: 'Ongjin, South Korea',
+    tz: 'Asia/Seoul',
     lat: 37.9553, lon: 124.7354, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793910208/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'baengnyeong-west', name: 'Baengnyeong west', place: 'Ongjin, South Korea',
+    tz: 'Asia/Seoul',
     lat: 37.9747, lon: 124.6189, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1762140071/original.jpg',
     host: 'windy.com',
@@ -196,24 +216,28 @@ export const CAMS = [
   // is pointed at.
   {
     id: 'azov-coast', name: 'Sea of Azov coast', place: 'Krasnodar Krai, Russia',
+    tz: 'Europe/Moscow',
     lat: 46.6647, lon: 37.7529, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1689404487/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'kursk', name: 'Kursk', place: 'Kursk Oblast, Russia',
+    tz: 'Europe/Moscow',
     lat: 51.7299, lon: 36.1327, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1610395347/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'volgograd', name: 'Volgograd', place: 'Volgograd Oblast, Russia',
+    tz: 'Europe/Volgograd',
     lat: 48.7552, lon: 44.5065, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1747888923/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'kaluga', name: 'Kaluga', place: 'Kaluga Oblast, Russia',
+    tz: 'Europe/Moscow',
     lat: 54.5293, lon: 36.2754, precision: 'given position',
     // A fixed filename that the host overwrites, so it refreshes like any
     // other snapshot rather than being a single frame.
@@ -222,72 +246,84 @@ export const CAMS = [
   },
   {
     id: 'kolomna', name: 'Kolomna', place: 'Moscow Oblast, Russia',
+    tz: 'Europe/Moscow',
     lat: 55.0958, lon: 38.7644, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793907411/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'moscow-oblast-nw', name: 'Moscow Oblast north-west', place: 'Russia',
+    tz: 'Europe/Moscow',
     lat: 56.0960, lon: 36.5520, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793903294/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'konakovo', name: 'Konakovo', place: 'Tver Oblast, Russia',
+    tz: 'Europe/Moscow',
     lat: 56.7205, lon: 36.7719, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1624789022/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'tver-west', name: 'Tver Oblast west', place: 'Russia',
+    tz: 'Europe/Moscow',
     lat: 56.2278, lon: 32.7650, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793868708/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'nizhny-novgorod', name: 'Nizhny Novgorod', place: 'Nizhny Novgorod Oblast, Russia',
+    tz: 'Europe/Moscow',
     lat: 56.2375, lon: 43.9596, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1731429998/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'udmurtia', name: 'Udmurtia', place: 'Russia',
+    tz: 'Europe/Samara',
     lat: 56.0600, lon: 53.0500, precision: 'given position',
     kind: 'still', src: 'https://pics.starvisor.net/galleries/orig/cap_azv.jpg',
     host: 'starvisor.net',
   },
   {
     id: 'tuapse', name: 'Tuapse', place: 'Krasnodar Krai, Russia',
+    tz: 'Europe/Moscow',
     lat: 44.0978, lon: 39.0534, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1457258031/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'krasnodar', name: 'Krasnodar', place: 'Krasnodar Krai, Russia',
+    tz: 'Europe/Moscow',
     lat: 45.0464, lon: 39.0281, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1746027972/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'pyatigorsk', name: 'Pyatigorsk', place: 'Stavropol Krai, Russia',
+    tz: 'Europe/Moscow',
     lat: 44.0332, lon: 43.0506, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793899677/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'saratov', name: 'Saratov', place: 'Saratov Oblast, Russia',
+    tz: 'Europe/Saratov',
     lat: 51.5276, lon: 46.0597, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793901790/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'moscow-southeast', name: 'Moscow south-east', place: 'Russia',
+    tz: 'Europe/Moscow',
     lat: 55.7074, lon: 37.7669, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1662277766/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'moscow-centre', name: 'Moscow centre', place: 'Russia',
+    tz: 'Europe/Moscow',
     lat: 55.7262, lon: 37.5636, precision: 'given position',
     // EarthCam's own video host rather than the page that frames it, so this
     // is a playlist for the player here instead of somebody else's embed.
@@ -297,18 +333,21 @@ export const CAMS = [
   },
   {
     id: 'east-sussex', name: 'East Sussex', place: 'England',
+    tz: 'Europe/London',
     lat: 50.9725, lon: 0.9677, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1474904378/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'odesa-coast', name: 'Odesa Oblast coast', place: 'Ukraine',
+    tz: 'Europe/Kyiv',
     lat: 46.4129, lon: 30.1209, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1668778986/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'tallinn-cam024', name: 'Tallinn junction camera', place: 'Tallinn, Estonia',
+    tz: 'Europe/Tallinn',
     lat: 59.4178, lon: 24.7648, precision: 'given position',
     // The city's traffic cameras publish at a fixed "last" address that is
     // overwritten in place, so unlike the Estonian road frames this replaced
@@ -321,6 +360,7 @@ export const CAMS = [
   // are pages built to be framed, so they are embeds rather than stills.
   {
     id: 'narva-town', name: 'Narva', place: 'Ida-Viru, Estonia',
+    tz: 'Europe/Tallinn',
     lat: 59.3934, lon: 28.1429, precision: 'given position',
     kind: 'embed',
     src: 'https://balticlivecam.com/cameras/estonia/narva/narva/?embed',
@@ -329,6 +369,7 @@ export const CAMS = [
   {
     id: 'narva-castle', name: 'Narva castle and Ivangorod fortress',
     place: 'Ida-Viru, Estonia',
+    tz: 'Europe/Tallinn',
     lat: 59.3934, lon: 28.1429, precision: 'given position',
     kind: 'embed',
     src: 'https://balticlivecam.com/cameras/estonia/narva/narva-castle-ivangorod-fortress/?embed',
@@ -336,12 +377,14 @@ export const CAMS = [
   },
   {
     id: 'german-bight', name: 'German Bight', place: 'North Sea',
+    tz: 'Europe/Berlin',
     lat: 54.1532, lon: 6.8243, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1759328266/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'brest-customs', name: 'Brest customs post', place: 'Brest Region, Belarus',
+    tz: 'Europe/Minsk',
     lat: 51.7530, lon: 23.5870, precision: 'given position',
     // The customs service's own border camera, on a fixed address it
     // overwrites, so it is asked for again like any other snapshot.
@@ -350,24 +393,28 @@ export const CAMS = [
   },
   {
     id: 'brest', name: 'Brest', place: 'Brest Region, Belarus',
+    tz: 'Europe/Minsk',
     lat: 52.0727, lon: 23.6549, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1662035053/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'himachal-pradesh', name: 'Kangra valley', place: 'Himachal Pradesh, India',
+    tz: 'Asia/Kolkata',
     lat: 32.0370, lon: 76.7076, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1707102692/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'riga', name: 'Riga', place: 'Latvia',
+    tz: 'Europe/Riga',
     lat: 56.9351, lon: 24.1160, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1716213770/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'klaipeda-road', name: 'Klaipėda region road', place: 'Lithuania',
+    tz: 'Europe/Vilnius',
     lat: 55.3016, lon: 21.3931, precision: 'given position',
     // The national road authority's camera service, which answers "last" with
     // whatever it most recently captured -- so a fixed address that stays
@@ -378,12 +425,14 @@ export const CAMS = [
   },
   {
     id: 'vistytis', name: 'Vištytis lake area', place: 'Kaliningrad Oblast, Russia',
+    tz: 'Europe/Kaliningrad',
     lat: 54.3625, lon: 22.7960, precision: 'given position',
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1610097666/original.jpg',
     host: 'windy.com',
   },
   {
     id: 'st-petersburg-north', name: 'St Petersburg north', place: 'Russia',
+    tz: 'Europe/Moscow',
     lat: 60.0040, lon: 30.4680, precision: 'given position',
     // VK's video_ext player is built to be framed, so this one is an embed
     // rather than a still or a playlist.
@@ -642,6 +691,53 @@ function datedSlot(cam, back = 0) {
   return shifted;
 }
 
+/**
+ * A clock time where the CAMERA is, not where you are.
+ *
+ * Asked for, and the right way round. A picture of a road in Vladivostok
+ * stamped with London's clock says nothing a viewer can use: whether it is
+ * dark in the picture because it is night THERE is the first question
+ * anybody asks of a webcam, and the viewer's own time cannot answer it.
+ *
+ * Every camera carries an IANA zone rather than an offset, so the answer
+ * stays right across daylight saving and across a region changing its mind
+ * -- Volgograd went back to Moscow time in 2020 and Saratov did not.
+ *
+ * A camera with no zone falls back to the viewer's, and says so, because a
+ * time labelled as somewhere it is not is worse than an honest local one.
+ */
+export function clockAt(cam, when = new Date()) {
+  if (!cam?.tz) {
+    return { time: when.toLocaleTimeString(), where: 'your time', local: false };
+  }
+  try {
+    return {
+      time: new Intl.DateTimeFormat([], {
+        timeZone: cam.tz, hour: '2-digit', minute: '2-digit',
+        second: '2-digit', hour12: false,
+      }).format(when),
+      where: zoneLabel(cam.tz, when),
+      local: true,
+    };
+  } catch {
+    // An unknown zone name throws rather than guessing, which is the right
+    // behaviour and a terrible thing to let reach a panel.
+    return { time: when.toLocaleTimeString(), where: 'your time', local: false };
+  }
+}
+
+/** "MSK", or "UTC+3" where the zone has no short name. */
+function zoneLabel(tz, when) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, timeZoneName: 'short',
+    }).formatToParts(when);
+    const name = parts.find((part) => part.type === 'timeZoneName')?.value;
+    if (name) return name.replace('GMT', 'UTC');
+  } catch { /* falls through to the zone's own name */ }
+  return tz.split('/').pop().replace(/_/g, ' ');
+}
+
 /** The real instant a slot was captured, for showing to the viewer. */
 function datedAt(cam, back = 0) {
   return new Date(datedSlot(cam, back).getTime() - (cam.tzOffsetMinutes ?? 0) * 60000);
@@ -682,13 +778,13 @@ function dated(cam) {
     img.addEventListener('load', () => {
       image.replaceChildren(img);
       waiting.remove();
-      // The slot's own instant, shown in the viewer's timezone -- so the
-      // clock time on screen is one they can compare against their own.
+      // The slot's own instant, on the camera's clock. How old it is stays
+      // in plain minutes: "twenty minutes ago" needs no timezone at all.
       const when = datedAt(cam, back);
       const old = Math.round((Date.now() - when.getTime()) / 60000);
-      stamp.textContent = old < (cam.stepMinutes ?? 10)
-        ? when.toLocaleTimeString()
-        : `${when.toLocaleTimeString()} · ${old} min old`;
+      const said = clockAt(cam, when);
+      stamp.textContent = `${said.time} ${said.where}`
+        + (old < (cam.stepMinutes ?? 10) ? '' : ` · ${old} min old`);
     }, { once: true });
     img.addEventListener('error', () => {
       back += 1;
@@ -738,7 +834,10 @@ function snapshot(cam) {
   };
   image.addEventListener('load', () => {
     waiting.remove();
-    stamp.textContent = new Date().toLocaleTimeString();
+    // When the frame was fetched, on the camera's clock. A still has no
+    // stamp of its own, so this is the honest reading: "as of now, there".
+    const said = clockAt(cam);
+    stamp.textContent = `${said.time} ${said.where}`;
   });
   image.addEventListener('error', () => {
     waiting.replaceChildren(

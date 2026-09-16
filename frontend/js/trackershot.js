@@ -78,8 +78,15 @@ const CREDIT = 'Data supplied by NEPTUN — neptun.in.ua';
 // on an empty field is a dot, and an arrow inside Poltava oblast is a report.
 const SKY_TOP = '#141926';
 const SKY_BOTTOM = '#080a0f';
-const BORDER = 'rgba(150, 180, 220, 0.38)';
-const LAND = 'rgba(120, 160, 210, 0.055)';
+// Brighter and heavier again. At 38% on a dark ground they were visible on
+// the screen this was drawn on and faint to everybody else -- and the
+// borders are not decoration here: they are the only thing telling a viewer
+// which country, and which province, a mark is over.
+const BORDER = 'rgba(178, 208, 245, 0.72)';
+const LAND = 'rgba(120, 160, 210, 0.08)';
+// A dark line under each border, so that where two provinces meet the pair
+// reads as an edge rather than as one pale line of uncertain thickness.
+const BORDER_SHADOW = 'rgba(0, 0, 0, 0.55)';
 const LABEL = 'rgba(200, 218, 240, 0.55)';
 
 // The bands top and bottom. Text over a map needs something behind it or it
@@ -299,23 +306,37 @@ function bandSizes(frame, marks) {
 }
 
 function drawLand(ctx, frame, outlines) {
-  ctx.lineWidth = 1.1;
-  ctx.strokeStyle = BORDER;
-  ctx.fillStyle = LAND;
   ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  // Each ring walked once and kept, because it is drawn three times: the
+  // land, then a dark line under the border, then the border itself. Three
+  // passes over one path rather than three walks of the same coordinates.
+  const paths = [];
   for (const outline of outlines ?? []) {
     walkRings(outline.shape, (ring) => {
-      ctx.beginPath();
+      const path = new Path2D();
       ring.forEach(([lon, lat], i) => {
         const [x, y] = frame.at(lat, lon);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        if (i === 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
       });
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      path.closePath();
+      paths.push(path);
     });
   }
+
+  ctx.fillStyle = LAND;
+  for (const path of paths) ctx.fill(path);
+
+  // The shadow first and wider, so the bright line sits on top of it.
+  ctx.strokeStyle = BORDER_SHADOW;
+  ctx.lineWidth = 3.2;
+  for (const path of paths) ctx.stroke(path);
+
+  ctx.strokeStyle = BORDER;
+  ctx.lineWidth = 1.5;
+  for (const path of paths) ctx.stroke(path);
 }
 
 /**

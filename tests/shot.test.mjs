@@ -397,3 +397,37 @@ test('a mark is drawn on something that separates it from the ground', () => {
   assert.match(block.slice(0, block.indexOf('\n}')), /ctx\.arc\(x, y, size/,
     'nothing is drawn behind a mark');
 });
+
+test('the borders are drawn strongly enough to see', () => {
+  // They are not decoration: they are the only thing telling a viewer which
+  // country, and which province, a mark is over. At 38% on a dark ground
+  // they were visible on the screen this was drawn on and faint everywhere
+  // else.
+  const alpha = (name) => {
+    const line = SOURCE.split('\n').find((l) => l.startsWith(`const ${name} = `));
+    assert.ok(line, `${name} is gone`);
+    const nums = line.match(/[\d.]+/g);
+    return Number(nums[nums.length - 1]);
+  };
+  assert.ok(alpha('BORDER') >= 0.6, `borders at ${alpha('BORDER')}`);
+  assert.ok(alpha('LAND') > 0, 'the land has no fill at all');
+});
+
+test('a border is drawn over its own shadow, not under it', () => {
+  // The dark line goes down first and wider; the bright one sits on it. The
+  // other order paints the shadow over the border and hides it.
+  const block = SOURCE.slice(SOURCE.indexOf('function drawLand'));
+  const body = block.slice(0, block.indexOf('\n}'));
+  assert.ok(body.indexOf('BORDER_SHADOW') < body.indexOf('ctx.strokeStyle = BORDER;'),
+    'the shadow is painted over the border');
+  const shadowWidth = /lineWidth = ([\d.]+);\n  for \(const path of paths\) ctx\.stroke/
+    .exec(body.slice(body.indexOf('BORDER_SHADOW')));
+  assert.ok(Number(shadowWidth[1]) > 1.5, 'the shadow is no wider than the line');
+});
+
+test('the land is filled before anything is stroked over it', () => {
+  const block = SOURCE.slice(SOURCE.indexOf('function drawLand'));
+  const body = block.slice(0, block.indexOf('\n}'));
+  assert.ok(body.indexOf('ctx.fillStyle = LAND;') < body.indexOf('BORDER_SHADOW'),
+    'a province fill is painted over its neighbour\'s border');
+});
