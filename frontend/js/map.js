@@ -18,6 +18,7 @@ import { initCopernicus } from './copernicus.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
+import { initNotams } from './notams.js';
 import { initTracker } from './tracker.js';
 import { initDayNight, sunBlock } from './daynight.js';
 import { BASEMAPS, DEFAULT_BASEMAP, refusal, saidNo } from './tiles.js';
@@ -153,6 +154,7 @@ export function initMap() {
   initMTG(map);
   initCopernicus(map);
   initTracker(map);
+  initNotams(map);
   initVessels(map);
   initSeismic(map);
   initCams(map);

@@ -455,6 +455,82 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   font-size: 10px; line-height: 1.45; color: var(--ink-faint);
 }
 
+/* ── NOTAMs: which airspace is closed ───────────────────────── */
+
+.notam-dock { display: grid; gap: 8px; justify-items: stretch; }
+.notam-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.notam-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+/* Cool blue, and deliberately not a colour the air tracker uses: amber is a
+   warning, purple a missile, yellow a drone. A closure is a rule rather than
+   a threat and must not read as one. */
+.notam-toggle.is-on {
+  color: #bfe6ff; border-color: rgba(90,200,250,.6); background: rgba(8,38,56,.85);
+  font-weight: 600;
+}
+.notam-mark { filter: grayscale(1); opacity: .6; font-size: 13px; }
+.notam-toggle.is-on .notam-mark { filter: none; opacity: 1; }
+.notam-body {
+  padding: 10px 11px; border-radius: 10px; font-size: 11.5px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+/* The paste box is the feature, so it is the first and largest thing in the
+   panel rather than a field tucked under a heading. */
+.notam-paste {
+  display: block; width: 100%; box-sizing: border-box; resize: vertical;
+  padding: 7px 8px; margin-bottom: 7px; border-radius: 8px;
+  font: 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-height: 62px; white-space: pre; overflow-x: auto;
+  color: var(--ink); background: rgba(0,0,0,.35);
+  border: 1px solid var(--line);
+}
+.notam-paste:focus {
+  outline: none; border-color: rgba(90,200,250,.65);
+  background: rgba(0,0,0,.5);
+}
+.notam-paste::placeholder { color: var(--ink-faint); }
+.notam-actions { display: flex; gap: 6px; margin-bottom: 8px; }
+.notam-actions button, .notam-file {
+  flex: 1 1 0; text-align: center; cursor: pointer; font: inherit;
+  font-size: 10.5px; padding: 5px 4px; border-radius: 7px;
+  white-space: nowrap;
+  color: var(--ink-dim); background: rgba(255,255,255,.04);
+  border: 1px solid var(--line);
+}
+.notam-actions button:hover, .notam-file:hover {
+  color: var(--ink); border-color: #3a4a66;
+}
+.notam-file input { display: none; }
+.notam-count { color: var(--ink); line-height: 1.4; }
+.notam-list { display: grid; gap: 3px; margin-top: 8px; }
+.notam-row {
+  display: flex; gap: 8px; justify-content: space-between;
+  font-size: 10.5px; color: var(--ink-faint); min-width: 0;
+}
+.notam-id { color: #bfe6ff; flex: 0 0 auto; }
+.notam-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notam-where {
+  margin-top: 8px; font-size: 10px; line-height: 1.5; color: var(--ink-faint);
+}
+.notam-where a { color: #bfe6ff; text-decoration: none; }
+.notam-where a:hover { text-decoration: underline; }
+.notam-note {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 10px; line-height: 1.4; color: var(--ink-faint);
+}
+.notam-pop { max-width: 260px; }
+.notam-pop h4 { margin: 0 0 5px; font-size: 12px; color: var(--ink); }
+.notam-pop p { margin: 0 0 4px; font-size: 10.5px; color: var(--ink-dim); }
+.notam-pop blockquote {
+  margin: 6px 0; padding-left: 7px; font-size: 10px; line-height: 1.45;
+  color: var(--ink-faint); border-left: 2px solid rgba(90,200,250,.5);
+}
+
 /* ── NASA FIRMS active fires ────────────────────────────────── */
 
 .fire-dock { display: grid; gap: 8px; justify-items: stretch; }

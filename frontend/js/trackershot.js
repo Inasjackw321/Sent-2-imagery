@@ -22,7 +22,24 @@ const TALLEST = 2000;
 // The glyphs are drawn from an 18-unit box. On a 1600-pixel picture the
 // 24-pixel screen size is a speck, so they are drawn larger -- still small
 // enough that forty of them over a country do not merge.
-const MARK_PX = 44;
+//
+// Twenty-eight rather than forty-four. Forty-four was chosen against a
+// picture of a whole country; once the frame tightens to what is actually in
+// the air (see framing below) the same glyph covers far more ground, and a
+// mark wide enough to cover the town it is over is a mark that has stopped
+// saying where it is.
+const MARK_PX = 28;
+
+// How much room to leave around the marks, as a fraction of their spread.
+const AIR = 0.18;
+
+// And the least ground a picture covers, in degrees of latitude.
+//
+// Without a floor, two drones a mile apart would fill the frame at a
+// thousandth of a degree across -- a picture of nothing, at enormous
+// magnification, with no landmark in it to say where it was taken. About
+// eighty kilometres, which holds a couple of districts.
+const LEAST_SPAN = 0.75;
 
 // What the picture says about whose data it is.
 //
@@ -55,6 +72,54 @@ function project(lat, lon) {
  * picture ends up with the borders in one projection and the marks in
  * another, which looks like the marks being in the wrong place.
  */
+/**
+ * Pull the frame in to what is actually in the air.
+ *
+ * The picture used to be framed by the map view, which is how it was asked
+ * for -- "an image of an area or the whole country". But the view is chosen
+ * for looking at a map with panels down the side, and the marks in it are
+ * usually clustered in one part of it, so most of the picture was empty
+ * ground and the thing being sent was a few specks in a lot of dark.
+ *
+ * So the frame closes on the marks with room around them, never growing
+ * past the view it was asked for and never shrinking past LEAST_SPAN. Both
+ * limits matter: the first keeps "the whole country" meaning the country
+ * when that is what is on screen, and the second stops two nearby marks
+ * producing a picture of nothing at huge magnification.
+ */
+export function closeIn(bounds, marks) {
+  if (!marks?.length) return bounds;
+  let north = -90, south = 90, west = 180, east = -180;
+  for (const mark of marks) {
+    north = Math.max(north, mark.lat);
+    south = Math.min(south, mark.lat);
+    west = Math.min(west, mark.lon);
+    east = Math.max(east, mark.lon);
+  }
+  // Room around them, per axis. Measuring it off the bigger of the two
+  // spreads instead gave a group spread across a country a margin of a
+  // whole degree in BOTH directions, which is most of the crop given back
+  // -- and the floor below already covers the case that was meant to
+  // protect against.
+  const tall = (north - south) * AIR;
+  const wide = (east - west) * AIR;
+  north += tall; south -= tall; west -= wide; east += wide;
+
+  // Never smaller than the floor, grown about the middle.
+  const short = LEAST_SPAN - (north - south);
+  if (short > 0) { north += short / 2; south -= short / 2; }
+  const narrow = LEAST_SPAN - (east - west);
+  if (narrow > 0) { east += narrow / 2; west -= narrow / 2; }
+
+  // And never wider than what was asked for.
+  return {
+    north: Math.min(bounds.north, north),
+    south: Math.max(bounds.south, south),
+    west: Math.max(bounds.west, west),
+    east: Math.min(bounds.east, east),
+  };
+}
+
 function framing(bounds) {
   const [x0, y0] = project(bounds.north, bounds.west);
   const [x1, y1] = project(bounds.south, bounds.east);
@@ -107,7 +172,7 @@ function walkRings(shape, each) {
  * and leaves them out, because the caller is the thing that knows.
  */
 export async function drawShot({ bounds, marks, outlines, credit }) {
-  const frame = framing(bounds);
+  const frame = framing(closeIn(bounds, marks));
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
