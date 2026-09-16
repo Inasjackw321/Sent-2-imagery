@@ -3936,3 +3936,70 @@ class TestPickingWhatThePictureCovers:
         block = block[:block.index("\n  }")]
         assert "span < 20" in block
         assert "return;" in block
+
+
+class TestAskingForOneCountry:
+    """"When I ask for Russia, it should be this region with all the alerts."
+
+    The country was a fixed box and Russia's runs to the Urals, so choosing
+    it put two warnings near Kursk in the corner of three thousand kilometres
+    of empty ground. It fits what is actually there now.
+    """
+
+    def source(self, name="frontend/js/tracker.js"):
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / name).read_text(encoding="utf-8")
+
+    def test_the_backend_says_which_border_is_whose(self):
+        """The page cannot work it out and this is the only place that can.
+
+        NEPTUN's file IS Ukraine's provinces, so everything in it is
+        Ukrainian by definition rather than by guess.
+        """
+        text = self.source("backend/tracker.py")
+        block = text[text.index("def outlines()"):]
+        block = block[:block.index("\ndef ")]
+        assert '"in": where' in block
+        assert 'keep(name, shape, "ua")' in block
+        # And what the gazetteer learned is "elsewhere" rather than "ru": it
+        # will hand back a Belarusian oblast just as readily.
+        assert 'keep(name, shape, "elsewhere")' in block
+
+    def test_the_view_fits_the_marks_rather_than_the_box(self):
+        block = self.source()
+        block = block[block.index("function areaOf(which)"):]
+        block = block[:block.index("\n}")]
+        assert "belongsTo(held, which, box)" in block
+        assert "L.latLngBounds(points)" in block
+        # Including the shaded provinces, which reach past their centroids.
+        assert "held.area?.getBounds?.()" in block
+
+    def test_an_empty_country_still_answers(self):
+        # Flying to an empty rectangle is at least an answer to where the
+        # country is, and the panel says that is what happened.
+        block = self.source()
+        block = block[block.index("function areaOf(which)"):]
+        block = block[:block.index("\n}")]
+        assert "return { bounds: box, found: 0 };" in block
+        said = self.source()
+        said = said[said.index("async function showAirspace"):]
+        said = said[:said.index("\n}")]
+        assert "if (!got.found)" in said
+        assert "toast(" in said
+
+    def test_the_picture_fits_the_same_way(self):
+        # Otherwise the map and the picture disagree about what "Russia"
+        # means, which is worse than either answer on its own.
+        block = self.source()
+        block = block[block.index("function askWhere()"):]
+        block = block[:block.index("\nfunction closeWhere")]
+        assert "areaOf(key)?.bounds" in block
+        assert "await regionOutlines();" in block
+
+    def test_not_knowing_the_border_does_not_empty_the_map(self):
+        # Until the outlines arrive every mark is in the box's country, which
+        # is what the view did before any of this.
+        block = self.source()
+        block = block[block.index("function belongsTo"):]
+        block = block[:block.index("\n}")]
+        assert "if (ua === null) return true;" in block

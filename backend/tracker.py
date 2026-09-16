@@ -1707,18 +1707,32 @@ def outlines() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     already: list[Any] = []
 
-    def keep(name: str, shape: Any) -> None:
+    def keep(name: str, shape: Any, where: str) -> None:
         if not shape or len(out) >= MOST_OUTLINES:
             return
         if any(shape is seen for seen in already):
             return
         already.append(shape)
-        out.append({"name": name, "shape": shape})
+        # Which country's border this is part of.
+        #
+        # The page needs it to answer "show me Russia", and this is the only
+        # place that knows. Nothing in a report says which country a place is
+        # in: the source's own region names the CHANNEL's beat, not the
+        # mark's, and Belgorod and Kharkiv sit a hundred kilometres apart
+        # inside each other's bounding boxes -- so no box can tell them
+        # apart. A real boundary can, and NEPTUN publish Ukraine's.
+        out.append({"name": name, "shape": shape, "in": where})
 
+    # NEPTUN's file IS Ukraine's provinces -- that is what it is a file of --
+    # so everything in it is Ukrainian by definition rather than by guess.
     for name, shape in neptun.shapes().items():
-        keep(name, shape)
+        keep(name, shape, "ua")
+    # And these are learned one at a time as warnings are drawn over them.
+    # Mostly Russia, and "elsewhere" rather than "ru" because the gazetteer
+    # will hand back a Belarusian oblast just as readily and calling that
+    # Russia would be a claim this app has no business making.
     for name, shape in gazetteer.outlines():
-        keep(name, shape)
+        keep(name, shape, "elsewhere")
     return out
 
 

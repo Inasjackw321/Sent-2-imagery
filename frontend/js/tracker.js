@@ -864,21 +864,137 @@ function toggleGroup(key) {
   paintDock();
 }
 
-/** Put one country's airspace on the screen, marks and all. */
-function showAirspace(which) {
-  const want = AIRSPACE[which];
-  if (!want || !map) return;
-  const bounds = L.latLngBounds(want.bounds);
-  // Extended to take in anything drawn inside it that reaches past the box --
-  // an oblast outline on the border, a mark just outside. The box is a frame,
-  // not a filter: nothing is hidden, the view is just put where the country is.
-  for (const held of drawn.values()) {
-    const at = spotOf(held);
-    if (bounds.contains(at) && held.area?.getBounds) {
-      bounds.extend(held.area.getBounds());
+/**
+ * Which country a point is in, as far as this app can tell.
+ *
+ * Only Ukraine is answered exactly, and that is enough for the question
+ * being asked. NEPTUN publish Ukraine's provinces, so a point either falls
+ * inside one of them or it does not; everything else in view is "not
+ * Ukraine", which is what "show me Russia" actually needs.
+ *
+ * No bounding box can do this. Belgorod sits at 50.6N 36.6E and Kharkiv at
+ * 50.0N 36.2E -- a hundred kilometres apart, each inside any box drawn round
+ * the other's country. Asking whether a point is inside Ukraine's real
+ * border is the only test that separates them.
+ */
+export function inUkraine(at) {
+  if (!ukraine?.length) return null;   // Not known yet: caller decides.
+  for (const ring of ukraine) {
+    if (ringHolds(ring, at.lng, at.lat)) return true;
+  }
+  return false;
+}
+
+/** Ray casting, in degrees. Good enough: a border is not a hair's breadth. */
+export function ringHolds(ring, x, y) {
+  let within = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      within = !within;
     }
   }
-  map.flyToBounds(bounds, { duration: 0.7 });
+  return within;
+}
+
+/** Ukraine's provinces, flattened to rings, from the outlines the app holds. */
+export function learnUkraine(outlines) {
+  const rings = [];
+  for (const outline of outlines ?? []) {
+    if (outline.in !== 'ua') continue;
+    const shape = outline.shape;
+    const parts = shape?.type === 'Polygon' ? shape.coordinates
+      : shape?.type === 'MultiPolygon' ? shape.coordinates.flat() : [];
+    // Every ring, holes included, and each tested on its own. A hole in a
+    // province is an enclave, and an enclave inside Ukraine is still
+    // Ukraine -- so counting it as inside is the right answer here, not a
+    // corner cut.
+    for (const ring of parts) {
+      if (ring?.length >= 4) rings.push(ring);
+    }
+  }
+  ukraine = rings;
+  return rings;
+}
+
+/** Whether a drawn record belongs to the country asked for. */
+function belongsTo(held, which, box) {
+  const at = spotOf(held);
+  if (!box.contains(at)) return false;
+  const ua = inUkraine(at);
+  // Nothing learned yet -- the box is all there is, and it is better than
+  // refusing to frame anything.
+  if (ua === null) return true;
+  return which === 'ua' ? ua : !ua;
+}
+
+/**
+ * The area one country's marks actually occupy.
+ *
+ * Asked for: "when I ask for Russia, it should be this region with all the
+ * alerts present". The box was a frame rather than a fit, and Russia's runs
+ * to the Urals -- so choosing it put two warnings near Kursk in the corner
+ * of three thousand kilometres of empty ground.
+ *
+ * Falls back to the box when that country has nothing on the map, because
+ * flying to an empty rectangle is at least an answer to where the country
+ * is; the caller says so.
+ */
+function areaOf(which) {
+  const want = AIRSPACE[which];
+  if (!want || !map) return null;
+  const box = L.latLngBounds(want.bounds);
+  const points = [];
+  for (const held of drawn.values()) {
+    if (!belongsTo(held, which, box)) continue;
+    const at = spotOf(held);
+    points.push([at.lat, at.lng]);
+    // A shaded province reaches well past the point it is filed at.
+    const edge = held.area?.getBounds?.();
+    if (edge?.isValid?.()) points.push(edge.getSouthWest(), edge.getNorthEast());
+  }
+  if (!points.length) return { bounds: box, found: 0 };
+  return { bounds: atLeast(L.latLngBounds(points).pad(0.08)),
+           found: points.length };
+}
+
+// The least ground a country's view covers, in degrees of latitude.
+//
+// Half a degree, about fifty-five kilometres. Without it, a country with one
+// mark in it fits to a single point and the map flies to a scale bar reading
+// ten metres -- a rooftop, with no border, no coast and no town in view to
+// say which country you asked for. The same lesson the exported picture
+// learnt, for the same reason.
+const LEAST_VIEW = 0.5;
+
+function atLeast(bounds) {
+  const south = bounds.getSouth();
+  const north = bounds.getNorth();
+  const west = bounds.getWest();
+  const east = bounds.getEast();
+  const tall = Math.max(0, LEAST_VIEW - (north - south)) / 2;
+  const wide = Math.max(0, LEAST_VIEW - (east - west)) / 2;
+  if (!tall && !wide) return bounds;
+  return L.latLngBounds(
+    [south - tall, west - wide], [north + tall, east + wide]);
+}
+
+/** Put one country's airspace on the screen, fitted to what is in it. */
+async function showAirspace(which) {
+  const want = AIRSPACE[which];
+  if (!want || !map) return;
+  // The border is needed to tell one country's marks from the other's, and
+  // it is fetched once and kept. A failure is not fatal: areaOf falls back
+  // to the box, which is where the view used to go every time anyway.
+  await regionOutlines();
+  const got = areaOf(which);
+  if (!got) return;
+  // Capped, so one mark in a quiet country does not become a street map.
+  map.flyToBounds(got.bounds, { duration: 0.7, maxZoom: 9 });
+  if (!got.found) {
+    toast(`Nothing over ${want.name} right now`, 'warn');
+  }
 }
 
 /**
@@ -1573,6 +1689,8 @@ function toggle() {
 // The province borders, fetched once and kept. They change about never and
 // they are a few hundred kilobytes, which is why they are not in the feed.
 let borders = null;
+// Ukraine's provinces as flat rings, learned from those borders once.
+let ukraine = null;
 let bordersFailed = '';
 
 async function regionOutlines() {
@@ -1580,6 +1698,7 @@ async function regionOutlines() {
   try {
     const got = await api.trackerOutlines();
     borders = got.outlines ?? [];
+    learnUkraine(borders);
     bordersFailed = '';
   } catch (err) {
     // A picture with no borders is still a picture of the marks, so this
@@ -1632,8 +1751,12 @@ function askWhere() {
     el('div', { class: 'ao-where-what' }, 'Picture of…'),
     pick('This view', 'The area on screen now', () => saveShot()),
     ...Object.entries(AIRSPACE).map(([key, what]) =>
-      pick(what.name, `All of ${what.name}`,
-        () => saveShot(L.latLngBounds(what.bounds)))),
+      pick(what.name, `Everything over ${what.name}`, async () => {
+        // The same fit the Airspace button uses, so the picture covers what
+        // the map would show rather than a rectangle round a country.
+        await regionOutlines();
+        saveShot(areaOf(key)?.bounds);
+      })),
     pick('Everything', 'Every mark on the map, wherever it is',
       () => saveShot(everything())),
     pick('Draw an area…', 'Drag a box on the map', drawArea),
