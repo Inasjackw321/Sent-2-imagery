@@ -1560,8 +1560,15 @@ async function saveShot() {
       if (event.kind === 'alert') continue;
       const at = held.marker.getLatLng();
       if (!view.contains(at)) continue;
-      const parts = glyphParts(event, colourOf(event), positionOf(event).facing);
-      marks.push({ lat: at.lat, lon: at.lng, ...parts });
+      const colour = colourOf(event);
+      const parts = glyphParts(event, colour, positionOf(event).facing);
+      // The colour and the word for it, so the picture can carry a key.
+      // Without them a viewer has a yellow dot and a purple one and no way
+      // to learn that one is a drone and the other a missile.
+      marks.push({
+        lat: at.lat, lon: at.lng, ...parts, colour,
+        label: feed?.kinds?.[event.kind]?.label ?? 'Unidentified',
+      });
     }
     if (!marks.length) {
       toast('Nothing in view to put in a picture', 'warn');
@@ -1575,6 +1582,7 @@ async function saveShot() {
       marks,
       outlines: await regionOutlines(),
       credit: feed?.attribution?.picture ?? 'Data supplied by NEPTUN — neptun.in.ua',
+      at: new Date(),
     });
     const blob = await new Promise((done) => canvas.toBlob(done, 'image/png'));
     if (!blob) {

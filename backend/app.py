@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, copernicus, fires, gazetteer, mtg, notams,
+    aisstream, composite, config, copernicus, fires, gazetteer, mtg,
     ollama, passes, seismic, service, stac, tracker, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
@@ -325,30 +325,6 @@ def tracker_events() -> dict:
         answer = tracker.current()
         answer["state"] = str(exc)
         return answer
-
-
-@app.post("/api/notams/read")
-def read_notams(body: dict = Body(...)) -> dict:
-    """Plot the NOTAMs in a pasted blob. Nothing is fetched; nothing is kept.
-
-    The layer used to ask the FAA. Their documented API wants a key, their
-    search endpoint answered every request with a 403, and every dependable
-    worldwide service wants a contract -- so it asks the person instead, who
-    can open any of those in their own browser where they work perfectly
-    well. See backend/notams.py.
-    """
-    if config.DEMO_MODE and not str(body.get("text") or "").strip():
-        return notams.demo()
-    try:
-        return notams.read_text(body.get("text"))
-    except notams.NotamError as exc:
-        raise _fail(exc)
-
-
-@app.get("/api/notams/demo")
-def notams_demo() -> dict:
-    """An invented set, so the layer can be seen before anything is pasted."""
-    return notams.demo()
 
 
 @app.get("/api/tracker/outlines")

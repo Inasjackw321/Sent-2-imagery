@@ -69,8 +69,4 @@ export const api = {
   // The province borders, for drawing a picture with no map tiles in it.
   // Asked for once, when somebody exports one -- see trackershot.js.
   trackerOutlines: () => request('/api/tracker/outlines', { method: 'GET' }),
-  // NOTAMs are read from text somebody pasted rather than fetched from
-  // anywhere -- see backend/notams.py for why there is no live source.
-  readNotams: (text) => request('/api/notams/read', { body: { text } }),
-  notamsDemo: () => request('/api/notams/demo', { method: 'GET' }),
 };

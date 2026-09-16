@@ -3160,7 +3160,7 @@ class TestTheDrawingMoves:
         """
         shot = (pathlib.Path(__file__).resolve().parent.parent
                 / "frontend" / "js" / "trackershot.js").read_text(encoding="utf-8")
-        block = shot[shot.index("function stamp("):]
+        block = shot[shot.index("function drawFurniture("):]
         block = block[:block.index("\n}")]
         assert "if (!credit) return;" not in block
         assert "credit || CREDIT" in block
@@ -3173,7 +3173,10 @@ class TestTheDrawingMoves:
         # one of them was changed.
         text = self.source()
         assert "export function glyphParts" in text
-        assert "glyphParts(event, colourOf(event)" in text
+        # The picture asks the same function the map does for its artwork,
+        # rather than keeping a second copy of a dozen paths.
+        assert "glyphParts(event, colour" in text
+        assert "colourOf(event)" in text
         shot = (pathlib.Path(__file__).resolve().parent.parent
                 / "frontend" / "js" / "trackershot.js").read_text(encoding="utf-8")
         assert "part.body" in shot
