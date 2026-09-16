@@ -93,7 +93,11 @@ export function initTracker(leafletMap) {
   // whole oblast drawn in the marker pane would sit on top of the arrows
   // crossing it, and swallow their clicks with them.
   map.createPane('trackerArea').style.zIndex = 428;
-  map.getPane('trackerArea').style.pointerEvents = 'none';
+  // Clicks reach the shaded provinces, because a shaded province IS the
+  // warning now rather than a wash behind a triangle that carried the popup.
+  // The pane was deaf to the mouse and the popup bound to the region simply
+  // never opened -- a warning you could see and could not ask about.
+  map.getPane('trackerArea').style.pointerEvents = 'auto';
   // An explicit SVG renderer, because the map is built with preferCanvas and
   // a canvas-rendered circle is pixels: it has no element, so className is
   // ignored and the CSS that makes an alert pulse never applies to anything.
@@ -165,12 +169,20 @@ const look = (event) => feed?.kinds?.[event.kind] ?? {};
 // A warning that does not say what it is about keeps the neutral amber. That
 // is a real third state, and inventing a cause for it would be worse than the
 // colour it started with.
+// A warning is yellow or red and nothing else.
+//
+// Red for a missile, yellow for everything else -- including a warning whose
+// cause nobody stated, which used to get the kind's own amber and made a
+// third colour that meant "unspecified". Three shades of warning is a legend
+// nobody reads; two is a thing you can act on from across a room, and
+// defaulting the unknown to the lesser of them is the honest way round.
 const WARNING_COLOURS = { drone: '#ffd400', missile: '#ff3b30' };
+const WARNING_DEFAULT = '#ffd400';
 
 function colourOf(event) {
   const base = look(event).colour ?? '#ff8a3b';
-  if (event.kind !== 'alert' || !event.cause) return base;
-  return WARNING_COLOURS[event.cause] ?? base;
+  if (event.kind !== 'alert') return base;
+  return WARNING_COLOURS[event.cause] ?? WARNING_DEFAULT;
 }
 const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
 
@@ -722,7 +734,9 @@ function areaFor(event) {
   return L.geoJSON({ type: 'Feature', geometry: event.shape, properties: {} }, {
     pane: 'trackerArea',
     renderer: areaInk,
-    interactive: false,
+    // Clickable, because the shaded province IS the warning now -- there is
+    // no triangle beside it to carry the popup any more.
+    interactive: true,
     className: `ao-area ao-area-alert`
       + (event.region_scope ? ` is-region is-${event.region_scope}` : ''),
     style: {
@@ -859,7 +873,7 @@ function showAirspace(which) {
   // an oblast outline on the border, a mark just outside. The box is a frame,
   // not a filter: nothing is hidden, the view is just put where the country is.
   for (const held of drawn.values()) {
-    const at = held.marker.getLatLng();
+    const at = spotOf(held);
     if (bounds.contains(at) && held.area?.getBounds) {
       bounds.extend(held.area.getBounds());
     }
@@ -867,10 +881,23 @@ function showAirspace(which) {
   map.flyToBounds(bounds, { duration: 0.7 });
 }
 
+/**
+ * Where a record sits, marker or not.
+ *
+ * A warning whose province is shaded has no marker at all -- the region is
+ * the drawing. Everything that used to reach through .marker for a position
+ * comes here instead.
+ */
+function spotOf(held) {
+  if (held.marker) return held.marker.getLatLng();
+  const at = positionOf(held.event);
+  return L.latLng(at.lat, at.lon);
+}
+
 function fitToMarks() {
   const points = [];
   for (const held of drawn.values()) {
-    const at = held.marker.getLatLng();
+    const at = spotOf(held);
     points.push([at.lat, at.lng]);
   }
   for (const mass of (concentrated ? masses ?? [] : [])) {
@@ -924,30 +951,59 @@ function reconcile(events) {
     if (held) {
       // A fresh report for something already on the map: the course or the
       // kind may have changed, so the icon is rebuilt only when it differs.
-      if (held.event.heading !== event.heading
+      if (held.marker && (held.event.heading !== event.heading
           || held.event.kind !== event.kind
-          || held.event.count !== event.count) {
+          || held.event.count !== event.count)) {
         held.marker.setIcon(icon(event, at.facing));
       }
       held.event = event;
-      held.marker.setLatLng(where);
+      held.marker?.setLatLng(where);
+      // The boundary usually arrives a poll or two after the warning does:
+      // it is fetched in the background at somebody else's rate limit. When
+      // it lands, the warning stops being a triangle on a point and becomes
+      // the shaded province it always meant -- without this it stayed a
+      // triangle until it expired, which is the whole bug on the Russian
+      // side wearing a different hat.
+      if (!held.area && hasArea(event)) {
+        held.area = areaFor(event);
+        held.area.bindPopup(() => popup(event));
+        held.area.addTo(areas);
+        if (held.marker) {
+          layer.removeLayer(held.marker);
+          held.marker = null;
+        }
+      }
       age(held);
       continue;
     }
-    const marker = L.marker(where, {
+    // A warning with a real boundary is drawn AS that boundary and nothing
+    // else. Asked for in as many words -- "instead of an icon, just the
+    // region highlighted" -- and it is the better drawing: the triangle sat
+    // on a centroid nobody had reported, claiming a point for something that
+    // covers a province, while the province it covers went unshaded.
+    //
+    // The icon stays for a warning whose boundary is not known, because the
+    // alternative to a triangle there is nothing at all, and a warning that
+    // draws nothing is the one failure this layer must not have.
+    const area = hasArea(event) ? areaFor(event) : null;
+    const marker = area ? null : L.marker(where, {
       icon: icon(event, at.facing), pane: 'tracker', keyboard: false,
     });
-    marker.bindPopup(() => popup(event));
-    marker.addTo(layer);
-    const area = hasArea(event) ? areaFor(event) : null;
-    area?.addTo(areas);
+    if (marker) {
+      marker.bindPopup(() => popup(event));
+      marker.addTo(layer);
+    }
+    if (area) {
+      area.bindPopup(() => popup(event));
+      area.addTo(areas);
+    }
     const made = { event, marker, area };
     drawn.set(id, made);
     age(made);
   }
   for (const [id, held] of drawn) {
     if (alive.has(id)) continue;
-    layer.removeLayer(held.marker);
+    if (held.marker) layer.removeLayer(held.marker);
     if (held.area) areas.removeLayer(held.area);
     drawn.delete(id);
   }
@@ -1083,7 +1139,7 @@ function declump() {
   // Clear, so what is measured is where each mark actually belongs.
   const parts = [];
   for (const one of held) {
-    const el = one.marker.getElement?.();
+    const el = one.marker?.getElement?.();
     if (!el) continue;
     el.style.marginLeft = '';
     el.style.marginTop = '';
@@ -1198,7 +1254,7 @@ function slide() {
   for (const held of drawn.values()) {
     const at = positionOf(held.event);
     if (!(at.carried > 0)) continue;
-    held.marker.setLatLng([at.lat, at.lon]);
+    held.marker?.setLatLng([at.lat, at.lon]);
     moved = true;
   }
   // Only when something actually moved. On a map of warnings and nothing in
@@ -1363,7 +1419,7 @@ function compass(deg) {
  */
 function age(held) {
   const pale = paleness(held.event);
-  held.marker.setOpacity(pale);
+  held.marker?.setOpacity(pale);
   // A circle is one element; a boundary drawn through GeoJSON is a group of
   // them, one per ring. Both have to be faded, so this walks whatever the
   // layer turned out to be.
@@ -1558,7 +1614,7 @@ async function saveShot() {
     for (const held of drawn.values()) {
       const event = held.event;
       if (event.kind === 'alert') continue;
-      const at = held.marker.getLatLng();
+      const at = spotOf(held);
       if (!view.contains(at)) continue;
       const colour = colourOf(event);
       const parts = glyphParts(event, colour, positionOf(event).facing);
@@ -1877,6 +1933,6 @@ function goTo(item) {
   // in view, which tells you nothing that the panel had not already said.
   const bounds = held.event.region_wide ? held.area?.getBounds?.() : null;
   if (bounds?.isValid?.()) map.flyToBounds(bounds, { padding: [40, 40], duration: 0.7 });
-  else map.flyTo(held.marker.getLatLng(), Math.max(map.getZoom(), 8), { duration: 0.7 });
-  held.marker.openPopup();
+  else map.flyTo(spotOf(held), Math.max(map.getZoom(), 8), { duration: 0.7 });
+  (held.marker ?? held.area)?.openPopup?.();
 }

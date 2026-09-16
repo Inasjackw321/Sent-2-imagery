@@ -938,11 +938,26 @@ def _look(lookup, name: str, region: str | None, countries: str,
         found = places.lookup(attempt)
         if found:
             if found.get("category") == "boundary":
+                # Asked for by the name the TABLE settled on, not by the one
+                # the post happened to write.
+                #
+                # This is why Russia had no provinces on it. The channel
+                # covering the Russian side posts in English -- "Belgorod
+                # region" -- and the alias table exists precisely because
+                # OpenStreetMap does not hold it under that name; it holds
+                # "Белгородская область". The table resolved the English
+                # spelling correctly and then this handed the English
+                # spelling straight back to the gazetteer, which asked
+                # OpenStreetMap a question it had no answer to. So the
+                # boundary never arrived, and a warning over Belgorod was
+                # drawn as a triangle on a point while Ukraine's came out of
+                # NEPTUN's file properly shaped.
+                canonical = found.get("name") or attempt
                 # A warning gets its outline first. It is the only thing here
                 # drawn AS the region rather than at a point in it, so it is
                 # the only one whose look depends on the boundary arriving.
                 gazetteer.improve_later(
-                    attempt, countries,
+                    canonical, countries,
                     urgent=fold_kind(kind) in ("alert", LIFTED))
                 # And if it has already arrived, use it. Without this the
                 # table's shapeless answer shadowed the boundary forever:
@@ -950,7 +965,7 @@ def _look(lookup, name: str, region: str | None, countries: str,
                 # every region this table knows -- which is every region in
                 # Russia -- was a warning with no province under it while
                 # Ukraine's came out of NEPTUN's file properly shaped.
-                learned = gazetteer.outline(attempt, countries)
+                learned = gazetteer.outline(canonical, countries)
                 if learned:
                     found = {**found, "shape": learned}
             return found

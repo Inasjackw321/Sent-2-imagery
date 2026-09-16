@@ -3685,3 +3685,175 @@ class TestAStandDownReachesTheRegionItNames:
         self.warn(50.0, 36.0, "warning")
         assert tracker.lift_alerts(50.0, 36.0, 500.0) == 1
         assert [e["id"] for e in tracker._events] == ["drone"]
+
+
+class TestARegionIsAskedForByItsOwnName:
+    """Why Russia had no provinces on it.
+
+    The channel covering the Russian side posts in English -- "Belgorod
+    region" -- and the alias table exists precisely because OpenStreetMap
+    does not hold it under that name. The table resolved the English spelling
+    correctly and then the code handed that same English spelling back to the
+    gazetteer, which asked OpenStreetMap a question it had no answer to. The
+    boundary never arrived, so a warning over Belgorod was a triangle on a
+    point while Ukraine's came out of NEPTUN's file properly shaped.
+    """
+
+    SHAPE = {"type": "Polygon",
+             "coordinates": [[[36, 50], [37, 50], [37, 51], [36, 51], [36, 50]]]}
+
+    def wired(self, monkeypatch, text, shapes=None):
+        asked = []
+
+        def queued(name, countries, urgent=False):
+            asked.append(name)
+            return True
+
+        def outline(name, countries=""):
+            asked.append(name)
+            return (shapes or {}).get(name)
+
+        monkeypatch.setattr(tracker.gazetteer, "improve_later", queued)
+        monkeypatch.setattr(tracker.gazetteer, "outline", outline)
+        item = reports.read(text)
+        assert item, text
+        return asked, tracker.place_event(item, "ru,ua")
+
+    def test_the_russian_name_is_what_is_asked_for(self, monkeypatch):
+        asked, _ = self.wired(monkeypatch, "Air raid alert in Belgorod region")
+        assert asked, "no outline was asked for at all"
+        assert set(asked) == {"Белгородская область"}, asked
+
+    def test_for_every_region_that_channel_names(self, monkeypatch):
+        for said, want in (
+            ("UAV threat in Voronezh region", "Воронежская область"),
+            ("Air alert in Kursk region", "Курская область"),
+            ("Missile danger in Rostov region", "Ростовская область"),
+            ("Air alert in Krasnodar Krai", "Краснодарский край"),
+            ("UAV danger in the Republic of Tatarstan", "Республика Татарстан"),
+        ):
+            asked, _ = self.wired(monkeypatch, said)
+            assert set(asked) == {want}, (said, asked)
+
+    def test_and_the_boundary_reaches_the_event(self, monkeypatch):
+        _, out = self.wired(monkeypatch, "Air raid alert in Belgorod region",
+                            {"Белгородская область": self.SHAPE})
+        assert out["shape"] == self.SHAPE
+        assert out["region_scope"] == "covers"
+
+    def test_a_ukrainian_report_still_asks_in_ukrainian(self, monkeypatch):
+        asked, _ = self.wired(monkeypatch, "Повітряна тривога у Харківській області")
+        assert set(asked) == {"Харківська область"}, asked
+
+    def test_a_warning_jumps_the_queue(self, monkeypatch):
+        """Everything else in that queue is already drawn correctly.
+
+        A warning is the only thing drawn AS its region, so it is the only
+        one whose look depends on the boundary arriving.
+        """
+        urgency = []
+
+        monkeypatch.setattr(tracker.gazetteer, "improve_later",
+                            lambda name, countries, urgent=False:
+                            urgency.append(urgent) or True)
+        monkeypatch.setattr(tracker.gazetteer, "outline",
+                            lambda name, countries="": None)
+        tracker.place_event(reports.read("Air raid alert in Belgorod region"),
+                            "ru,ua")
+        assert urgency == [True]
+        urgency.clear()
+        tracker.place_event(reports.read("Drone over Belgorod region"), "ru,ua")
+        assert urgency == [False]
+
+
+class TestAWarningIsItsRegion:
+    """A shaded province instead of a triangle on a point.
+
+    Asked for in as many words -- "instead of an icon, just the region
+    highlighted either yellow or red depending on the event" -- and it is the
+    better drawing either way: the triangle sat on a centroid nobody had
+    reported, claiming a point for something that covers a province, while
+    the province it covers went unshaded.
+    """
+
+    def source(self):
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
+
+    def test_a_warning_with_a_boundary_gets_no_marker(self):
+        text = self.source()
+        assert "const area = hasArea(event) ? areaFor(event) : null;" in text
+        assert "const marker = area ? null : L.marker(where, {" in text
+
+    def test_but_one_without_a_boundary_still_draws_something(self):
+        """The one failure this layer must not have.
+
+        A warning whose region is unknown has to be visible as SOMETHING. The
+        alternative to a triangle there is nothing at all, which is the map
+        saying the airspace is quiet.
+        """
+        text = self.source()
+        block = text[text.index("const marker = area ? null : L.marker"):]
+        block = block[:block.index("drawn.set(id, made);")]
+        assert "marker.addTo(layer);" in block
+
+    def test_the_boundary_arriving_late_replaces_the_icon(self):
+        """It usually does arrive late -- it is fetched at somebody else's
+        rate limit, behind a mark that is already drawn."""
+        text = self.source()
+        block = text[text.index("held.marker?.setLatLng(where);"):]
+        block = block[:block.index("continue;")]
+        assert "if (!held.area && hasArea(event))" in block
+        assert "layer.removeLayer(held.marker);" in block
+        assert "held.marker = null;" in block
+
+    def test_the_shaded_region_can_be_asked_about(self):
+        # It carries the popup now; there is no triangle beside it to do it.
+        text = self.source()
+        # In areaFor, which is the layer being drawn -- not in some other
+        # layer that happens to use the same words.
+        block = text[text.index("function areaFor(event)"):]
+        block = block[:block.index("\n}")]
+        assert "interactive: true," in block, "the region is deaf to the mouse"
+        # And the popup bound on the freshly drawn one, not only on the one
+        # that replaces an icon later.
+        block = text[text.index("const marker = area ? null : L.marker"):]
+        block = block[:block.index("drawn.set(id, made);")]
+        assert "area.bindPopup(() => popup(event));" in block
+        # The pane has to hear the mouse too, or the popup never opens.
+        assert "getPane('trackerArea').style.pointerEvents = 'auto'" in text
+
+    def test_a_warning_is_yellow_or_red_and_nothing_else(self):
+        text = self.source()
+        block = text[text.index("function colourOf"):]
+        block = block[:block.index("\n}")]
+        # No third colour for a warning whose cause nobody stated.
+        assert "WARNING_DEFAULT" in block
+        colours = text[text.index("const WARNING_COLOURS"):]
+        colours = colours[:colours.index("\nconst WARNING_DEFAULT")]
+        assert "'#ffd400'" in colours and "'#ff3b30'" in colours
+        default = text[text.index("const WARNING_DEFAULT"):]
+        default = default[:default.index(";")]
+        assert "#ffd400" in default, "an unstated cause is not the lesser colour"
+
+    def test_red_is_the_missile(self):
+        # Which way round matters: red is the fast thing.
+        text = self.source()
+        line = text[text.index("const WARNING_COLOURS"):]
+        line = line[:line.index("\n")]
+        assert "missile: '#ff3b30'" in line
+        assert "drone: '#ffd400'" in line
+
+    def test_nothing_still_reaches_through_a_marker_that_may_be_gone(self):
+        """Half the file assumed every record had one."""
+        text = self.source()
+        # spotOf is the one place allowed to reach for it, because it is the
+        # place that checks first and answers for the ones that have none.
+        assert "function spotOf(held)" in text
+        start = text.index("function spotOf(held)")
+        rest = text[:start] + text[text.index("\n}", start):]
+        for reach in ("held.marker.getLatLng()", "held.marker.setOpacity",
+                      "one.marker.getElement", "held.marker.openPopup()",
+                      "held.marker.setLatLng"):
+            assert reach not in rest, reach
+        assert "if (held.marker) return held.marker.getLatLng();" in text
