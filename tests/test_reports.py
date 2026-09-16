@@ -270,6 +270,53 @@ class TestWhere:
         assert read("Розвідувальний БпЛА над Чорним морем") is None
 
 
+class TestAnFpvIsNotAShahed:
+    """"Grey icons are FPV drones."
+
+    They were grey because nothing anywhere had a word for them: NEPTUN's
+    own `fpv` type fell through to "unknown" and was drawn as a grey ring
+    labelled Unidentified, while a post saying FPV was filed as a Shahed.
+
+    The distinction is worth a mark of its own. An FPV is flown by a person
+    on a video link and its range is a few kilometres, so one on the map says
+    the thing that launched it is close -- which is a different fact from a
+    Shahed crossing an oblast.
+    """
+
+    def test_the_word_gets_its_own_kind(self):
+        for text in ("FPV activity near the border",
+                     "ФПВ дрон над селом",
+                     "First-person-view drone reported"):
+            assert reports.find_kind(text) == "fpv", text
+
+    def test_a_shahed_is_still_a_shahed(self):
+        """The mistake this must not make.
+
+        A Shahed is routinely called a дрон-камікадзе, and a loitering
+        munition is not an FPV. Relabelling the long-range strikes this map
+        exists for as something launched from the next field would be worse
+        than the grey ring was.
+        """
+        for text in ("дрон-камікадзе курсом на Київ", "Shahed over Sumy",
+                     "БпЛА на Полтавщині", "UAV detection"):
+            assert reports.find_kind(text) == "drone", text
+
+    def test_it_is_tried_before_the_general_drone_pattern(self):
+        # Every FPV word also matches "drone", and the first rule wins, so
+        # the order in KIND_WORDS is the whole of the behaviour.
+        order = [kind for kind, _ in reports.KIND_WORDS]
+        assert order.index("fpv") < order.index("drone")
+
+    def test_one_shot_down_is_still_a_shootdown(self):
+        # An event that has already happened, whatever was flying.
+        assert reports.find_kind("\u041f\u041f\u041e \u0437\u0431\u0438\u043b\u0430 FPV \u043d\u0430\u0434 \u0421\u0443\u043c\u0430\u043c\u0438") == "explosion"
+
+    def test_the_summary_has_a_name_for_it(self):
+        # Without this a report reads "Report over ..." and says nothing
+        # about the one fact in it.
+        assert reports.SAYS["fpv"] == "FPV drone"
+
+
 class TestEnglish:
     """Several of these channels post in English, natively or translated.
 
@@ -303,7 +350,8 @@ class TestEnglish:
 
     def test_the_english_kinds(self):
         assert reports.find_kind("UAV detection") == "drone"
-        assert reports.find_kind("FPV activity") == "drone"
+        # Its own kind now, not a Shahed. See TestAnFpvIsNotAShahed.
+        assert reports.find_kind("FPV activity") == "fpv"
         assert reports.find_kind("Jet UAV inbound") == "jet_drone"
         assert reports.find_kind("Reconnaissance drone") == "recon"
         assert reports.find_kind("Cruise missiles launched") == "cruise"

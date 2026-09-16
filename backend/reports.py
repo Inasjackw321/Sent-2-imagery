@@ -211,9 +211,22 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
     ("jet_drone",
      r"реактивн\w*\s+(?:бпла|шахед|дрон)|шахед-?238|герань-?3"
      r"|\bjet[- ](?:powered\s+)?(?:uav|drone)\b|\bshahed-?238\b|\bgeran-?3\b"),
+    # Above "drone" for the same reason jet_drone is: every one of these
+    # words also matches the general drone pattern below, and the first rule
+    # to match wins.
+    #
+    # An FPV is flown by a person on a video link. Its range is a few
+    # kilometres rather than a few hundred, so a mark that says FPV says the
+    # thing that launched it is close -- which is a different fact from a
+    # Shahed crossing an oblast, and the one worth drawing separately.
+    # Only wording that means an FPV and nothing else. "камікадзе" is not
+    # here on purpose: a Shahed is routinely called a дрон-камікадзе, so
+    # taking that word would relabel the long-range strikes this map exists
+    # for as something launched from the next field.
+    ("fpv", r"fpv|фпв|\bfirst[- ]person[- ]view\b"),
     ("drone",
      r"бпла|шахед|шахид|герань|geran|дрон|безпілотн|беспилотн"
-     r"|\buavs?\b|\bfpvs?\b|\bdrones?\b|\bshahed\b|\bgeran\b|\bunmanned\b"
+     r"|\buavs?\b|\bdrones?\b|\bshahed\b|\bgeran\b|\bunmanned\b"
      r"|مسيرة|مسيّرة|مسيرات|طائرة مسيرة|درون"
      r"|כטב\"ם|כטבם|רחפן|רחפנים"
      r"|پهپاد|پهپادها"),
@@ -787,8 +800,8 @@ def find_kind(text: str) -> str:
             # pattern above it. Only the kinds that would put an OBJECT in the
             # air are second-guessed; a post about air defence working names a
             # weapon and reports nothing flying.
-            if kind in ("cruise", "ballistic", "drone", "jet_drone", "recon",
-                        "kab", "aircraft", "helicopter") \
+            if kind in ("cruise", "ballistic", "drone", "jet_drone", "fpv",
+                        "recon", "kab", "aircraft", "helicopter") \
                     and NOT_A_REPORT.search(low):
                 return "unknown"
             return kind
@@ -941,6 +954,7 @@ def find_count(text: str) -> int:
 # what the rest of the interface is in and the wall display reads it out.
 SAYS = {
     "recon": "Reconnaissance drone", "drone": "Drone", "jet_drone": "Jet drone",
+    "fpv": "FPV drone",
     "cruise": "Cruise missile", "ballistic": "Ballistic missile",
     "aircraft": "Aircraft", "helicopter": "Helicopter",
     "explosion": "Explosions reported", "alert": "Air alert",

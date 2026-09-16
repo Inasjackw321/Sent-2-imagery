@@ -838,6 +838,11 @@ const AIRSPACE = {
 // kind added there and not here would silently stop being drawable.
 const GROUPS = [
   { key: 'drones', label: 'Drones', kinds: ['drone', 'jet_drone'] },
+  // Its own button rather than folded in with the drones. An FPV has a range
+  // of a few kilometres, so a screen full of them is a different picture from
+  // a screen full of Shaheds -- and on a day of one and none of the other,
+  // being able to turn the other off is most of what these buttons are for.
+  { key: 'fpv', label: 'FPV', kinds: ['fpv'] },
   { key: 'missiles', label: 'Missiles', kinds: ['missile', 'bomb'] },
   { key: 'aircraft', label: 'Aircraft', kinds: ['aircraft', 'unknown'] },
   { key: 'warnings', label: 'Warnings', kinds: ['alert'] },

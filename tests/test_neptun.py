@@ -1341,3 +1341,68 @@ class TestWhereUkraineIs:
         monkeypatch.setattr(neptun, "shapes", lambda: elsewhere)
         assert neptun.covers(50.0, 36.0) is False
         assert neptun.covers(10.5, 10.5) is True
+
+
+class TestAnFpvIsItsOwnThing:
+    """"Grey icons are FPV drones."
+
+    They were: an FPV was in neither vocabulary, so it fell through to
+    "unknown" and was drawn as a grey ring labelled Unidentified -- the map
+    holding the answer and refusing to say it.
+    """
+
+    def test_the_feed_s_own_word_for_one_is_read(self):
+        assert neptun.KINDS["fpv"] == "fpv"
+
+    def test_and_it_is_not_folded_into_a_shahed(self):
+        """Its range is a few kilometres rather than a few hundred.
+
+        An FPV mark says the thing that launched it is CLOSE, which is a
+        different fact from a Shahed crossing an oblast, and the whole of
+        what makes it worth its own kind.
+        """
+        assert neptun.KINDS["fpv"] != neptun.KINDS["uav"]
+
+
+class TestAHeadingHoweverItIsWritten:
+    """A bearing is usually a number and is not always one.
+
+    _number answers None for anything else, so a heading written "SW" was
+    read as no heading at all and the mark was drawn as a ring -- which means
+    "nobody said which way this is going", a different thing from "it was
+    said in words".
+    """
+
+    def test_a_number_is_unchanged(self):
+        assert neptun._bearing(225) == 225.0
+        assert neptun._bearing("225") == 225.0
+        assert neptun._bearing(0) == 0.0
+
+    def test_the_compass_points(self):
+        assert neptun._bearing("SW") == 225.0
+        assert neptun._bearing("nne") == 22.5
+        assert neptun._bearing("south-west") == 225.0
+        assert neptun._bearing("northwest") == 315.0
+
+    def test_degrees_written_out(self):
+        for said in ("225°", "225 deg", "225 degrees", " 225° "):
+            assert neptun._bearing(said) == 225.0, said
+
+    def test_and_nothing_is_still_nothing(self):
+        # A ring is the honest drawing for a course nobody stated; inventing
+        # one is the thing this whole layer refuses to do.
+        for junk in (None, "", "   ", "nonsense", "northish", {}):
+            assert neptun._bearing(junk) is None, junk
+
+    def test_the_reader_uses_it(self):
+        raw = {"id": "t1", "type": "uav", "lat": 50.0, "lon": 36.0,
+               "heading": "SW", "region": "Сумська область", "status": "active"}
+        got = neptun.read_threat(raw)
+        assert got["heading"] == 225.0
+
+    def test_including_the_velocity_block(self):
+        raw = {"id": "t2", "type": "uav", "lat": 50.0, "lon": 36.0,
+               "velocity": {"bearingDeg": "NE"},
+               "region": "Сумська область", "status": "active"}
+        got = neptun.read_threat(raw)
+        assert got["heading"] == 45.0

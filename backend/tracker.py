@@ -235,6 +235,19 @@ KINDS = {
                   "motion": "track", "rank": 3},
     "jet_drone": {"colour": "#ff3b30", "label": "Jet drone",
                   "motion": "track", "rank": 4},
+    # An FPV, and its own kind rather than a drone.
+    #
+    # Flown by a person on a video link, with a range of a few kilometres
+    # rather than a few hundred -- so an FPV mark says the thing that
+    # launched it is CLOSE, which is a different fact from a Shahed crossing
+    # an oblast and the most useful thing this kind carries.
+    #
+    # Ranked below a drone because it threatens less ground, and kept for
+    # less time: something with a few minutes of flight in it is not still
+    # up twenty minutes later, and a stale FPV on the map is a claim about a
+    # place nobody is currently being attacked from.
+    "fpv":       {"colour": "#ff9ecd", "label": "FPV drone",
+                  "motion": "track", "rank": 2, "keep": 8},
     "missile":   {"colour": "#a855f7", "label": "Missile",
                   "motion": "track", "rank": 6},
     # A guided bomb, and its own kind rather than a missile.
@@ -1152,7 +1165,19 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     # Only warnings. A drone over Sochi is AT Sochi; shading the krai for it
     # would say a warning covers ground nobody mentioned, which is the
     # distinction this layer has spent a long time getting right.
-    if (out["region_scope"] is None
+    #
+    # Asked of any warning with no OUTLINE, rather than of any warning with
+    # no region -- which is why some of Russia shaded and the rest did not.
+    # A warning that NAMES a region ("Air alert in Kursk region") already had
+    # region_scope set, so this never ran for it and it sat waiting on the
+    # gazetteer's background queue, which is rate-limited and gives up after
+    # four tries. A warning that named a TOWN came through here and was
+    # shaded at once. Two paths, two answers, on one map.
+    #
+    # The point of a region warning IS the region, so the centroid is inside
+    # its own province and the very first test below -- a boundary the app
+    # already holds -- answers it for nothing.
+    if (out["shape"] is None
             and MOTION.get(item["kind"], "track") == "still"):
         wider = region_around(out["lat"], out["lon"], countries)
         if wider:
@@ -2516,6 +2541,14 @@ DEMO_SEED = [
     # same kinds, same region outline, same everything.
     ("alert", "Белгородская область", None, None, 1,
      "UAV danger across Belgorod oblast"),
+    # An FPV, close to the line and heading across it, because the whole
+    # point of the kind is that one on the map says whatever launched it is
+    # a few kilometres away. Without a row here the offline build never
+    # draws the mark at all.
+    # Three minutes old, not eight: an FPV is kept for eight, so an
+    # eight-minute-old one is at its own expiry and never appears.
+    ("fpv", "Kupiansk", None, "N", 1,
+     "FPV drone over Kupiansk heading north", 3),
     # The case the previous version hid: a real report that cannot be placed.
     # It belongs in the alert stream and nowhere else.
     # ── Concentrate mode ────────────────────────────────────────

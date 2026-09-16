@@ -214,6 +214,16 @@ export const CAMS = [
   // Each is placed exactly where its position says; the labels are the nearest
   // recognisable place to that point rather than a claim about what the camera
   // is pointed at.
+  // Dobrogea, inland from the Romanian Black Sea coast and about forty
+  // kilometres from the Danube delta -- the stretch of NATO territory the
+  // Shahed corridor up the coast keeps drifting over.
+  {
+    id: 'dobrogea', name: 'Dobrogea', place: 'Constanța County, Romania',
+    tz: 'Europe/Bucharest',
+    lat: 44.7549, lon: 28.8760, precision: 'given position',
+    kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793889300/original.jpg',
+    host: 'windy.com',
+  },
   {
     id: 'azov-coast', name: 'Sea of Azov coast', place: 'Krasnodar Krai, Russia',
     tz: 'Europe/Moscow',

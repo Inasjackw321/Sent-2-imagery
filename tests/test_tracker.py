@@ -285,8 +285,15 @@ class TestKindsAndHowTheyLast:
         # into "missile" would draw a hundreds-of-kilometres weapon where a
         # tens-of-kilometres one was reported, which is the wrong answer to
         # "how long have I got".
+        #
+        # "fpv" joined because the feed sends them and neither vocabulary had
+        # a name for one, so every FPV was drawn as a grey ring labelled
+        # Unidentified -- the map holding the answer and refusing to say it.
+        # Its range is a few kilometres rather than a few hundred, so the
+        # mark says the thing that launched it is CLOSE, which is the whole
+        # of what makes it worth its own kind.
         assert set(tracker.KINDS) == {
-            "drone", "jet_drone", "missile", "bomb", "aircraft",
+            "drone", "jet_drone", "fpv", "missile", "bomb", "aircraft",
             "alert", "unknown"}
 
     def test_every_removed_kind_folds_somewhere_real(self):
@@ -4246,6 +4253,93 @@ class TestAWarningAtATownCoversItsRegion:
         out = self.alert(monkeypatch)
         assert out["placed"] is True
         assert out["region_scope"] is None
+
+
+class TestAWarningThatNamesARegionIsShadedToo:
+    """"Some areas of Russia get the region warnings while others dont."
+
+    Two paths, two answers, on one map. A warning reported at a TOWN went
+    through the promotion above and was shaded at once. A warning that NAMED
+    a region -- "Air raid alert in Kursk region" -- already had region_scope
+    set by the match, so the promotion skipped it and it sat waiting on the
+    gazetteer's background queue, which is rate-limited and gives up.
+
+    The question the promotion asks is whether there is an OUTLINE to draw,
+    not whether a region was named.
+    """
+
+    OBLAST = {"type": "Polygon", "coordinates": [
+        [[34.0, 50.5], [39.0, 50.5], [39.0, 52.5], [34.0, 52.5],
+         [34.0, 50.5]]]}
+
+    def named(self, monkeypatch, *, held=(), reverse=None, kind="alert"):
+        monkeypatch.setattr(tracker.gazetteer, "outlines", lambda: list(held))
+        monkeypatch.setattr(tracker.gazetteer, "region_at",
+                            lambda lat, lon, countries="": reverse)
+        monkeypatch.setattr(tracker.gazetteer, "improve_later",
+                            lambda name, countries, urgent=False: True)
+        monkeypatch.setattr(tracker.gazetteer, "outline",
+                            lambda name, countries="": self.OBLAST)
+        # The match IS a region -- and has no boundary yet, which is the
+        # whole of the bug.
+        monkeypatch.setattr(tracker, "_look", lambda *a, **k: {
+            "lat": 51.7, "lon": 36.2, "name": "Kursk region",
+            "kind": "state", "category": "boundary",
+            "bbox": [50.5, 52.5, 34.0, 39.0], "shape": None,
+        })
+        monkeypatch.setattr(tracker.neptun, "shape_for", lambda name: None)
+        return tracker.place_event(
+            {"kind": kind, "place": "Kursk region", "count": 1}, "ru")
+
+    def test_a_named_region_with_no_outline_is_shaded(self, monkeypatch):
+        out = self.named(monkeypatch, reverse="Курская область")
+        assert out["shape"] == self.OBLAST
+        assert out["region_wide"] is True
+
+    def test_it_is_answered_by_a_border_already_held(self, monkeypatch):
+        """The centroid of a region is inside that region.
+
+        So the first test the promotion makes -- a boundary this app already
+        holds -- answers a named region for nothing, without a lookup.
+        """
+        asked = []
+        out = self.named(monkeypatch,
+                         held=[("Курская область", self.OBLAST)])
+        monkeypatch.setattr(tracker.gazetteer, "region_at",
+                            lambda *a, **k: asked.append(1))
+        assert out["shape"] == self.OBLAST
+        assert asked == []
+
+    def test_an_outline_already_matched_is_not_replaced(self, monkeypatch):
+        """The promotion only runs when there is nothing to draw.
+
+        A region whose own boundary arrived with the match keeps it; asking
+        the gazetteer again could hand back a neighbour.
+        """
+        mine = {"type": "Polygon", "coordinates": [
+            [[35.0, 51.0], [36.0, 51.0], [36.0, 52.0], [35.0, 52.0],
+             [35.0, 51.0]]]}
+        monkeypatch.setattr(tracker.gazetteer, "outlines",
+                            lambda: [("Somewhere else", self.OBLAST)])
+        monkeypatch.setattr(tracker.gazetteer, "improve_later",
+                            lambda name, countries, urgent=False: True)
+        monkeypatch.setattr(tracker, "_look", lambda *a, **k: {
+            "lat": 51.7, "lon": 36.2, "name": "Kursk region",
+            "kind": "state", "category": "boundary",
+            "bbox": [50.5, 52.5, 34.0, 39.0], "shape": mine,
+        })
+        monkeypatch.setattr(tracker.neptun, "shape_for", lambda name: None)
+        out = tracker.place_event(
+            {"kind": "alert", "place": "Kursk region", "count": 1}, "ru")
+        assert out["shape"] == mine
+        assert out.get("region_over") is None
+
+    def test_a_drone_over_a_region_is_not_shaded_by_this(self, monkeypatch):
+        # Same distinction as for towns: only warnings cover their region.
+        out = self.named(monkeypatch, reverse="Курская область",
+                         kind="drone")
+        assert out["region_wide"] is False
+        assert out["shape"] is None
 
 
 class TestThePictureTakesTheGroundYouAskedFor:

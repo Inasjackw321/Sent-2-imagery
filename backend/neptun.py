@@ -156,6 +156,15 @@ _shapes_at = 0.0
 KINDS = {
     "uav": "drone",
     "recon": "drone",
+    # An FPV is a drone and is NOT the same drone. It is flown by a person on
+    # a video link, its range is a few kilometres rather than a few hundred,
+    # and a mark that says "FPV" says the thing that launched it is close --
+    # which is a different fact from a Shahed crossing an oblast.
+    #
+    # It was in neither vocabulary, so every one of them fell through to
+    # "unknown" and was drawn as a grey ring labelled Unidentified: the map
+    # holding the answer and refusing to say it.
+    "fpv": "fpv",
     "missile": "missile",
     "ballistic": "missile",
     "kab": "bomb",
@@ -166,6 +175,45 @@ KINDS = {
 # Statuses worth drawing. "resolved" is a track that has ended; drawing one
 # would be saying something is in the air that they have said is not.
 DRAWN = ("active", "stale")
+
+
+# A compass course, for the headings that do not arrive as a number.
+#
+# Their bearing is usually a number and is not always one, and _number()
+# answers None for anything else -- so a heading written "SW", or "225°", or
+# "225 deg" was read as no heading at all and the mark was drawn as a ring.
+# A ring means "nobody said which way this is going", which is a different
+# thing from "it was said in words".
+POINTS = {
+    "n": 0.0, "nne": 22.5, "ne": 45.0, "ene": 67.5,
+    "e": 90.0, "ese": 112.5, "se": 135.0, "sse": 157.5,
+    "s": 180.0, "ssw": 202.5, "sw": 225.0, "wsw": 247.5,
+    "w": 270.0, "wnw": 292.5, "nw": 315.0, "nnw": 337.5,
+}
+WORDS = {
+    "north": "n", "northeast": "ne", "north-east": "ne", "east": "e",
+    "southeast": "se", "south-east": "se", "south": "s",
+    "southwest": "sw", "south-west": "sw", "west": "w",
+    "northwest": "nw", "north-west": "nw",
+}
+
+
+def _bearing(value: Any) -> float | None:
+    """A heading as degrees, however it was written."""
+    straight = _number(value)
+    if straight is not None:
+        return straight
+    said = " ".join(str(value or "").split()).lower().strip(" .")
+    if not said:
+        return None
+    # "225°", "225 deg", "225 degrees".
+    trimmed = said.rstrip("\u00b0").removesuffix("degrees").removesuffix("degree")
+    trimmed = trimmed.removesuffix("deg").strip()
+    spun = _number(trimmed)
+    if spun is not None:
+        return spun
+    said = WORDS.get(said, said)
+    return POINTS.get(said)
 
 
 def _text(value: Any, limit: int = 160) -> str | None:
@@ -274,11 +322,11 @@ def read_threat(raw: Any) -> dict[str, Any] | None:
     # left for a caller to remember -- the course, the speed, the destination.
     area_only = bool(raw.get("areaOnly"))
 
-    heading = None if area_only else _number(raw.get("heading"))
+    heading = None if area_only else _bearing(raw.get("heading"))
     if heading is None and not area_only:
         moving = raw.get("velocity")
         if isinstance(moving, dict):
-            heading = _number(moving.get("bearingDeg"))
+            heading = _bearing(moving.get("bearingDeg"))
     if heading is not None:
         heading %= 360.0
 
