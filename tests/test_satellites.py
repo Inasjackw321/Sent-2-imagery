@@ -671,3 +671,121 @@ def test_surface_temperature_belongs_to_landsat_alone():
     assert config.INDICES["surface_temp"]["sat"] == ["landsat"]
     assert "landsat" in config.BANDS["lwir11"]["sat"]
     assert "sentinel-2" not in config.BANDS["lwir11"]["sat"]
+
+
+class TestAnOpticalPassIsInDaylight:
+    """"Make it so the next optical pass accounts for when it is going over
+    land at day."
+
+    A camera in the dark records nothing, so "the next pass" and "the next
+    pass you will get a picture from" are different questions and the second
+    is the one anybody asking has in mind.
+
+    Over LAND is answered by measurement rather than by a landmask: the
+    prediction is built from the passes the catalogue holds over this point,
+    and an optical satellite files no products over open ocean -- so a point
+    at sea has no passes to project and says so.
+    """
+
+    KYIV = (30.52, 50.45)
+
+    def wired(self, monkeypatch, when, orbit=36, period_hours=12):
+        """Two passes twelve hours apart, the later one at midnight.
+
+        Projected naively that lands in the dark every other step, which is
+        what the old answer did without comment.
+        """
+        recent = [
+            {"when": when - dt.timedelta(hours=period_hours), "orbit": orbit,
+             "platform": "X", "orbit_state": "descending"},
+            {"when": when, "orbit": orbit, "platform": "X",
+             "orbit_state": "ascending"},
+        ]
+        monkeypatch.setattr(passes, "_recent_passes",
+                            lambda sat, lon, lat, now: recent)
+
+    def test_an_optical_satellite_skips_the_night_pass(self, monkeypatch):
+        now = dt.datetime(2026, 9, 16, 12, tzinfo=dt.timezone.utc)
+        midnight = dt.datetime(2026, 9, 16, 0, tzinfo=dt.timezone.utc)
+        self.wired(monkeypatch, midnight)
+        # What it would have answered.
+        naive = passes._project(midnight, dt.timedelta(hours=12), now)
+        assert passes.sun.is_daylight(50.45, 30.52, naive) is False
+
+        got = passes.satellite_passes(config.satellite("sentinel-2"),
+                                      *self.KYIV, now)
+        flown = dt.datetime.fromisoformat(
+            got["next"]["datetime"].replace("Z", "+00:00"))
+        assert flown != naive
+        assert got["next"]["daylight"] is True
+        assert got["next"]["sun_elevation"] > 5
+
+    def test_radar_keeps_it(self, monkeypatch):
+        # It sees in the dark, and its best passes are often at night.
+        now = dt.datetime(2026, 9, 16, 12, tzinfo=dt.timezone.utc)
+        midnight = dt.datetime(2026, 9, 16, 0, tzinfo=dt.timezone.utc)
+        self.wired(monkeypatch, midnight)
+        got = passes.satellite_passes(config.satellite("sentinel-1"),
+                                      *self.KYIV, now)
+        assert got["next"]["daylight"] is False
+        assert got["next"]["needs_daylight"] is False
+
+    def test_the_sun_is_reported_either_way(self, monkeypatch):
+        # "The radar comes at two in the morning" is worth knowing; it is
+        # only a REASON to skip a pass for the optical ones.
+        now = dt.datetime(2026, 9, 16, 12, tzinfo=dt.timezone.utc)
+        self.wired(monkeypatch, dt.datetime(2026, 9, 16, 0, tzinfo=dt.timezone.utc))
+        for key in ("sentinel-1", "sentinel-2", "landsat"):
+            got = passes.satellite_passes(config.satellite(key), *self.KYIV, now)
+            assert got["next"]["sun_elevation"] is not None, key
+
+    def test_an_ordinary_daylight_track_is_not_moved(self, monkeypatch):
+        """It costs nothing in the ordinary case.
+
+        A repeating ground track keeps its local time of day, so the first
+        step forward is already at the same hour of the morning the last one
+        was, and the daylight test passes immediately.
+        """
+        now = dt.datetime(2026, 9, 16, 12, tzinfo=dt.timezone.utc)
+        morning = dt.datetime(2026, 9, 11, 8, 30, tzinfo=dt.timezone.utc)
+        monkeypatch.setattr(passes, "_recent_passes", lambda *a: [
+            {"when": morning - dt.timedelta(days=10), "orbit": 36,
+             "platform": "X", "orbit_state": "descending"},
+            {"when": morning, "orbit": 36, "platform": "X",
+             "orbit_state": "descending"},
+        ])
+        got = passes.satellite_passes(config.satellite("sentinel-2"),
+                                      *self.KYIV, now)
+        flown = dt.datetime.fromisoformat(
+            got["next"]["datetime"].replace("Z", "+00:00"))
+        assert flown == morning + dt.timedelta(days=10)
+
+    def test_a_polar_night_gives_up_rather_than_running_forever(self, monkeypatch):
+        """Svalbard in December: there is no daylight pass at any step.
+
+        The measured time is still the honest answer -- the satellite really
+        does come over then -- and the panel says the sun will not be up.
+        """
+        now = dt.datetime(2026, 12, 15, 12, tzinfo=dt.timezone.utc)
+        last = dt.datetime(2026, 12, 14, 10, tzinfo=dt.timezone.utc)
+        monkeypatch.setattr(passes, "_recent_passes", lambda *a: [
+            {"when": last - dt.timedelta(days=10), "orbit": 36,
+             "platform": "X", "orbit_state": "descending"},
+            {"when": last, "orbit": 36, "platform": "X",
+             "orbit_state": "descending"},
+        ])
+        got = passes.satellite_passes(config.satellite("sentinel-2"),
+                                      15.0, 78.0, now)
+        assert got["next"]["daylight"] is False
+        assert got["next"]["needs_daylight"] is True
+
+    def test_the_offline_schedule_keeps_the_same_promise(self):
+        # A demo that contradicts the app is worse than no demo: it used to
+        # anchor on an arbitrary offset from now, so its Sentinel-2 arrived
+        # at any hour at all, midnight included.
+        for lon, lat in ((30.52, 50.45), (-74.0, 40.7), (139.7, 35.7)):
+            got = passes.next_passes(lon, lat, demo=True)
+            for sat in got["satellites"]:
+                if sat["kind"] != "optical":
+                    continue
+                assert sat["next"]["daylight"] is True, (sat["short"], lon, lat)

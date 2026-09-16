@@ -1756,7 +1756,8 @@ function askWhere() {
 
   dock.replaceChildren(
     el('div', { class: 'ao-where-what' }, 'Picture of…'),
-    pick('This view', 'The area on screen now', () => saveShot()),
+    pick('This view', 'Exactly what is on screen now',
+      () => saveShot(null, { exactly: true })),
     ...Object.entries(AIRSPACE).map(([key, what]) =>
       pick(what.name, `Everything over ${what.name}`, async () => {
         // The same fit the Airspace button uses, so the picture covers what
@@ -1841,7 +1842,7 @@ function drawArea() {
     const span = map.latLngToContainerPoint(box.getNorthEast())
       .distanceTo(map.latLngToContainerPoint(box.getSouthWest()));
     if (span < 20) { toast('No area drawn — nothing taken', 'warn'); return; }
-    saveShot(box);
+    saveShot(box, { exactly: true });
   }
 
   map.on('mousedown', begin);
@@ -1851,7 +1852,22 @@ function drawArea() {
   document.addEventListener('keydown', onKey);
 }
 
-async function saveShot(where) {
+/**
+ * Save a picture of an area.
+ *
+ * `exactly` means the area came from the person rather than from the marks:
+ * "this view", or a box they dragged. Then it is the picture, whatever is or
+ * is not in it -- it used to be pulled in around the marks and refused
+ * outright when there were none, so asking for a picture of a quiet border
+ * got "nothing in that area" and asking for the view got a crop of somewhere
+ * else inside it.
+ *
+ * The crop stays for the areas this app worked out ITSELF -- a country, or
+ * everything on the map -- because there it is the point: "Russia" means the
+ * part of Russia something is happening in, not three thousand kilometres of
+ * empty ground.
+ */
+async function saveShot(where, { exactly = false } = {}) {
   const button = $('#trackerShot');
   if (!map || !button) return;
   button.disabled = true;
@@ -1893,7 +1909,7 @@ async function saveShot(where) {
         label: event.kind === 'alert' ? warningLabel(event) : label,
       });
     }
-    if (!marks.length && !warnings.length) {
+    if (!marks.length && !warnings.length && !exactly) {
       toast('Nothing in that area to put in a picture', 'warn');
       return;
     }
@@ -1904,6 +1920,8 @@ async function saveShot(where) {
       },
       marks,
       warnings,
+      // Take the ground as asked for, rather than closing in on the marks.
+      exactly,
       outlines: await regionOutlines(),
       credit: feed?.attribution?.picture ?? 'Data supplied by NEPTUN — neptun.in.ua',
       at: new Date(),
@@ -1921,7 +1939,10 @@ async function saveShot(where) {
     if (warnings.length) {
       bits.push(`${warnings.length} warning${warnings.length === 1 ? '' : 's'}`);
     }
-    const what = bits.join(' and ');
+    // An empty picture of the right ground is a real answer -- "nothing over
+    // this border tonight" is worth sending -- so it says so rather than
+    // reading as a failure.
+    const what = bits.join(' and ') || 'an empty sky';
     const how = went === 'shared' ? `${what} — pick Save Image` : `Saved ${what}`;
     toast(how + (bordersFailed ? ` — without borders: ${bordersFailed}` : ''),
       bordersFailed ? 'warn' : '');

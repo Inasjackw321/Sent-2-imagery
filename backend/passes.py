@@ -21,7 +21,7 @@ from typing import Any
 
 import requests
 
-from . import config
+from . import config, sun
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": config.USER_AGENT})
@@ -109,11 +109,50 @@ def _interval(times: list[dt.datetime], fallback: dt.timedelta) -> tuple[dt.time
     return (min(gaps), True) if gaps else (fallback, False)
 
 
-def _project(last: dt.datetime, period: dt.timedelta, now: dt.datetime) -> dt.datetime:
-    """Step forward by whole periods until the pass is in the future."""
+# How many periods forward to look for a pass in daylight before giving up.
+#
+# A repeating ground track keeps its local time of day, so the first step
+# forward is nearly always already in daylight and this loop ends at once.
+# It matters where it does not: a point whose only recorded passes were mixed
+# together into a short interval, or an optical satellite near the winter pole
+# where the sun does not come up at all. Six is half a season on a ten-day
+# repeat, which is long enough to walk out of a polar night and short enough
+# that giving up is quick.
+MOST_STEPS = 6
+
+
+def _project(last: dt.datetime, period: dt.timedelta, now: dt.datetime,
+             daylight_at: tuple[float, float] | None = None) -> dt.datetime:
+    """Step forward by whole periods until the pass is in the future.
+
+    And, for an optical satellite, until it is in DAYLIGHT there.
+
+    A camera in the dark records nothing, so "the next pass" and "the next
+    pass you will get a picture from" are different questions and the second
+    is the one anybody asking has in mind. It costs nothing in the ordinary
+    case: a repeating ground track keeps its local time of day, so the first
+    step forward is already at the same hour of the morning the last one was.
+
+    Where it earns itself is the awkward cases -- a point with too few
+    recorded passes to measure a real interval, a track whose products got
+    mixed into one short period, a winter pole where the sun does not rise.
+    Those are exactly the times the old answer was a pass in the dark, offered
+    without comment.
+    """
     if period <= dt.timedelta(0):
         return last
     steps = int((now - last) // period) + 1
+    when = last + steps * period
+    if daylight_at is None:
+        return when
+    lat, lon = daylight_at
+    for _ in range(MOST_STEPS):
+        if sun.is_daylight(lat, lon, when):
+            return when
+        when += period
+    # Nothing in daylight within the budget. The measured time is still the
+    # honest answer -- the satellite really does come over then -- and the
+    # caller says the sun will not be up for it.
     return last + steps * period
 
 
@@ -136,6 +175,11 @@ def satellite_passes(sat: dict, lon: float, lat: float,
     for item in recent:
         tracks.setdefault(item["orbit"], []).append(item["when"])
 
+    # An optical satellite is only worth predicting into daylight; radar sees
+    # in the dark and its best passes are often at night.
+    wants_light = sat["kind"] == "optical"
+    daylight_at = (lat, lon) if wants_light else None
+
     candidates = []
     for orbit, times in tracks.items():
         period, measured = _interval(times, nominal)
@@ -144,7 +188,7 @@ def satellite_passes(sat: dict, lon: float, lat: float,
         anchor = _distinct(times)[-1]
         candidates.append({
             "orbit": orbit,
-            "when": _project(anchor, period, now),
+            "when": _project(anchor, period, now, daylight_at),
             "period_days": round(period.total_seconds() / 86400, 2),
             "measured": measured,
             "last_seen": times[-1],
@@ -171,6 +215,14 @@ def satellite_passes(sat: dict, lon: float, lat: float,
             "hours_away": round((soonest["when"] - now).total_seconds() / 3600, 1),
             "orbit": soonest["orbit"],
             "period_days": soonest["period_days"],
+            # How high the sun will be over the point when it flies. Sent for
+            # every satellite, because "the radar comes at two in the morning"
+            # is worth knowing too -- it is only a REASON to skip a pass for
+            # the optical ones.
+            "sun_elevation": round(sun.elevation(lat, lon, soonest["when"]), 1),
+            "daylight": sun.is_daylight(lat, lon, soonest["when"]),
+            # Whether the sun being up was a condition of picking this time.
+            "needs_daylight": wants_light,
         },
     }
 
@@ -198,12 +250,31 @@ def next_passes(lon: float, lat: float, satellites=None,
 def _demo_passes(sat: dict, lon: float, lat: float, now: dt.datetime) -> dict:
     """A plausible pass schedule offline, on the satellite's real cadence."""
     period = dt.timedelta(days=sat["repeat_days"] / 2)
-    # Anchor on the point and on the satellite, so the answer is stable, varies
-    # from place to place, and does not have both satellites arriving together.
-    offset = dt.timedelta(hours=(abs(lon * 7 + lat * 13 + sat["repeat_days"] * 17.3)
-                                 % (period.total_seconds() / 3600)))
-    last = now - offset
-    nxt = last + period
+    wants_light = sat["kind"] == "optical"
+
+    # At the hour the real satellite crosses, in LOCAL solar time.
+    #
+    # These are sun-synchronous: they cross the same latitude at the same
+    # local time every orbit, which is the whole reason an optical one is
+    # always in daylight. The offline schedule used to anchor on an arbitrary
+    # offset from now, so the demo's Sentinel-2 arrived at any hour at all --
+    # including midnight, which is the very thing this was asked to stop
+    # doing. A demo that contradicts the app is worse than no demo.
+    local_hour = 10.5 if wants_light else 17.9
+    utc_hour = (local_hour - lon / 15.0) % 24.0
+
+    # The day varies with the place and the satellite, so the answer is
+    # stable, differs from place to place, and does not have both arriving
+    # together. The HOUR does not vary: that is the point.
+    back = int(abs(lon * 7 + lat * 13 + sat["repeat_days"] * 17.3)
+               % max(1.0, period.total_seconds() / 86400))
+    last = now.replace(hour=int(utc_hour),
+                       minute=int(utc_hour % 1 * 60),
+                       second=0, microsecond=0) - dt.timedelta(days=back)
+    while last >= now:
+        last -= period
+    offset = now - last
+    nxt = _project(last, period, now, (lat, lon) if wants_light else None)
     return {
         "satellite": sat["key"], "short": sat["short"], "kind": sat["kind"],
         "passes_seen": 6, "orbits_seen": 2, "measured": False, "demo": True,
@@ -219,5 +290,8 @@ def _demo_passes(sat: dict, lon: float, lat: float, now: dt.datetime) -> dict:
             "hours_away": round((nxt - now).total_seconds() / 3600, 1),
             "orbit": 59 if sat["kind"] == "radar" else 108,
             "period_days": round(period.total_seconds() / 86400, 2),
+            "sun_elevation": round(sun.elevation(lat, lon, nxt), 1),
+            "daylight": sun.is_daylight(lat, lon, nxt),
+            "needs_daylight": wants_light,
         },
     }

@@ -901,6 +901,25 @@ function passRow(sat) {
       + (sat.next.orbit != null ? ` · track ${sat.next.orbit}` : '')
       + (sat.measured ? `, repeating every ${sat.next.period_days} days`
         : ', on the nominal cycle')));
+    // What the sun will be doing. A camera in the dark records nothing, so
+    // for the optical satellites this is the difference between a pass and a
+    // picture -- and for the radar it is worth knowing the other way round,
+    // because a night pass is when it is least like a photograph.
+    if (sat.next.sun_elevation != null) {
+      const up = sat.next.daylight;
+      const high = Math.round(sat.next.sun_elevation);
+      // "0° below the horizon" is not a thing anybody says, and it is what
+      // rounding a sun a third of a degree down produces -- which is exactly
+      // where a sun-synchronous evening pass puts it.
+      const dark = high === 0 ? 'Sun on the horizon'
+        : `Sun ${Math.abs(high)}° below the horizon`;
+      rows.push(el('div', { class: `pass-sun${up ? '' : ' is-dark'}` },
+        up ? `Sun ${high}° up` : dark,
+        sat.next.needs_daylight
+          ? el('span', { class: 'pass-sun-why' },
+            up ? ' — chosen for the daylight' : ' — no daylight pass in range')
+          : ''));
+    }
   } else {
     rows.push(el('div', { class: 'pass-last' }, sat.note ?? 'No passes on record here.'));
   }

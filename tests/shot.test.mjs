@@ -93,8 +93,11 @@ const SOURCE = readFileSync(
   'utf8');
 
 test('the picture is actually drawn from the tightened frame', () => {
-  assert.ok(/framing\(closeIn\(bounds,/.test(SOURCE),
+  // Unless the area was named by the person -- see further down.
+  assert.ok(/closeIn\(bounds,/.test(SOURCE),
     'drawShot frames the whole view again');
+  assert.ok(/framing\(exactly \? bounds/.test(SOURCE),
+    'the frame no longer comes from framing()');
 });
 
 test('the frame takes in the warnings, not only the marks', () => {
@@ -511,4 +514,35 @@ test('the heading counts warnings as well as tracks', () => {
   const body = block.slice(0, block.indexOf('\n}'));
   assert.match(body, /warnings\?\.length/);
   assert.match(body, /'warning' : 'warnings'/);
+});
+
+// ── The ground you asked for ───────────────────────────────────
+//
+// "When you press this view, it takes it from that view and ignores whether
+// there's a drone there or not. Make it so it just takes it for where you
+// highlighted."
+//
+// The crop was pulling in around the marks whatever the area came from, so
+// asking for the view got a picture of one corner of it, and asking for a
+// quiet border got "nothing in that area" and no picture at all.
+
+test('an area named by the person is the picture, crop and all', () => {
+  const block = SOURCE.slice(SOURCE.indexOf('export async function drawShot'));
+  const head = block.slice(0, block.indexOf('drawLand('));
+  assert.match(head, /exactly \? bounds/,
+    'the chosen area is still cropped to the marks');
+});
+
+test('and one the app worked out itself is still closed in on', () => {
+  // "Russia" means the part of Russia something is happening in, not three
+  // thousand kilometres of empty ground.
+  const block = SOURCE.slice(SOURCE.indexOf('export async function drawShot'));
+  const head = block.slice(0, block.indexOf('drawLand('));
+  assert.match(head, /: closeIn\(bounds,/, 'the country fit is gone');
+});
+
+test('the crop is off by default, only when asked for', () => {
+  const block = SOURCE.slice(SOURCE.indexOf('export async function drawShot'));
+  assert.match(block.slice(0, block.indexOf(')')), /exactly = false/,
+    'exactly has no default, so a caller that omits it gets undefined');
 });

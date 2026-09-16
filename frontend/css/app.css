@@ -519,6 +519,9 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .pass-next { margin-top: 2px; color: var(--ink-dim); }
 .pass-next b { color: var(--accent-2); }
 .pass-last { margin-top: 2px; font-size: 11px; color: var(--ink-faint); }
+.pass-sun { margin-top: 2px; font-size: 11px; color: #ffd48a; }
+.pass-sun.is-dark { color: #7d8cff; }
+.pass-sun-why { color: var(--ink-faint); }
 .passes-foot {
   margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
   font-size: 10.5px; line-height: 1.4; color: var(--ink-faint);

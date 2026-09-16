@@ -264,11 +264,17 @@ function walkRings(shape, each) {
  * `marks` are already the ones to show: the caller decides what a warning is
  * and leaves them out, because the caller is the thing that knows.
  */
-export async function drawShot({ bounds, marks, warnings, outlines, credit, at }) {
+export async function drawShot({ bounds, marks, warnings, outlines, credit,
+                                 at, exactly = false }) {
   // The frame has to take in the warnings too, or a picture of a country
   // whose only activity is a shaded province crops to nothing at all.
-  const frame = framing(closeIn(bounds, [...(marks ?? []),
-                                         ...spread(warnings)]));
+  //
+  // Unless the ground was named by the person rather than worked out from
+  // the marks -- "this view", or a box they dragged. Then it IS the picture,
+  // and closing in on whatever happens to be inside it hands back a crop of
+  // somewhere else.
+  const frame = framing(exactly ? bounds
+    : closeIn(bounds, [...(marks ?? []), ...spread(warnings)]));
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;

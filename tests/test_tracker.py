@@ -3163,7 +3163,9 @@ class TestTheDrawingMoves:
         # The Russia case, which is the whole of why this changed.
         block = self.source()
         block = block[block.index("async function saveShot"):]
-        assert "if (!marks.length && !warnings.length) {" in block
+        # The refusal is now only for an area the app worked out itself; an
+        # area somebody named is taken whatever is in it.
+        assert "if (!marks.length && !warnings.length && !exactly) {" in block
 
     def test_the_picture_carries_the_watermark_and_the_credit(self):
         """NEPTUN's credit is a condition of use, not decoration.
@@ -3914,7 +3916,7 @@ class TestPickingWhatThePictureCovers:
 
     def test_the_area_is_an_argument_rather_than_the_screen(self):
         text = self.source()
-        assert "async function saveShot(where)" in text
+        assert "async function saveShot(where, { exactly = false } = {})" in text
         assert "const view = where ?? map.getBounds();" in text
 
     def test_what_it_offers(self):
@@ -4244,3 +4246,57 @@ class TestAWarningAtATownCoversItsRegion:
         out = self.alert(monkeypatch)
         assert out["placed"] is True
         assert out["region_scope"] is None
+
+
+class TestThePictureTakesTheGroundYouAskedFor:
+    """"When you press this view, it takes it from that view and ignores
+    whether there's a drone there or not."
+
+    The crop was pulling in around the marks whatever the area came from, so
+    asking for the view got a picture of one corner of it -- and asking for a
+    quiet border got "nothing in that area" and no picture at all.
+    """
+
+    def source(self):
+        return (pathlib.Path(__file__).resolve().parent.parent
+                / "frontend" / "js" / "tracker.js").read_text(encoding="utf-8")
+
+    def test_this_view_asks_for_the_view_exactly(self):
+        block = self.source()
+        block = block[block.index("function askWhere()"):]
+        block = block[:block.index("\nfunction closeWhere")]
+        assert "saveShot(null, { exactly: true })" in block
+
+    def test_a_drawn_box_is_taken_exactly_too(self):
+        block = self.source()
+        block = block[block.index("function done(e)"):]
+        assert "saveShot(box, { exactly: true })" in block
+
+    def test_a_country_is_still_fitted_to_what_is_over_it(self):
+        # "Russia" means the part of Russia something is happening in, not
+        # three thousand kilometres of empty ground.
+        block = self.source()
+        block = block[block.index("function askWhere()"):]
+        block = block[:block.index("\nfunction closeWhere")]
+        assert "saveShot(areaOf(key)?.bounds)" in block
+        assert "areaOf(key)?.bounds, { exactly" not in block
+
+    def test_an_empty_chosen_area_still_makes_a_picture(self):
+        """"Nothing over this border tonight" is worth sending.
+
+        It used to refuse outright, which reads as the button being broken
+        rather than as the sky being quiet.
+        """
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        assert "if (!marks.length && !warnings.length && !exactly) {" in block
+
+    def test_and_says_so_rather_than_saying_nothing(self):
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        assert "'an empty sky'" in block
+
+    def test_the_flag_reaches_the_drawing(self):
+        block = self.source()
+        block = block[block.index("async function saveShot"):]
+        assert "      exactly," in block
