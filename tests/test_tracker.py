@@ -4037,3 +4037,109 @@ class TestAskingForOneCountry:
         block = block[block.index("function belongsTo"):]
         block = block[:block.index("\n}")]
         assert "if (ua === null) return true;" in block
+
+
+class TestNeptunIsTheSourceForUkraine:
+    """A channel reading that lands inside Ukraine is not drawn.
+
+    This module has said so at the top since the other four channels were
+    removed -- "two paths to the same facts with only the worse one able to
+    put a mark in the wrong province" -- and then went on reading the one
+    remaining channel into Ukraine anyway.
+
+    What it removes is real and was on screen: a jet drone over Sumy, drawn
+    in a colour NEPTUN's vocabulary cannot produce -- their types are uav,
+    recon, missile, ballistic, kab and mig31k, and none of them is a jet
+    drone -- sitting beside NEPTUN's own tracks of the same raid, which did
+    not include it.
+    """
+
+    # A square standing in for Ukraine, around Sumy and well clear of
+    # Belgorod: the two are a hundred kilometres apart.
+    UKRAINE = {"type": "Polygon", "coordinates": [
+        [[33.0, 49.5], [35.5, 49.5], [35.5, 51.5], [33.0, 51.5], [33.0, 49.5]]]}
+
+    def wired(self, monkeypatch, shapes):
+        monkeypatch.setattr(tracker.neptun, "shapes", lambda: shapes)
+        monkeypatch.setattr(tracker.neptun, "_rings", None, raising=False)
+        monkeypatch.setattr(tracker.neptun, "_rings_from", None, raising=False)
+        tracker.reset()
+
+    def post(self, lat, lon, kind="jet_drone", by="rules"):
+        item = {"kind": kind, "place": "somewhere", "by": by}
+        message = {"id": "t1", "channel": "lpr1_treugolnik",
+                   "region": "Luhansk and Russia", "date": time.time(),
+                   "text": "a report"}
+        monkey = lambda i, c, lookup=None: {   # noqa: E731
+            "placed": True, "lat": lat, "lon": lon, "kind": kind,
+            "summary": "a report", "place": "somewhere", "count": 1,
+            "region_scope": None, "area_km": 5.0,
+        }
+        return item, message, monkey
+
+    def test_a_channel_mark_inside_ukraine_is_not_drawn(self, monkeypatch):
+        self.wired(monkeypatch, {"ua": self.UKRAINE})
+        item, message, place = self.post(50.9, 34.8)     # Sumy
+        monkeypatch.setattr(tracker, "place_event", place)
+        assert tracker._record(item, message, "ru,ua") is False
+        assert tracker._events == []
+        assert tracker._shadowed == 1
+
+    def test_but_one_in_russia_is(self, monkeypatch):
+        self.wired(monkeypatch, {"ua": self.UKRAINE})
+        item, message, place = self.post(50.6, 36.6)     # Belgorod
+        monkeypatch.setattr(tracker, "place_event", place)
+        assert tracker._record(item, message, "ru,ua") is True
+        assert len(tracker._events) == 1
+        assert tracker._shadowed == 0
+
+    def test_with_no_border_the_channel_is_all_there_is(self, monkeypatch):
+        """None is not False.
+
+        With no boundary file there is no NEPTUN behind it either, so the
+        channel is the only source there is and dropping its reports would
+        empty the map to prefer a source that is not answering.
+        """
+        self.wired(monkeypatch, {})
+        item, message, place = self.post(50.9, 34.8)
+        monkeypatch.setattr(tracker, "place_event", place)
+        assert tracker._record(item, message, "ru,ua") is True
+        assert len(tracker._events) == 1
+
+    def test_a_report_with_no_position_is_untouched(self, monkeypatch):
+        # It is listed as unplaced, which is a different thing from shadowed.
+        self.wired(monkeypatch, {"ua": self.UKRAINE})
+        item = {"kind": "drone", "place": None, "by": "rules"}
+        message = {"id": "t2", "channel": "lpr1_treugolnik",
+                   "region": "Luhansk and Russia", "date": time.time(),
+                   "text": "a report"}
+        monkeypatch.setattr(tracker, "place_event",
+                            lambda i, c, lookup=None: {
+                                "placed": False, "lat": None, "lon": None,
+                                "kind": "drone", "summary": "", "count": 1,
+                                "why_unplaced": "no place named",
+                            })
+        # _record returns False for anything unplaced -- "an alert always, a
+        # track only if it placed" -- so what matters is that the report is
+        # still in the stream and was not counted as shadowed.
+        tracker._record(item, message, "ru,ua")
+        assert len(tracker._alerts) == 1
+        assert tracker._shadowed == 0
+
+    def test_the_count_is_said_out_loud(self, monkeypatch):
+        # "Read, and not drawn, because a better source has Ukraine" is a
+        # different fact from "not read", and a thin channel row with no
+        # explanation reads as the channel being broken.
+        self.wired(monkeypatch, {"ua": self.UKRAINE})
+        item, message, place = self.post(50.9, 34.8)
+        monkeypatch.setattr(tracker, "place_event", place)
+        tracker._record(item, message, "ru,ua")
+        assert tracker.current()["shadowed"] == 1
+
+    def test_neptuns_own_tracks_are_never_shadowed(self, monkeypatch):
+        # They are the source being deferred to; deferring them to
+        # themselves would empty Ukraine entirely.
+        self.wired(monkeypatch, {"ua": self.UKRAINE})
+        item, message, place = self.post(50.9, 34.8, by="neptun")
+        monkeypatch.setattr(tracker, "place_event", place)
+        assert tracker._record(item, message, "ru,ua") is True

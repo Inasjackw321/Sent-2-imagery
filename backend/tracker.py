@@ -307,6 +307,10 @@ MOST_SEEN = 50_000
 _events: list[dict[str, Any]] = []
 _alerts: list[dict[str, Any]] = []
 _counter = 0
+# How many channel readings NEPTUN's own coverage stood in for this run.
+# Counted rather than dropped in silence: "read, and not drawn, because a
+# better source has Ukraine" is a different fact from "not read".
+_shadowed = 0
 _state = "not started"
 _last_poll = 0.0
 # Whether a background read is in flight, so two requests cannot start two.
@@ -1278,9 +1282,34 @@ def photo_paths(urls: Any) -> list[str]:
 def _record(item: dict[str, Any], message: dict[str, Any],
             countries: str) -> bool:
     """One classified report: an alert always, a track only if it placed."""
-    global _counter
+    global _counter, _shadowed
     seen = _when(message)
     placed = place_event(item, countries)
+
+    # NEPTUN is the source for Ukraine, so a channel reading that lands
+    # inside Ukraine is not drawn.
+    #
+    # This module has said so at the top since the other four channels were
+    # removed -- "two paths to the same facts with only the worse one able to
+    # put a mark in the wrong province" -- and then went on reading the one
+    # remaining channel into Ukraine anyway. It is kept for the Russian side,
+    # which NEPTUN does not cover, and that is the only thing it is kept for.
+    #
+    # What this removes is real: a jet drone drawn over Sumy from a Telegram
+    # post, in a colour NEPTUN's vocabulary cannot even produce -- their
+    # types are uav, recon, missile, ballistic, kab and mig31k, and none of
+    # them is a jet drone -- sitting beside NEPTUN's own tracks of the same
+    # night's raid, which did not include it.
+    #
+    # Only while NEPTUN is actually answering. covers() returns None when the
+    # boundary file has not arrived, and None is not False: with no border to
+    # test against, and no NEPTUN behind it, the channel is the only source
+    # there is and its reports are drawn.
+    if placed["placed"] and item.get("by") != "neptun":
+        in_ukraine = neptun.covers(placed["lat"], placed["lon"])
+        if in_ukraine:
+            _shadowed += 1
+            return False
 
     # An all-clear takes a warning away rather than putting one up.
     #
@@ -1573,13 +1602,14 @@ def _expire(now: float) -> None:
 
 def reset() -> None:
     """Forget everything read so far. For tests and for starting over."""
-    global _counter, _state, _last_poll, _polling
+    global _counter, _state, _last_poll, _polling, _shadowed
     with _lock:
         _dismissed.clear()
         _seen.clear()
         _events.clear()
         _alerts.clear()
         _counter = 0
+        _shadowed = 0
         _state = "not started"
         _last_poll = 0.0
 
@@ -2235,6 +2265,9 @@ def current() -> dict[str, Any]:
         "drift_cap_minutes": MOST_DRIFT_MINUTES,
         "kinds": KINDS,
         "channels": [c["name"] for c in CHANNELS],
+        # Channel readings NEPTUN stood in for -- see _record. Said out
+        # loud so a thin channel row is explained rather than puzzling.
+        "shadowed": _shadowed,
         "regions": sorted({c["region"] for c in CHANNELS}),
         # Whether a read of the channels is happening right now. The page uses
         # it to ask again in a couple of seconds instead of waiting out its

@@ -426,6 +426,68 @@ def index_shapes(payload: Any) -> dict[str, Any]:
 SHAPES_FOR = 24 * 3600
 
 
+_rings: list[list[tuple[float, float]]] | None = None
+_rings_from: Any = None
+
+
+def covers(lat: float, lon: float) -> bool | None:
+    """Whether a point is inside Ukraine, or None if that is not known yet.
+
+    Ukraine's provinces are what this module fetches a boundary file OF, so
+    their union is Ukraine's border. Nothing else this app holds can answer
+    the question: Belgorod sits at 50.6N 36.6E and Kharkiv at 50.0N 36.2E, a
+    hundred kilometres apart and each inside any box drawn round the other's
+    country.
+
+    None rather than False when the file has not arrived. The difference
+    matters: a caller that treats "I do not know" as "not in Ukraine" would
+    act on a border it has not got.
+    """
+    global _rings, _rings_from
+    known = shapes()
+    if not known:
+        return None
+    if _rings is None or _rings_from is not known:
+        rings: list[list[tuple[float, float]]] = []
+        for shape in known.values():
+            for ring in _walk(shape):
+                if len(ring) >= 4:
+                    rings.append(ring)
+        _rings, _rings_from = rings, known
+    return any(_ring_holds(ring, lon, lat) for ring in _rings)
+
+
+def _walk(shape: Any) -> list[list[tuple[float, float]]]:
+    """Every ring of a polygon or multipolygon, holes included."""
+    if not isinstance(shape, dict):
+        return []
+    kind = shape.get("type")
+    coords = shape.get("coordinates")
+    if kind == "Polygon" and isinstance(coords, list):
+        return [r for r in coords if isinstance(r, list)]
+    if kind == "MultiPolygon" and isinstance(coords, list):
+        return [r for part in coords if isinstance(part, list)
+                for r in part if isinstance(r, list)]
+    return []
+
+
+def _ring_holds(ring: list[Any], x: float, y: float) -> bool:
+    """Ray casting, in degrees. A border is not a hair's breadth."""
+    inside = False
+    j = len(ring) - 1
+    for i, point in enumerate(ring):
+        try:
+            xi, yi = float(point[0]), float(point[1])
+            xj, yj = float(ring[j][0]), float(ring[j][1])
+        except (TypeError, ValueError, IndexError):
+            j = i
+            continue
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
 def shapes() -> dict[str, Any]:
     """The region outlines, fetched once and kept. {} if they cannot be had.
 

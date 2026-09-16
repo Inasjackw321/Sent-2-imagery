@@ -1274,3 +1274,70 @@ class TestOneRefusalDoesNotLoseTheOther:
             neptun.TooSoon("not due")))
         with pytest.raises(neptun.TooSoon):
             tracker.take_neptun()
+
+
+class TestWhereUkraineIs:
+    """Their boundary file is the only thing this app has that knows.
+
+    Belgorod sits at 50.6N 36.6E and Kharkiv at 50.0N 36.2E -- a hundred
+    kilometres apart, each inside any box drawn round the other's country. No
+    bounding box separates them; a real border does.
+    """
+
+    SQUARE = {"type": "Polygon", "coordinates": [
+        [[35.0, 49.0], [37.0, 49.0], [37.0, 51.0], [35.0, 51.0], [35.0, 49.0]]]}
+
+    def wired(self, monkeypatch, shapes):
+        monkeypatch.setattr(neptun, "shapes", lambda: shapes)
+        monkeypatch.setattr(neptun, "_rings", None, raising=False)
+        monkeypatch.setattr(neptun, "_rings_from", None, raising=False)
+
+    def test_inside_and_outside(self, monkeypatch):
+        self.wired(monkeypatch, {"one": self.SQUARE})
+        assert neptun.covers(50.0, 36.0) is True
+        assert neptun.covers(50.0, 40.0) is False
+        assert neptun.covers(48.0, 36.0) is False
+
+    def test_latitude_and_longitude_are_not_swapped(self, monkeypatch):
+        # The mistake that would file every mark under the wrong country
+        # while still running: a ring is [lon, lat] and the call is (lat, lon).
+        self.wired(monkeypatch, {"one": self.SQUARE})
+        assert neptun.covers(50.0, 36.0) is True
+        assert neptun.covers(36.0, 50.0) is False
+
+    def test_a_country_of_several_pieces(self, monkeypatch):
+        self.wired(monkeypatch, {"many": {"type": "MultiPolygon", "coordinates": [
+            [self.SQUARE["coordinates"][0]],
+            [[[20.0, 45.0], [21.0, 45.0], [21.0, 46.0], [20.0, 46.0], [20.0, 45.0]]],
+        ]}})
+        assert neptun.covers(45.5, 20.5) is True
+
+    def test_not_knowing_is_not_the_same_as_no(self, monkeypatch):
+        """None rather than False when the file has not arrived.
+
+        A caller that read "I do not know" as "not in Ukraine" would act on a
+        border it has not got -- and the caller here drops reports on the
+        strength of it.
+        """
+        self.wired(monkeypatch, {})
+        assert neptun.covers(50.0, 36.0) is None
+
+    def test_a_shape_it_cannot_read_is_skipped(self, monkeypatch):
+        self.wired(monkeypatch, {
+            "junk": {"type": "Point", "coordinates": [36.0, 50.0]},
+            "none": None,
+            "real": self.SQUARE,
+        })
+        assert neptun.covers(50.0, 36.0) is True
+        assert neptun.covers(50.0, 40.0) is False
+
+    def test_the_rings_are_rebuilt_when_the_file_changes(self, monkeypatch):
+        # Cached against the dict it came from, so a refreshed boundary file
+        # is used rather than the one from an hour ago.
+        self.wired(monkeypatch, {"one": self.SQUARE})
+        assert neptun.covers(50.0, 36.0) is True
+        elsewhere = {"other": {"type": "Polygon", "coordinates": [
+            [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]]]}}
+        monkeypatch.setattr(neptun, "shapes", lambda: elsewhere)
+        assert neptun.covers(50.0, 36.0) is False
+        assert neptun.covers(10.5, 10.5) is True
