@@ -4143,3 +4143,104 @@ class TestNeptunIsTheSourceForUkraine:
         item, message, place = self.post(50.9, 34.8, by="neptun")
         monkeypatch.setattr(tracker, "place_event", place)
         assert tracker._record(item, message, "ru,ua") is True
+
+
+class TestAWarningAtATownCoversItsRegion:
+    """"If a town or area has an alert in that region, highlight the whole
+    region."
+
+    A warning reported at a town used to be a triangle on one street corner
+    of a province -- which is what the Russian side looked like beside
+    Ukraine's filled oblasts, because NEPTUN key their alerts to regions and
+    a Telegram post names whatever the poster named.
+    """
+
+    KRAI = {"type": "Polygon", "coordinates": [
+        [[37.0, 43.0], [41.5, 43.0], [41.5, 46.5], [37.0, 46.5], [37.0, 43.0]]]}
+
+    def wired(self, monkeypatch, *, held=(), reverse=None):
+        monkeypatch.setattr(tracker.gazetteer, "outlines", lambda: list(held))
+        monkeypatch.setattr(tracker.gazetteer, "region_at",
+                            lambda lat, lon, countries="": reverse)
+        monkeypatch.setattr(tracker.gazetteer, "improve_later",
+                            lambda name, countries, urgent=False: True)
+        monkeypatch.setattr(tracker.gazetteer, "outline",
+                            lambda name, countries="": self.KRAI)
+
+    def alert(self, monkeypatch, lat=43.60, lon=39.73, kind="alert"):
+        # Sochi: a town, not a region.
+        monkeypatch.setattr(tracker, "_look", lambda *a, **k: {
+            "lat": lat, "lon": lon, "name": "Sochi", "kind": "town",
+            "category": "place", "bbox": [lat - 0.09, lat + 0.09,
+                                          lon - 0.09, lon + 0.09],
+            "shape": None,
+        })
+        return tracker.place_event(
+            {"kind": kind, "place": "Sochi", "count": 1}, "ru")
+
+    def test_a_town_warning_is_drawn_as_its_region(self, monkeypatch):
+        self.wired(monkeypatch, reverse="Краснодарский край")
+        out = self.alert(monkeypatch)
+        assert out["region_scope"] == "covers"
+        assert out["region_wide"] is True
+        assert out["shape"] == self.KRAI
+
+    def test_a_boundary_already_held_is_used_without_asking_anybody(
+            self, monkeypatch):
+        """Exact and free.
+
+        Once a province has been drawn over once, every later warning inside
+        it is decided by the real border rather than by a reverse lookup.
+        """
+        asked = []
+        self.wired(monkeypatch, held=[("Краснодарский край", self.KRAI)])
+        monkeypatch.setattr(tracker.gazetteer, "region_at",
+                            lambda lat, lon, countries="":
+                            asked.append(1) or "somewhere else")
+        out = self.alert(monkeypatch)
+        assert out["shape"] == self.KRAI
+        assert asked == [], "the gazetteer was asked despite holding the border"
+
+    def test_the_town_stays_the_place(self, monkeypatch):
+        # "Air alert in Sochi" is what was reported and is more use than the
+        # krai's name; the region is recorded beside it.
+        self.wired(monkeypatch, reverse="Краснодарский край")
+        out = self.alert(monkeypatch)
+        assert out["place_match"] == "Sochi"
+        assert out["region_over"] == "Краснодарский край"
+
+    def test_a_drone_over_a_town_is_still_at_the_town(self, monkeypatch):
+        """The distinction this layer has spent a long time getting right.
+
+        A drone over Sochi is AT Sochi. Shading the krai for it would say a
+        warning covers ground nobody mentioned.
+        """
+        self.wired(monkeypatch, reverse="Краснодарский край")
+        out = self.alert(monkeypatch, kind="drone")
+        assert out["region_scope"] is None
+        assert out["shape"] is None
+
+    def test_a_point_outside_every_border_held_falls_through(self, monkeypatch):
+        # The held boundary must actually contain the point, or a warning in
+        # one province would be drawn over another.
+        self.wired(monkeypatch, held=[("Краснодарский край", self.KRAI)],
+                   reverse=None)
+        out = self.alert(monkeypatch, lat=60.0, lon=100.0)
+        assert out["region_scope"] is None
+
+    def test_nothing_known_leaves_it_as_a_point(self, monkeypatch):
+        # A triangle at the town is a worse drawing than a shaded province
+        # and a far better one than a province picked by guesswork.
+        self.wired(monkeypatch, reverse=None)
+        out = self.alert(monkeypatch)
+        assert out["region_scope"] is None
+        assert out["shape"] is None
+
+    def test_the_gazetteer_being_down_is_not_fatal(self, monkeypatch):
+        self.wired(monkeypatch)
+        monkeypatch.setattr(tracker.gazetteer, "region_at",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                tracker.gazetteer.GazetteerError("down")))
+        out = self.alert(monkeypatch)
+        assert out["placed"] is True
+        assert out["region_scope"] is None

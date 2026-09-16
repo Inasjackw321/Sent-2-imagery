@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend import neptun
+from backend import gazetteer, neptun
 
 
 @pytest.fixture(autouse=True)
@@ -34,3 +34,31 @@ def no_neptun_network(monkeypatch):
     neptun.forget()
     yield
     neptun.forget()
+
+
+@pytest.fixture(autouse=True)
+def no_gazetteer_network(monkeypatch):
+    """Nothing here reaches Nominatim.
+
+    Stubbed at the two functions that hold a requests.get, so a lookup added
+    later is caught by the same stub rather than quietly escaping it. It had
+    escaped: place_event reaches the gazetteer for any place the built-in
+    table does not hold, and the suite was waiting out a twenty-second
+    timeout per test against a blocked proxy to be told so.
+    """
+    def refuse(*a, **kw):
+        raise gazetteer.GazetteerError("the test suite does not reach the network")
+
+    # The real ones stashed rather than lost, the same way neptun's are.
+    # A handful of tests are about what _ask itself SENDS -- the country
+    # filter, the polygon threshold, the rate-limit reading -- and they
+    # cannot check that through a stub that replaced the thing being checked.
+    monkeypatch.setattr(gazetteer, "unstubbed_ask", gazetteer._ask,
+                        raising=False)
+    monkeypatch.setattr(gazetteer, "unstubbed_ask_reverse",
+                        gazetteer._ask_reverse, raising=False)
+    monkeypatch.setattr(gazetteer, "_ask", refuse)
+    monkeypatch.setattr(gazetteer, "_ask_reverse", refuse)
+    gazetteer.forget()
+    yield
+    gazetteer.forget()

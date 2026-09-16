@@ -175,6 +175,85 @@ def _ask(name: str, countries: str) -> dict[str, Any] | None:
     return read_place(found)
 
 
+# Where a point is, rather than where a name is.
+#
+# Nominatim answers this at /reverse, and zoom 5 is its own word for "the
+# administrative region", which is exactly the question: an air alert
+# reported at a town is a warning over the province that declared it, and
+# nothing else this app holds can say which province a town is in. The
+# built-in table cannot: its extents are squares around centres, they
+# overlap, and the smallest square containing Belgorod is Kharkiv oblast's.
+REVERSE_ZOOM = 5
+
+_reversed: dict[tuple[float, float], str | None] = {}
+
+
+def region_at(lat: float, lon: float, countries: str = "") -> str | None:
+    """The region a point is in, by name, or None.
+
+    Cached on the point rounded to a tenth of a degree -- about eleven
+    kilometres, far smaller than any province and far larger than the jitter
+    between two reports of the same town. Warnings come back to the same
+    places night after night, so this is one request per place ever rather
+    than one per warning.
+    """
+    key = (round(lat, 1), round(lon, 1))
+    with _lock:
+        if key in _reversed:
+            return _reversed[key]
+    name = _ask_reverse(lat, lon, countries)
+    with _lock:
+        _reversed[key] = name
+        if len(_reversed) > MAX_REMEMBERED:
+            _reversed.clear()
+    return name
+
+
+def _ask_reverse(lat: float, lon: float, countries: str) -> str | None:
+    global _calls
+    wait_turn()
+    try:
+        resp = requests.get(
+            config.NOMINATIM_REVERSE_URL, timeout=20,
+            headers={"User-Agent": config.USER_AGENT},
+            params={"lat": lat, "lon": lon, "format": "jsonv2",
+                    "zoom": REVERSE_ZOOM, "addressdetails": 1})
+    except requests.RequestException as exc:
+        raise GazetteerError(f"the gazetteer could not be reached: {exc}") from exc
+    if resp.status_code == 429:
+        raise GazetteerError("the gazetteer is rate limiting")
+    if not resp.ok:
+        raise GazetteerError(f"the gazetteer answered {resp.status_code}")
+    with _lock:
+        _calls += 1
+    try:
+        found = resp.json()
+    except ValueError:
+        return None
+    return read_region(found)
+
+
+def read_region(found: Any) -> str | None:
+    """The province name out of a reverse answer.
+
+    Their address block names the levels from the building up. "state" is the
+    federal subject in Russia and the oblast in Ukraine, which is the level a
+    warning is declared at; "region" is the federal district above it, too
+    coarse to draw. Asked for by name rather than taking display_name, which
+    is the whole address and is not a thing any gazetteer can be asked for.
+    """
+    if not isinstance(found, dict):
+        return None
+    address = found.get("address")
+    if not isinstance(address, dict):
+        return None
+    for level in ("state", "province", "region", "county"):
+        said = address.get(level)
+        if isinstance(said, str) and said.strip():
+            return " ".join(said.split())[:120]
+    return None
+
+
 def read_bbox(raw: Any) -> list[float] | None:
     """Nominatim's bounding box as [south, north, west, east], or None.
 
@@ -563,4 +642,8 @@ def forget() -> None:
         _wanted.clear()
         _asked_for_shapes.clear()
         _shape_tries.clear()
+        # And which region each point was found to be in. Left behind, it
+        # outlives the thing it is a cache of: a test that clears the
+        # gazetteer and asks again gets an answer from the run before.
+        _reversed.clear()
         _calls = 0

@@ -870,6 +870,59 @@ REGION_KINDS = ("administrative", "state", "region", "province", "county",
                 "district", "governorate", "emirate", "country")
 
 
+def region_around(lat: float, lon: float,
+                  countries: str = "") -> dict[str, Any] | None:
+    """The province a point is in, with its outline where that is known.
+
+    Two ways, cheapest first.
+
+    A boundary this app already holds is exact and free: once a province has
+    been drawn over once, every later warning inside it is decided by the
+    real border rather than by asking anybody. That covers the regions
+    warnings actually keep happening in, which is most of them.
+
+    Otherwise the gazetteer is asked which region the point is in, and that
+    region's outline is asked for in the background as usual -- so the first
+    warning in a new province is drawn from its extent and the second from
+    its border.
+    """
+    if lat is None or lon is None:
+        return None
+    for name, shape in gazetteer.outlines():
+        if _shape_holds(shape, lat, lon):
+            known = places.lookup(name) or {}
+            return {"name": name, "shape": shape,
+                    "bbox": list(known["bbox"]) if known.get("bbox") else None,
+                    "area_km": area_km(known) if known else None}
+    try:
+        name = gazetteer.region_at(lat, lon, countries)
+    except gazetteer.GazetteerError:
+        return None
+    if not name:
+        return None
+    known = places.lookup(name)
+    if known:
+        gazetteer.improve_later(known.get("name") or name, countries, urgent=True)
+        shape = gazetteer.outline(known.get("name") or name, countries)
+        return {"name": known.get("name") or name, "shape": shape,
+                "bbox": list(known["bbox"]) if known.get("bbox") else None,
+                "area_km": area_km(known)}
+    # Not in the table, so the gazetteer is the only source for both its
+    # position and its shape. Asked for in the background like any other.
+    gazetteer.improve_later(name, countries, urgent=True)
+    shape = gazetteer.outline(name, countries)
+    return {"name": name, "shape": shape, "bbox": None,
+            "area_km": None} if shape else None
+
+
+def _shape_holds(shape: Any, lat: float, lon: float) -> bool:
+    """Whether a GeoJSON polygon holds a point. Ray casting, in degrees."""
+    for ring in neptun._walk(shape):
+        if len(ring) >= 4 and neptun._ring_holds(ring, lon, lat):
+            return True
+    return False
+
+
 def is_region(place: dict[str, Any]) -> bool:
     """Whether a match is an area in its own right rather than a spot in one."""
     if place.get("category") == "boundary":
@@ -1087,6 +1140,32 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     out["region_scope"] = (
         "covers" if MOTION.get(item["kind"], "track") == "still" else "located"
     ) if is_region(here) else None
+
+    # A warning reported at a TOWN covers the region that town is in.
+    #
+    # "Air alert in Sochi" is a warning over Krasnodar Krai. Drawn at the
+    # town it was a triangle on one street corner of a province -- which is
+    # what the Russian side looked like beside Ukraine's filled oblasts,
+    # because NEPTUN key their alerts to regions and a Telegram post names
+    # whatever the poster named.
+    #
+    # Only warnings. A drone over Sochi is AT Sochi; shading the krai for it
+    # would say a warning covers ground nobody mentioned, which is the
+    # distinction this layer has spent a long time getting right.
+    if (out["region_scope"] is None
+            and MOTION.get(item["kind"], "track") == "still"):
+        wider = region_around(out["lat"], out["lon"], countries)
+        if wider:
+            out["region_scope"] = "covers"
+            out["region_wide"] = True
+            out["shape"] = wider.get("shape")
+            out["bbox"] = wider.get("bbox") or out["bbox"]
+            # The town stays the place: "Air alert in Sochi" is what was
+            # reported and is more use than the krai's name. The region is
+            # recorded beside it so the popup can say which was shaded.
+            out["region_over"] = wider.get("name")
+            if wider.get("area_km"):
+                out["area_km"] = wider["area_km"]
     # Kept meaning what it always meant: the whole region is under this.
     out["region_wide"] = out["region_scope"] == "covers"
     out["placed"] = True

@@ -187,6 +187,7 @@ class TestRefusingThingsThatAreNotPlaces:
             def json():
                 return answer()
 
+        monkeypatch.setattr(gazetteer, "_ask", gazetteer.unstubbed_ask)
         monkeypatch.setattr(gazetteer.requests, "get",
                             lambda url, params=None, **kw: (seen.update(params), Reply())[1])
         gazetteer._last_call = time.time() - 99
@@ -261,6 +262,7 @@ class TestOutlines:
             def json():
                 return answer()
 
+        monkeypatch.setattr(gazetteer, "_ask", gazetteer.unstubbed_ask)
         monkeypatch.setattr(gazetteer.requests, "get",
                             lambda url, params=None, **kw: (seen.update(params), Reply())[1])
         gazetteer._last_call = time.time() - 99
@@ -372,6 +374,7 @@ class TestPoliteness:
             seen.update(params or {})
             return Reply()
 
+        monkeypatch.setattr(gazetteer, "_ask", gazetteer.unstubbed_ask)
         monkeypatch.setattr(gazetteer.requests, "get", fake_get)
         gazetteer._last_call = time.time() - 99
         gazetteer.find("Zzyzxgrad", "ua")
@@ -385,6 +388,7 @@ class TestPoliteness:
             status_code = 429
             ok = False
 
+        monkeypatch.setattr(gazetteer, "_ask", gazetteer.unstubbed_ask)
         monkeypatch.setattr(gazetteer.requests, "get", lambda *a, **k: Reply())
         gazetteer._last_call = time.time() - 99
         with pytest.raises(gazetteer.GazetteerError, match="rate limiting"):
@@ -762,3 +766,102 @@ class TestTheOutlineIsPickedOutOfTheAnswer:
         got = gazetteer.read_place([self.node(), huge])
         assert got is not None
         assert got["shape"] is None
+
+
+class TestWhichRegionAPointIsIn:
+    """For a warning reported at a town.
+
+    "Air alert in Sochi" is a warning over Krasnodar Krai, and nothing else
+    this app holds can say which province a town is in. The built-in table
+    cannot: its extents are squares around centres, they overlap, and the
+    smallest square containing Belgorod is Kharkiv oblast's -- measured, and
+    the reason this asks rather than guesses.
+    """
+
+    def test_the_province_comes_out_of_the_address(self):
+        assert gazetteer.read_region({"address": {
+            "town": "Sochi", "state": "Краснодарский край",
+            "country": "Россия"}}) == "Краснодарский край"
+
+    def test_a_country_with_no_state_level_falls_back(self):
+        # Their address block is not the same everywhere.
+        assert gazetteer.read_region(
+            {"address": {"county": "Kent", "country": "UK"}}) == "Kent"
+
+    def test_an_answer_with_no_region_in_it_is_none(self):
+        assert gazetteer.read_region({"address": {"country": "Россия"}}) is None
+        assert gazetteer.read_region({}) is None
+        assert gazetteer.read_region("nonsense") is None
+        assert gazetteer.read_region(None) is None
+
+    def test_it_asks_the_right_question(self, monkeypatch):
+        seen = {}
+
+        class Reply:
+            status_code = 200
+            ok = True
+
+            @staticmethod
+            def json():
+                return {"address": {"state": "Краснодарский край"}}
+
+        def capture(url, **kw):
+            seen["url"] = url
+            seen.update(kw.get("params") or {})
+            return Reply()
+
+        monkeypatch.setattr(gazetteer, "_ask_reverse",
+                            gazetteer.unstubbed_ask_reverse)
+        monkeypatch.setattr(gazetteer.requests, "get", capture)
+        gazetteer._last_call = time.time() - 99
+        assert gazetteer.region_at(43.6, 39.73, "ru") == "Краснодарский край"
+        assert "reverse" in seen["url"]
+        # Their own word for "the administrative region", which is the level
+        # a warning is declared at.
+        assert seen["zoom"] == gazetteer.REVERSE_ZOOM
+        assert seen["addressdetails"] == 1
+
+    def test_the_answer_is_kept(self, monkeypatch):
+        """Warnings come back to the same places night after night.
+
+        One request per place ever, rather than one per warning.
+        """
+        calls = []
+        monkeypatch.setattr(gazetteer, "_ask_reverse",
+                            lambda lat, lon, countries:
+                            calls.append(1) or "Краснодарский край")
+        gazetteer.forget()
+        assert gazetteer.region_at(43.60, 39.73, "ru") == "Краснодарский край"
+        # The same town, jittered by less than the cache's resolution.
+        assert gazetteer.region_at(43.61, 39.74, "ru") == "Краснодарский край"
+        assert len(calls) == 1
+
+    def test_two_towns_a_province_apart_are_not_one_answer(self, monkeypatch):
+        """The cache's resolution has to be smaller than a province.
+
+        Rounded to whole degrees it is a hundred and eleven kilometres, which
+        is wider than some regions and would hand one province's name to a
+        warning in the next one along.
+        """
+        calls = []
+        monkeypatch.setattr(gazetteer, "_ask_reverse",
+                            lambda lat, lon, countries:
+                            calls.append((lat, lon)) or f"region at {lon}")
+        gazetteer.forget()
+        # Twelve kilometres apart, and on opposite sides of a border --
+        # which near Belgorod is an ordinary distance for two towns in two
+        # countries. Both round to the same whole degree and to different
+        # tenths, so this passes only while the key is the finer one.
+        gazetteer.region_at(50.62, 36.52, "ru")
+        gazetteer.region_at(50.71, 36.62, "ru")
+        assert len(calls) == 2
+
+    def test_but_a_different_place_is_asked_about(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(gazetteer, "_ask_reverse",
+                            lambda lat, lon, countries:
+                            calls.append((lat, lon)) or "somewhere")
+        gazetteer.forget()
+        gazetteer.region_at(43.6, 39.7, "ru")
+        gazetteer.region_at(50.6, 36.6, "ru")
+        assert len(calls) == 2

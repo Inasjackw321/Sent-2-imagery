@@ -181,6 +181,9 @@ def satellite_for_collection(collection: str | None) -> str:
 DEMO_MODE = os.environ.get("DEMO_MODE", "0").lower() in ("1", "true", "yes", "on")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+# The other direction: which region a point is in. Used for a warning
+# reported at a town, which covers the province that declared it.
+NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 USER_AGENT = "Sent-2-imagery/1.0 (https://github.com/Inasjackw321/Sent-2-imagery)"
 
 # GDAL tuning for reading COGs over HTTP range requests.
