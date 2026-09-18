@@ -67,7 +67,7 @@ from typing import Any
 
 import requests
 
-from . import config, gazetteer, neptun, places, reports
+from . import config, gazetteer, neighbours, neptun, places, reports
 
 log = logging.getLogger("sent2.tracker")
 
@@ -1838,6 +1838,8 @@ def outlines() -> list[dict[str, Any]]:
     key and under each of its names, so a name-based pass would send a
     province's border two or three times.
     """
+    want_neighbours()
+
     out: list[dict[str, Any]] = []
     already: list[Any] = []
 
@@ -1861,13 +1863,126 @@ def outlines() -> list[dict[str, Any]]:
     # so everything in it is Ukrainian by definition rather than by guess.
     for name, shape in neptun.shapes().items():
         keep(name, shape, "ua")
+    # Poland's and Belarus's, from the closed lists in neighbours.py. Before
+    # the loose ones below, because these are named regions of a named
+    # country and the pass below would file the same boundary as "elsewhere"
+    # -- and the de-duplication is by identity, so whichever came first won.
+    for code, name, shape in neighbour_outlines():
+        keep(name, shape, code)
     # And these are learned one at a time as warnings are drawn over them.
     # Mostly Russia, and "elsewhere" rather than "ru" because the gazetteer
     # will hand back a Belarusian oblast just as readily and calling that
     # Russia would be a claim this app has no business making.
+    #
+    # Minus the neighbours' own names, which the pass above has already
+    # placed. The de-duplication above is by identity, and a province that
+    # answered to BOTH its spellings is two objects holding two slightly
+    # different simplifications of one border -- so it came through here as
+    # well, drawn a second time and filed as a country nobody had named.
+    spoken_for = neighbour_names()
     for name, shape in gazetteer.outlines():
+        if _same_name(name) in spoken_for:
+            continue
         keep(name, shape, "elsewhere")
+
+    # Which countries are here in full.
+    #
+    # The page draws a red national border, and it may only draw one round a
+    # country it has every province of. Round a partial set the same line
+    # would be a fiction -- three Russian oblasts learned from three warnings
+    # would come out as a red frontier that follows no border on earth, drawn
+    # in the one colour on the picture that means "this is where a country
+    # ends". So it is said here, by the half of the app that knows, rather
+    # than guessed at by the half that draws.
+    whole = whole_countries(out)
+    for item in out:
+        item["whole"] = item["in"] in whole
     return out
+
+
+def _same_name(name: str) -> str:
+    """A name in the one spelling two of them can be compared in.
+
+    The gazetteer's own normalisation, because that is what its keys are in
+    and what outlines() hands back.
+    """
+    return " ".join(str(name or "").lower().split())
+
+
+def neighbour_names() -> set[str]:
+    """Every spelling the neighbours may be known under, comparably."""
+    return {_same_name(one)
+            for _code, _name, spellings in neighbours.REGIONS
+            for one in spellings}
+
+
+def neighbour_outlines() -> list[tuple[str, str, Any]]:
+    """Poland's and Belarus's provinces, as (country, name, shape).
+
+    One entry per region at most, whichever spelling found it -- see the note
+    in neighbours.py about the two. Asking under both names and keeping both
+    answers would draw the same province twice, and the second copy is a
+    slightly different simplification of the same border, so the pair reads
+    as a shimmer along every line.
+    """
+    got: list[tuple[str, str, Any]] = []
+    for code, name, asked in neighbours.REGIONS:
+        for spelling in asked:
+            shape = gazetteer.outline(spelling, code)
+            if shape:
+                got.append((code, name, shape))
+                break
+    return got
+
+
+def whole_countries(outlines_had: list[dict[str, Any]]) -> set[str]:
+    """Which countries every one of whose provinces is present.
+
+    Ukraine is always in it when anything Ukrainian is: NEPTUN's file is the
+    country, so holding any of it is holding all of it. The neighbours have
+    to be counted, because their boundaries arrive one request at a time and
+    a country half way through arriving is not a country you can draw a
+    border round.
+    """
+    tally: dict[str, int] = {}
+    for item in outlines_had:
+        tally[item["in"]] = tally.get(item["in"], 0) + 1
+    whole = {code for code, wanted in neighbours.EXPECTED.items()
+             if tally.get(code, 0) >= wanted}
+    if tally.get("ua"):
+        whole.add("ua")
+    return whole
+
+
+def want_neighbours() -> int:
+    """Queue the next missing neighbour boundary. Returns how many were asked.
+
+    One spelling per region per call, and only where no spelling has answered
+    yet, so this costs nothing once the set is complete: improve_later refuses
+    a name already queued or already known, so the walk simply finds nothing
+    to do and stops asking.
+    """
+    asked = 0
+    for code, _name, spellings in neighbours.REGIONS:
+        if any(gazetteer.outline(one, code) for one in spellings):
+            continue
+        # Something already in the air for this region. Without this the walk
+        # queued the fallback spelling on the next poll, thirty seconds after
+        # the first one and long before it had failed -- so every region was
+        # asked for twice over and the second answer was thrown away.
+        if any(gazetteer.queued(one, code) for one in spellings):
+            continue
+        for spelling in spellings:
+            # Escalation, and the only thing that makes the second spelling
+            # worth listing: a name Nominatim has no polygon for is asked
+            # four times and then abandoned, and THAT is when the other name
+            # is worth trying rather than before.
+            if gazetteer.given_up(spelling, code):
+                continue
+            if gazetteer.improve_later(spelling, code):
+                asked += 1
+                break
+    return asked
 
 
 def take_neptun() -> tuple[int, int]:
@@ -2218,6 +2333,13 @@ def poll() -> dict[str, Any]:
             "placed": 0, "problem": str(exc)[:120],
         }
     _remember_sources(seen_now)
+
+    # The neighbours' boundaries, asked for here as well as when a picture is
+    # exported. Asking only at export would mean the first picture of the
+    # night had a black half: forty-odd boundaries at one request every three
+    # seconds is a couple of minutes, and nobody waits two minutes with the
+    # export dialog open. Asked from the poll they are simply there.
+    want_neighbours()
 
     if not fresh:
         # Nothing new from the channels. Not "nothing new" any more: the feed

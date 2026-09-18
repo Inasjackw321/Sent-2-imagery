@@ -514,6 +514,27 @@ def outlines() -> list[tuple[str, Any]]:
     return got
 
 
+def queued(name: str, countries: str) -> bool:
+    """Whether an outline for this name is waiting or in flight.
+
+    For a caller with a SECOND name to try for the same region -- see
+    neighbours.py. "Already asked for" and "asked for as many times as it is
+    going to be" are the same state in _asked_for_shapes, and a caller that
+    cannot tell them apart either escalates to the fallback spelling while
+    the first request is still in the air or never escalates at all.
+    """
+    with _lock:
+        key = _key(name, countries)
+        return (key in _asked_for_shapes
+                and _shape_tries.get(key, 0) < MOST_SHAPE_TRIES)
+
+
+def given_up(name: str, countries: str) -> bool:
+    """Whether this name has had all the asks it is going to get."""
+    with _lock:
+        return _shape_tries.get(_key(name, countries), 0) >= MOST_SHAPE_TRIES
+
+
 def improve_later(name: str, countries: str, urgent: bool = False) -> bool:
     """Ask for a region's real outline in the background. Never blocks.
 

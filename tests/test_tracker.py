@@ -30,7 +30,8 @@ import time
 
 import pytest
 
-from backend import gazetteer as gaz, neptun, ollama, places, reports, tracker
+from backend import (gazetteer as gaz, neighbours, neptun, ollama, places,
+                     reports, tracker)
 
 
 class Reply:
@@ -3530,6 +3531,189 @@ class TestTheBordersForAPictureOfItsOwn:
         assert len(tracker.outlines()) == tracker.MOST_OUTLINES
 
     def test_nothing_known_is_an_empty_list_rather_than_a_failure(self):
+        assert tracker.outlines() == []
+
+
+class TestTheNeighboursAreOnTheMapToo:
+    """"Make it so there are regions in Poland and Belarus present."
+
+    A picture of this layer stopped at Ukraine's edge: north and west of it
+    the ground was black, which is not what the ground is. A reader looking
+    at the empty half cannot tell whether nothing is happening there or
+    whether the map has nothing to say about it.
+
+    Ukraine's provinces arrive as a file. Nobody publishes one for Poland or
+    Belarus, so they are named in neighbours.py and their boundaries fetched
+    one at a time -- which makes "are they all here yet" a real question, and
+    the answer decides whether a national border may be drawn.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+        gaz.forget()
+
+    teardown_method = setup_method
+
+    SHAPE = {"type": "Polygon",
+             "coordinates": [[[22.0, 51.0], [23.0, 51.0], [23.0, 52.0],
+                              [22.0, 51.0]]]}
+
+    def give(self, code, names, shape=None):
+        """Hand the gazetteer a boundary for each of these regions."""
+        for i, name in enumerate(names):
+            # A shape per region, since outlines() de-duplicates by identity
+            # and one object shared between them would come out once.
+            own = shape or {"type": "Polygon", "coordinates": [
+                [[22.0 + i, 51.0], [23.0 + i, 51.0], [23.0 + i, 52.0],
+                 [22.0 + i, 51.0]]]}
+            gaz.remember(name, code, {
+                "name": name, "lat": 51.5, "lon": 22.5 + i,
+                "category": "boundary", "bbox": (51.0, 52.0, 22.0, 23.0),
+                "shape": own})
+
+    def whole_country(self, code):
+        self.give(code, [region[2][0] for region in neighbours.REGIONS
+                         if region[0] == code])
+
+    def test_a_polish_voivodeship_is_filed_under_poland(self):
+        self.give("pl", ["województwo lubelskie"])
+        got = tracker.outlines()
+        assert [o["in"] for o in got] == ["pl"]
+
+    def test_and_a_belarusian_oblast_under_belarus(self):
+        self.give("by", ["Брэсцкая вобласць"])
+        assert [o["in"] for o in tracker.outlines()] == ["by"]
+
+    def test_the_name_on_the_map_is_the_native_one(self):
+        # Whichever spelling found it. A map that labels Ukraine in
+        # Ukrainian and Poland in English is a map drawn from somewhere else.
+        self.give("pl", ["Lublin Voivodeship"])
+        assert [o["name"] for o in tracker.outlines()] == [
+            "województwo lubelskie"]
+
+    def test_a_region_found_under_both_spellings_is_drawn_once(self):
+        """The reason neighbour_outlines stops at the first hit.
+
+        Two answers for one province are two slightly different
+        simplifications of the same border, and the pair reads as a shimmer
+        along every line.
+        """
+        self.give("pl", ["województwo lubelskie", "Lublin Voivodeship"])
+        assert len(tracker.outlines()) == 1
+
+    def test_no_red_border_until_the_whole_country_is_here(self):
+        """A frontier round a country half way through arriving is a fiction.
+
+        It is drawn in the one colour on the picture that means "a country
+        ends", so the flag has to be earned rather than assumed.
+        """
+        every = [r[2][0] for r in neighbours.REGIONS if r[0] == "pl"]
+        self.give("pl", every[:-1])
+        assert all(o["whole"] is False for o in tracker.outlines())
+        self.give("pl", every[-1:])
+        assert all(o["whole"] is True for o in tracker.outlines())
+
+    def test_ukraine_is_whole_as_soon_as_any_of_it_is_here(self):
+        # NEPTUN's file IS the country, so holding any of it is holding all.
+        neptun.remember_shapes({"сумська область": self.SHAPE})
+        assert [o["whole"] for o in tracker.outlines()] == [True]
+
+    def test_a_region_learned_from_a_warning_is_never_whole(self):
+        """Three Russian oblasts are not Russia.
+
+        This is the case the flag exists to refuse: they arrive one per
+        warning, they are tagged "elsewhere" because nothing here knows
+        which country they are in, and a red line round them would follow no
+        border on earth.
+        """
+        gaz.remember("Брянская область", "ru", {
+            "name": "Брянская область", "lat": 52.9, "lon": 33.5,
+            "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
+            "shape": self.SHAPE})
+        got = tracker.outlines()
+        assert [o["in"] for o in got] == ["elsewhere"]
+        assert [o["whole"] for o in got] == [False]
+
+    def test_poland_and_belarus_are_counted_apart(self):
+        # One country being complete says nothing about the other.
+        self.whole_country("pl")
+        self.give("by", ["Брэсцкая вобласць"])
+        by_country = {o["in"]: o["whole"] for o in tracker.outlines()}
+        assert by_country == {"pl": True, "by": False}
+
+    def test_every_region_is_asked_for(self):
+        asked = tracker.want_neighbours()
+        assert asked == len(neighbours.REGIONS)
+
+    def test_and_not_asked_for_twice(self):
+        tracker.want_neighbours()
+        assert tracker.want_neighbours() == 0
+
+    def test_nor_asked_for_once_it_is_known(self):
+        """Costs nothing for the rest of the process.
+
+        Called from every poll, so a walk that kept re-queueing a region
+        whose boundary is already in hand would be a request every thirty
+        seconds for something already drawn.
+        """
+        self.whole_country("pl")
+        asked = tracker.want_neighbours()
+        assert asked == len(neighbours.BELARUS)
+
+    def test_the_lists_are_the_countries_they_claim_to_be(self):
+        # Poland has sixteen voivodeships; Belarus six oblasts and a capital
+        # that is its own region. Getting either count wrong would mean the
+        # red border either never appears or appears round a country with a
+        # hole in it.
+        assert len(neighbours.POLAND) == 16
+        assert len(neighbours.BELARUS) == 7
+        assert neighbours.EXPECTED == {"pl": 16, "by": 7}
+
+    def test_no_region_is_listed_twice(self):
+        names = [region[1] for region in neighbours.REGIONS]
+        assert len(set(names)) == len(names)
+
+    def test_every_region_has_a_spelling_to_ask_under(self):
+        for code, name, spellings in neighbours.REGIONS:
+            assert code in neighbours.EXPECTED, name
+            assert spellings, name
+            assert name in spellings, name
+
+    def test_the_second_spelling_waits_for_the_first_to_fail(self):
+        """The only thing that makes a second spelling worth listing.
+
+        Which name tag a region carries in OpenStreetMap is not something
+        this app can know in advance, so each is asked for under its own
+        name and then under English. But asking both at once is asking
+        twice for one province and throwing an answer away -- so the
+        fallback only goes in once the first has had all four of its asks.
+        """
+        one, two = neighbours.POLAND[0][2][:2]
+        assert tracker.want_neighbours() == len(neighbours.REGIONS)
+        assert gaz.queued(one, "pl") is True
+        # Still in the air: nothing more is asked for this region.
+        assert tracker.want_neighbours() == 0
+
+        for _ in range(gaz.MOST_SHAPE_TRIES):
+            gaz._try_again(one, "pl")
+        assert gaz.given_up(one, "pl") is True
+
+        # Now, and not before, the other spelling is worth trying.
+        assert tracker.want_neighbours() == 1
+        assert gaz.queued(two, "pl") is True
+
+    def test_a_region_that_answers_to_neither_is_simply_absent(self):
+        """Rather than a gap in a country that claims to be whole.
+
+        Which is why `whole` is counted from the boundaries actually held.
+        """
+        tracker.want_neighbours()
+        for code, _name, spellings in neighbours.REGIONS:
+            for spelling in spellings:
+                for _ in range(gaz.MOST_SHAPE_TRIES):
+                    gaz._try_again(spelling, code)
+        assert tracker.want_neighbours() == 0
         assert tracker.outlines() == []
 
 

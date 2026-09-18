@@ -89,6 +89,20 @@ const LAND = 'rgba(120, 160, 210, 0.08)';
 const BORDER_SHADOW = 'rgba(0, 0, 0, 0.55)';
 const LABEL = 'rgba(200, 218, 240, 0.55)';
 
+// The international borders.
+//
+// Every line on the picture was the same pale blue, so a picture with Poland
+// and Belarus on it read as one country with a great many provinces -- which
+// is the reading that matters most and the one the map was not making. A
+// drone four kilometres from Belarus and a drone four kilometres from the
+// next oblast are not the same report, and the only thing on the picture
+// that could say so is the line between them.
+//
+// A shade off the jet drone's red, which is the one other red here, and told
+// apart from it by being a line rather than a filled glyph on a dark disc.
+// See drawFrontiers for what this may be drawn around and what it may not.
+const FRONTIER = 'rgba(255, 96, 92, 0.95)';
+
 // The bands top and bottom. Text over a map needs something behind it or it
 // sits on whichever border happens to be under it.
 const SCRIM = 'rgba(8, 10, 15, 0.82)';
@@ -374,7 +388,13 @@ function drawLand(ctx, frame, outlines) {
   // Each ring walked once and kept, because it is drawn three times: the
   // land, then a dark line under the border, then the border itself. Three
   // passes over one path rather than three walks of the same coordinates.
+  //
+  // Grouped by country as well, for the frontiers below. Same single walk:
+  // every path goes in the flat list that draws the provinces and in its own
+  // country's list, and neither is a second pass over the coordinates.
   const paths = [];
+  const byCountry = new Map();
+  const frontiered = frontierCountries(outlines);
   for (const outline of outlines ?? []) {
     walkRings(outline.shape, (ring) => {
       const path = new Path2D();
@@ -385,6 +405,10 @@ function drawLand(ctx, frame, outlines) {
       });
       path.closePath();
       paths.push(path);
+      if (frontiered.has(outline.in)) {
+        if (!byCountry.has(outline.in)) byCountry.set(outline.in, new Path2D());
+        byCountry.get(outline.in).addPath(path);
+      }
     });
   }
 
@@ -399,6 +423,70 @@ function drawLand(ctx, frame, outlines) {
   ctx.strokeStyle = BORDER;
   ctx.lineWidth = 1.5;
   for (const path of paths) ctx.stroke(path);
+
+  drawFrontiers(ctx, frame, byCountry);
+}
+
+/**
+ * Which countries may have a red border drawn round them.
+ *
+ * Only one whose every province is on the picture. That is the `whole` flag
+ * the backend sends, and it is the whole of the honesty of this: three
+ * Russian oblasts learned from three warnings, ringed in red, would be a
+ * frontier that follows no border on earth drawn in the one colour here that
+ * means "a country ends".
+ *
+ * Its own function, and exported, because it is the rule rather than the
+ * drawing -- and a rule that can only be checked by reading pixels off a
+ * canvas is a rule nobody checks.
+ */
+export function frontierCountries(outlines) {
+  const got = new Set();
+  for (const outline of outlines ?? []) {
+    if (outline?.whole && outline?.in) got.add(outline.in);
+  }
+  return got;
+}
+
+/**
+ * The national borders, red, over the pale provincial ones.
+ *
+ * How it is done is worth a note, because the obvious way does not work. A
+ * country's border is the outside edge of the union of its provinces, and
+ * there is no polygon union in a canvas -- stroking the provinces gives red
+ * along every internal oblast line too, which is the opposite of the point.
+ *
+ * So the strokes are laid down at twice the width they want to be and then
+ * the union is punched out of them:
+ *
+ *   - stroke every province of the country, wide, on a layer of its own;
+ *   - fill the union of those provinces in `destination-out`.
+ *
+ * An internal edge is interior to the union, so the whole of its stroke is
+ * erased. The perimeter's stroke straddles the edge, so its outer half
+ * survives -- and where two of these countries meet, the two surviving
+ * halves make one line centred on the border between them. No topology, no
+ * shared-vertex assumption, exact at any zoom.
+ */
+function drawFrontiers(ctx, frame, byCountry) {
+  if (!byCountry.size) return;
+  const width = Math.max(2, Math.round(frame.width * 0.0022));
+  for (const country of byCountry.values()) {
+    const layer = document.createElement('canvas');
+    layer.width = frame.width;
+    layer.height = frame.height;
+    const pen = layer.getContext('2d');
+    if (!pen) continue;
+    pen.lineJoin = 'round';
+    pen.lineCap = 'round';
+    // Twice, because half of it is about to be erased.
+    pen.lineWidth = width * 2;
+    pen.strokeStyle = FRONTIER;
+    pen.stroke(country);
+    pen.globalCompositeOperation = 'destination-out';
+    pen.fill(country);
+    ctx.drawImage(layer, 0, 0);
+  }
 }
 
 /**
@@ -569,9 +657,16 @@ function inside(ring, x, y) {
 export function shortName(raw) {
   const name = String(raw ?? '').trim();
   if (!name) return '';
-  const trimmed = name.replace(
-    /\s+(?:область|обл\.?|oblast|region|province|krai|край|okrug|округ)$/i,
+  let trimmed = name.replace(
+    // "вобласць" is Belarusian and was in none of these, so every Belarusian
+    // oblast carried its type word on the map while its Ukrainian and
+    // Russian neighbours did not.
+    /\s+(?:область|обл\.?|вобласць|oblast|region|province|krai|край|okrug|округ|voivodeship)$/i,
     '');
+  // Polish puts the type word at the FRONT -- "województwo lubelskie" -- so
+  // stripping a suffix left sixteen labels each three quarters the same
+  // word, which is the least informative thing a map label can be.
+  trimmed = trimmed.replace(/^(?:województwo|voivodeship of)\s+/i, '');
   // Upper case, because the data arrives lower case -- "київська область" --
   // and a lower-case word dropped on a map reads as a note somebody left
   // rather than as the name of the ground under it.

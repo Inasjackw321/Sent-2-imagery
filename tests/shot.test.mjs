@@ -12,7 +12,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { closeIn, labelSpot, legendKeys, shortName, stampedAt }
+import { closeIn, frontierCountries, labelSpot, legendKeys, shortName,
+  stampedAt }
   from '../frontend/js/trackershot.js';
 
 const VIEW = { north: 52.5, south: 45.5, west: 22.0, east: 40.0 };
@@ -154,6 +155,59 @@ test('a province is named without its type word', () => {
   assert.equal(shortName('Белгородская область'), 'БЕЛГОРОДСКАЯ');
   assert.equal(shortName('Krasnodar krai'), 'KRASNODAR');
   assert.equal(shortName('Kharkiv oblast'), 'KHARKIV');
+});
+
+// A red line is drawn round a country, and red on this picture means "a
+// country ends here". These are about it never saying that of ground where
+// it is not true.
+
+test('a country every province of which is here gets a red border', () => {
+  const got = frontierCountries([
+    { name: 'a', in: 'pl', whole: true },
+    { name: 'b', in: 'pl', whole: true },
+  ]);
+  assert.deepEqual([...got], ['pl']);
+});
+
+test('a country half way through arriving gets none', () => {
+  // Its boundaries come one request at a time, so this is the state the map
+  // is in for the first couple of minutes of every run.
+  const got = frontierCountries([
+    { name: 'a', in: 'by', whole: false },
+    { name: 'b', in: 'by', whole: false },
+  ]);
+  assert.deepEqual([...got], []);
+});
+
+test('and a province nobody could name a country for gets none', () => {
+  // Three Russian oblasts learned from three warnings are not Russia.
+  const got = frontierCountries([
+    { name: 'a', in: 'elsewhere', whole: false },
+    { name: 'b', in: 'ua', whole: true },
+  ]);
+  assert.deepEqual([...got], ['ua']);
+});
+
+test('nothing to draw is not a failure', () => {
+  assert.equal(frontierCountries([]).size, 0);
+  assert.equal(frontierCountries(null).size, 0);
+  assert.equal(frontierCountries([null, {}, { in: 'pl' }]).size, 0);
+});
+
+test('the neighbours are named without theirs either', () => {
+  // Polish puts the type word at the FRONT. Stripping a suffix left sixteen
+  // labels each three quarters the same word, which is the least
+  // informative thing a map label can be.
+  assert.equal(shortName('województwo lubelskie'), 'LUBELSKIE');
+  assert.equal(shortName('województwo warmińsko-mazurskie'),
+    'WARMIŃSKO-MAZURSKIE');
+  // And Belarusian spells oblast its own way, which was in none of the
+  // patterns -- so every Belarusian region carried its type word on the map
+  // while its Ukrainian and Russian neighbours did not.
+  assert.equal(shortName('Брэсцкая вобласць'), 'БРЭСЦКАЯ');
+  assert.equal(shortName('Магілёўская вобласць'), 'МАГІЛЁЎСКАЯ');
+  // A city that is its own region has no type word to lose.
+  assert.equal(shortName('Мінск'), 'МІНСК');
 });
 
 test('a name that is only its type word keeps it', () => {
