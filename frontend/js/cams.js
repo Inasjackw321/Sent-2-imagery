@@ -224,6 +224,17 @@ export const CAMS = [
     kind: 'still', src: 'https://imgproxy.windy.com/_/full/plain/current/1793889300/original.jpg',
     host: 'windy.com',
   },
+  // Kalvarija, on the Via Baltica a few kilometres from the Polish border --
+  // the Suwałki gap, which is the stretch of NATO ground most often named in
+  // the same sentence as this map's subject.
+  {
+    id: 'suwalki-gap', name: 'Suwałki gap', place: 'Kalvarija, Lithuania',
+    tz: 'Europe/Vilnius',
+    lat: 54.3230, lon: 23.1449, precision: 'given position',
+    kind: 'still',
+    src: 'https://eismoinfo.lt/eismoinfo-backend/image-provider/camera/last?id=269',
+    host: 'eismoinfo.lt',
+  },
   {
     id: 'azov-coast', name: 'Sea of Azov coast', place: 'Krasnodar Krai, Russia',
     tz: 'Europe/Moscow',

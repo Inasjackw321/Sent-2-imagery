@@ -56,6 +56,21 @@ const LIST_ROWS = 20;
 // grid and scaled to this, so one number changes all of them together.
 const GLYPH = 24;
 
+// A drone's mark is bigger than the rest, and that is legibility rather than
+// emphasis.
+//
+// Every other kind is a solid shape whose whole silhouette is the meaning: a
+// triangle is a triangle at any size. A quadcopter is four rings, a frame and
+// a nose, and at twenty-four pixels the nose -- which is the course, and the
+// most useful thing this layer knows about a mark -- was indistinguishable
+// from no nose at all. Measured rather than judged by eye: the three states
+// were rendered side by side at 24, 34 and 64 and only the larger two could
+// be told apart.
+//
+// So the glyph that needs the room gets it. The ratio is written once, here,
+// and the picture export reads the same number so the two cannot drift.
+export const ROTARY_SCALE = 32 / 24;
+
 const EARTH_KM = 6371.0088;
 
 let map = null;
@@ -361,6 +376,63 @@ const ARROW = (c) => `<path d="M9 1.4 L15.6 15.6 L2.4 15.6 Z" fill="${c}"/>`;
 const BORROWED = (c) => `<path d="M9 2.2 L14.8 15 L3.2 15 Z"
   fill="none" stroke="${c}" stroke-width="1.7" stroke-linejoin="round"/>`;
 
+// A drone is drawn as a drone.
+//
+// The arrow says where a thing is going and says nothing about what it is,
+// which left the whole weight of "drone or missile" on the colour. The
+// reference maps draw a quadcopter, and they are right to: at a glance across
+// a screen the silhouette reads before the hue does, and it reads for a
+// colour-blind viewer, on a washed-out phone, and over a shaded warning --
+// three cases where amber against purple does not.
+//
+// The frame is the same X of four rotors those maps use. What is added here
+// is the NOSE, and it is not decoration: everything this layer knows about
+// where a thing is heading lives in the direction its mark points, and a
+// quadcopter with no front would have thrown that away to look like the
+// reference. So the nose is the course, and the three states the arrows
+// spent a long time getting right are kept exactly:
+//
+//   solid nose    the course the report stated
+//   hollow nose   a course borrowed from the group around it
+//   no nose       nothing anywhere said which way -- see glyphParts
+//
+// Only the drone family. A missile keeps the arrow, so the two now differ in
+// silhouette as well as in hue rather than in hue alone.
+// The rotors sit clear of the nose above them: at twenty-four pixels a
+// triangle overlapping the top two circles reads as a fifth rotor rather than
+// as a direction. Centred on 9,10.1 rather than on 9,9, so that the airframe
+// AND its nose together balance on the reported position -- the icon is
+// anchored at the middle of the box and the mark has to sit where the report
+// put it.
+const ROTORS = (c, w) => `
+  <path d="M5.6 6.7 L12.4 13.5 M12.4 6.7 L5.6 13.5"
+        stroke="${c}" stroke-width="${w}" stroke-linecap="round"/>
+  <circle cx="4.9" cy="6" r="2.5" fill="none" stroke="${c}" stroke-width="${w}"/>
+  <circle cx="13.1" cy="6" r="2.5" fill="none" stroke="${c}" stroke-width="${w}"/>
+  <circle cx="4.9" cy="14.2" r="2.5" fill="none" stroke="${c}" stroke-width="${w}"/>
+  <circle cx="13.1" cy="14.2" r="2.5" fill="none" stroke="${c}" stroke-width="${w}"/>
+  <rect x="7.2" y="8.3" width="3.6" height="3.6" rx="1.1" fill="${c}"/>`;
+
+// Wider than it is tall and sitting above the frame, so the three states are
+// told apart across a room: filled, outlined, absent.
+const NOSE = (c, filled) => `<path d="M9 0.5 L12 3.4 H6 Z"
+  ${filled ? `fill="${c}"` : `fill="none" stroke="${c}" stroke-width="1.6"`}
+  stroke-linejoin="round"/>`;
+
+// One airframe, three noses. The rotors are identical in all three on
+// purpose: if they differed too, the mark would be saying something about
+// what the thing IS rather than about how well its course is known, and
+// those are different claims.
+const AIRFRAME = 1.6;
+const DRONE = (c) => ROTORS(c, AIRFRAME) + NOSE(c, true);
+const DRONE_BORROWED = (c) => ROTORS(c, AIRFRAME) + NOSE(c, false);
+const DRONE_ADRIFT = (c) => ROTORS(c, AIRFRAME);
+
+// Which kinds are drawn as an aircraft with rotors. The backend's own kind
+// names rather than a guess at them: a kind added there and spelt differently
+// here would quietly go back to being an arrow.
+const ROTARY = new Set(['drone', 'jet_drone', 'fpv', 'recon']);
+
 // No number on a mark. It was a plate reading "3" on the arrow, and before
 // that it was three arrows; both are gone for the same reason, said twice
 // from the other side of the screen: the count is the least dependable thing
@@ -410,34 +482,50 @@ export function glyphParts(event, colour, facing) {
        <circle cx="9" cy="9" r="1.6" fill="${colour}"/>`, facing ?? 0);
   }
 
+  // Solid when the course came from the report, hollow when it was borrowed
+  // from the group. Both point somewhere real; the weight is the difference
+  // between an observation and an inference, and it is on the map rather than
+  // only in the popup because that is where it is read.
+  const borrowed = event.course_from === 'group';
+
+  if (ROTARY.has(event.kind)) {
+    // A drone, drawn as one. The rotors say what it is and the nose says
+    // where it is going -- and where nothing said which way, the same
+    // airframe is drawn with no nose at all rather than pointed north and
+    // meant, which is the invention this whole layer exists to avoid.
+    if (facing == null) return svg('drone-adrift', DRONE_ADRIFT(colour));
+    return svg(`drone${borrowed ? '-borrowed' : ''}`,
+      (borrowed ? DRONE_BORROWED : DRONE)(colour), facing);
+  }
+
   if (facing == null) {
     // In the air, and nothing anywhere said which way -- not the report, and
-    // not the group around it. An arrow here would point north and mean it,
-    // which is the invention this whole layer exists to avoid. So it is a
-    // ring: something is here, and its course is not known.
+    // not the group around it. An arrow here would point north and mean it.
+    // So it is a ring: something is here, and its course is not known.
     return svg('dot',
       `<circle cx="9" cy="9" r="6.4" fill="none" stroke="${colour}"
                stroke-width="1.6"/>`
       + `<circle cx="9" cy="9" r="2" fill="${colour}"/>`
       );
   }
-  // Solid when the course came from the report, hollow when it was borrowed
-  // from the group. Both are arrows and both point somewhere real; the weight
-  // is the difference between an observation and an inference, and it is on
-  // the map rather than only in the popup because that is where it is read.
-  const borrowed = event.course_from === 'group';
   const shape = `arrow${borrowed ? '-borrowed' : ''}`;
   return svg(shape, (borrowed ? BORROWED : ARROW)(colour), facing);
 }
 
+/** How many pixels across one kind's mark is drawn. */
+export function glyphSize(event) {
+  return ROTARY.has(event?.kind) ? Math.round(GLYPH * ROTARY_SCALE) : GLYPH;
+}
+
 /** One mark as an <svg> element, rotated by CSS to its course. */
 function glyph(event, colour, facing) {
-  // Drawn at GLYPH pixels from an 18-unit viewBox, so making them bigger is
-  // one number here: the artwork scales rather than being redrawn, and the
+  // Drawn at glyphSize pixels from an 18-unit viewBox, so making them bigger
+  // is one number: the artwork scales rather than being redrawn, and the
   // anchor moves with it.
+  const size = glyphSize(event);
   const { shape, body, turn } = glyphParts(event, colour, facing);
-  return `<svg class="ao-glyph" data-shape="${shape}" width="${GLYPH}"`
-    + ` height="${GLYPH}" viewBox="0 0 18 18"`
+  return `<svg class="ao-glyph" data-shape="${shape}" width="${size}"`
+    + ` height="${size}" viewBox="0 0 18 18"`
     + `${turn == null ? '' : ` style="transform: rotate(${turn.toFixed(1)}deg)"`}>`
     + `${body}</svg>`;
 }
@@ -485,8 +573,8 @@ function icon(event, facing) {
     // The anchor is the middle of the glyph, which is the reported position.
     // Derived from the size rather than written out, so the two cannot drift
     // apart and quietly offset every marker on the map.
-    iconSize: [GLYPH, GLYPH],
-    iconAnchor: [GLYPH / 2, GLYPH / 2],
+    iconSize: [glyphSize(event), glyphSize(event)],
+    iconAnchor: [glyphSize(event) / 2, glyphSize(event) / 2],
   });
 }
 
@@ -1911,6 +1999,11 @@ async function saveShot(where, { exactly = false } = {}) {
       // to learn that one is a drone and the other a missile.
       marks.push({
         lat: at.lat, lon: at.lng, ...parts, colour,
+        // How big this one is drawn, relative to the rest. A drone's mark
+        // needs the room on the picture for the same reason it needs it on
+        // the map -- see ROTARY_SCALE -- and sending the ratio rather than a
+        // pixel size keeps the picture free to pick its own base size.
+        scale: glyphSize(event) / GLYPH,
         label: event.kind === 'alert' ? warningLabel(event) : label,
       });
     }
