@@ -80,48 +80,76 @@ def frontiers() -> dict[str, dict[str, Any]]:
 
 
 def forget() -> None:
-    """Drop the cached file. For the tests."""
-    global _frontiers
+    """Drop the cached files. For the tests."""
+    global _frontiers, _provinces, _by_name
     _frontiers = None
+    _provinces = None
+    _by_name = None
 
 
-# Russia's western federal subjects, and only those.
+# The provinces themselves, with their boundaries.
 #
-# Not all eighty-odd, and not a stand-in for a border: this is the ground next
-# to Ukraine, drawn before any warning has been reported over it. Kamchatka is
-# not next to Ukraine, and a hundred and forty lookups to draw provinces that
-# can never be in frame is exactly the bulk querying this module stopped
-# doing. Anything further east still arrives the old way, one province per
-# warning, the moment one is reported there.
+# This is what makes a Russian warning look like a Ukrainian one. Ukraine's
+# warnings shade their oblast because NEPTUN publish the boundaries; Russia's
+# had none, so the same warning came out as a triangle on a province's
+# arithmetic centre -- the difference between the two halves of the map was
+# never about the warnings, it was about whether an outline existed.
 #
-# Crimea is not here, for the reason in the module note.
+# They used to be fetched, one name at a time, which is the bulk querying the
+# note above describes and which never arrived. Natural Earth publishes them
+# and Natural Earth is public domain: fifty regions, the ones the built-in
+# table can name, thinned to about two hundred and sixty points each and
+# rounded to four decimal places. 230 KB, no network, right on the first poll.
 #
-# Two spellings each, native first. The gazetteer matches OpenStreetMap's own
-# name tags and which of them a region carries is not something this app can
-# know in advance, so each may be asked for under either and the first
-# boundary back is the one used -- see tracker.want_neighbours.
-RUSSIA: tuple[Region, ...] = (
-    ("ru", "Брянская область", ("Брянская область", "Bryansk Oblast")),
-    ("ru", "Курская область", ("Курская область", "Kursk Oblast")),
-    ("ru", "Белгородская область",
-     ("Белгородская область", "Belgorod Oblast")),
-    ("ru", "Воронежская область",
-     ("Воронежская область", "Voronezh Oblast")),
-    ("ru", "Ростовская область", ("Ростовская область", "Rostov Oblast")),
-    ("ru", "Краснодарский край",
-     ("Краснодарский край", "Krasnodar Krai")),
-    ("ru", "Смоленская область", ("Смоленская область", "Smolensk Oblast")),
-    ("ru", "Орловская область", ("Орловская область", "Oryol Oblast")),
-    ("ru", "Липецкая область", ("Липецкая область", "Lipetsk Oblast")),
-    ("ru", "Тамбовская область", ("Тамбовская область", "Tambov Oblast")),
-    ("ru", "Волгоградская область",
-     ("Волгоградская область", "Volgograd Oblast")),
-    ("ru", "Калужская область", ("Калужская область", "Kaluga Oblast")),
-    ("ru", "Тульская область", ("Тульская область", "Tula Oblast")),
-    ("ru", "Республика Адыгея", ("Республика Адыгея", "Republic of Adygea")),
-)
+# Checked rather than trusted: every one of them contains its own capital.
+PROVINCES_FILE = pathlib.Path(__file__).with_name("data") / "provinces.json"
 
-# Everything this module asks the gazetteer for. The borders are not in it:
-# they are a file, which is the whole point of the change that put them there.
-REGIONS: tuple[Region, ...] = RUSSIA
-EVERYTHING: tuple[Region, ...] = REGIONS
+_provinces: dict[str, dict[str, Any]] | None = None
+
+
+def provinces() -> dict[str, dict[str, Any]]:
+    """The shipped province boundaries, as {name: {"in", "shape"}}."""
+    global _provinces
+    if _provinces is None:
+        try:
+            with PROVINCES_FILE.open(encoding="utf-8") as fh:
+                got = json.load(fh)
+            _provinces = {name: row for name, row in got.items()
+                          if isinstance(row, dict) and row.get("shape")}
+        except (OSError, ValueError):
+            _provinces = {}
+    return _provinces
+
+
+def _fold(name: Any) -> str:
+    return " ".join(str(name or "").lower().split())
+
+
+_by_name: dict[str, str] | None = None
+
+
+def shape_for(name: Any) -> Any | None:
+    """A shipped province boundary by name, or None.
+
+    The same question neptun.shape_for answers for Ukraine, answered for the
+    other side of the border from a file instead of a published one.
+    """
+    global _by_name
+    got = provinces()
+    if _by_name is None:
+        _by_name = {_fold(real): real for real in got}
+    real = _by_name.get(_fold(name))
+    return got[real]["shape"] if real else None
+
+
+# Nothing is fetched by name any more.
+#
+# There was a list of Russia's western federal subjects here, asked for one
+# at a time so the ground next to Ukraine was drawn before a warning reached
+# it. The file above does that for fifty regions at once, with real
+# boundaries rather than centres, so the list had nothing left to do.
+#
+# What still goes to the gazetteer is a region this app cannot name at all --
+# somewhere east of the file, mentioned in a report for the first time. One
+# lookup, when a warning actually arrives, is ordinary use of a free service
+# rather than the systematic querying its policy forbids.

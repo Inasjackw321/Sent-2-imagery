@@ -911,6 +911,15 @@ def region_around(lat: float, lon: float,
     """
     if lat is None or lon is None:
         return None
+    # The shipped provinces first: they are exact, free, and there before
+    # anything has been fetched, which is what a warning reported at a town
+    # needs on its very first poll rather than on its fourth.
+    for name, row in neighbours.provinces().items():
+        if _shape_holds(row["shape"], lat, lon):
+            known = places.lookup(name) or {}
+            return {"name": name, "shape": row["shape"],
+                    "bbox": list(known["bbox"]) if known.get("bbox") else None,
+                    "area_km": area_km(known) if known else None}
     for name, shape in gazetteer.outlines():
         if _shape_holds(shape, lat, lon):
             known = places.lookup(name) or {}
@@ -1142,6 +1151,15 @@ def place_event(item: dict[str, Any], countries: str, lookup=None) -> dict[str, 
     if is_region(here):
         out["shape"] = (neptun.shape_for(here.get("name"))
                         or neptun.shape_for(item.get("place"))
+                        # And the other side of the border, from the file
+                        # that ships with this app. This is the whole of why
+                        # a Russian warning used to look different from a
+                        # Ukrainian one: not the warning, the outline. NEPTUN
+                        # publish Ukraine's; nobody publishes Russia's, so
+                        # its warnings were triangles on province centroids
+                        # while Ukraine's were shaded provinces.
+                        or neighbours.shape_for(here.get("name"))
+                        or neighbours.shape_for(item.get("place"))
                         or here.get("shape"))
     # The region's extent, so a warning whose real boundary has not arrived
     # yet can be drawn as that rectangle rather than as a circle. A disc
@@ -1978,8 +1996,6 @@ def outlines() -> list[dict[str, Any]]:
     key and under each of its names, so a name-based pass would send a
     province's border two or three times.
     """
-    want_neighbours()
-
     out: list[dict[str, Any]] = []
     already: list[Any] = []
 
@@ -2015,12 +2031,12 @@ def outlines() -> list[dict[str, Any]]:
     # so everything in it is Ukrainian by definition rather than by guess.
     for name, shape in neptun.shapes().items():
         keep(name, shape, "ua", "region")
-    # The neighbours' provinces, from the closed lists in neighbours.py.
+    # The neighbours' provinces, from the file that ships with this app.
     # Before the loose ones below, because these are named regions of a named
     # country and the pass below would file the same boundary as "elsewhere"
     # -- and the de-duplication is by identity, so whichever came first won.
-    for code, name, shape in neighbour_outlines():
-        keep(name, shape, code, "region")
+    for name, row in neighbours.provinces().items():
+        keep(name, row["shape"], row["in"], "region")
     # And these are learned one at a time as warnings are drawn over them.
     # Whatever is east of the listed part of Russia, and "elsewhere" rather
     # than "ru" because the gazetteer will hand back a Kazakh oblast just as
@@ -2050,36 +2066,16 @@ def _same_name(name: str) -> str:
 
 
 def neighbour_names() -> set[str]:
-    """Every spelling this app asks the gazetteer for by name, comparably.
+    """Every name this app ships a boundary for, comparably.
 
-    So a province named here is not ALSO drawn by the loose pass below as a
-    region of no particular country. The de-duplication there is by identity,
-    and a province that answered to both its spellings is two objects holding
-    two slightly different simplifications of one border.
+    So a province drawn from the file is not ALSO drawn by the loose pass
+    below as a region of no particular country. That pass hands back whatever
+    the gazetteer has learned, and it learns these names too -- from a
+    warning reported over one, before the file was consulted.
     """
-    return {_same_name(one)
-            for _code, _name, spellings in neighbours.EVERYTHING
-            for one in spellings}
-
-
-def _found(listed: tuple[tuple[str, str, tuple[str, ...]], ...],
-           ) -> list[tuple[str, str, Any]]:
-    """The boundaries held for these, as (country, name, shape).
-
-    One entry per entry at most, whichever spelling found it -- see the note
-    in neighbours.py about the two. Asking under both names and keeping both
-    answers would draw the same ground twice, and the second copy is a
-    slightly different simplification of the same border, so the pair reads
-    as a shimmer along every line.
-    """
-    got: list[tuple[str, str, Any]] = []
-    for code, name, asked in listed:
-        for spelling in asked:
-            shape = gazetteer.outline(spelling, code)
-            if shape:
-                got.append((code, name, shape))
-                break
-    return got
+    return ({_same_name(name) for name in neighbours.provinces()}
+            | {_same_name(row["name"])
+               for row in neighbours.frontiers().values()})
 
 
 # How many points a national border is drawn with.
@@ -2090,9 +2086,8 @@ def _found(listed: tuple[tuple[str, str, tuple[str, ...]], ...],
 # is drawing. Anything more is detail nobody can see, paid for in a payload
 # the page fetches before it can draw anything.
 #
-# Kept well under the gazetteer's own ceiling deliberately. That ceiling is a
-# guard against an unreasonable payload; this is a judgement about a picture,
-# and the two should not be the same number by accident.
+# The provinces need no equivalent: they are thinned where the file is built,
+# because a province is drawn at a tenth of a country's size.
 COUNTRY_POINTS = 1200
 
 
@@ -2111,42 +2106,6 @@ def country_outlines() -> list[tuple[str, str, Any]]:
     return [(code, row["name"],
              gazetteer.thin_shape(row["shape"], COUNTRY_POINTS))
             for code, row in sorted(neighbours.frontiers().items())]
-
-
-def neighbour_outlines() -> list[tuple[str, str, Any]]:
-    """The neighbours' provinces held, as (country, name, shape)."""
-    return _found(neighbours.REGIONS)
-
-
-def want_neighbours() -> int:
-    """Queue the next missing neighbour boundary. Returns how many were asked.
-
-    One spelling per region per call, and only where no spelling has answered
-    yet, so this costs nothing once the set is complete: improve_later refuses
-    a name already queued or already known, so the walk simply finds nothing
-    to do and stops asking.
-    """
-    asked = 0
-    for code, _name, spellings in neighbours.EVERYTHING:
-        if any(gazetteer.outline(one, code) for one in spellings):
-            continue
-        # Something already in the air for this region. Without this the walk
-        # queued the fallback spelling on the next poll, thirty seconds after
-        # the first one and long before it had failed -- so every region was
-        # asked for twice over and the second answer was thrown away.
-        if any(gazetteer.queued(one, code) for one in spellings):
-            continue
-        for spelling in spellings:
-            # Escalation, and the only thing that makes the second spelling
-            # worth listing: a name Nominatim has no polygon for is asked
-            # four times and then abandoned, and THAT is when the other name
-            # is worth trying rather than before.
-            if gazetteer.given_up(spelling, code):
-                continue
-            if gazetteer.improve_later(spelling, code):
-                asked += 1
-                break
-    return asked
 
 
 def take_neptun() -> tuple[int, int]:
@@ -2497,13 +2456,6 @@ def poll() -> dict[str, Any]:
             "placed": 0, "problem": str(exc)[:120],
         }
     _remember_sources(seen_now)
-
-    # The neighbours' boundaries, asked for here as well as when a picture is
-    # exported. Asking only at export would mean the first picture of the
-    # night had a black half: forty-odd boundaries at one request every three
-    # seconds is a couple of minutes, and nobody waits two minutes with the
-    # export dialog open. Asked from the poll they are simply there.
-    want_neighbours()
 
     if not fresh:
         # Nothing new from the channels. Not "nothing new" any more: the feed
@@ -3012,7 +2964,16 @@ def _demo_lookup(name: str, countries: str = "") -> dict[str, Any] | None:
         # path does with the same name, so the demo disagreed with it.
         lat, lon = found
         half = (known["bbox"][1] - known["bbox"][0]) / 2
-        return _demo_place(name, lat, lon, half)
+        # Under the name the TABLE settled on, not the one the post wrote.
+        #
+        # The same fix the live path needed, for the same reason and one
+        # layer down: the demo's warnings are written in English -- "Lipetsk
+        # oblast" -- and the shipped boundaries are keyed in Russian, so
+        # handing the English spelling on meant the demo drew its own wobbly
+        # ring for every Russian region while the live map drew the real
+        # outline. The offline build disagreeing with the live one about the
+        # thing it exists to demonstrate.
+        return _demo_place(known.get("name") or name, lat, lon, half)
     lat, lon = found
     half = DEMO_EXTENT.get(name, 0.06)
     region = half > 1
@@ -3102,14 +3063,10 @@ def demo() -> dict[str, Any]:
         for name, (lat, lon) in places.UKRAINE_REGIONS.items()
         if name != DEMO_WITHOUT_AN_OUTLINE
     })
-    # And the rest through the gazetteer's own door, the way Russia's
-    # boundaries actually arrive: learned one at a time, tagged "elsewhere".
-    for name, (lat, lon) in places.ELSEWHERE_REGIONS.items():
-        gazetteer.remember(name, "ru", {
-            "name": name, "lat": lat, "lon": lon, "category": "boundary",
-            "bbox": [lat - 1, lat + 1, lon - 1, lon + 1],
-            "shape": _demo_ring(lat, lon, places.WIDE.get(name, 1.0)),
-        })
+    # The neighbours' own boundaries are not seeded here at all. They ship
+    # with the app now -- real Natural Earth outlines rather than the rings
+    # this function draws -- so seeding would put a second, wobblier copy of
+    # every Russian province on the demo's map beside the real one.
 
     events, alerts = [], []
     for i, row in enumerate(seed, start=1):

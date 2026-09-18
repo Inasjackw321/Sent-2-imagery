@@ -2758,19 +2758,19 @@ class TestTheDemoDoesNotMoveTheBorder:
         assert len(ua) >= len(places.UKRAINE_REGIONS) - 2
 
     def test_the_neighbours_still_get_their_boundaries(self):
-        """They arrive the way Russia's really do, rather than not at all.
+        """From the file, the same as on the live map.
 
-        Learned one at a time through the gazetteer -- so a listed western
-        oblast comes out under "ru" and anything further east under
-        "elsewhere", which is what the live map does with the same names.
+        The demo used to seed its own wobbly rings for these. It does not any
+        more: real outlines ship with the app, and seeding would put a second
+        and worse copy of every Russian province beside the real one.
         """
         tracker.demo()
-        whose = {o["name"].casefold(): o["in"] for o in tracker.outlines()}
-        assert whose.get("белгородская область") == "ru"
-        assert whose.get("рязанская область") == "elsewhere"
+        whose = {o["name"]: o["in"] for o in tracker.outlines()}
+        assert whose.get("Белгородская область") == "ru"
+        assert whose.get("Брестская область") == "by"
         # And not one of them is Ukraine, which is the whole point.
-        assert "ua" not in {whose.get("белгородская область"),
-                            whose.get("рязанская область")}
+        assert "ua" not in {whose.get("Белгородская область"),
+                            whose.get("Брестская область")}
 
     def test_the_table_is_split_rather_than_commented(self):
         # REGIONS is the two halves joined, so neither can drift from it.
@@ -3581,14 +3581,13 @@ class TestTheDrawingMoves:
 class TestRussiaIsDrawnLikeUkraine:
     """One layer, one look, whichever side of the border a region is on.
 
-    Ukraine's outlines come from NEPTUN's own boundary file. Russia has no
-    such file, so its regions are answered by the built-in table -- which has
-    a centre and an extent and no shape. The outline the background worker
-    fetched for them was remembered and then never read, because the built-in
-    answer short-circuited the lookup that would have read it.
-
-    The visible result was a layer split in half: Ukrainian warnings shaded
-    their province, Russian ones were a triangle on a dot.
+    Ukraine's outlines come from NEPTUN's own boundary file. Russia's now
+    come from one that ships with this app, because nobody publishes them
+    and fetching fifty of them by name never worked. Before either, a
+    Russian region was answered by the built-in table -- a centre and an
+    extent and no shape -- and the visible result was a layer split in half:
+    Ukrainian warnings shaded their province, Russian ones were a triangle
+    on a dot.
     """
 
     SHAPE = {"type": "Polygon",
@@ -3615,20 +3614,51 @@ class TestRussiaIsDrawnLikeUkraine:
              "count": 1, "summary": f"Air alert — {place}", "region": None},
             countries)
 
-    def test_a_russian_warning_is_flat_until_its_outline_arrives(self):
-        # Honest, and not the end state: the mark is on the map from the
-        # built-in centre while the boundary is still being fetched.
+    def test_a_russian_warning_is_shaped_at_once(self):
+        """No fetch, no wait, no difference from Ukraine.
+
+        This is what the shipped boundaries bought. It used to be flat until
+        the background worker had been round -- and on the deployment that
+        prompted the file, the worker never came back at all, so every
+        Russian warning was a triangle on a province centroid for the life
+        of the process.
+        """
         got = self.warning("Воронежская область", "ru,ua")
         assert got["placed"] is True
-        assert got["shape"] is None
+        assert got["shape"] is not None
+        assert got["region_wide"] is True
+        assert got["region_scope"] == "covers"
 
-    def test_and_shaped_once_it_has(self):
-        gaz.remember("Воронежская область", "ru,ua",
-                           {"name": "Воронежская область", "lat": 51.6,
-                            "lon": 39.2, "category": "boundary",
-                            "bbox": (50.5, 38.0, 52.5, 41.0),
-                            "shape": self.SHAPE})
-        got = self.warning("Воронежская область", "ru,ua")
+    def test_every_region_this_app_can_name_has_an_outline(self):
+        """Which is what makes the two halves of the map look alike.
+
+        The shipped file was built FROM the built-in table, so the two match
+        by construction -- and this is what notices if a region is added to
+        one and not the other, which would put a single flat triangle back
+        on a map of shaded provinces.
+        """
+        missing = [n for n in places.ELSEWHERE_REGIONS
+                   if not neighbours.shape_for(n)]
+        assert missing == []
+
+    def test_a_learned_outline_still_reaches_the_mark(self):
+        """The path anything east of the file still takes.
+
+        The gazetteer is the only source for a region the table does not
+        hold, and its answer has to reach the event rather than being
+        remembered and never read -- which is the bug this class was
+        originally written for.
+        """
+        gaz.remember("Омская область", "ru,ua",
+                     {"name": "Омская область", "lat": 55.0, "lon": 73.4,
+                      "category": "boundary", "kind": "administrative",
+                      "bbox": (54.0, 56.0, 72.0, 75.0),
+                      "shape": self.SHAPE})
+        got = tracker.place_event(
+            {"kind": "alert", "place": "Омская область", "toward": None,
+             "course": None, "count": 1, "summary": "Air alert",
+             "region": None},
+            "ru,ua", lookup=lambda name, countries="": gaz.find(name, countries))
         assert got["shape"] == self.SHAPE
         # And the same two fields a Ukrainian warning gets, because "the same
         # style" is these rather than a resemblance anybody has to eyeball.
@@ -3751,13 +3781,16 @@ class TestTheBordersForAPictureOfItsOwn:
                               [33.0, 50.0]]]}
 
     def provinces(self):
-        """The fetched boundaries, without the four that ship with the app.
+        """The fetched boundaries, without the ones that ship with the app.
 
-        outlines() always carries the shipped national borders now -- that is
-        what makes the picture's red lines appear with no network -- so a
+        outlines() always carries the shipped national borders and the
+        neighbours' provinces now -- that is what makes the picture's red
+        lines and Russia's shaded oblasts appear with no network -- so a
         test about what was FETCHED has to say so.
         """
-        return [o for o in tracker.outlines() if o["level"] != "country"]
+        shipped = set(neighbours.provinces())
+        return [o for o in tracker.outlines()
+                if o["level"] != "country" and o["name"] not in shipped]
 
     def test_it_carries_the_boundaries_neptun_publish(self):
         neptun.remember_shapes({"сумська область": self.SHAPE})
@@ -3779,13 +3812,13 @@ class TestTheBordersForAPictureOfItsOwn:
         neptun.remember_shapes({"a": self.SHAPE, "b": other})
         assert len(self.provinces()) == 2
 
-    def test_russia_comes_from_the_gazetteer(self):
-        # There is no published boundary file for Russia's provinces the way
-        # NEPTUN publish one for Ukraine, so without this half a border
-        # region would have no outline in the picture at all.
-        gaz.remember("Брянская область", "ru",
-                     {"name": "Брянская область", "lat": 52.9, "lon": 33.5,
-                      "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
+    def test_a_region_nobody_ships_comes_from_the_gazetteer(self):
+        # Russia's western provinces ship with the app now. Anything east of
+        # them is still learned one at a time, and without this it would have
+        # no outline in the picture at all.
+        gaz.remember("Омская область", "ru",
+                     {"name": "Омская область", "lat": 55.0, "lon": 73.4,
+                      "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
                       "shape": self.SHAPE})
         assert [o["shape"] for o in self.provinces()] == [self.SHAPE]
 
@@ -3803,25 +3836,27 @@ class TestTheBordersForAPictureOfItsOwn:
         neptun.remember_shapes(many)
         assert len(tracker.outlines()) == tracker.MOST_OUTLINES
 
-    def test_nothing_known_is_just_the_shipped_borders(self):
-        # It used to be an empty list. The borders ship with the app now, so
-        # "nothing fetched" is four national outlines and no provinces.
+    def test_nothing_known_is_just_what_ships(self):
+        # It used to be an empty list. The borders and the neighbours'
+        # provinces ship with the app now, so "nothing fetched" is those.
         assert self.provinces() == []
-        assert len(tracker.outlines()) == len(neighbours.frontiers())
+        assert len(tracker.outlines()) == (len(neighbours.frontiers())
+                                           + len(neighbours.provinces()))
 
 
 class TestTheNeighboursAreOnTheMapToo:
-    """"Make it so you can see Belarus, Poland, Moldova, Romania and Russia."
+    """"Make it a view of Russia with warnings overlayed like Ukraine."
 
-    A picture of this layer stopped at Ukraine's edge: north and west of it
-    the ground was black, which is not what the ground is. A reader looking
-    at the empty half cannot tell whether nothing is happening there or
-    whether the map has nothing to say about it.
+    Ukraine's warnings shade their oblast because NEPTUN publish the
+    boundaries. Russia's did not, so the same warning came out as a triangle
+    on a province's arithmetic centre -- and the difference between the two
+    halves of the map was never about the warnings, it was about whether an
+    outline existed.
 
-    The national borders ship with the app. The version before this asked
-    the gazetteer for them by name along with a hundred and sixteen
-    provinces, and a hundred and twenty-one systematic boundary lookups is
-    the bulk querying Nominatim's usage policy forbids.
+    They were fetched by name, fifty at a time, which is the bulk querying
+    Nominatim's policy forbids and which never arrived. They ship with the
+    app now: Natural Earth, public domain, the fifty regions the built-in
+    table can name.
     """
 
     def setup_method(self):
@@ -3832,252 +3867,215 @@ class TestTheNeighboursAreOnTheMapToo:
 
     teardown_method = setup_method
 
-    def give(self, listed, n=None):
-        """Hand the gazetteer a boundary for each of these entries."""
-        for i, (code, name, spellings) in enumerate(listed[:n]):
-            # A shape per entry, since outlines() de-duplicates by identity
-            # and one object shared between them would come out once.
-            gaz.remember(spellings[0], code, {
-                "name": name, "lat": 51.5, "lon": 22.5 + i,
-                "category": "boundary", "bbox": (51.0, 52.0, 22.0, 23.0),
-                "shape": {"type": "Polygon", "coordinates": [
-                    [[22.0 + i, 51.0], [23.0 + i, 51.0], [23.0 + i, 52.0],
-                     [22.0 + i, 51.0]]]}})
-
     def levels(self):
         return [(o["in"], o["level"]) for o in tracker.outlines()]
 
-    # ── the borders that ship with the app ──────────────────────
+    # ── what ships ──────────────────────────────────────────────
 
-    def test_the_four_borders_are_there_with_no_network_at_all(self):
-        """The whole point of shipping them.
+    def test_the_provinces_are_there_with_no_network_at_all(self):
+        # The gazetteer is empty and stubbed, and Russia has its regions.
+        got = self.levels()
+        assert ("ru", "region") in got
+        assert ("by", "region") in got
 
-        Nothing in this test reaches anything: the gazetteer is empty and
-        stubbed, and the borders are still on the picture.
+    def test_every_region_the_table_can_name_has_one(self):
+        """Built FROM that table, so the two match by construction.
+
+        This is what notices if a region is added to one and not the other,
+        which would put a single flat triangle back on a map of shaded
+        provinces.
         """
-        assert sorted(neighbours.frontiers()) == ["by", "md", "pl", "ro"]
-        assert sorted(self.levels()) == [
-            ("by", "country"), ("md", "country"),
-            ("pl", "country"), ("ro", "country")]
+        missing = [n for n in places.ELSEWHERE_REGIONS
+                   if not neighbours.shape_for(n)]
+        assert missing == []
 
-    def test_they_are_the_countries_the_request_named(self):
-        # Poland, Romania, Moldova and Belarus -- the four frontiers asked
-        # for, in the order they were asked for or any other.
-        assert set(neighbours.frontiers()) == {"pl", "ro", "md", "by"}
-
-    def test_each_carries_its_own_name_natively(self):
-        # A map that labels Ukraine in Ukrainian and Romania in English is a
-        # map drawn from somewhere else.
-        names = {code: row["name"]
-                 for code, row in neighbours.frontiers().items()}
-        assert names == {"pl": "Polska", "ro": "România",
-                         "md": "Moldova", "by": "Беларусь"}
-
-    def test_each_border_is_a_real_area(self):
-        for code, row in neighbours.frontiers().items():
-            shape = row["shape"]
-            assert shape["type"] in ("Polygon", "MultiPolygon"), code
-            assert gaz.count_points(shape) > 100, code
-
-    def test_the_borders_are_where_those_countries_are(self):
+    def test_they_are_where_those_regions_are(self):
         """Read off the file rather than trusted.
 
-        A boundary file with the right names and the wrong geometry draws a
-        confident red line round the wrong ground, which is the one failure
-        this layer exists to avoid.
+        A boundary file with the right names and the wrong geometry shades
+        the wrong province, which is the one failure this layer exists to
+        avoid -- and it would look entirely plausible.
         """
-        capitals = {"pl": (52.2297, 21.0122), "by": (53.9006, 27.5590),
-                    "md": (47.0105, 28.8638), "ro": (44.4268, 26.1025)}
-        for code, (lat, lon) in capitals.items():
-            holds = [c for c, row in neighbours.frontiers().items()
+        capitals = {
+            "Белгородская область": (50.5977, 36.5858),
+            "Курская область": (51.7373, 36.1874),
+            "Ростовская область": (47.2357, 39.7015),
+            "Республика Татарстан": (55.7963, 49.1088),
+            "Гомельская область": (52.4345, 30.9754),
+        }
+        for name, (lat, lon) in capitals.items():
+            holds = [n for n, row in neighbours.provinces().items()
                      if tracker._shape_holds(row["shape"], lat, lon)]
-            assert holds == [code], f"{code}: {holds}"
+            assert holds == [name], f"{name}: {holds}"
 
-    def test_ukraine_and_russia_are_not_in_the_file(self):
-        """Neither outline is shipped, and that is deliberate.
+    def test_each_is_filed_under_its_own_country(self):
+        whose = {n: row["in"] for n, row in neighbours.provinces().items()}
+        assert whose["Курская область"] == "ru"
+        assert whose["Брестская область"] == "by"
+        assert set(whose.values()) == {"ru", "by"}
 
-        Every ready-made dataset reachable here draws Crimea inside Russia.
-        That is a live dispute and a red line is the most emphatic thing on
-        this picture, so this app ships neither rather than shipping the
-        claim in either direction. Ukraine's shape is its own oblasts.
-        """
-        assert "ua" not in neighbours.frontiers()
-        assert "ru" not in neighbours.frontiers()
-
-    def test_a_missing_file_loses_the_lines_and_nothing_else(self):
-        # The picture without its red lines is the picture this app drew for
-        # months. A border that cannot be read is not a reason to fail.
-        was = neighbours.FRONTIERS_FILE
+    def test_a_missing_file_loses_the_shading_and_nothing_else(self):
+        was = neighbours.PROVINCES_FILE
         try:
-            neighbours.FRONTIERS_FILE = was.with_name("not-a-file.json")
+            neighbours.PROVINCES_FILE = was.with_name("not-a-file.json")
             neighbours.forget()
-            assert neighbours.frontiers() == {}
-            assert tracker.outlines() == []
+            assert neighbours.provinces() == {}
+            assert neighbours.shape_for("Курская область") is None
+            # The countries still draw; a province file that cannot be read
+            # is not a reason to lose the frontiers as well.
+            assert ("pl", "country") in self.levels()
         finally:
-            neighbours.FRONTIERS_FILE = was
+            neighbours.PROVINCES_FILE = was
             neighbours.forget()
 
-    def test_a_border_is_thinned_to_what_the_picture_can_draw(self):
-        """The file is finer than the picture.
+    # ── what it does to a warning ───────────────────────────────
 
-        A national border is an order of magnitude longer than a province's
-        and arrives an order of magnitude finer; at the picture's width that
-        is several vertices per pixel.
+    def warning(self, place):
+        return tracker.place_event(
+            {"kind": "alert", "place": place, "toward": None, "course": None,
+             "count": 1, "summary": f"Air alert — {place}", "region": None},
+            "ru,ua")
+
+    def test_a_russian_warning_shades_its_province_at_once(self):
+        got = self.warning("Белгородская область")
+        assert got["shape"] is not None
+        assert got["region_wide"] is True
+        assert got["region_scope"] == "covers"
+
+    def test_the_english_name_gets_there_too(self):
+        # The Russian-side channel posts in English; the alias table resolves
+        # it, and the outline has to follow the name the table settled on.
+        got = self.warning("Belgorod region")
+        assert got["shape"] is not None
+        assert got["region_wide"] is True
+
+    def test_a_warning_at_a_town_shades_the_province_it_is_in(self):
+        """And without asking anybody.
+
+        The shipped boundaries are exact and free, so the first warning over
+        a Russian town is shaded rather than the fourth.
         """
-        for _code, _name, shape in tracker.country_outlines():
-            assert gaz.count_points(shape) <= tracker.COUNTRY_POINTS
+        out = tracker.place_event(
+            {"kind": "alert", "place": "Белгород", "toward": None,
+             "course": None, "count": 1, "summary": "Air alert", "region": None},
+            "ru,ua")
+        assert out["region_wide"] is True
+        assert out["region_over"] == "Белгородская область"
+        assert out["shape"] is not None
 
-    # ── the provinces that are still fetched ────────────────────
+    def test_the_demo_shades_them_with_the_real_outlines_too(self):
+        """The offline build must not disagree with the live one.
 
-    def test_russias_western_oblasts_are_still_asked_for(self):
-        """Nothing else draws that ground until a warning is reported there.
-
-        Fourteen occasional lookups is ordinary use of the gazetteer rather
-        than the bulk querying that was removed.
+        The demo's warnings are written in English -- "Lipetsk oblast" --
+        and the shipped boundaries are keyed in Russian. Handed on as
+        written, the demo drew its own wobbly ring for every Russian region
+        while the live map drew the real outline: the one build anybody can
+        check being wrong about the thing it exists to demonstrate.
         """
-        assert tracker.want_neighbours() == len(neighbours.RUSSIA)
-        assert len(neighbours.RUSSIA) == 14
+        got = tracker.demo()
+        shaded = {e["place_match"]: e["shape"] for e in got["events"]
+                  if e["kind"] == "alert" and e.get("shape")}
+        # Named specifically, and in Russian. The demo writes this warning as
+        # "Lipetsk oblast"; if the table's answer is not carried through, the
+        # mark comes out under the English spelling with a ring for a shape,
+        # and a test that only looked at whatever WAS Russian would pass by
+        # checking a different region entirely.
+        assert "Липецкая область" in shaded, sorted(shaded)
+        assert shaded["Липецкая область"] == neighbours.shape_for(
+            "Липецкая область")
+        for name, shape in shaded.items():
+            real = neighbours.shape_for(name)
+            if real:
+                assert shape == real, name
 
-    def test_and_nothing_else_is(self):
-        # The four countries' own provinces were a hundred of the hundred
-        # and twenty-one lookups. They are gone.
-        asked = {code for code, _name, _spellings in neighbours.EVERYTHING}
-        assert asked == {"ru"}
+    def test_a_drone_over_a_town_is_still_at_the_town(self):
+        # The distinction this layer has spent a long time getting right.
+        out = tracker.place_event(
+            {"kind": "drone", "place": "Белгород", "toward": None,
+             "course": None, "count": 1, "summary": "Drone", "region": None},
+            "ru,ua")
+        assert out["region_wide"] is False
+        assert out["shape"] is None
 
-    def test_a_listed_russian_oblast_is_filed_under_russia(self):
-        self.give(neighbours.RUSSIA, 1)
-        assert ("ru", "region") in self.levels()
+    # ── how they reach the picture ──────────────────────────────
 
-    def test_the_native_name_is_the_one_on_the_map(self):
-        code, name, spellings = neighbours.RUSSIA[0]
-        gaz.remember(spellings[1], code, {
-            "name": spellings[1], "lat": 52.9, "lon": 33.5,
-            "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
+    def test_they_are_drawn_as_provinces_rather_than_frontiers(self):
+        """A red line means a country ends. These are the lines inside one.
+
+        Asked of the provinces by name rather than of the country tags:
+        Belarus has both a national border and three oblasts here, and the
+        border is quite properly a frontier.
+        """
+        level = {o["name"]: o["level"] for o in tracker.outlines()}
+        for name in neighbours.provinces():
+            assert level.get(name) == "region", f"{name}: {level.get(name)}"
+
+    def test_a_province_is_not_drawn_twice(self):
+        """Once from the file and once from what the gazetteer learned.
+
+        It learns these names too -- from a warning reported over one, before
+        the file was consulted -- and the de-duplication below it is by
+        identity, so the two copies would both come through.
+        """
+        gaz.remember("Курская область", "ru", {
+            "name": "Курская область", "lat": 51.7, "lon": 36.0,
+            "category": "boundary", "bbox": (50.5, 52.5, 34.0, 39.0),
             "shape": {"type": "Polygon", "coordinates": [
-                [[33.0, 52.0], [34.0, 52.0], [34.0, 53.0], [33.0, 52.0]]]}})
-        assert name in [o["name"] for o in tracker.outlines()]
+                [[34.0, 50.5], [39.0, 50.5], [39.0, 52.5], [34.0, 50.5]]]}})
+        # Folded, because the gazetteer hands its names back lower-cased --
+        # counting the file's spelling alone found one copy whatever
+        # happened, which is a test that proves nothing.
+        names = [o["name"].casefold() for o in tracker.outlines()]
+        assert names.count("курская область") == 1
 
-    def test_a_region_found_under_both_spellings_is_drawn_once(self):
-        """Two answers for one province are two slightly different
-        simplifications of the same border, and the pair reads as a shimmer
-        along every line."""
-        code, _name, spellings = neighbours.RUSSIA[0]
-        for n, spelling in enumerate(spellings):
-            gaz.remember(spelling, code, {
-                "name": spelling, "lat": 52.9, "lon": 33.5,
-                "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
-                "shape": {"type": "Polygon", "coordinates": [
-                    [[33.0 + n, 52.0], [34.0 + n, 52.0], [34.0 + n, 53.0],
-                     [33.0 + n, 52.0]]]}})
-        assert sum(1 for o in tracker.outlines() if o["in"] == "ru") == 1
-
-    def test_not_asked_for_twice(self):
-        tracker.want_neighbours()
-        assert tracker.want_neighbours() == 0
-
-    def test_nor_asked_for_once_it_is_known(self):
-        """Costs nothing for the rest of the process.
-
-        Called from every poll, so a walk that kept re-queueing a boundary
-        already in hand would be a request every thirty seconds for
-        something already drawn.
-        """
-        self.give(neighbours.RUSSIA)
-        assert tracker.want_neighbours() == 0
-
-    def test_the_second_spelling_waits_for_the_first_to_fail(self):
-        """The only thing that makes a second spelling worth listing.
-
-        Which name tag a region carries in OpenStreetMap is not something
-        this app can know in advance. But asking both at once is asking
-        twice for one province and throwing an answer away, so the fallback
-        only goes in once the first has had all four of its asks.
-        """
-        one, two = neighbours.RUSSIA[0][2][:2]
-        assert tracker.want_neighbours() == len(neighbours.EVERYTHING)
-        assert gaz.queued(one, "ru") is True
-        assert tracker.want_neighbours() == 0
-
-        for _ in range(gaz.MOST_SHAPE_TRIES):
-            gaz._try_again(one, "ru")
-        assert gaz.given_up(one, "ru") is True
-
-        assert tracker.want_neighbours() == 1
-        assert gaz.queued(two, "ru") is True
-
-    def test_a_region_that_answers_to_neither_is_simply_absent(self):
-        """A missing province costs one pale line and nothing else.
-
-        Which is the point of shipping the borders separately: nothing
-        important rests on this list at all now.
-        """
-        tracker.want_neighbours()
-        for code, _name, spellings in neighbours.EVERYTHING:
-            for spelling in spellings:
-                for _ in range(gaz.MOST_SHAPE_TRIES):
-                    gaz._try_again(spelling, code)
-        assert tracker.want_neighbours() == 0
-        assert all(o["level"] == "country" for o in tracker.outlines())
-
-    # ── how the two kinds are told apart ────────────────────────
-
-    def test_a_province_learned_from_a_warning_is_still_a_province(self):
-        gaz.remember("Омская область", "ru", {
-            "name": "Омская область", "lat": 55.0, "lon": 73.4,
-            "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
-            "shape": {"type": "Polygon", "coordinates": [
-                [[80.0, 55.0], [81.0, 55.0], [81.0, 56.0], [80.0, 55.0]]]}})
-        assert ("elsewhere", "region") in self.levels()
+    def test_the_borders_come_before_the_provinces(self):
+        """Under the cap, the last thing to go is the line that says which
+        country the ground is."""
+        levels = [o["level"] for o in tracker.outlines()]
+        borders = len(neighbours.frontiers())
+        assert levels[:borders] == ["country"] * borders
+        assert "country" not in levels[borders:]
 
     def test_ukraines_own_provinces_are_provinces(self):
-        """The bug that prompted all of this.
-
-        NEPTUN publish oblasts AND raions, and the picture drew a red line
-        round every one of the hundred and thirty-six raions and none round
-        anything else.
-        """
         neptun.remember_shapes({"сумська область": {
             "type": "Polygon", "coordinates": [
                 [[33.0, 50.0], [34.0, 50.0], [34.0, 51.0], [33.0, 50.0]]]}})
         assert ("ua", "region") in self.levels()
         assert ("ua", "country") not in self.levels()
 
-    def test_the_borders_come_before_the_provinces(self):
-        """Under the cap, the last thing to go is the line that says which
-        country the ground is."""
-        neptun.remember_shapes({
-            f"oblast{i}": {"type": "Polygon", "coordinates": [
-                [[30.0 + i, 48.0], [31.0 + i, 48.0], [31.0 + i, 49.0],
-                 [30.0 + i, 48.0]]]}
-            for i in range(5)})
-        self.give(neighbours.RUSSIA, 2)
-        levels = [o["level"] for o in tracker.outlines()]
-        assert levels[:len(neighbours.frontiers())] == (
-            ["country"] * len(neighbours.frontiers()))
-        assert set(levels[len(neighbours.frontiers()):]) == {"region"}
-
     def test_there_is_room_for_all_of_it(self):
-        """The cap cuts the tail, and the tail must not be a whole country.
-
-        Ukraine's own oblasts and raions are a hundred and sixty of these on
-        their own.
-        """
+        """The cap cuts the tail, and the tail must not be a whole country."""
         ukraine = 170
-        assert (len(neighbours.EVERYTHING) + len(neighbours.frontiers())
+        assert (len(neighbours.provinces()) + len(neighbours.frontiers())
                 + ukraine) < tracker.MOST_OUTLINES
 
-    def test_every_entry_has_a_spelling_to_ask_under(self):
-        for code, name, spellings in neighbours.EVERYTHING:
-            assert code, name
-            assert spellings, name
-            assert name in spellings, name
+    # ── what is no longer asked for ─────────────────────────────
 
-    def test_nothing_is_listed_twice(self):
-        names = [entry[1] for entry in neighbours.EVERYTHING]
-        assert len(set(names)) == len(names)
-        asked = [one for _c, _n, spellings in neighbours.EVERYTHING
-                 for one in spellings]
-        assert len(set(asked)) == len(asked)
+    def test_nothing_is_fetched_by_name_any_more(self):
+        """The bulk querying is gone rather than reduced.
+
+        A list of names asked for one at a time is what Nominatim's policy
+        forbids and what never arrived; the file replaced it, so the
+        machinery that walked the list has no reason to exist.
+        """
+        assert not hasattr(tracker, "want_neighbours")
+        assert not hasattr(tracker, "neighbour_outlines")
+        assert not hasattr(neighbours, "RUSSIA")
+        assert not hasattr(neighbours, "REGIONS")
+        assert not hasattr(neighbours, "EVERYTHING")
+
+    def test_a_region_nobody_ships_is_still_learned_one_at_a_time(self):
+        """Ordinary use of the gazetteer, and the only use left.
+
+        Somewhere east of the file, mentioned in a report for the first
+        time: one lookup, when a warning actually arrives.
+        """
+        gaz.remember("Омская область", "ru", {
+            "name": "Омская область", "lat": 55.0, "lon": 73.4,
+            "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
+            "shape": {"type": "Polygon", "coordinates": [
+                [[72.0, 54.0], [75.0, 54.0], [75.0, 56.0], [72.0, 54.0]]]}})
+        assert ("elsewhere", "region") in self.levels()
 
 
 class TestADotOnlyWhereSomebodyGaveAPosition:
@@ -4303,6 +4301,12 @@ class TestARegionIsAskedForByItsOwnName:
             asked.append(name)
             return (shapes or {}).get(name)
 
+        # Nothing shipped: this class is about the name a boundary is FETCHED
+        # under, and the shipped file now answers Belgorod before any fetch
+        # happens. The question it asks is still live for every region east
+        # of what that file covers.
+        monkeypatch.setattr(tracker.neighbours, "provinces", dict)
+        monkeypatch.setattr(tracker.neighbours, "shape_for", lambda name: None)
         monkeypatch.setattr(tracker.gazetteer, "improve_later", queued)
         monkeypatch.setattr(tracker.gazetteer, "outline", outline)
         item = reports.read(text)
@@ -4571,8 +4575,9 @@ class TestAskingForOneCountry:
                 "shape": {"type": "Polygon", "coordinates": [
                     [[80.0, 55.0], [81.0, 55.0], [81.0, 56.0],
                      [80.0, 55.0]]]}})
+            shipped = set(neighbours.provinces())
             whose = {o["name"]: o["in"] for o in tracker.outlines()
-                     if o["level"] != "country"}
+                     if o["level"] != "country" and o["name"] not in shipped}
             assert whose == {"сумська область": "ua",
                              "омская область": "elsewhere"}
         finally:
@@ -4773,6 +4778,12 @@ class TestAWarningAtATownCoversItsRegion:
         [[37.0, 43.0], [41.5, 43.0], [41.5, 46.5], [37.0, 46.5], [37.0, 43.0]]]}
 
     def wired(self, monkeypatch, *, held=(), reverse=None):
+        # Nothing shipped. These tests are about the two fallbacks -- a
+        # boundary already held, then the gazetteer -- and the shipped file
+        # now answers before both, so it is taken away to reach them. That
+        # the file DOES answer first is its own test below.
+        monkeypatch.setattr(tracker.neighbours, "provinces", dict)
+        monkeypatch.setattr(tracker.neighbours, "shape_for", lambda name: None)
         monkeypatch.setattr(tracker.gazetteer, "outlines", lambda: list(held))
         monkeypatch.setattr(tracker.gazetteer, "region_at",
                             lambda lat, lon, countries="": reverse)
@@ -4878,6 +4889,10 @@ class TestAWarningThatNamesARegionIsShadedToo:
          [34.0, 50.5]]]}
 
     def named(self, monkeypatch, *, held=(), reverse=None, kind="alert"):
+        # As above: the shipped file answers first, and these are about what
+        # happens when it has not.
+        monkeypatch.setattr(tracker.neighbours, "provinces", dict)
+        monkeypatch.setattr(tracker.neighbours, "shape_for", lambda name: None)
         monkeypatch.setattr(tracker.gazetteer, "outlines", lambda: list(held))
         monkeypatch.setattr(tracker.gazetteer, "region_at",
                             lambda lat, lon, countries="": reverse)
