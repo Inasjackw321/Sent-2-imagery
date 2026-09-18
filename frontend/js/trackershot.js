@@ -47,23 +47,6 @@ function markSize(frame) {
   return Math.round(Math.min(34, Math.max(24, frame.height * 0.032)));
 }
 
-/**
- * How big one mark is drawn, given the size the picture picked for its marks.
- *
- * A mark may carry its own `scale`. A drone is four rings, a frame and a nose
- * rather than a solid triangle, and it is unreadable at the size a triangle
- * is fine at -- so the map draws it bigger, and sends the RATIO rather than a
- * pixel size so the picture stays free to choose its own base.
- *
- * Its own function, and exported, because it is the contract between the two
- * and a contract that can only be checked by measuring pixels on a canvas is
- * one nobody checks.
- */
-export function markScale(base, mark) {
-  const want = Number(mark?.scale);
-  return Math.round(base * (Number.isFinite(want) && want > 0 ? want : 1));
-}
-
 // How much room to leave around the marks, as a fraction of their spread.
 const AIR = 0.18;
 
@@ -533,7 +516,7 @@ function nameRegions(ctx, frame, outlines, bands, marks) {
   // it has a word growing out of it. So the names move instead.
   const placed = (marks ?? []).map((mark) => {
     const [x, y] = frame.at(mark.lat, mark.lon);
-    const half = markScale(markSize(frame), mark) * 0.72;
+    const half = markSize(frame) * 0.72;
     return { x0: x - half, x1: x + half, y0: y - half, y1: y + half };
   });
   // Countries first, so that where a country's name and a province's want
@@ -697,15 +680,10 @@ export function shortName(raw) {
 }
 
 async function drawMarks(ctx, frame, marks) {
-  const base = markSize(frame);
+  const size = markSize(frame);
   for (const mark of marks ?? []) {
     const image = await glyphImage(mark);
     if (!image) continue;
-    // Its own size, where the map gave it one. A drone is four rings and a
-    // nose rather than a solid triangle, and it is unreadable at the size a
-    // triangle is fine at -- the same reason it is bigger on the map, and
-    // the ratio comes from there so the two cannot drift apart.
-    const size = markScale(base, mark);
     const [x, y] = frame.at(mark.lat, mark.lon);
     // A dark disc under each one. The glyphs are bright on a dark ground
     // until they land on a border or a label, and then they are bright on

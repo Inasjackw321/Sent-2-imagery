@@ -1120,11 +1120,17 @@ class TestNothingIsSilentlyDropped:
         got = tracker.demo()
         # Against the marks that came from reports. Derived warnings are not
         # reports -- nobody sent one -- so counting them here would make the
-        # number stop meaning "reports the gazetteer could place".
-        reported = [e for e in got["events"] if not e.get("derived")]
+        # number stop meaning "reports the gazetteer could place". Nor is a
+        # drone raised from a warning, for exactly the same reason.
+        reported = [e for e in got["events"]
+                    if not e.get("derived") and not e.get("from_warning")]
         assert got["reports"]["placed"] >= len(reported)
         placed_ids = {a["id"] for a in got["alerts"] if a["placed"]}
-        assert {e["id"] for e in got["events"]} <= placed_ids
+        # Every mark traces back to a row somebody can read. A mark raised
+        # from a warning says which row is its own -- see "row" in
+        # _drone_from_warning -- because one post is one row and it is the
+        # second mark from that post rather than a second post.
+        assert {e.get("row", e["id"]) for e in got["events"]} <= placed_ids
 
     def test_alerts_outlive_tracks(self):
         # A position extrapolated for an hour is fiction; "a strike was
@@ -2679,9 +2685,11 @@ class TestWarningsAreColouredByWhatTheyWarnAbout:
 
     def test_a_drone_warning_carries_its_cause_to_the_map(self):
         got = self.one("Lipetsk Oblast Drone Alert")["events"]
-        assert len(got) == 1
-        assert got[0]["kind"] == "alert"
-        assert got[0]["cause"] == "drone"
+        warning = [e for e in got if e["kind"] == "alert"]
+        assert len(warning) == 1
+        assert warning[0]["cause"] == "drone"
+        # And a drone beside it -- see TestADroneWarningPutsADroneOnTheMap.
+        assert [e["kind"] for e in got] == ["alert", "drone"]
 
     def test_a_missile_warning_carries_its_own(self):
         got = self.one("Voronezh Oblast Missile Alert")["events"]
@@ -2710,6 +2718,197 @@ class TestWarningsAreColouredByWhatTheyWarnAbout:
         # amber silently.
         for cause in ("drone", "missile"):
             assert cause in tracker.KINDS, cause
+
+
+class TestADroneWarningPutsADroneOnTheMap:
+    """"Make it so drones are placed over reports in Russia."
+
+    The Russian side's posts are overwhelmingly region-level -- "UAV danger in
+    Rostov region" -- and those became a shaded oblast with a warning triangle
+    and nothing in the air. Ukraine's map was full of drones because NEPTUN
+    supplies real tracks; Russia's had none, from the same feed, for the same
+    night.
+
+    This reverses an earlier decision that region-centre marks are not drawn
+    (see regionOnly in the page). That decision is still right where there is
+    something better to draw: on the Ukrainian side a vague mark would sit
+    beside sharp ones. On the Russian side the choice is between a vague mark
+    and an empty map.
+    """
+
+    def one(self, text, channel="radarrussiia"):
+        tracker.reset()
+        plain = reports.read(text)
+        plain["kind"] = tracker.fold_kind(plain["kind"])
+        item = tracker._clean({**plain, "id": "c/1"})
+        tracker._record(item, {"id": "c/1", "channel": channel}, "ru")
+        return tracker.current()
+
+    def drones(self, feed):
+        return [e for e in feed["events"] if e["kind"] == "drone"]
+
+    def test_a_drone_warning_puts_a_drone_on_the_map(self):
+        got = self.drones(self.one("Rostov Oblast Drone Alert"))
+        assert len(got) == 1
+        assert got[0]["from_warning"] is True
+
+    def test_it_sits_where_the_warning_sits(self):
+        feed = self.one("Rostov Oblast Drone Alert")
+        warning = [e for e in feed["events"] if e["kind"] == "alert"][0]
+        drone = self.drones(feed)[0]
+        assert (drone["lat"], drone["lon"]) == (warning["lat"], warning["lon"])
+
+    def test_the_warning_is_still_there_as_well(self):
+        # The drone is added beside it, not instead of it. The shaded region
+        # is what says the warning covers the whole oblast.
+        kinds = [e["kind"] for e in self.one("Rostov Oblast Drone Alert")["events"]]
+        assert kinds == ["alert", "drone"]
+
+    def test_the_drone_does_not_shade_the_region_a_second_time(self):
+        """Two shadings of one report read as two reports.
+
+        The warning beside it carries the outline; this is the point inside
+        it.
+        """
+        drone = self.drones(self.one("Rostov Oblast Drone Alert"))[0]
+        assert drone["shape"] is None
+        assert drone["region_wide"] is False
+        assert drone["region_scope"] is None
+
+    def test_it_claims_no_course(self):
+        """It came from a sentence about a region, not from a track.
+
+        An arrow here would point somewhere nobody said, which is the
+        invention this whole layer exists to avoid.
+        """
+        drone = self.drones(self.one("Rostov Oblast Drone Alert"))[0]
+        assert drone["course"] is None
+        assert drone.get("course_from") is None
+        assert drone.get("heading") is None
+
+    def test_it_is_not_marked_area_only(self):
+        """Which would be truthful and would hide it.
+
+        area_only means "there is no dot" and the page drops such marks, so
+        setting it would make this whole feature draw nothing. What it is
+        gets said by from_warning instead, and by the popup.
+        """
+        drone = self.drones(self.one("Rostov Oblast Drone Alert"))[0]
+        assert drone["area_only"] is False
+
+    def test_a_missile_warning_puts_nothing_in_the_air(self):
+        """A warning about what may come is not a weapon in flight.
+
+        Drawing a missile in the middle of an oblast would be a claim nobody
+        made -- and unlike a drone incursion, a missile warning is routinely
+        declared for ground nothing ever reaches.
+        """
+        assert self.drones(self.one("Voronezh Oblast Missile Alert")) == []
+
+    def test_a_warning_that_does_not_say_what_it_is_about_puts_nothing(self):
+        assert self.drones(self.one("Повітряна тривога у Києві")) == []
+
+    def test_an_all_clear_puts_nothing(self):
+        # A warning being lifted is the opposite of a drone arriving.
+        feed = self.one("UAV alert cleared in Rostov region")
+        assert self.drones(feed) == []
+
+    def test_an_unplaceable_warning_puts_nothing(self):
+        # There is nowhere to put it, and the alert stream already says so.
+        feed = self.one("Drone Alert in Nowherewithatypo Oblast")
+        assert self.drones(feed) == []
+
+    def test_no_course_is_ever_borrowed_for_it(self):
+        """The inference that must not compound.
+
+        borrow_course lends a group's bearing to members of the same kind
+        that lack one, and this mark IS a drone -- so a stream of real drones
+        reported nearby would have lent it theirs, and the map would have
+        drawn an arrow: a direction, at a position, neither of which anybody
+        stated.
+        """
+        raised = {"id": "AO1D", "kind": "drone", "from_warning": True,
+                  "heading": None, "course_from": None,
+                  "lat": 47.5, "lon": 40.0}
+        real = [{"id": "r1", "kind": "drone", "heading": 90.0,
+                 "course_from": "stated", "lat": 47.5, "lon": 40.1},
+                {"id": "r2", "kind": "drone", "heading": 90.0,
+                 "course_from": "stated", "lat": 47.6, "lon": 40.0},
+                {"id": "r3", "kind": "drone", "heading": None,
+                 "course_from": None, "lat": 47.55, "lon": 40.05}]
+        events = [raised, *real]
+        tracker.borrow_course(events, [{"ids": [e["id"] for e in events]}])
+        # The ordinary courseless drone in the group is lent one...
+        assert real[2]["course_from"] == "group"
+        assert real[2]["heading"] == 90.0
+        # ...and the one raised from a warning is not.
+        assert raised["heading"] is None
+        assert raised.get("course_from") is None
+
+    def test_it_says_what_it_is_rather_than_repeating_the_warning(self):
+        """It is a drone mark, not a second copy of the warning.
+
+        Copying the warning's own summary put "Air alert in Липецкая область"
+        on a mark drawn as a drone, twice over in the popup, and said nothing
+        about the one thing the mark actually is.
+        """
+        feed = self.one("Rostov Oblast Drone Alert")
+        drone = self.drones(feed)[0]
+        warning = [e for e in feed["events"] if e["kind"] == "alert"][0]
+        assert drone["summary"] != warning["summary"]
+        assert "warned of" in drone["summary"].lower()
+        assert "Ростовская область" in drone["summary"]
+
+    def test_it_does_not_count_as_a_report(self):
+        """Nobody sent it.
+
+        "Reports the gazetteer could place" is a number a reader checks to
+        see whether the gazetteer is broken, and counting a mark this app
+        invented would make it stop meaning that.
+        """
+        drone = self.drones(self.one("Rostov Oblast Drone Alert"))[0]
+        assert drone["from_warning"] is True
+        # And NOT under the old feature's flag. `derived` belongs to warnings
+        # raised from drones -- asked for, then removed -- and this is the
+        # mirror of that rather than the same thing. One flag for both would
+        # let either quietly stand in for the other.
+        assert drone.get("derived") is None
+
+    def test_the_stream_gets_one_row_rather_than_two(self):
+        # The panel lists what was REPORTED. One post arrived, so one row --
+        # the drone is a second mark on the map, not a second report.
+        feed = self.one("Rostov Oblast Drone Alert")
+        assert len(feed["alerts"]) == 1
+        assert feed["alerts"][0]["kind"] == "alert"
+
+    def test_it_carries_the_report_with_it(self):
+        # It is a mark somebody will click. Without the text and the link it
+        # is an assertion with no way back to what it came from.
+        feed = self.one("Rostov Oblast Drone Alert")
+        drone = self.drones(feed)[0]
+        assert drone["channel"] == "radarrussiia"
+        assert drone["source"] == "c/1"
+        assert drone["id"].endswith("D")
+        # And it says which panel row it belongs to: its warning's, because
+        # one post is one row.
+        assert drone["row"] == feed["alerts"][0]["id"]
+
+    def test_ukraine_does_not_get_these(self):
+        """NEPTUN supplies real tracks there.
+
+        Not by a country test here, but by where this sits: a channel reading
+        inside Ukraine is shadowed by NEPTUN before it reaches this code, and
+        NEPTUN's own alerts are recorded by a different function entirely.
+        """
+        tracker.reset()
+        neptun.remember_shapes({"ua": {"type": "Polygon", "coordinates": [
+            [[20.0, 44.0], [41.0, 44.0], [41.0, 53.0], [20.0, 53.0],
+             [20.0, 44.0]]]}})
+        plain = reports.read("Kyiv Oblast Drone Alert")
+        plain["kind"] = tracker.fold_kind(plain["kind"])
+        item = tracker._clean({**plain, "id": "c/2"})
+        tracker._record(item, {"id": "c/2", "channel": "somechannel"}, "ua")
+        assert self.drones(tracker.current()) == []
 
 
 class TestTakingAMarkOffByHand:

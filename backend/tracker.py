@@ -763,6 +763,16 @@ def borrow_course(events: list[dict[str, Any]],
             for event in same:
                 if event.get("heading") is not None:
                     continue
+                # Never to a mark raised from a warning. The sentence this
+                # function rests on is "things reported TOGETHER are usually
+                # one group going one way", and such a mark was not reported
+                # with anything: it sits at the arithmetic centre of a
+                # province because a warning was declared over it. Lending it
+                # a bearing would compound one inference with another and
+                # draw the result as an arrow -- a direction, at a position,
+                # neither of which anybody stated.
+                if event.get("from_warning"):
+                    continue
                 event["heading"] = course
                 event["course_from"] = "group"
                 event["course_from_count"] = len(stated)
@@ -1517,6 +1527,122 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         # the same promise the rest of this layer makes, and it is worth more
         # for pictures than for text -- an <img> straight to their CDN would
         # hand them the viewer's address on every popup.
+        "photos": photo_paths(message.get("photos")),
+        "link": message.get("link"),
+    })
+    _drone_from_warning(placed, ident, message, seen, item)
+    return True
+
+
+# A warning about drones puts a drone on the map as well as shading the region.
+#
+# This reverses a decision, so here is the decision and why it went the other
+# way now. Region-level marks used to be drawn and were removed: a report that
+# names an oblast and nothing finer has no point that means anything, its
+# position is the arithmetic centre of a province, and a dot sitting there
+# looked -- in the note left at the time -- like "random drones", which is
+# exactly what it was.
+#
+# What has changed is that the Russian side is not the Ukrainian one. Ukraine
+# has NEPTUN: real tracks, at real positions, so a region-level dot there adds
+# a worse mark beside a better one. Russia has one Telegram channel, its posts
+# are overwhelmingly "UAV danger in Rostov region", and the choice there is
+# not between a vague mark and a sharp one. It is between a vague mark and
+# nothing at all on a map whose whole subject is what is in the air.
+#
+# So it is drawn, and it is drawn honestly:
+#
+#   - no course, so it is the courseless ring rather than an arrow pointing
+#     somewhere nobody said;
+#   - no outline of its own, because the warning beside it already shades the
+#     region and two shadings of one report read as two reports;
+#   - carrying `from_warning`, which the popup spells out in full and the map
+#     draws at reduced weight -- it is an inference from a warning, not a
+#     sighting, and the difference is the sort this layer says out loud.
+#
+# Drones only. "Missile danger in Belgorod region" is a warning about what may
+# come, and a missile drawn in the middle of an oblast would be a claim about
+# a weapon in flight that nobody made.
+#
+# Ukraine never reaches this. A channel reading that lands inside Ukraine is
+# shadowed by NEPTUN further up this function and returns before here, and
+# NEPTUN's own alerts are recorded by _record_neptun_alert, which is a
+# different path entirely.
+def _warned_drones(placed: dict[str, Any]) -> str:
+    """What to call a drone mark raised from a warning."""
+    where = (placed.get("region_over") or placed.get("place_match")
+             or placed.get("place"))
+    return f"Drones warned of over {where}" if where else "Drones warned of"
+
+
+def _drone_from_warning(placed: dict[str, Any], ident: str,
+                        message: dict[str, Any], seen: float,
+                        item: dict[str, Any]) -> bool:
+    """A drone mark for a warning that is about drones. Returns whether one
+    was added."""
+    if placed["kind"] != "alert" or placed.get("cause") != "drone":
+        return False
+    # An all-clear cannot reach here at all: _record returns on the LIFTED
+    # branch well above this call. It is worth saying because the obvious
+    # guard against one is unreachable, and an unreachable guard is a claim
+    # that this function is defending something it is not.
+    if not placed["placed"]:
+        return False
+    _events.append({
+        **placed,
+        "kind": "drone",
+        "rank": KINDS["drone"]["rank"],
+        "motion": MOTION.get("drone", "track"),
+        # Nothing said which way. Belt and braces: an alert never carries a
+        # heading -- place_event returns before setting one for anything that
+        # is not a track -- so these are here to survive a change that makes
+        # it do so, not because it does today. What actually keeps this mark
+        # courseless is the refusal in borrow_course.
+        "course": None,
+        "course_from": None,
+        "heading": None,
+        # The warning next to it is what shades the region. This is the point
+        # inside it.
+        "shape": None,
+        "region_wide": False,
+        "region_scope": None,
+        # Not area_only, and that is not an oversight. area_only means "there
+        # is no dot" and the page hides such marks -- which would make this
+        # whole function draw nothing. What it IS gets its own word below.
+        "area_only": False,
+        # Not a report: nobody sent this one, it was raised from the warning
+        # beside it. So the count of "reports the gazetteer could place" must
+        # exclude it, or that number stops meaning what a reader checks it
+        # for.
+        #
+        # Under its own name rather than under `derived`. That word belongs to
+        # a feature that put a WARNING wherever there were drones -- asked
+        # for, then asked to be removed, and a test still guards the removal.
+        # This is the mirror of it and not the same thing, and giving the two
+        # one flag would let either quietly stand in for the other.
+        "from_warning": True,
+        # Its own sentence rather than the warning's. Copying that one put
+        # "Air alert in Липецкая область" on a mark drawn as a drone, twice
+        # over in the popup, and said nothing about the one thing this mark
+        # is: drones, claimed over a region, by a warning rather than by
+        # anybody who saw one.
+        "summary": _warned_drones(placed),
+        "id": f"{ident}D",
+        # Which row in the panel this mark belongs to: its warning's, because
+        # one post arrived and one post is one row. Said explicitly rather
+        # than left to be inferred from the id, so that "every mark on the map
+        # traces back to a report you can read" stays a property something can
+        # check rather than a naming convention.
+        "row": ident,
+        "by": item.get("by", "model"),
+        "origin_lat": placed["lat"],
+        "origin_lon": placed["lon"],
+        "seen": seen,
+        "channel": message.get("channel"),
+        "region": message.get("region"),
+        "oblast": placed.get("region"),
+        "source": message.get("id"),
+        "text": message.get("text", "")[:300],
         "photos": photo_paths(message.get("photos")),
         "link": message.get("link"),
     })
@@ -3009,6 +3135,25 @@ def demo() -> dict[str, Any]:
         if not _alive(event, now):
             continue
         events.append(project(event, now))
+        # And the drone a drone warning raises, through the same function the
+        # live path calls rather than a copy of it. Without this the offline
+        # build showed a shaded oblast with nothing in the air over it, which
+        # is precisely the picture the function exists to fix -- and the
+        # fourth time a case reachable only on the live map would have been
+        # the case a drawing bug was hiding in.
+        #
+        # It appends to the module's own list, which the demo does not use --
+        # so the one it made is taken back off and put in the demo's list
+        # instead. Ugly, and better than the alternative: a second copy of
+        # the function here, drifting from the real one.
+        if _drone_from_warning(placed, ident, {"id": f"demo/{i}",
+                                               "channel": "demo",
+                                               "region": "Ukraine",
+                                               "text": summary},
+                               seen, {"by": "rules"}):
+            drone = _events.pop()
+            if _alive(drone, now):
+                events.append(project(drone, now))
 
     # A NEPTUN-shaped track and an areaOnly one, read by the same reader the
     # live path uses. The offline build could otherwise show neither, and

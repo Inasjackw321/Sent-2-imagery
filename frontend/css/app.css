@@ -1925,3 +1925,15 @@ body.is-walled { overflow: hidden; }
   font-style: italic;
 }
 
+/* Raised from a warning rather than reported: a drone drawn because a warning
+   about drones covers this region, not because anybody saw one here. It takes
+   the advisory's reduced weight and adds a dashed ring, so that at a glance
+   it reads as "something is claimed over this ground" rather than as a
+   sighting with a position. The popup says it in words. */
+.ao-pin.is-from-warning .ao-glyph {
+  opacity: .58;
+  border-radius: 50%;
+  outline: 1px dashed currentColor;
+  outline-offset: 2px;
+}
+

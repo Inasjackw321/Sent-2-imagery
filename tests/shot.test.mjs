@@ -12,8 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { closeIn, isFrontier, labelSpot, legendKeys, markScale, shortName,
-  stampedAt }
+import { closeIn, isFrontier, labelSpot, legendKeys, shortName, stampedAt }
   from '../frontend/js/trackershot.js';
 
 const VIEW = { north: 52.5, south: 45.5, west: 22.0, east: 40.0 };
@@ -596,27 +595,4 @@ test('the crop is off by default, only when asked for', () => {
   const block = SOURCE.slice(SOURCE.indexOf('export async function drawShot'));
   assert.match(block.slice(0, block.indexOf(')')), /exactly = false/,
     'exactly has no default, so a caller that omits it gets undefined');
-});
-
-// A mark may be drawn bigger than its neighbours, and the map is what decides.
-// A drone is four rings, a frame and a nose rather than a solid triangle, and
-// it is unreadable at the size a triangle is fine at.
-
-test('a mark with its own scale is drawn at it', () => {
-  assert.equal(markScale(24, { scale: 32 / 24 }), 32);
-  assert.equal(markScale(34, { scale: 32 / 24 }), 45);
-});
-
-test('and one without is drawn at the picture\'s own size', () => {
-  for (const mark of [{}, null, undefined, { scale: 1 }]) {
-    assert.equal(markScale(24, mark), 24, JSON.stringify(mark));
-  }
-});
-
-test('a nonsense scale is ignored rather than obeyed', () => {
-  // It arrives over the wire with everything else. A mark drawn at zero
-  // pixels, or backwards, is worse than one drawn at the ordinary size.
-  for (const bad of [0, -2, NaN, Infinity, 'big', null]) {
-    assert.equal(markScale(24, { scale: bad }), 24, String(bad));
-  }
 });
