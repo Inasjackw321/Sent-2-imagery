@@ -12,8 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { closeIn, frontierCountries, labelSpot, legendKeys, shortName,
-  stampedAt }
+import { closeIn, isFrontier, labelSpot, legendKeys, shortName, stampedAt }
   from '../frontend/js/trackershot.js';
 
 const VIEW = { north: 52.5, south: 45.5, west: 22.0, east: 40.0 };
@@ -158,40 +157,37 @@ test('a province is named without its type word', () => {
 });
 
 // A red line is drawn round a country, and red on this picture means "a
-// country ends here". These are about it never saying that of ground where
-// it is not true.
+// country ends here". These are about which boundaries earn one.
+//
+// The rule used to be "a country all of whose provinces are here", and the
+// red line was worked out from those provinces. That needed every ring of
+// every province wound the same way; Ukraine arrives as oblasts AND raions,
+// two nested levels from two files, and where they disagreed the picture
+// drew a red line round all hundred and thirty-six raions and none round
+// Ukraine. The line is now the country's own boundary, and this is the flag
+// that says which one that is.
 
-test('a country every province of which is here gets a red border', () => {
-  const got = frontierCountries([
-    { name: 'a', in: 'pl', whole: true },
-    { name: 'b', in: 'pl', whole: true },
-  ]);
-  assert.deepEqual([...got], ['pl']);
+test('a national boundary is drawn as a frontier', () => {
+  assert.equal(isFrontier({ name: 'Polska', in: 'pl', level: 'country' }),
+    true);
 });
 
-test('a country half way through arriving gets none', () => {
-  // Its boundaries come one request at a time, so this is the state the map
-  // is in for the first couple of minutes of every run.
-  const got = frontierCountries([
-    { name: 'a', in: 'by', whole: false },
-    { name: 'b', in: 'by', whole: false },
-  ]);
-  assert.deepEqual([...got], []);
+test('a province is not, however big', () => {
+  // The case that broke: every raion in Ukraine came out red.
+  assert.equal(isFrontier(
+    { name: 'Харківська область', in: 'ua', level: 'region' }), false);
+  assert.equal(isFrontier(
+    { name: 'Краснодарский край', in: 'elsewhere', level: 'region' }), false);
 });
 
-test('and a province nobody could name a country for gets none', () => {
-  // Three Russian oblasts learned from three warnings are not Russia.
-  const got = frontierCountries([
-    { name: 'a', in: 'elsewhere', whole: false },
-    { name: 'b', in: 'ua', whole: true },
-  ]);
-  assert.deepEqual([...got], ['ua']);
-});
-
-test('nothing to draw is not a failure', () => {
-  assert.equal(frontierCountries([]).size, 0);
-  assert.equal(frontierCountries(null).size, 0);
-  assert.equal(frontierCountries([null, {}, { in: 'pl' }]).size, 0);
+test('and a boundary that says nothing about itself is not', () => {
+  // Fail closed. A missing flag draws a pale province, which is a boundary
+  // drawn modestly; guessing the other way draws a national border where
+  // nobody said there was one.
+  assert.equal(isFrontier({ name: 'x', in: 'ua' }), false);
+  assert.equal(isFrontier({}), false);
+  assert.equal(isFrontier(null), false);
+  assert.equal(isFrontier(undefined), false);
 });
 
 test('the neighbours are named without theirs either', () => {

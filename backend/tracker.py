@@ -1821,9 +1821,23 @@ def catch_up() -> int:
 
 
 # A ceiling on the boundaries handed to the page for drawing its own map.
-# Twenty-five oblasts, a hundred and change raions, and whatever Russia has
-# been learned -- generous, and bounded so a runaway index cannot be sent.
-MOST_OUTLINES = 400
+#
+# Twenty-five oblasts, a hundred and change raions, five national borders,
+# a hundred and twenty provinces of the neighbours, and whatever has been
+# learned from warnings further east -- about two hundred and eighty of them
+# with everything arrived.
+#
+# Raised from 400 for headroom rather than because 400 was being hit: it was
+# not, and the arithmetic above is why. It left about a hundred and twenty
+# spare, and the only part of that total which grows without bound is the
+# learned tail -- one more province every time a warning is reported
+# somewhere new. A cap that a long night could reach is a cap that starts
+# dropping borders on the night it matters.
+#
+# Bounded so a runaway index cannot be sent. What it cuts is the tail, and
+# the national borders go in first for that reason: under a cap, the last
+# thing to go should be the line that says which country the ground is.
+MOST_OUTLINES = 600
 
 
 def outlines() -> list[dict[str, Any]]:
@@ -1843,60 +1857,60 @@ def outlines() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     already: list[Any] = []
 
-    def keep(name: str, shape: Any, where: str) -> None:
+    def keep(name: str, shape: Any, where: str, level: str) -> None:
         if not shape or len(out) >= MOST_OUTLINES:
             return
         if any(shape is seen for seen in already):
             return
         already.append(shape)
-        # Which country's border this is part of.
+        # Which country's border this is part of, and which KIND of border.
         #
-        # The page needs it to answer "show me Russia", and this is the only
-        # place that knows. Nothing in a report says which country a place is
-        # in: the source's own region names the CHANNEL's beat, not the
-        # mark's, and Belgorod and Kharkiv sit a hundred kilometres apart
-        # inside each other's bounding boxes -- so no box can tell them
-        # apart. A real boundary can, and NEPTUN publish Ukraine's.
-        out.append({"name": name, "shape": shape, "in": where})
+        # The country, because the page needs it to answer "show me Russia",
+        # and this is the only place that knows. Nothing in a report says
+        # which country a place is in: the source's own region names the
+        # CHANNEL's beat, not the mark's, and Belgorod and Kharkiv sit a
+        # hundred kilometres apart inside each other's bounding boxes -- so
+        # no box can tell them apart. A real boundary can.
+        #
+        # The kind, because a national border and a provincial one are not
+        # the same fact and must not be the same line. "country" is drawn in
+        # red and "region" pale, and which is which is decided here rather
+        # than worked out from the shapes: the page tried working it out, by
+        # taking the outside edge of the union of a country's provinces, and
+        # Ukraine's two nested levels of them came apart in its hands.
+        out.append({"name": name, "shape": shape, "in": where,
+                    "level": level})
 
+    # The national borders first, so a picture drawn before the provinces
+    # have all arrived still has its red lines.
+    for code, name, shape in country_outlines():
+        keep(name, shape, code, "country")
     # NEPTUN's file IS Ukraine's provinces -- that is what it is a file of --
     # so everything in it is Ukrainian by definition rather than by guess.
     for name, shape in neptun.shapes().items():
-        keep(name, shape, "ua")
-    # Poland's and Belarus's, from the closed lists in neighbours.py. Before
-    # the loose ones below, because these are named regions of a named
+        keep(name, shape, "ua", "region")
+    # The neighbours' provinces, from the closed lists in neighbours.py.
+    # Before the loose ones below, because these are named regions of a named
     # country and the pass below would file the same boundary as "elsewhere"
     # -- and the de-duplication is by identity, so whichever came first won.
     for code, name, shape in neighbour_outlines():
-        keep(name, shape, code)
+        keep(name, shape, code, "region")
     # And these are learned one at a time as warnings are drawn over them.
-    # Mostly Russia, and "elsewhere" rather than "ru" because the gazetteer
-    # will hand back a Belarusian oblast just as readily and calling that
-    # Russia would be a claim this app has no business making.
+    # Whatever is east of the listed part of Russia, and "elsewhere" rather
+    # than "ru" because the gazetteer will hand back a Kazakh oblast just as
+    # readily and calling that Russia would be a claim this app has no
+    # business making.
     #
-    # Minus the neighbours' own names, which the pass above has already
-    # placed. The de-duplication above is by identity, and a province that
-    # answered to BOTH its spellings is two objects holding two slightly
-    # different simplifications of one border -- so it came through here as
-    # well, drawn a second time and filed as a country nobody had named.
+    # Minus the names the passes above have already placed. The
+    # de-duplication is by identity, and a province that answered to BOTH
+    # its spellings is two objects holding two slightly different
+    # simplifications of one border -- so it came through here as well, drawn
+    # a second time and filed as a country nobody had named.
     spoken_for = neighbour_names()
     for name, shape in gazetteer.outlines():
         if _same_name(name) in spoken_for:
             continue
-        keep(name, shape, "elsewhere")
-
-    # Which countries are here in full.
-    #
-    # The page draws a red national border, and it may only draw one round a
-    # country it has every province of. Round a partial set the same line
-    # would be a fiction -- three Russian oblasts learned from three warnings
-    # would come out as a red frontier that follows no border on earth, drawn
-    # in the one colour on the picture that means "this is where a country
-    # ends". So it is said here, by the half of the app that knows, rather
-    # than guessed at by the half that draws.
-    whole = whole_countries(out)
-    for item in out:
-        item["whole"] = item["in"] in whole
+        keep(name, shape, "elsewhere", "region")
     return out
 
 
@@ -1910,23 +1924,30 @@ def _same_name(name: str) -> str:
 
 
 def neighbour_names() -> set[str]:
-    """Every spelling the neighbours may be known under, comparably."""
+    """Every spelling this module asks for, comparably.
+
+    Both lists. A country's own boundary is asked for by name like anything
+    else, so "Poland" is in the gazetteer's cache alongside its
+    voivodeships -- and letting it through the loose pass would draw the
+    whole country a second time as an ordinary pale province.
+    """
     return {_same_name(one)
-            for _code, _name, spellings in neighbours.REGIONS
+            for _code, _name, spellings in neighbours.EVERYTHING
             for one in spellings}
 
 
-def neighbour_outlines() -> list[tuple[str, str, Any]]:
-    """Poland's and Belarus's provinces, as (country, name, shape).
+def _found(listed: tuple[tuple[str, str, tuple[str, ...]], ...],
+           ) -> list[tuple[str, str, Any]]:
+    """The boundaries held for these, as (country, name, shape).
 
-    One entry per region at most, whichever spelling found it -- see the note
+    One entry per entry at most, whichever spelling found it -- see the note
     in neighbours.py about the two. Asking under both names and keeping both
-    answers would draw the same province twice, and the second copy is a
+    answers would draw the same ground twice, and the second copy is a
     slightly different simplification of the same border, so the pair reads
     as a shimmer along every line.
     """
     got: list[tuple[str, str, Any]] = []
-    for code, name, asked in neighbours.REGIONS:
+    for code, name, asked in listed:
         for spelling in asked:
             shape = gazetteer.outline(spelling, code)
             if shape:
@@ -1935,23 +1956,14 @@ def neighbour_outlines() -> list[tuple[str, str, Any]]:
     return got
 
 
-def whole_countries(outlines_had: list[dict[str, Any]]) -> set[str]:
-    """Which countries every one of whose provinces is present.
+def country_outlines() -> list[tuple[str, str, Any]]:
+    """The national borders held, as (country, name, shape)."""
+    return _found(neighbours.COUNTRIES)
 
-    Ukraine is always in it when anything Ukrainian is: NEPTUN's file is the
-    country, so holding any of it is holding all of it. The neighbours have
-    to be counted, because their boundaries arrive one request at a time and
-    a country half way through arriving is not a country you can draw a
-    border round.
-    """
-    tally: dict[str, int] = {}
-    for item in outlines_had:
-        tally[item["in"]] = tally.get(item["in"], 0) + 1
-    whole = {code for code, wanted in neighbours.EXPECTED.items()
-             if tally.get(code, 0) >= wanted}
-    if tally.get("ua"):
-        whole.add("ua")
-    return whole
+
+def neighbour_outlines() -> list[tuple[str, str, Any]]:
+    """The neighbours' provinces held, as (country, name, shape)."""
+    return _found(neighbours.REGIONS)
 
 
 def want_neighbours() -> int:
@@ -1963,7 +1975,7 @@ def want_neighbours() -> int:
     to do and stops asking.
     """
     asked = 0
-    for code, _name, spellings in neighbours.REGIONS:
+    for code, _name, spellings in neighbours.EVERYTHING:
         if any(gazetteer.outline(one, code) for one in spellings):
             continue
         # Something already in the air for this region. Without this the walk

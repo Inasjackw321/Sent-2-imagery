@@ -88,6 +88,8 @@ const LAND = 'rgba(120, 160, 210, 0.08)';
 // reads as an edge rather than as one pale line of uncertain thickness.
 const BORDER_SHADOW = 'rgba(0, 0, 0, 0.55)';
 const LABEL = 'rgba(200, 218, 240, 0.55)';
+// A country's name, brighter than a province's. See nameRegions.
+const COUNTRY_LABEL = 'rgba(226, 236, 250, 0.82)';
 
 // The international borders.
 //
@@ -381,6 +383,22 @@ function bandSizes(frame, marks, warnings) {
   };
 }
 
+/**
+ * Whether this boundary is a national border, and so drawn in red.
+ *
+ * The backend says which, because it is the half of the app that knows: it
+ * asked Nominatim for "Poland" and for "województwo lubelskie" and the two
+ * answers are different kinds of fact. The drawing used to work it out for
+ * itself and got it wrong -- see drawFrontiers.
+ *
+ * Its own exported function because it is the CONTRACT rather than the
+ * drawing, and a contract that can only be checked by reading pixels off a
+ * canvas is a contract nobody checks.
+ */
+export function isFrontier(outline) {
+  return outline?.level === 'country';
+}
+
 function drawLand(ctx, frame, outlines) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
@@ -389,13 +407,13 @@ function drawLand(ctx, frame, outlines) {
   // land, then a dark line under the border, then the border itself. Three
   // passes over one path rather than three walks of the same coordinates.
   //
-  // Grouped by country as well, for the frontiers below. Same single walk:
-  // every path goes in the flat list that draws the provinces and in its own
-  // country's list, and neither is a second pass over the coordinates.
+  // Split by what kind of border it is, on the same single walk. A national
+  // border and a provincial one are not the same fact and are not drawn the
+  // same way -- see drawFrontiers.
   const paths = [];
-  const byCountry = new Map();
-  const frontiered = frontierCountries(outlines);
+  const frontiers = [];
   for (const outline of outlines ?? []) {
+    const national = isFrontier(outline);
     walkRings(outline.shape, (ring) => {
       const path = new Path2D();
       ring.forEach(([lon, lat], i) => {
@@ -404,16 +422,15 @@ function drawLand(ctx, frame, outlines) {
         else path.lineTo(x, y);
       });
       path.closePath();
-      paths.push(path);
-      if (frontiered.has(outline.in)) {
-        if (!byCountry.has(outline.in)) byCountry.set(outline.in, new Path2D());
-        byCountry.get(outline.in).addPath(path);
-      }
+      (national ? frontiers : paths).push(path);
     });
   }
 
+  // The land under everything, national outlines included: a country whose
+  // provinces have not arrived yet is still ground, and without this it is a
+  // red ring round a hole.
   ctx.fillStyle = LAND;
-  for (const path of paths) ctx.fill(path);
+  for (const path of [...frontiers, ...paths]) ctx.fill(path);
 
   // The shadow first and wider, so the bright line sits on top of it.
   ctx.strokeStyle = BORDER_SHADOW;
@@ -424,69 +441,38 @@ function drawLand(ctx, frame, outlines) {
   ctx.lineWidth = 1.5;
   for (const path of paths) ctx.stroke(path);
 
-  drawFrontiers(ctx, frame, byCountry);
-}
-
-/**
- * Which countries may have a red border drawn round them.
- *
- * Only one whose every province is on the picture. That is the `whole` flag
- * the backend sends, and it is the whole of the honesty of this: three
- * Russian oblasts learned from three warnings, ringed in red, would be a
- * frontier that follows no border on earth drawn in the one colour here that
- * means "a country ends".
- *
- * Its own function, and exported, because it is the rule rather than the
- * drawing -- and a rule that can only be checked by reading pixels off a
- * canvas is a rule nobody checks.
- */
-export function frontierCountries(outlines) {
-  const got = new Set();
-  for (const outline of outlines ?? []) {
-    if (outline?.whole && outline?.in) got.add(outline.in);
-  }
-  return got;
+  drawFrontiers(ctx, frame, frontiers);
 }
 
 /**
  * The national borders, red, over the pale provincial ones.
  *
- * How it is done is worth a note, because the obvious way does not work. A
- * country's border is the outside edge of the union of its provinces, and
- * there is no polygon union in a canvas -- stroking the provinces gives red
- * along every internal oblast line too, which is the opposite of the point.
+ * Each one is a country's own boundary, asked for as a boundary. The version
+ * before this worked them out instead, by taking the outside edge of the
+ * union of a country's provinces -- there is no polygon union in a canvas,
+ * so it stroked the provinces wide and punched the union back out of them,
+ * leaving the perimeter and erasing the internal lines.
  *
- * So the strokes are laid down at twice the width they want to be and then
- * the union is punched out of them:
- *
- *   - stroke every province of the country, wide, on a layer of its own;
- *   - fill the union of those provinces in `destination-out`.
- *
- * An internal edge is interior to the union, so the whole of its stroke is
- * erased. The perimeter's stroke straddles the edge, so its outer half
- * survives -- and where two of these countries meet, the two surviving
- * halves make one line centred on the border between them. No topology, no
- * shared-vertex assumption, exact at any zoom.
+ * That was clever and it was wrong. It needed every ring of every province
+ * wound the same way, and Ukraine arrives as oblasts AND raions, two nested
+ * levels from two files. Where the levels disagreed the winding cancelled,
+ * the "union" came out with a hole at every raion, and the picture drew a
+ * red line round all hundred and thirty-six of them and none round the
+ * country. A border asked for as a border needs no topology, no winding
+ * assumption, and no country to have fully arrived.
  */
-function drawFrontiers(ctx, frame, byCountry) {
-  if (!byCountry.size) return;
+function drawFrontiers(ctx, frame, frontiers) {
+  if (!frontiers.length) return;
   const width = Math.max(2, Math.round(frame.width * 0.0022));
-  for (const country of byCountry.values()) {
-    const layer = document.createElement('canvas');
-    layer.width = frame.width;
-    layer.height = frame.height;
-    const pen = layer.getContext('2d');
-    if (!pen) continue;
-    pen.lineJoin = 'round';
-    pen.lineCap = 'round';
-    // Twice, because half of it is about to be erased.
-    pen.lineWidth = width * 2;
-    pen.strokeStyle = FRONTIER;
-    pen.stroke(country);
-    pen.globalCompositeOperation = 'destination-out';
-    pen.fill(country);
-    ctx.drawImage(layer, 0, 0);
-  }
+  // A dark line under it, the same trick the pale borders use: a red line
+  // over a shaded warning is red on olive, and the shadow is what keeps it
+  // reading as one line.
+  ctx.strokeStyle = BORDER_SHADOW;
+  ctx.lineWidth = width + 2.5;
+  for (const path of frontiers) ctx.stroke(path);
+  ctx.strokeStyle = FRONTIER;
+  ctx.lineWidth = width;
+  for (const path of frontiers) ctx.stroke(path);
 }
 
 /**
@@ -503,13 +489,25 @@ function drawFrontiers(ctx, frame, byCountry) {
  */
 function nameRegions(ctx, frame, outlines, bands, marks) {
   const size = Math.max(11, Math.round(frame.width * 0.0105));
-  ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Letter-spacing is what makes a map label read as a label rather than as a
-  // word dropped on the picture. Not in every engine, so it is set through a
-  // property that is simply ignored where it is unknown.
-  ctx.letterSpacing = `${Math.max(1, Math.round(size * 0.12))}px`;
+  // A country's name is set larger and brighter than a province's.
+  //
+  // Without this "POLSKA" sat beside "DOLNOŚLĄSKIE" at the same size in the
+  // same grey, which reads as two provinces, one of which happens to be
+  // called Poland. The red line says where the country ends and this says
+  // which country it is -- and a hierarchy of places needs a hierarchy of
+  // type or it is just a list.
+  const countrySize = Math.round(size * 1.45);
+  const setType = (national) => {
+    const px = national ? countrySize : size;
+    ctx.font = `${national ? 700 : 600} ${px}px system-ui, -apple-system, `
+      + 'Segoe UI, sans-serif';
+    // Letter-spacing is what makes a map label read as a label rather than
+    // as a word dropped on the picture. Not in every engine, so it is set
+    // through a property that is simply ignored where it is unknown.
+    ctx.letterSpacing = `${Math.max(1, Math.round(px * (national ? 0.2 : 0.12)))}px`;
+  };
 
   // The marks' own room, claimed before any name is placed. The marks are
   // drawn after the labels and so win every overlap, which is the right
@@ -521,11 +519,19 @@ function nameRegions(ctx, frame, outlines, bands, marks) {
     const half = markSize(frame) * 0.72;
     return { x0: x - half, x1: x + half, y0: y - half, y1: y + half };
   });
-  for (const outline of outlines ?? []) {
+  // Countries first, so that where a country's name and a province's want
+  // the same spot the country keeps it. It is the label a reader needs
+  // first and there are five of them against a hundred and sixty.
+  const order = [...(outlines ?? [])].sort(
+    (a, b) => Number(isFrontier(b)) - Number(isFrontier(a)));
+  for (const outline of order) {
     const name = shortName(outline.name);
     if (!name) continue;
+    const national = isFrontier(outline);
+    setType(national);
+    const tall = national ? countrySize : size;
     const width = ctx.measureText(name).width;
-    const spots = labelSpot(outline.shape, frame, width, size * 2.4, bands);
+    const spots = labelSpot(outline.shape, frame, width, tall * 2.4, bands);
     if (!spots) continue;
     // The first spot that is not already taken. Nearest the middle of the
     // visible part comes first, so a name only shifts as far as it must.
@@ -533,7 +539,7 @@ function nameRegions(ctx, frame, outlines, bands, marks) {
     let box = null;
     for (const candidate of spots) {
       const tryBox = { x0: candidate.x - width / 2, x1: candidate.x + width / 2,
-                       y0: candidate.y - size, y1: candidate.y + size };
+                       y0: candidate.y - tall, y1: candidate.y + tall };
       if (placed.some((had) => overlaps(had, tryBox))) continue;
       spot = candidate;
       box = tryBox;
@@ -543,7 +549,7 @@ function nameRegions(ctx, frame, outlines, bands, marks) {
     placed.push(box);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
     ctx.fillText(name, spot.x + 1, spot.y + 1);
-    ctx.fillStyle = LABEL;
+    ctx.fillStyle = national ? COUNTRY_LABEL : LABEL;
     ctx.fillText(name, spot.x, spot.y);
   }
   ctx.letterSpacing = '0px';
