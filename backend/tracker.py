@@ -3089,11 +3089,27 @@ def demo() -> dict[str, Any]:
     # fetched yet. With an outline for every region the offline build always
     # took the happy path, and "a mark on a province centroid" was a thing
     # only the live map could show.
+    #
+    # Ukraine's regions only, and that is not tidiness. NEPTUN's file IS
+    # Ukraine's provinces, so everything in this index is tagged Ukrainian
+    # downstream -- seeded from the whole table, the demo told the page that
+    # Belgorod, Voronezh and Brest were Ukraine. The country filter on the
+    # picture then did the wrong thing in the one build anybody can check it
+    # in, while being right on the live map. Sixth time the offline build
+    # could not reach a state; first time it actively misrepresented one.
     neptun.remember_shapes({
         name.casefold(): _demo_ring(lat, lon, places.WIDE.get(name, 1.0))
-        for name, (lat, lon) in places.REGIONS.items()
+        for name, (lat, lon) in places.UKRAINE_REGIONS.items()
         if name != DEMO_WITHOUT_AN_OUTLINE
     })
+    # And the rest through the gazetteer's own door, the way Russia's
+    # boundaries actually arrive: learned one at a time, tagged "elsewhere".
+    for name, (lat, lon) in places.ELSEWHERE_REGIONS.items():
+        gazetteer.remember(name, "ru", {
+            "name": name, "lat": lat, "lon": lon, "category": "boundary",
+            "bbox": [lat - 1, lat + 1, lon - 1, lon + 1],
+            "shape": _demo_ring(lat, lon, places.WIDE.get(name, 1.0)),
+        })
 
     events, alerts = [], []
     for i, row in enumerate(seed, start=1):

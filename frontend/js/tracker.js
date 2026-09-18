@@ -942,8 +942,14 @@ function warningLabel(event) {
   return 'Air alert';
 }
 
-/** Whether a drawn record belongs to the country asked for. */
-function belongsTo(held, which, box) {
+/** Whether a drawn record belongs to the country asked for.
+ *
+ * Exported because two things now depend on it and they must agree: the fit
+ * the Airspace button flies to, and what goes ON a picture of that country.
+ * They used to disagree -- the fit filtered and the picture did not, so
+ * asking for Russia framed Russia's marks and then drew everybody's.
+ */
+export function belongsTo(held, which, box) {
   const at = spotOf(held);
   if (!box.contains(at)) return false;
   const ua = inUkraine(at);
@@ -1793,7 +1799,8 @@ function askWhere() {
         // The same fit the Airspace button uses, so the picture covers what
         // the map would show rather than a rectangle round a country.
         await regionOutlines();
-        saveShot(areaOf(key)?.bounds);
+        // And only that country's marks on it -- see saveShot.
+        saveShot(areaOf(key)?.bounds, { only: key });
       })),
     pick('Everything', 'Every mark on the map, wherever it is',
       () => saveShot(everything())),
@@ -1897,18 +1904,44 @@ function drawArea() {
  * part of Russia something is happening in, not three thousand kilometres of
  * empty ground.
  */
-async function saveShot(where, { exactly = false } = {}) {
+/**
+ * Whether one drawn record goes on the picture being made.
+ *
+ * A picture OF a country contains that country. The country buttons used to
+ * pass only the BOUNDS of a country's marks, and every mark inside that
+ * rectangle went on it -- Russia's marks run from Bryansk to Krasnodar, so
+ * the rectangle round them covers the whole of Ukraine, and asking for
+ * Russia produced a picture of Ukraine's warnings with a few Russian ones at
+ * the edges. No rectangle can exclude the ground between two countries; only
+ * a border can say which marks on it belong to which.
+ *
+ * Its own exported function because it is the rule rather than the drawing,
+ * and the version of this that lived inside saveShot could only be checked
+ * by making a picture and looking at it.
+ */
+export function picked(held, view, only = null) {
+  if (only) return belongsTo(held, only, view);
+  return view.contains(spotOf(held));
+}
+
+async function saveShot(where, { exactly = false, only = null } = {}) {
   const button = $('#trackerShot');
   if (!map || !button) return;
   button.disabled = true;
   try {
     const view = where ?? map.getBounds();
+    // Before the marks are gathered, not after, and that ordering is the
+    // whole of whether `only` works: belongsTo asks inUkraine, inUkraine
+    // needs the provinces, and until they arrive it answers null -- which
+    // belongsTo reads as "cannot tell, keep it". Fetched below the loop, as
+    // it was, a picture of one country would quietly contain both.
+    const outlines = await regionOutlines();
     const marks = [];
     const warnings = [];
     for (const held of drawn.values()) {
       const event = held.event;
       const at = spotOf(held);
-      if (!view.contains(at)) continue;
+      if (!picked(held, view, only)) continue;
       const colour = colourOf(event);
       const label = feed?.kinds?.[event.kind]?.label ?? 'Unidentified';
 
@@ -1952,7 +1985,7 @@ async function saveShot(where, { exactly = false } = {}) {
       warnings,
       // Take the ground as asked for, rather than closing in on the marks.
       exactly,
-      outlines: await regionOutlines(),
+      outlines,
       credit: feed?.attribution?.picture ?? 'Data supplied by NEPTUN — neptun.in.ua',
       at: new Date(),
     });

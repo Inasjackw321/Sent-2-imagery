@@ -260,7 +260,15 @@ CITIES: dict[str, tuple[float, float]] = {
 
 # Regions: oblasts, krais and republics, by the nominative form OpenStreetMap
 # and these reports both use.
-REGIONS: dict[str, tuple[float, float]] = {
+# Ukraine's own, split out from the rest and not by a comment.
+#
+# The demo seeds NEPTUN's shape index from this table, and NEPTUN's file
+# IS Ukraine's provinces -- so everything in that index is tagged as
+# Ukrainian further down the line. Seeded from the whole table, the demo
+# told the page that Belgorod, Voronezh and Brest were Ukraine, and the
+# country filter it was meant to be demonstrating quietly did the wrong
+# thing in front of anybody checking it.
+UKRAINE_REGIONS: dict[str, tuple[float, float]] = {
     "Волинська область": (51.10, 25.00),
     "Рівненська область": (51.00, 26.60),
     "Житомирська область": (50.60, 28.60),
@@ -286,7 +294,11 @@ REGIONS: dict[str, tuple[float, float]] = {
     "Закарпатська область": (48.40, 23.30),
     "Чернівецька область": (48.30, 26.00),
     "Автономна Республіка Крим": (45.30, 34.20),
-    # Russian, in Russian.
+}
+
+# Everywhere else these reports name: Russia, and the Belarusian border
+# oblasts. In their own languages, as OpenStreetMap holds them.
+ELSEWHERE_REGIONS: dict[str, tuple[float, float]] = {
     "Белгородская область": (50.70, 37.80),
     "Брянская область": (52.90, 33.50),
     "Курская область": (51.70, 36.00),
@@ -346,6 +358,12 @@ REGIONS: dict[str, tuple[float, float]] = {
     "Гомельская область": (52.40, 29.50),
     "Брестская область": (52.40, 25.50),
     "Минская область": (53.80, 27.50),
+}
+
+# Regions: oblasts, krais and republics, by the nominative form
+# OpenStreetMap and these reports both use.
+REGIONS: dict[str, tuple[float, float]] = {
+    **UKRAINE_REGIONS, **ELSEWHERE_REGIONS,
 }
 
 # Regions whose extent is not an oblast's. A republic can be ten times the

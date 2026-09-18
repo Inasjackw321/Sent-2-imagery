@@ -22,6 +22,7 @@ those silently and made a patchy night look like a broken feature.
 from __future__ import annotations
 
 import pathlib
+import re
 
 import datetime as dt
 import threading
@@ -2720,6 +2721,65 @@ class TestWarningsAreColouredByWhatTheyWarnAbout:
             assert cause in tracker.KINDS, cause
 
 
+class TestTheDemoDoesNotMoveTheBorder:
+    """The offline build must not teach the page a false country.
+
+    NEPTUN's boundary file IS Ukraine's provinces, so everything in that
+    index is tagged Ukrainian downstream. The demo seeded it from the whole
+    built-in region table -- fifty Russian and Belarusian oblasts included --
+    so the offline build told the page that Belgorod, Voronezh and Brest were
+    Ukraine.
+
+    Nothing looked broken. The live map was right, because NEPTUN's real file
+    holds Ukraine and nothing else. Only the one build anybody can check
+    without a network was wrong, and it was wrong about precisely the
+    question the country filter exists to answer.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+        gaz.forget()
+
+    teardown_method = setup_method
+
+    def test_only_ukraines_regions_are_tagged_ukrainian(self):
+        tracker.demo()
+        ua = {o["name"].casefold() for o in tracker.outlines()
+              if o["in"] == "ua"}
+        strangers = {n.casefold() for n in places.ELSEWHERE_REGIONS}
+        assert not (ua & strangers), sorted(ua & strangers)[:5]
+
+    def test_and_ukraines_own_are_there(self):
+        # The other half: a fix that seeded nothing would also pass above.
+        tracker.demo()
+        ua = {o["name"].casefold() for o in tracker.outlines()
+              if o["in"] == "ua"}
+        assert len(ua) >= len(places.UKRAINE_REGIONS) - 2
+
+    def test_the_neighbours_still_get_their_boundaries(self):
+        """They arrive the way Russia's really do, rather than not at all.
+
+        Learned one at a time through the gazetteer -- so a listed western
+        oblast comes out under "ru" and anything further east under
+        "elsewhere", which is what the live map does with the same names.
+        """
+        tracker.demo()
+        whose = {o["name"].casefold(): o["in"] for o in tracker.outlines()}
+        assert whose.get("белгородская область") == "ru"
+        assert whose.get("рязанская область") == "elsewhere"
+        # And not one of them is Ukraine, which is the whole point.
+        assert "ua" not in {whose.get("белгородская область"),
+                            whose.get("рязанская область")}
+
+    def test_the_table_is_split_rather_than_commented(self):
+        # REGIONS is the two halves joined, so neither can drift from it.
+        assert places.REGIONS == {**places.UKRAINE_REGIONS,
+                                  **places.ELSEWHERE_REGIONS}
+        assert not (set(places.UKRAINE_REGIONS) & set(places.ELSEWHERE_REGIONS))
+        assert "Автономна Республіка Крим" in places.UKRAINE_REGIONS
+
+
 class TestADroneWarningPutsADroneOnTheMap:
     """"Make it so drones are placed over reports in Russia."
 
@@ -4409,8 +4469,13 @@ class TestPickingWhatThePictureCovers:
         assert "onclick: saveShot" not in block
 
     def test_the_area_is_an_argument_rather_than_the_screen(self):
+        # The ground comes from the caller and falls back to the screen,
+        # rather than being the screen and nothing else. Matched loosely on
+        # the signature because the options it takes keep growing -- this is
+        # about the FIRST argument, and pinning the whole line meant every
+        # new option broke a test about something else.
         text = self.source()
-        assert "async function saveShot(where, { exactly = false } = {})" in text
+        assert re.search(r"async function saveShot\(where, \{", text)
         assert "const view = where ?? map.getBounds();" in text
 
     def test_what_it_offers(self):
@@ -4514,6 +4579,39 @@ class TestAskingForOneCountry:
             tracker.reset()
             neptun.forget()
             gaz.forget()
+
+    def test_a_picture_of_a_country_is_told_which_country(self):
+        """Wiring, and read off the source because that is what it is.
+
+        picked() and belongsTo() are both checked properly in
+        tests/picture.test.mjs. What cannot be checked there is that the
+        button actually HANDS the country over -- saveShot needs a map, a
+        Leaflet bounds and a canvas. Without this the two would agree about
+        the rule and disagree about whether it is applied, which is exactly
+        the state this fixed: the fit filtered by country and the picture
+        did not.
+        """
+        text = self.source()
+        block = text[text.index("function askWhere()"):]
+        block = block[:block.index("\nfunction ")]
+        assert "saveShot(areaOf(key)?.bounds, { only: key })" in block
+        # And the other three answers name no country, because they are not
+        # about one: this view, everything, and a box somebody drew.
+        assert "saveShot(null, { exactly: true })" in block
+        assert "saveShot(everything())" in block
+
+    def test_the_borders_are_loaded_before_the_marks_are_chosen(self):
+        """Ordering, and it decides whether the filter works at all.
+
+        belongsTo asks inUkraine; inUkraine answers null until the provinces
+        arrive; belongsTo reads null as "cannot tell, keep it". Fetched after
+        the loop -- where it was -- a picture of one country would quietly
+        contain both, and nothing would look broken.
+        """
+        text = self.source()
+        block = text[text.index("async function saveShot("):]
+        block = block[:block.index("\n}")]
+        assert block.index("await regionOutlines()") < block.index("for (const held")
 
     def test_the_view_fits_the_marks_rather_than_the_box(self):
         block = self.source()
@@ -4879,7 +4977,9 @@ class TestThePictureTakesTheGroundYouAskedFor:
         block = self.source()
         block = block[block.index("function askWhere()"):]
         block = block[:block.index("\nfunction closeWhere")]
-        assert "saveShot(areaOf(key)?.bounds)" in block
+        assert "saveShot(areaOf(key)?.bounds" in block
+        # And NOT as ground taken exactly: a country is fitted to what is
+        # over it, and "exactly" would hand back the rectangle instead.
         assert "areaOf(key)?.bounds, { exactly" not in block
 
     def test_an_empty_chosen_area_still_makes_a_picture(self):
