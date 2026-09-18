@@ -1924,12 +1924,12 @@ def _same_name(name: str) -> str:
 
 
 def neighbour_names() -> set[str]:
-    """Every spelling this module asks for, comparably.
+    """Every spelling this app asks the gazetteer for by name, comparably.
 
-    Both lists. A country's own boundary is asked for by name like anything
-    else, so "Poland" is in the gazetteer's cache alongside its
-    voivodeships -- and letting it through the loose pass would draw the
-    whole country a second time as an ordinary pale province.
+    So a province named here is not ALSO drawn by the loose pass below as a
+    region of no particular country. The de-duplication there is by identity,
+    and a province that answered to both its spellings is two objects holding
+    two slightly different simplifications of one border.
     """
     return {_same_name(one)
             for _code, _name, spellings in neighbours.EVERYTHING
@@ -1971,15 +1971,20 @@ COUNTRY_POINTS = 1200
 
 
 def country_outlines() -> list[tuple[str, str, Any]]:
-    """The national borders held, as (country, name, shape).
+    """The national borders, as (country, name, shape).
 
-    Thinned to what the picture can draw. A country's border arrives an order
-    of magnitude finer than a province's -- it is an order of magnitude
-    longer -- and five of them at full detail were half a megabyte on their
-    own.
+    Read from the file that ships with this app rather than fetched. See the
+    note in neighbours.py: they were fetched, a hundred and twenty-one
+    systematic boundary lookups is the bulk querying Nominatim's policy
+    forbids, and nothing arrived at all.
+
+    Still thinned, because the file is finer than the picture. A country's
+    border is an order of magnitude longer than a province's and arrives an
+    order of magnitude finer.
     """
-    return [(code, name, gazetteer.thin_shape(shape, COUNTRY_POINTS))
-            for code, name, shape in _found(neighbours.COUNTRIES)]
+    return [(code, row["name"],
+             gazetteer.thin_shape(row["shape"], COUNTRY_POINTS))
+            for code, row in sorted(neighbours.frontiers().items())]
 
 
 def neighbour_outlines() -> list[tuple[str, str, Any]]:

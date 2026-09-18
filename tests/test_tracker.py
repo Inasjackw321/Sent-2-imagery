@@ -3491,10 +3491,18 @@ class TestTheBordersForAPictureOfItsOwn:
              "coordinates": [[[33.0, 50.0], [34.0, 50.0], [34.0, 51.0],
                               [33.0, 50.0]]]}
 
+    def provinces(self):
+        """The fetched boundaries, without the four that ship with the app.
+
+        outlines() always carries the shipped national borders now -- that is
+        what makes the picture's red lines appear with no network -- so a
+        test about what was FETCHED has to say so.
+        """
+        return [o for o in tracker.outlines() if o["level"] != "country"]
+
     def test_it_carries_the_boundaries_neptun_publish(self):
         neptun.remember_shapes({"сумська область": self.SHAPE})
-        got = tracker.outlines()
-        assert [o["shape"] for o in got] == [self.SHAPE]
+        assert [o["shape"] for o in self.provinces()] == [self.SHAPE]
 
     def test_one_region_filed_under_several_names_comes_out_once(self):
         # index_shapes files the SAME object under a region's key and under
@@ -3503,14 +3511,14 @@ class TestTheBordersForAPictureOfItsOwn:
         neptun.remember_shapes({
             "sumska": self.SHAPE, "сумська область": self.SHAPE,
             "sumy oblast": self.SHAPE})
-        assert len(tracker.outlines()) == 1
+        assert len(self.provinces()) == 1
 
     def test_two_different_regions_both_come_out(self):
         other = {"type": "Polygon",
                  "coordinates": [[[30.0, 50.0], [31.0, 50.0], [31.0, 51.0],
                                   [30.0, 50.0]]]}
         neptun.remember_shapes({"a": self.SHAPE, "b": other})
-        assert len(tracker.outlines()) == 2
+        assert len(self.provinces()) == 2
 
     def test_russia_comes_from_the_gazetteer(self):
         # There is no published boundary file for Russia's provinces the way
@@ -3520,7 +3528,13 @@ class TestTheBordersForAPictureOfItsOwn:
                      {"name": "Брянская область", "lat": 52.9, "lon": 33.5,
                       "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
                       "shape": self.SHAPE})
-        assert [o["shape"] for o in tracker.outlines()] == [self.SHAPE]
+        assert [o["shape"] for o in self.provinces()] == [self.SHAPE]
+
+    def test_the_shipped_borders_are_there_whatever_was_fetched(self):
+        # The other half of the same fact, said once so the filter above is
+        # not quietly hiding a regression.
+        assert {o["in"] for o in tracker.outlines() if o["level"] == "country"} \
+            == set(neighbours.frontiers())
 
     def test_it_is_bounded(self):
         many = {f"r{i}": {"type": "Polygon",
@@ -3530,8 +3544,11 @@ class TestTheBordersForAPictureOfItsOwn:
         neptun.remember_shapes(many)
         assert len(tracker.outlines()) == tracker.MOST_OUTLINES
 
-    def test_nothing_known_is_an_empty_list_rather_than_a_failure(self):
-        assert tracker.outlines() == []
+    def test_nothing_known_is_just_the_shipped_borders(self):
+        # It used to be an empty list. The borders ship with the app now, so
+        # "nothing fetched" is four national outlines and no provinces.
+        assert self.provinces() == []
+        assert len(tracker.outlines()) == len(neighbours.frontiers())
 
 
 class TestTheNeighboursAreOnTheMapToo:
@@ -3542,15 +3559,17 @@ class TestTheNeighboursAreOnTheMapToo:
     at the empty half cannot tell whether nothing is happening there or
     whether the map has nothing to say about it.
 
-    Ukraine's provinces arrive as a file. Nobody publishes one for the
-    neighbours, so they are named in neighbours.py and their boundaries
-    fetched one at a time.
+    The national borders ship with the app. The version before this asked
+    the gazetteer for them by name along with a hundred and sixteen
+    provinces, and a hundred and twenty-one systematic boundary lookups is
+    the bulk querying Nominatim's usage policy forbids.
     """
 
     def setup_method(self):
         tracker.reset()
         neptun.forget()
         gaz.forget()
+        neighbours.forget()
 
     teardown_method = setup_method
 
@@ -3566,205 +3585,134 @@ class TestTheNeighboursAreOnTheMapToo:
                     [[22.0 + i, 51.0], [23.0 + i, 51.0], [23.0 + i, 52.0],
                      [22.0 + i, 51.0]]]}})
 
-    def of(self, code):
-        return tuple(r for r in neighbours.REGIONS if r[0] == code)
+    def levels(self):
+        return [(o["in"], o["level"]) for o in tracker.outlines()]
 
-    # ── the provinces ───────────────────────────────────────────
+    # ── the borders that ship with the app ──────────────────────
 
-    def test_all_five_neighbours_have_provinces_listed(self):
-        got = {code for code, _name, _spellings in neighbours.REGIONS}
-        assert got == {"pl", "by", "ro", "md", "ru"}
+    def test_the_four_borders_are_there_with_no_network_at_all(self):
+        """The whole point of shipping them.
 
-    def test_a_polish_voivodeship_is_filed_under_poland(self):
-        self.give(self.of("pl"), 1)
-        got = tracker.outlines()
-        assert [(o["in"], o["level"]) for o in got] == [("pl", "region")]
-
-    def test_and_a_romanian_county_under_romania(self):
-        self.give(self.of("ro"), 1)
-        assert [o["in"] for o in tracker.outlines()] == ["ro"]
-
-    def test_a_moldovan_raion_under_moldova(self):
-        self.give(self.of("md"), 1)
-        assert [o["in"] for o in tracker.outlines()] == ["md"]
-
-    def test_and_a_listed_russian_oblast_under_russia(self):
-        """Not "elsewhere".
-
-        Russia's western provinces are a named list now, so the ground next
-        to Ukraine is drawn before any warning has been reported over it.
+        Nothing in this test reaches anything: the gazetteer is empty and
+        stubbed, and the borders are still on the picture.
         """
-        self.give(self.of("ru"), 1)
-        assert [o["in"] for o in tracker.outlines()] == ["ru"]
+        assert sorted(neighbours.frontiers()) == ["by", "md", "pl", "ro"]
+        assert sorted(self.levels()) == [
+            ("by", "country"), ("md", "country"),
+            ("pl", "country"), ("ro", "country")]
 
-    def test_the_name_on_the_map_is_the_native_one(self):
-        # Whichever spelling found it. A map that labels Ukraine in
-        # Ukrainian and Romania in English is a map drawn from somewhere
-        # else.
-        code, name, spellings = self.of("ro")[0]
-        gaz.remember(spellings[1], code, {
-            "name": spellings[1], "lat": 46.0, "lon": 23.6,
-            "category": "boundary", "bbox": (45.0, 47.0, 22.0, 24.0),
-            "shape": {"type": "Polygon", "coordinates": [
-                [[23.0, 46.0], [24.0, 46.0], [24.0, 47.0], [23.0, 46.0]]]}})
-        assert [o["name"] for o in tracker.outlines()] == [name]
-        assert name.startswith("Județul")
+    def test_they_are_the_countries_the_request_named(self):
+        # Poland, Romania, Moldova and Belarus -- the four frontiers asked
+        # for, in the order they were asked for or any other.
+        assert set(neighbours.frontiers()) == {"pl", "ro", "md", "by"}
 
-    def test_a_region_found_under_both_spellings_is_drawn_once(self):
-        """The reason _found stops at the first hit.
+    def test_each_carries_its_own_name_natively(self):
+        # A map that labels Ukraine in Ukrainian and Romania in English is a
+        # map drawn from somewhere else.
+        names = {code: row["name"]
+                 for code, row in neighbours.frontiers().items()}
+        assert names == {"pl": "Polska", "ro": "România",
+                         "md": "Moldova", "by": "Беларусь"}
 
-        Two answers for one province are two slightly different
-        simplifications of the same border, and the pair reads as a shimmer
-        along every line.
+    def test_each_border_is_a_real_area(self):
+        for code, row in neighbours.frontiers().items():
+            shape = row["shape"]
+            assert shape["type"] in ("Polygon", "MultiPolygon"), code
+            assert gaz.count_points(shape) > 100, code
+
+    def test_the_borders_are_where_those_countries_are(self):
+        """Read off the file rather than trusted.
+
+        A boundary file with the right names and the wrong geometry draws a
+        confident red line round the wrong ground, which is the one failure
+        this layer exists to avoid.
         """
-        code, _name, spellings = self.of("pl")[0]
-        for n, spelling in enumerate(spellings):
-            gaz.remember(spelling, code, {
-                "name": spelling, "lat": 51.5, "lon": 22.5,
-                "category": "boundary", "bbox": (51.0, 52.0, 22.0, 23.0),
-                "shape": {"type": "Polygon", "coordinates": [
-                    [[22.0 + n, 51.0], [23.0 + n, 51.0], [23.0 + n, 52.0],
-                     [22.0 + n, 51.0]]]}})
-        assert len(tracker.outlines()) == 1
+        capitals = {"pl": (52.2297, 21.0122), "by": (53.9006, 27.5590),
+                    "md": (47.0105, 28.8638), "ro": (44.4268, 26.1025)}
+        for code, (lat, lon) in capitals.items():
+            holds = [c for c, row in neighbours.frontiers().items()
+                     if tracker._shape_holds(row["shape"], lat, lon)]
+            assert holds == [code], f"{code}: {holds}"
 
-    # ── the national borders ────────────────────────────────────
+    def test_ukraine_and_russia_are_not_in_the_file(self):
+        """Neither outline is shipped, and that is deliberate.
 
-    def test_a_national_border_is_marked_as_one(self):
-        """The line the picture draws in red.
-
-        It is a country's own boundary, asked for as a boundary -- not the
-        outside edge of the union of its provinces, which is what the
-        drawing used to work out for itself and which came apart on
-        Ukraine's two nested levels of them.
+        Every ready-made dataset reachable here draws Crimea inside Russia.
+        That is a live dispute and a red line is the most emphatic thing on
+        this picture, so this app ships neither rather than shipping the
+        claim in either direction. Ukraine's shape is its own oblasts.
         """
-        self.give(neighbours.COUNTRIES, 1)
-        got = tracker.outlines()
-        assert [(o["in"], o["level"]) for o in got] == [("ua", "country")]
+        assert "ua" not in neighbours.frontiers()
+        assert "ru" not in neighbours.frontiers()
 
-    def test_every_neighbour_asked_for_has_a_border_except_russia(self):
-        """Russia's own outline is deliberately absent.
-
-        It is the one country here whose boundary is a live dispute, and a
-        red line is the most emphatic thing on the picture. Its provinces are
-        drawn like anybody else's.
-        """
-        got = {code for code, _name, _spellings in neighbours.COUNTRIES}
-        assert got == {"ua", "by", "pl", "md", "ro"}
+    def test_a_missing_file_loses_the_lines_and_nothing_else(self):
+        # The picture without its red lines is the picture this app drew for
+        # months. A border that cannot be read is not a reason to fail.
+        was = neighbours.FRONTIERS_FILE
+        try:
+            neighbours.FRONTIERS_FILE = was.with_name("not-a-file.json")
+            neighbours.forget()
+            assert neighbours.frontiers() == {}
+            assert tracker.outlines() == []
+        finally:
+            neighbours.FRONTIERS_FILE = was
+            neighbours.forget()
 
     def test_a_border_is_thinned_to_what_the_picture_can_draw(self):
-        """Five countries at full detail were half a megabyte on their own.
+        """The file is finer than the picture.
 
-        A national border arrives an order of magnitude finer than a
-        province's, because it is an order of magnitude longer -- and at the
-        picture's width that is several vertices per pixel, which is detail
-        nobody can see paid for in a payload the page waits on.
+        A national border is an order of magnitude longer than a province's
+        and arrives an order of magnitude finer; at the picture's width that
+        is several vertices per pixel.
         """
-        code, name, spellings = neighbours.COUNTRIES[0]
-        ring = [[20.0 + i * 0.001, 50.0] for i in range(4000)]
-        ring.append(ring[0])
-        gaz.remember(spellings[0], code, {
-            "name": name, "lat": 49.0, "lon": 31.0, "category": "boundary",
-            "bbox": (44.0, 53.0, 22.0, 40.0),
-            "shape": {"type": "Polygon", "coordinates": [ring]}})
-        got = tracker.outlines()
-        assert len(got) == 1
-        assert gaz.count_points(got[0]["shape"]) <= tracker.COUNTRY_POINTS
+        for _code, _name, shape in tracker.country_outlines():
+            assert gaz.count_points(shape) <= tracker.COUNTRY_POINTS
 
-    def test_a_province_is_not_thinned_that_way(self):
-        # The budget is for the long lines. A province is already inside it
-        # and must come through exactly as it arrived.
-        code, name, spellings = self.of("pl")[0]
-        shape = {"type": "Polygon", "coordinates": [
-            [[22.0, 51.0], [23.0, 51.0], [23.0, 52.0], [22.0, 51.0]]]}
-        gaz.remember(spellings[0], code, {
-            "name": name, "lat": 51.5, "lon": 22.5, "category": "boundary",
-            "bbox": (51.0, 52.0, 22.0, 23.0), "shape": shape})
-        assert [o["shape"] for o in tracker.outlines()] == [shape]
+    # ── the provinces that are still fetched ────────────────────
 
-    def test_a_border_arrives_without_waiting_for_the_provinces(self):
-        """The whole point of asking for it directly.
+    def test_russias_western_oblasts_are_still_asked_for(self):
+        """Nothing else draws that ground until a warning is reported there.
 
-        The old rule was "no red line until every province of the country is
-        here", which for Romania meant forty-two requests at one every three
-        seconds before the first red line appeared.
+        Fourteen occasional lookups is ordinary use of the gazetteer rather
+        than the bulk querying that was removed.
         """
-        self.give(neighbours.COUNTRIES)
-        levels = {o["in"]: o["level"] for o in tracker.outlines()}
-        assert levels == {code: "country"
-                          for code, _n, _s in neighbours.COUNTRIES}
+        assert tracker.want_neighbours() == len(neighbours.RUSSIA)
+        assert len(neighbours.RUSSIA) == 14
 
-    def test_a_country_outline_is_not_also_drawn_as_a_province(self):
-        """It is in the gazetteer's cache like anything else it asked for.
+    def test_and_nothing_else_is(self):
+        # The four countries' own provinces were a hundred of the hundred
+        # and twenty-one lookups. They are gone.
+        asked = {code for code, _name, _spellings in neighbours.EVERYTHING}
+        assert asked == {"ru"}
 
-        Letting it through the loose pass would draw the whole country a
-        second time as an ordinary pale province, on top of its own red line.
+    def test_a_listed_russian_oblast_is_filed_under_russia(self):
+        self.give(neighbours.RUSSIA, 1)
+        assert ("ru", "region") in self.levels()
 
-        Given under BOTH its spellings on purpose. One spelling is caught by
-        the de-duplication further down -- the two passes hand back the same
-        object -- so a test with one spelling passes whatever this does.
-        """
-        code, _name, spellings = neighbours.COUNTRIES[0]
+    def test_the_native_name_is_the_one_on_the_map(self):
+        code, name, spellings = neighbours.RUSSIA[0]
+        gaz.remember(spellings[1], code, {
+            "name": spellings[1], "lat": 52.9, "lon": 33.5,
+            "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
+            "shape": {"type": "Polygon", "coordinates": [
+                [[33.0, 52.0], [34.0, 52.0], [34.0, 53.0], [33.0, 52.0]]]}})
+        assert name in [o["name"] for o in tracker.outlines()]
+
+    def test_a_region_found_under_both_spellings_is_drawn_once(self):
+        """Two answers for one province are two slightly different
+        simplifications of the same border, and the pair reads as a shimmer
+        along every line."""
+        code, _name, spellings = neighbours.RUSSIA[0]
         for n, spelling in enumerate(spellings):
             gaz.remember(spelling, code, {
-                "name": spelling, "lat": 49.0, "lon": 31.0,
-                "category": "boundary", "bbox": (44.0, 53.0, 22.0, 40.0),
+                "name": spelling, "lat": 52.9, "lon": 33.5,
+                "category": "boundary", "bbox": (52.0, 53.8, 31.0, 35.5),
                 "shape": {"type": "Polygon", "coordinates": [
-                    [[22.0 + n, 44.0], [40.0, 44.0], [40.0, 53.0],
-                     [22.0 + n, 44.0]]]}})
-        got = tracker.outlines()
-        assert [o["level"] for o in got] == ["country"]
+                    [[33.0 + n, 52.0], [34.0 + n, 52.0], [34.0 + n, 53.0],
+                     [33.0 + n, 52.0]]]}})
+        assert sum(1 for o in tracker.outlines() if o["in"] == "ru") == 1
 
-    def test_the_borders_come_before_the_provinces(self):
-        """Under the cap, the last thing to go is the line that says which
-        country the ground is.
-
-        Ukraine's own provinces are in here deliberately: they are the
-        largest block by far, they come from a different source from
-        everything else, and a test without them cannot tell whether the
-        national borders are ahead of them or behind.
-        """
-        neptun.remember_shapes({
-            f"oblast{i}": {"type": "Polygon", "coordinates": [
-                [[30.0 + i, 48.0], [31.0 + i, 48.0], [31.0 + i, 49.0],
-                 [30.0 + i, 48.0]]]}
-            for i in range(5)})
-        self.give(neighbours.COUNTRIES, 2)
-        self.give(self.of("pl"), 2)
-        levels = [o["level"] for o in tracker.outlines()]
-        assert levels[:2] == ["country", "country"]
-        assert levels.count("country") == 2
-        assert set(levels[2:]) == {"region"}
-
-    def test_a_province_learned_from_a_warning_is_still_a_province(self):
-        gaz.remember("Омская область", "ru", {
-            "name": "Омская область", "lat": 55.0, "lon": 73.4,
-            "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
-            "shape": {"type": "Polygon", "coordinates": [
-                [[80.0, 55.0], [81.0, 55.0], [81.0, 56.0], [80.0, 55.0]]]}})
-        got = tracker.outlines()
-        assert [(o["in"], o["level"]) for o in got] == [
-            ("elsewhere", "region")]
-
-    def test_ukraines_own_provinces_are_provinces(self):
-        """The bug that prompted all of this.
-
-        NEPTUN publish oblasts AND raions, and the picture drew a red line
-        round every one of the hundred and thirty-six raions and none round
-        Ukraine.
-        """
-        neptun.remember_shapes({"сумська область": {
-            "type": "Polygon", "coordinates": [
-                [[33.0, 50.0], [34.0, 50.0], [34.0, 51.0], [33.0, 50.0]]]}})
-        got = tracker.outlines()
-        assert [o["level"] for o in got] == ["region"]
-
-    # ── asking for them ─────────────────────────────────────────
-
-    def test_everything_is_asked_for(self):
-        asked = tracker.want_neighbours()
-        assert asked == len(neighbours.EVERYTHING)
-
-    def test_and_not_asked_for_twice(self):
+    def test_not_asked_for_twice(self):
         tracker.want_neighbours()
         assert tracker.want_neighbours() == 0
 
@@ -3775,38 +3723,34 @@ class TestTheNeighboursAreOnTheMapToo:
         already in hand would be a request every thirty seconds for
         something already drawn.
         """
-        self.give(neighbours.COUNTRIES)
-        asked = tracker.want_neighbours()
-        assert asked == len(neighbours.REGIONS)
+        self.give(neighbours.RUSSIA)
+        assert tracker.want_neighbours() == 0
 
     def test_the_second_spelling_waits_for_the_first_to_fail(self):
         """The only thing that makes a second spelling worth listing.
 
         Which name tag a region carries in OpenStreetMap is not something
-        this app can know in advance, so each is asked for under its own
-        name and then under English. But asking both at once is asking
-        twice for one province and throwing an answer away -- so the
-        fallback only goes in once the first has had all four of its asks.
+        this app can know in advance. But asking both at once is asking
+        twice for one province and throwing an answer away, so the fallback
+        only goes in once the first has had all four of its asks.
         """
-        one, two = neighbours.POLAND[0][2][:2]
+        one, two = neighbours.RUSSIA[0][2][:2]
         assert tracker.want_neighbours() == len(neighbours.EVERYTHING)
-        assert gaz.queued(one, "pl") is True
-        # Still in the air: nothing more is asked for this region.
+        assert gaz.queued(one, "ru") is True
         assert tracker.want_neighbours() == 0
 
         for _ in range(gaz.MOST_SHAPE_TRIES):
-            gaz._try_again(one, "pl")
-        assert gaz.given_up(one, "pl") is True
+            gaz._try_again(one, "ru")
+        assert gaz.given_up(one, "ru") is True
 
-        # Now, and not before, the other spelling is worth trying.
         assert tracker.want_neighbours() == 1
-        assert gaz.queued(two, "pl") is True
+        assert gaz.queued(two, "ru") is True
 
     def test_a_region_that_answers_to_neither_is_simply_absent(self):
         """A missing province costs one pale line and nothing else.
 
-        Which is the point of asking for the national borders separately:
-        nothing important rests on this list being perfect.
+        Which is the point of shipping the borders separately: nothing
+        important rests on this list at all now.
         """
         tracker.want_neighbours()
         for code, _name, spellings in neighbours.EVERYTHING:
@@ -3814,29 +3758,54 @@ class TestTheNeighboursAreOnTheMapToo:
                 for _ in range(gaz.MOST_SHAPE_TRIES):
                     gaz._try_again(spelling, code)
         assert tracker.want_neighbours() == 0
-        assert tracker.outlines() == []
+        assert all(o["level"] == "country" for o in tracker.outlines())
 
-    # ── the lists themselves ────────────────────────────────────
+    # ── how the two kinds are told apart ────────────────────────
 
-    def test_the_lists_are_the_countries_they_claim_to_be(self):
-        # Getting a count wrong here means a province missing from the map
-        # or a name asked for that does not exist.
-        assert len(neighbours.POLAND) == 16        # voivodeships
-        assert len(neighbours.BELARUS) == 7        # six oblasts and Minsk
-        assert len(neighbours.ROMANIA) == 42       # 41 counties and Bucharest
-        assert len(neighbours.MOLDOVA) == 35       # 32 raions, 2 cities, Gagauzia
-        assert len(neighbours.RUSSIA) == 14        # the western subjects only
+    def test_a_province_learned_from_a_warning_is_still_a_province(self):
+        gaz.remember("Омская область", "ru", {
+            "name": "Омская область", "lat": 55.0, "lon": 73.4,
+            "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
+            "shape": {"type": "Polygon", "coordinates": [
+                [[80.0, 55.0], [81.0, 55.0], [81.0, 56.0], [80.0, 55.0]]]}})
+        assert ("elsewhere", "region") in self.levels()
 
-    def test_nothing_is_listed_twice(self):
-        names = [entry[1] for entry in neighbours.EVERYTHING]
-        assert len(set(names)) == len(names)
+    def test_ukraines_own_provinces_are_provinces(self):
+        """The bug that prompted all of this.
 
-    def test_no_two_entries_share_a_spelling(self):
-        # Two entries answering to one name would draw one boundary twice
-        # and leave the other with nothing.
-        asked = [one for _c, _n, spellings in neighbours.EVERYTHING
-                 for one in spellings]
-        assert len(set(asked)) == len(asked)
+        NEPTUN publish oblasts AND raions, and the picture drew a red line
+        round every one of the hundred and thirty-six raions and none round
+        anything else.
+        """
+        neptun.remember_shapes({"сумська область": {
+            "type": "Polygon", "coordinates": [
+                [[33.0, 50.0], [34.0, 50.0], [34.0, 51.0], [33.0, 50.0]]]}})
+        assert ("ua", "region") in self.levels()
+        assert ("ua", "country") not in self.levels()
+
+    def test_the_borders_come_before_the_provinces(self):
+        """Under the cap, the last thing to go is the line that says which
+        country the ground is."""
+        neptun.remember_shapes({
+            f"oblast{i}": {"type": "Polygon", "coordinates": [
+                [[30.0 + i, 48.0], [31.0 + i, 48.0], [31.0 + i, 49.0],
+                 [30.0 + i, 48.0]]]}
+            for i in range(5)})
+        self.give(neighbours.RUSSIA, 2)
+        levels = [o["level"] for o in tracker.outlines()]
+        assert levels[:len(neighbours.frontiers())] == (
+            ["country"] * len(neighbours.frontiers()))
+        assert set(levels[len(neighbours.frontiers()):]) == {"region"}
+
+    def test_there_is_room_for_all_of_it(self):
+        """The cap cuts the tail, and the tail must not be a whole country.
+
+        Ukraine's own oblasts and raions are a hundred and sixty of these on
+        their own.
+        """
+        ukraine = 170
+        assert (len(neighbours.EVERYTHING) + len(neighbours.frontiers())
+                + ukraine) < tracker.MOST_OUTLINES
 
     def test_every_entry_has_a_spelling_to_ask_under(self):
         for code, name, spellings in neighbours.EVERYTHING:
@@ -3844,19 +3813,12 @@ class TestTheNeighboursAreOnTheMapToo:
             assert spellings, name
             assert name in spellings, name
 
-    def test_everything_is_the_borders_then_the_provinces(self):
-        assert neighbours.EVERYTHING == (neighbours.COUNTRIES
-                                         + neighbours.REGIONS)
-
-    def test_there_is_room_for_all_of_it(self):
-        """The cap cuts the tail, and the tail must not be a whole country.
-
-        Ukraine's own oblasts and raions are a hundred and sixty of these on
-        their own, and the cap had about a hundred spare when this list was
-        a fifth of its present length.
-        """
-        ukraine = 170
-        assert len(neighbours.EVERYTHING) + ukraine < tracker.MOST_OUTLINES
+    def test_nothing_is_listed_twice(self):
+        names = [entry[1] for entry in neighbours.EVERYTHING]
+        assert len(set(names)) == len(names)
+        asked = [one for _c, _n, spellings in neighbours.EVERYTHING
+                 for one in spellings]
+        assert len(set(asked)) == len(asked)
 
 
 class TestADotOnlyWhereSomebodyGaveAPosition:
@@ -4345,7 +4307,8 @@ class TestAskingForOneCountry:
                 "shape": {"type": "Polygon", "coordinates": [
                     [[80.0, 55.0], [81.0, 55.0], [81.0, 56.0],
                      [80.0, 55.0]]]}})
-            whose = {o["name"]: o["in"] for o in tracker.outlines()}
+            whose = {o["name"]: o["in"] for o in tracker.outlines()
+                     if o["level"] != "country"}
             assert whose == {"сумська область": "ua",
                              "омская область": "elsewhere"}
         finally:
