@@ -1956,9 +1956,30 @@ def _found(listed: tuple[tuple[str, str, tuple[str, ...]], ...],
     return got
 
 
+# How many points a national border is drawn with.
+#
+# The picture is 1600 pixels wide, and a country's border on it has a
+# perimeter of order two and a half thousand pixels -- so at this many points
+# there is a vertex about every three pixels, which is finer than the line it
+# is drawing. Anything more is detail nobody can see, paid for in a payload
+# the page fetches before it can draw anything.
+#
+# Kept well under the gazetteer's own ceiling deliberately. That ceiling is a
+# guard against an unreasonable payload; this is a judgement about a picture,
+# and the two should not be the same number by accident.
+COUNTRY_POINTS = 1200
+
+
 def country_outlines() -> list[tuple[str, str, Any]]:
-    """The national borders held, as (country, name, shape)."""
-    return _found(neighbours.COUNTRIES)
+    """The national borders held, as (country, name, shape).
+
+    Thinned to what the picture can draw. A country's border arrives an order
+    of magnitude finer than a province's -- it is an order of magnitude
+    longer -- and five of them at full detail were half a megabyte on their
+    own.
+    """
+    return [(code, name, gazetteer.thin_shape(shape, COUNTRY_POINTS))
+            for code, name, shape in _found(neighbours.COUNTRIES)]
 
 
 def neighbour_outlines() -> list[tuple[str, str, Any]]:

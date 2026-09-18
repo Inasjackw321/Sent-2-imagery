@@ -289,21 +289,153 @@ def count_points(geometry: Any) -> int:
     return walk(coords)
 
 
+def thin_ring(ring: Any, keep: int) -> list[Any]:
+    """A ring with about `keep` of its points, evenly spaced and closed.
+
+    Taken at a stride rather than by Douglas-Peucker on purpose. The points
+    arriving here have ALREADY been simplified by Nominatim, at the tolerance
+    this app asks for -- so they are the points that survived a proper
+    simplification and are all roughly a kilometre apart. Dropping every
+    other one of those gives two kilometres, which on a picture where a pixel
+    is most of a kilometre is a line in the same place. Running a second
+    simplification over an already-simplified ring costs a great deal more
+    and moves the line no less.
+    """
+    if not isinstance(ring, (list, tuple)):
+        return []
+    # A ring under four points is not an area at all, so a ring is either
+    # thinned to something still drawable or left alone.
+    keep = max(4, keep)
+    if keep >= len(ring):
+        return list(ring)
+    # keep - 1 taken at a stride, and the closing point is the last of the
+    # budget rather than one more on top of it: counting it on top is how a
+    # shape thinned to exactly the ceiling came out one point over it.
+    step = len(ring) / (keep - 1)
+    out = [ring[int(i * step)] for i in range(keep - 1)]
+    out.append(out[0])
+    return out
+
+
+# A ring under four points is a line or a point, not an area. Nothing is ever
+# thinned below this.
+LEAST_RING = 4
+
+
+def _map_rings(shape_type: str, coords: Any, each: Any) -> Any:
+    """Rebuild a Polygon's or MultiPolygon's coordinates, ring by ring."""
+    if shape_type == "Polygon":
+        return [each(ring) for ring in coords]
+    return [[each(ring) for ring in part] for part in coords]
+
+
+def share_out(lengths: list[int], budget: int) -> list[int] | None:
+    """How many points each ring may keep, inside a total budget.
+
+    Every ring is given its four points FIRST and the rest of the budget is
+    shared out in proportion to what each ring has over that floor.
+
+    Sharing the whole budget in proportion and then applying the floor
+    afterwards is the obvious way and it does not work: a country is one ring
+    of several thousand points and a handful of five-point islands, the
+    islands' proportional share rounds to one, the floor lifts each back to
+    four, and the total lands just over the ceiling. Which cost the country
+    its entire border to save three points on an island -- the backstop is
+    all-or-nothing, so overshooting by two points and overshooting by two
+    thousand have the same result.
+
+    None when even the floors do not fit, which is a shape of thousands of
+    tiny islands and genuinely cannot be drawn within the budget.
+    """
+    if not lengths:
+        return None
+    floors = LEAST_RING * len(lengths)
+    if floors > budget:
+        return None
+    spare = budget - floors
+    over = [max(0, n - LEAST_RING) for n in lengths]
+    total = sum(over)
+    if not total:
+        return list(lengths)
+    return [LEAST_RING + int(spare * part / total) for part in over]
+
+
+def thin_shape(shape: Any, budget: int) -> Any:
+    """The same outline with at most `budget` points, or it back unchanged.
+
+    Separated from read_shape because the two answer different questions.
+    read_shape's ceiling is a guard: past it a payload is unreasonable
+    whatever it is of. This is a drawing decision -- how fine a line needs to
+    be for the picture it is going on -- and only the caller building that
+    picture knows it.
+    """
+    if not isinstance(shape, dict) or count_points(shape) <= budget:
+        return shape
+    if shape.get("type") not in ("Polygon", "MultiPolygon"):
+        return shape
+    lengths: list[int] = []
+    _map_rings(shape["type"], shape["coordinates"],
+               lambda ring: lengths.append(
+                   len(ring) if isinstance(ring, (list, tuple)) else 0))
+    keeps = share_out(lengths, budget)
+    if keeps is None:
+        return shape
+    allowance = iter(keeps)
+    return {"type": shape["type"],
+            "coordinates": _map_rings(
+                shape["type"], shape["coordinates"],
+                lambda ring: thin_ring(ring, next(allowance)))}
+
+
 def read_shape(raw: Any) -> dict[str, Any] | None:
     """A usable outline out of Nominatim's polygon, or None.
 
     Only the shapes that are actually areas. A point or a line comes back for
     plenty of places, and drawing a warning as a one-pixel dot or a squiggle
     would be worse than the circle it replaces.
+
+    A shape with more points than the payload can carry is THINNED rather
+    than refused, and that is a fix rather than a nicety. It used to be
+    refused, and the arithmetic of that was quietly fatal for exactly one
+    kind of place: a country. At the tolerance this app asks for, a point is
+    about a kilometre, so the point count is about the length of the border
+    in kilometres -- a few hundred for an oblast and several thousand for
+    Ukraine, Poland, Belarus or Romania. Every one of those came back over
+    the ceiling, lost its shape here, was refused by the worker that only
+    stores an answer WITH a shape, was asked for four more times and then
+    given up on for the life of the process.
+
+    So the picture's red national borders never appeared at all -- not
+    because anything about them was wrong, but because the one property that
+    makes a national border a national border is that it is long.
     """
     if not isinstance(raw, dict):
         return None
     if raw.get("type") not in ("Polygon", "MultiPolygon"):
         return None
     points = count_points(raw)
-    if not 4 <= points <= MAX_POINTS:
+    if points < 4:
         return None
-    return {"type": raw["type"], "coordinates": raw["coordinates"]}
+    coords = raw["coordinates"]
+    if points > MAX_POINTS:
+        # Every ring thinned, so a country keeps its islands: thinning the
+        # big ring alone would draw a coastline at one resolution and its
+        # offshore islands at another, and taking the points off the small
+        # rings first would delete them.
+        lengths: list[int] = []
+        _map_rings(raw["type"], coords,
+                   lambda ring: lengths.append(
+                       len(ring) if isinstance(ring, (list, tuple)) else 0))
+        keeps = share_out(lengths, MAX_POINTS)
+        if keeps is None:
+            # Thousands of tiny islands: it cannot be brought inside the
+            # budget at all. Then no shape is the right answer and the caller
+            # falls back to what it does without one.
+            return None
+        allowance = iter(keeps)
+        coords = _map_rings(raw["type"], coords,
+                            lambda ring: thin_ring(ring, next(allowance)))
+    return {"type": raw["type"], "coordinates": coords}
 
 
 def read_place(found: Any) -> dict[str, Any] | None:

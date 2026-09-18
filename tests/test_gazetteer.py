@@ -229,12 +229,91 @@ class TestOutlines:
                      {"type": "Polygon", "coordinates": None}):
             assert gazetteer.read_shape(junk) is None
 
-    def test_something_enormous_is_dropped_so_a_circle_is_used_instead(self):
-        # A coastline at full resolution is a megabyte to draw one warning
-        # with. Better no shape, and the caller falls back.
-        huge = {"type": "Polygon",
-                "coordinates": [[[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS + 5)]]}
-        assert gazetteer.read_shape(huge) is None
+    def test_something_enormous_is_thinned_rather_than_dropped(self):
+        """The bug that left the picture with no national borders at all.
+
+        At the tolerance this app asks Nominatim for, a point is about a
+        kilometre, so a shape's point count is about the length of its
+        boundary in kilometres: a few hundred for an oblast and several
+        thousand for a country. Every national border came back over the
+        ceiling, was refused here, and was then refused by the worker that
+        only stores an answer WITH a shape -- four tries and then given up on
+        for the life of the process.
+
+        So the one property that makes a national border a national border --
+        that it is long -- was the property that stopped it being drawn.
+        """
+        huge = {"type": "Polygon", "coordinates": [
+            [[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS * 3)]]}
+        got = gazetteer.read_shape(huge)
+        assert got is not None
+        assert gazetteer.count_points(got) <= gazetteer.MAX_POINTS
+
+    def test_a_thinned_ring_is_still_closed(self):
+        # An open ring is not an area, and every drawing pass here assumes
+        # the last point meets the first.
+        huge = {"type": "Polygon", "coordinates": [
+            [[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS * 3)]]}
+        ring = gazetteer.read_shape(huge)["coordinates"][0]
+        assert ring[0] == ring[-1]
+
+    def test_thinning_keeps_the_points_it_keeps(self):
+        """It takes a subset rather than computing new positions.
+
+        So every vertex of the thinned outline is exactly on the original
+        boundary, and the only departure is the chord between two kept
+        points -- a couple of kilometres on a picture where a pixel is most
+        of one.
+        """
+        original = [[i * 0.001, 50 + (i % 7) * 0.001]
+                    for i in range(gazetteer.MAX_POINTS * 3)]
+        got = gazetteer.read_shape(
+            {"type": "Polygon", "coordinates": [original]})
+        was = {tuple(point) for point in original}
+        assert all(tuple(point) in was for point in got["coordinates"][0])
+
+    def test_every_ring_is_thinned_by_the_same_share(self):
+        """A country keeps its islands.
+
+        Thinning the big ring alone would draw a coastline at one resolution
+        and its offshore islands at another; taking the points off the small
+        rings first would delete them.
+        """
+        big = [[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS * 3)]
+        island = [[40, 45], [40.1, 45], [40.1, 45.1], [40, 45.1], [40, 45]]
+        got = gazetteer.read_shape({"type": "MultiPolygon",
+                                   "coordinates": [[big], [island]]})
+        assert len(got["coordinates"]) == 2
+        # Still an area rather than a line or a point.
+        assert len(got["coordinates"][1][0]) >= 4
+        assert gazetteer.count_points(got) <= gazetteer.MAX_POINTS
+
+    def test_what_cannot_be_thinned_under_the_ceiling_is_still_dropped(self):
+        """The backstop, and the old behaviour where it still applies.
+
+        A ring is never thinned below four points, so a shape made of
+        thousands of tiny islands cannot be brought under the ceiling at
+        all. Then no shape is the right answer and the caller falls back to
+        what it does without one.
+        """
+        islands = [[[[40 + i, 45], [40.1 + i, 45], [40.1 + i, 45.1],
+                     [40 + i, 45.1], [40 + i, 45]]]
+                   for i in range(gazetteer.MAX_POINTS)]
+        assert gazetteer.read_shape(
+            {"type": "MultiPolygon", "coordinates": islands}) is None
+
+    def test_a_shape_inside_the_ceiling_is_handed_back_untouched(self):
+        # Nothing is thinned that does not have to be: an oblast's border is
+        # a few hundred points and arrives as drawn.
+        assert gazetteer.read_shape(self.RING) == self.RING
+        fine = {"type": "Polygon", "coordinates": [
+            [[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS - 1)]]}
+        assert gazetteer.read_shape(fine) == fine
+
+    def test_a_ring_that_is_not_an_area_is_still_refused(self):
+        # The floor stays a floor: three points is not a polygon.
+        assert gazetteer.read_shape(
+            {"type": "Polygon", "coordinates": [[[1, 1], [2, 1], [1, 1]]]}) is None
 
     def test_counting_points_reaches_into_nested_rings(self):
         assert gazetteer.count_points(self.RING) == 5
@@ -755,15 +834,38 @@ class TestTheOutlineIsPickedOutOfTheAnswer:
         assert gazetteer.read_place([]) is None
         assert gazetteer.read_place("not a list") is None
 
-    def test_an_outline_too_big_to_draw_is_not_preferred_over_a_usable_answer(self):
-        # read_shape refuses a polygon past MAX_POINTS, so such a candidate
-        # counts as having no outline rather than as having a bad one.
-        huge = {"lat": "54.5", "lon": "36.2", "display_name": "Калужская область",
-                "category": "boundary", "type": "administrative",
-                "boundingbox": ["53.2", "55.4", "33.5", "37.3"],
-                "geojson": {"type": "Polygon",
-                            "coordinates": [[[0, 0]] * (gazetteer.MAX_POINTS + 10)]}}
-        got = gazetteer.read_place([self.node(), huge])
+    def test_a_big_outline_is_now_the_one_that_wins(self):
+        """It used to be the one that lost.
+
+        read_shape refused anything past MAX_POINTS, so a candidate carrying
+        a real border counted as having no outline -- and read_place, which
+        prefers a candidate WITH a shape, fell through to the shapeless node
+        instead. That is the whole of why no national border was ever drawn.
+        """
+        big = {"lat": "54.5", "lon": "36.2",
+               "display_name": "Калужская область",
+               "category": "boundary", "type": "administrative",
+               "boundingbox": ["53.2", "55.4", "33.5", "37.3"],
+               "geojson": {"type": "Polygon", "coordinates": [
+                   [[i * 0.001, 50] for i in range(gazetteer.MAX_POINTS * 3)]]}}
+        got = gazetteer.read_place([self.node(), big])
+        assert got is not None
+        assert got["shape"] is not None
+        assert gazetteer.count_points(got["shape"]) <= gazetteer.MAX_POINTS
+
+    def test_an_outline_that_cannot_be_drawn_at_all_is_still_not_preferred(self):
+        # The case read_shape still refuses: it cannot be brought under the
+        # ceiling, so the candidate counts as having no outline.
+        islands = [[[[40 + i, 45], [40.1 + i, 45], [40.1 + i, 45.1],
+                     [40 + i, 45.1], [40 + i, 45]]]
+                   for i in range(gazetteer.MAX_POINTS)]
+        hopeless = {"lat": "54.5", "lon": "36.2",
+                    "display_name": "Калужская область",
+                    "category": "boundary", "type": "administrative",
+                    "boundingbox": ["53.2", "55.4", "33.5", "37.3"],
+                    "geojson": {"type": "MultiPolygon",
+                                "coordinates": islands}}
+        got = gazetteer.read_place([self.node(), hopeless])
         assert got is not None
         assert got["shape"] is None
 

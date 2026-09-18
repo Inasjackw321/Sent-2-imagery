@@ -3651,6 +3651,36 @@ class TestTheNeighboursAreOnTheMapToo:
         got = {code for code, _name, _spellings in neighbours.COUNTRIES}
         assert got == {"ua", "by", "pl", "md", "ro"}
 
+    def test_a_border_is_thinned_to_what_the_picture_can_draw(self):
+        """Five countries at full detail were half a megabyte on their own.
+
+        A national border arrives an order of magnitude finer than a
+        province's, because it is an order of magnitude longer -- and at the
+        picture's width that is several vertices per pixel, which is detail
+        nobody can see paid for in a payload the page waits on.
+        """
+        code, name, spellings = neighbours.COUNTRIES[0]
+        ring = [[20.0 + i * 0.001, 50.0] for i in range(4000)]
+        ring.append(ring[0])
+        gaz.remember(spellings[0], code, {
+            "name": name, "lat": 49.0, "lon": 31.0, "category": "boundary",
+            "bbox": (44.0, 53.0, 22.0, 40.0),
+            "shape": {"type": "Polygon", "coordinates": [ring]}})
+        got = tracker.outlines()
+        assert len(got) == 1
+        assert gaz.count_points(got[0]["shape"]) <= tracker.COUNTRY_POINTS
+
+    def test_a_province_is_not_thinned_that_way(self):
+        # The budget is for the long lines. A province is already inside it
+        # and must come through exactly as it arrived.
+        code, name, spellings = self.of("pl")[0]
+        shape = {"type": "Polygon", "coordinates": [
+            [[22.0, 51.0], [23.0, 51.0], [23.0, 52.0], [22.0, 51.0]]]}
+        gaz.remember(spellings[0], code, {
+            "name": name, "lat": 51.5, "lon": 22.5, "category": "boundary",
+            "bbox": (51.0, 52.0, 22.0, 23.0), "shape": shape})
+        assert [o["shape"] for o in tracker.outlines()] == [shape]
+
     def test_a_border_arrives_without_waiting_for_the_provinces(self):
         """The whole point of asking for it directly.
 

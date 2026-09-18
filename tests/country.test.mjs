@@ -115,3 +115,31 @@ test('a country with one mark in it is not a street map', () => {
   assert.match(source, /flyToBounds\(got\.bounds, \{ duration: 0\.7, maxZoom: \d+ \}\)/,
     'the flight has no zoom cap');
 });
+
+// Ukraine's own national outline now arrives in the same list as its
+// provinces, tagged the same way. These are about that not disturbing the
+// one question this file exists to answer.
+
+test('the national outline counts as Ukraine too', () => {
+  // It is tagged in: 'ua' like everything else Ukrainian, so it reaches
+  // learnUkraine. That is right, and worth pinning: it fills the gaps
+  // between provinces rather than leaving a point in one of them stateless.
+  learnUkraine([{ name: 'Україна', in: 'ua', level: 'country',
+                  shape: { type: 'Polygon', coordinates: [SQUARE] } }]);
+  assert.equal(inUkraine(at(50, 36)), true);
+  assert.equal(inUkraine(at(50, 38)), false);
+});
+
+test('and a neighbour\'s national outline does not', () => {
+  // The whole point of the flag. Poland's border is in the same list and
+  // must not make a Polish point read as Ukrainian.
+  const POLAND = [[19, 49], [23, 49], [23, 53], [19, 53], [19, 49]];
+  learnUkraine([
+    { name: 'Україна', in: 'ua', level: 'country',
+      shape: { type: 'Polygon', coordinates: [SQUARE] } },
+    { name: 'Polska', in: 'pl', level: 'country',
+      shape: { type: 'Polygon', coordinates: [POLAND] } },
+  ]);
+  assert.equal(inUkraine(at(51, 21)), false);
+  assert.equal(inUkraine(at(50, 36)), true);
+});
