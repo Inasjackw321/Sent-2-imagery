@@ -133,6 +133,12 @@ _lock = threading.Lock()
 _called: dict[str, float] = {}
 _shapes: dict[str, Any] | None = None
 _shapes_at = 0.0
+# Which of the two boundary files could not be had, last time they were
+# fetched. A warning whose outline is missing is drawn as a triangle on a
+# point, which is a very different-looking map and says nothing about why --
+# and the raion file failing on its own is the case that turns a screen of
+# shaded provinces into a screen of overlapping labels. See boundary_trouble.
+_shapes_trouble: str = ""
 
 # Their type vocabulary, onto the kinds this map draws.
 #
@@ -543,10 +549,11 @@ def shapes() -> dict[str, Any]:
     instead, which is the behaviour without this module at all -- so the whole
     feature degrades to what it was rather than to an error.
     """
-    global _shapes, _shapes_at
+    global _shapes, _shapes_at, _shapes_trouble
     with _lock:
         if _shapes is not None and time.time() - _shapes_at < SHAPES_FOR:
             return _shapes
+    trouble = ""
     try:
         # Not paced with the snapshot: this is a static file fetched about
         # once a day, and making it queue behind the threat poll would delay
@@ -558,16 +565,35 @@ def shapes() -> dict[str, Any]:
         found = index_shapes(_get(OBLAST_SHAPES, paced=False))
         try:
             found.update(index_shapes(_get(RAION_SHAPES, paced=False)))
-        except NeptunError:
-            pass
-    except NeptunError:
+        except NeptunError as exc:
+            # Still not fatal -- the provinces are the bigger statement and
+            # they are already in hand. But it is SAID now. Their alert feed
+            # reports raions as well as oblasts, and without this file every
+            # raion alert loses its outline and is drawn as a triangle on a
+            # point: forty overlapping labels where there were shaded
+            # provinces, with nothing anywhere explaining the difference.
+            trouble = f"the district boundaries could not be read ({exc})"
+    except NeptunError as exc:
         found = {}
+        trouble = f"the region boundaries could not be read ({exc})"
     with _lock:
         # A failed fetch is remembered only briefly, so a blip does not cost a
         # day of outlines.
         _shapes = found
+        _shapes_trouble = trouble
         _shapes_at = time.time() if found else time.time() - SHAPES_FOR + 300
         return _shapes
+
+
+def boundary_trouble() -> str:
+    """Why the outlines are incomplete, or "" if they are not.
+
+    Asked for the panel. "The whole thing looks different tonight" has to be
+    answerable from the screen rather than by guessing, and a warning with no
+    outline is the most visible change this layer has.
+    """
+    with _lock:
+        return _shapes_trouble
 
 
 def shape_for(name: str | None) -> Any:
@@ -592,9 +618,10 @@ def remember_shapes(index: dict[str, Any]) -> None:
 
 def forget() -> None:
     """Drop what is cached. For tests and for starting over."""
-    global _shapes, _shapes_at
+    global _shapes, _shapes_at, _shapes_trouble
     with _lock:
         _shapes, _shapes_at = None, 0.0
+        _shapes_trouble = ""
         _called.clear()
 
 

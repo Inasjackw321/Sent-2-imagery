@@ -324,8 +324,14 @@ RU_REGIONS: dict[str, str] = {
 # DERIVED warning was raised beside it from the drones underneath: two
 # triangles over one oblast, which is what the screenshot showed.
 OBLAST_FULL = re.compile(
-    r"([А-ЯІЇЄҐЁ][а-яіїєґёʼ'’\-]+?)([сцз])ь?к\w*\s+"
-    r"(обл|кра|окру|республик)", re.I)
+    r"(?P<head>[А-ЯІЇЄҐЁ][а-яіїєґёʼ'’\-]+?)(?P<hiss>[сцз])"
+    # The soft sign, captured rather than skipped over. It is what tells
+    # Ukrainian from Russian in this exact word -- "Житомирська" against
+    # "Житомирская" -- and it is the only reliable signal, because ten of
+    # Ukraine's twenty-five oblast names contain not one letter Russian
+    # lacks. See find_region.
+    r"(?P<soft>ь?)к\w*\s+"
+    r"(?P<tail>обл|кра|окру|республик)", re.I)
 
 # The prepositions that introduce the place a report is about. Anything after
 # one of these that looks like a proper noun is where this is happening.
@@ -759,13 +765,28 @@ def find_region(text: str) -> str | None:
     if full:
         # Rebuilt in the nominative, in whichever language it was written, so
         # the gazetteer gets a name it knows rather than an inflected one.
-        head, hiss, tail = full.group(1), full.group(2), full.group(3).lower()
-        # Which language, decided by the letters Ukrainian has and Russian
-        # does not. Looking for Russian-only letters instead was the wrong way
-        # round: "Воронежской области" contains none of them, so it came back
-        # as "Воронежська область" -- a Russian region with a Ukrainian ending,
-        # which no gazetteer knows.
-        ukrainian = re.search(r"[іїєґ]", text.lower())
+        head = full.group("head")
+        hiss = full.group("hiss")
+        tail = full.group("tail").lower()
+        # Which language, decided by the WORD rather than by the sentence.
+        #
+        # It used to be decided by whether the sentence anywhere contained a
+        # letter Ukrainian has and Russian does not. That is true of most
+        # Ukrainian oblast names and false of ten of the twenty-five:
+        # Житомирська, Сумська, Луганська, Донецька, Херсонська, Одеська,
+        # Полтавська, Черкаська, Хмельницька and Закарпатська are spelt
+        # entirely in letters the two alphabets share. Every one of them came
+        # back rebuilt in Russian -- "Житомирская область" -- which NEPTUN's
+        # boundary file does not hold, so the warning lost its outline and
+        # was drawn as a triangle on a point.
+        #
+        # The soft sign settles it exactly and locally: Ukrainian writes
+        # -ська and -ський, Russian writes -ская and -ский. Looking for
+        # Russian-only letters was the other wrong way round, and the case
+        # that catches is still covered -- "Воронежской области" has no soft
+        # sign, so it rebuilds in Russian as it should.
+        ukrainian = bool(full.group("soft")) or bool(
+            re.search(r"[іїєґ]", full.group(0).lower()))
         word = "область" if tail == "обл" else RU_TAIL[tail]
         # And the gender has to agree with the noun. "край" and "округ" are
         # masculine, so "Краснодарская край" is not a thing anybody writes and

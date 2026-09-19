@@ -15,7 +15,7 @@ here are the grammar: the shapes that actually appear in these channels, and
 
 from __future__ import annotations
 
-from backend import places, reports
+from backend import neptun, places, reports
 
 
 def read(text):
@@ -268,6 +268,78 @@ class TestWhere:
         # The gazetteer would refuse the water anyway, but "Чорним" should not
         # reach the alert list either.
         assert read("Розвідувальний БпЛА над Чорним морем") is None
+
+
+class TestUkrainianOblastsKeepTheirOwnSpelling:
+    """Ten of the twenty-five were being rebuilt in Russian.
+
+    find_region takes an inflected name -- "Сумській області" -- and rebuilds
+    it in the nominative. Which language to rebuild it in was decided by
+    whether the SENTENCE anywhere held a letter Ukrainian has and Russian
+    does not.
+
+    That is true of most Ukrainian oblast names and false of exactly ten:
+    Житомирська, Сумська, Луганська, Донецька, Херсонська, Одеська,
+    Полтавська, Черкаська, Хмельницька and Закарпатська are spelt entirely in
+    letters the two alphabets share. Every one came back as "Житомирская
+    область" -- a spelling NEPTUN's boundary file does not hold -- so the
+    warning lost its outline and was drawn as a triangle on a point while its
+    neighbours were shaded provinces.
+
+    The soft sign settles it exactly and locally: Ukrainian writes -ська,
+    Russian writes -ская.
+    """
+
+    def test_every_ukrainian_oblast_keeps_its_name(self):
+        wrong = {n: reports.find_region(n) for n in places.UKRAINE_REGIONS
+                 if reports.find_region(n) != n}
+        assert wrong == {}
+
+    def test_the_ten_that_share_an_alphabet(self):
+        # Named, because they are the ones with no letter to give them away
+        # and so the ones a test written from the general case would miss.
+        for name in ("Житомирська область", "Сумська область",
+                     "Луганська область", "Донецька область",
+                     "Херсонська область", "Одеська область",
+                     "Полтавська область", "Черкаська область",
+                     "Хмельницька область", "Закарпатська область"):
+            assert reports.find_region(name) == name, name
+            assert "ская" not in reports.find_region(name), name
+
+    def test_an_inflected_ukrainian_name_still_comes_back_nominative(self):
+        assert reports.find_region("Волинської області") == "Волинська область"
+        assert reports.find_region(
+            "Повітряна тривога в Сумській області") == "Сумська область"
+
+    def test_a_russian_region_is_still_rebuilt_in_russian(self):
+        """The case the old test was protecting, and it still holds.
+
+        "Воронежской области" has no soft sign, so it rebuilds as
+        "Воронежская область" rather than as a Russian region with a
+        Ukrainian ending, which no gazetteer knows.
+        """
+        assert reports.find_region("Воронежской области") == "Воронежская область"
+        assert reports.find_region("Житомирской области") == "Житомирская область"
+
+    def test_the_masculine_ones_agree_too(self):
+        # "край" and "округ" are masculine: "Краснодарская край" is not a
+        # thing anybody writes or any gazetteer holds.
+        assert reports.find_region("Краснодарском крае") == "Краснодарский край"
+
+    def test_the_name_is_one_neptun_can_shade(self):
+        """The whole point, stated as the thing a reader sees.
+
+        A name is only worth rebuilding if the boundary file holds it.
+        """
+        shape = {"type": "Polygon", "coordinates": [
+            [[28.0, 50.0], [29.0, 50.0], [29.0, 51.0], [28.0, 50.0]]]}
+        neptun.forget()
+        try:
+            neptun.remember_shapes({"житомирська область": shape})
+            got = reports.find_region("Житомирській області")
+            assert neptun.shape_for(got) is not None, got
+        finally:
+            neptun.forget()
 
 
 class TestSeveralRegionsInOneLine:

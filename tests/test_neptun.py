@@ -865,6 +865,80 @@ class TestNothingRaisesAWarningByItself:
         assert not [e for e in got if e["kind"] == "alert"]
 
 
+class TestAMissingBoundaryIsSaidRatherThanShown:
+    """"The whole system doesn't work now."
+
+    Their alert feed reports raions as well as oblasts, and the two
+    boundary files are fetched separately. The raion one is the larger and
+    is allowed to fail on its own -- rightly, since the provinces are the
+    bigger statement and are already in hand.
+
+    What was wrong is that it failed SILENTLY. Every raion alert then loses
+    its outline and is drawn as a triangle on a point, so a screen of shaded
+    provinces becomes a screen of forty overlapping labels, with nothing
+    anywhere saying why. That is the single most visible change this layer
+    can undergo and it was the one thing it would not talk about.
+    """
+
+    def setup_method(self):
+        neptun.forget()
+        self.real = neptun._get
+
+    def teardown_method(self):
+        neptun._get = self.real
+        neptun.forget()
+
+    def serve(self, *, raions=True, oblasts=True):
+        def answer(url, **kw):
+            if url == neptun.OBLAST_SHAPES:
+                if not oblasts:
+                    raise neptun.NeptunError("503 from their CDN")
+                return {"features": []}
+            if url == neptun.RAION_SHAPES:
+                if not raions:
+                    raise neptun.NeptunError("503 from their CDN")
+                return {"features": []}
+            raise neptun.NeptunError("nothing else is fetched here")
+        neptun._get = answer
+
+    def test_nothing_is_said_when_both_arrive(self):
+        self.serve()
+        neptun.shapes()
+        assert neptun.boundary_trouble() == ""
+
+    def test_the_districts_failing_is_said(self):
+        self.serve(raions=False)
+        neptun.shapes()
+        said = neptun.boundary_trouble()
+        assert "district" in said.lower(), said
+        assert "503" in said, said
+
+    def test_and_it_is_still_not_fatal(self):
+        # The provinces are the bigger statement and are already in hand.
+        self.serve(raions=False)
+        assert neptun.shapes() == {}  # no features in this stand-in, but no raise
+
+    def test_the_regions_failing_is_said_too(self):
+        self.serve(oblasts=False)
+        neptun.shapes()
+        said = neptun.boundary_trouble()
+        assert "region" in said.lower(), said
+
+    def test_the_panel_carries_it(self):
+        # Said where somebody looking at a map that has changed shape would
+        # actually look, rather than only in a log.
+        self.serve(raions=False)
+        neptun.shapes()
+        assert "district" in tracker._poll_state([], "").lower()
+
+    def test_forgetting_clears_it(self):
+        self.serve(raions=False)
+        neptun.shapes()
+        assert neptun.boundary_trouble()
+        neptun.forget()
+        assert neptun.boundary_trouble() == ""
+
+
 class TestTheSourcesItReadsNow:
     def test_neptun_covers_ukraine(self):
         assert tracker.NEPTUN_SOURCE == "neptun.in.ua"

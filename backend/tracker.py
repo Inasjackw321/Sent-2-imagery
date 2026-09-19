@@ -2416,7 +2416,15 @@ def _middle(shape: Any) -> tuple[float, float]:
 def _poll_state(trouble: list[str], feed_state: str) -> str:
     """What the panel says the poll did. One place, so the two exits agree."""
     said = f"reading {len(CHANNELS)} channels and {NEPTUN_SOURCE}"
-    parts = [*trouble[:1], *([feed_state] if feed_state else []), said]
+    # And whether the boundaries are all there. A warning with no outline is
+    # drawn as a triangle on a point instead of a shaded province, which is
+    # the most visible change this layer can undergo -- a screen of shaded
+    # regions becomes a screen of overlapping labels -- and until now it
+    # happened silently. "It all looks different tonight" has to be
+    # answerable from the panel rather than by guessing.
+    borders = neptun.boundary_trouble()
+    parts = [*trouble[:1], *([feed_state] if feed_state else []),
+             *([borders] if borders else []), said]
     return "; ".join(parts)
 
 
