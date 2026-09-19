@@ -218,9 +218,15 @@ function driftMinutes(event) {
 }
 
 /** How far along its course a mark has been carried, in kilometres. */
-function driftKm(event) {
+export function driftKm(event) {
   const minutes = driftMinutes(event);
   if (minutes == null || event.heading == null) return 0;
+  // Never along an assumed course. Dead reckoning runs on a source's own
+  // speed and an assumed heading comes with none, so this cannot happen
+  // today -- and it is refused explicitly because "it cannot happen anyway"
+  // is exactly how the version of this that flew marks at a speed from a
+  // lookup table got in.
+  if (event.course_from === 'assumed') return 0;
   const speed = event.speed_kmh;
   if (!(typeof speed === 'number' && speed > 0)) return 0;
   return speed * (minutes / 60);
@@ -425,7 +431,12 @@ export function glyphParts(event, colour, facing) {
   // from the group. Both are arrows and both point somewhere real; the weight
   // is the difference between an observation and an inference, and it is on
   // the map rather than only in the popup because that is where it is read.
-  const borrowed = event.course_from === 'group';
+  // Hollow for anything that was not stated about THIS mark: a course
+  // borrowed from the group around it, and a course assumed from which side
+  // of the border it is on. Both are inferences and the weight is what says
+  // so on the map, where it is read, rather than only in the popup.
+  const borrowed = event.course_from === 'group'
+    || event.course_from === 'assumed';
   const shape = `arrow${borrowed ? '-borrowed' : ''}`;
   return svg(shape, (borrowed ? BORROWED : ARROW)(colour), facing);
 }
@@ -526,6 +537,13 @@ function popup(event) {
         + `${event.course_from_count ?? 'other'} nearby marks that did, and is `
         + 'drawn hollow because it is an inference rather than something '
         + 'anybody said about this one.');
+    } else if (event.course_from === 'assumed') {
+      rows.push(`Heading <b>${deg}</b> — <b>assumed, not reported</b>. `
+        + 'Nobody gave a course for this one. It points east because that is '
+        + 'the direction these incursions travel, which is true of the '
+        + 'traffic in general and was not said about this mark: the arrow is '
+        + 'drawn hollow, nothing is carried along it, and it is counted with '
+        + 'the courses that are not known.');
     } else if (event.course_from === 'destination') {
       rows.push(`Heading <b>${deg}</b> — the bearing to the place the report `
         + 'named as its destination.');
@@ -2203,6 +2221,9 @@ function paintDock() {
     const said = flying.filter((e) => e.course_from === 'stated'
       || e.course_from === 'destination').length;
     const lent = flying.filter((e) => e.course_from === 'group').length;
+    // An assumed course is not a reported one. It falls into the remainder
+    // below with the marks that have no course at all, which is where a
+    // reader counting what this map actually knows would want it.
     const none = flying.length - said - lent;
     if (flying.length) {
       lines.push(`Direction: ${said} of ${flying.length} reported`

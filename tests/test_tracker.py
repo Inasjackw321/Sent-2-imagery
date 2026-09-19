@@ -1706,13 +1706,15 @@ class TestGivingEachMarkADirection:
         tracker.borrow_course(marks, masses)
         assert marks[1]["course_from_count"] == 1
 
-    def test_the_demo_shows_all_four_drawings(self):
+    def test_the_demo_shows_every_drawing(self):
         # Solid arrow from a report, solid from a destination, hollow from a
-        # group, and a ring for no direction at all. If the demo cannot show
-        # one of them, that drawing is unreachable without a network.
+        # group, hollow from the assumption that drones over Russia are
+        # heading east, and a ring for no direction at all. If the demo
+        # cannot show one of them, that drawing is unreachable without a
+        # network.
         got = {e.get("course_from") for e in tracker.demo()["events"]
                if e["kind"] not in tracker.NOT_AIRBORNE}
-        assert got == {"stated", "destination", "group", None}, got
+        assert got == {"stated", "destination", "group", "assumed", None}, got
 
 
 class TestAveragingBearings:
@@ -2782,6 +2784,174 @@ class TestTheDemoDoesNotMoveTheBorder:
         assert "Автономна Республіка Крим" in places.UKRAINE_REGIONS
 
 
+class TestADroneOverRussiaPointsEast:
+    """"Make it so the drone icons for Russia are just pointing eastwards."
+
+    What these channels report is long-range drones that came from the west,
+    so on the Russian side the traffic runs broadly eastwards. A screen of
+    rings says less about that than a screen of arrows.
+
+    It is an assumption and it is labelled as one. course_from is "assumed",
+    a third thing alongside "stated" and "group": drawn hollow like a
+    borrowed course, explained in the popup, counted with the courses that
+    are not known, never averaged into a group's bearing, and never carried
+    along.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+        gaz.forget()
+
+    teardown_method = setup_method
+
+    # A stand-in Ukraine that stops short of Belgorod (50.6N 36.6E) and holds
+    # Sumy (50.9N 34.8E). Precise geometry rather than a box round the whole
+    # region, because the entire question is which side of a line a mark is
+    # on -- and a rectangle drawn generously puts Belgorod in Ukraine, which
+    # is exactly the mistake this test is meant to catch.
+    UKRAINE = {"type": "Polygon", "coordinates": [
+        [[22.0, 44.0], [35.6, 44.0], [35.6, 52.4], [22.0, 52.4], [22.0, 44.0]]]}
+
+    def report(self, text, channel="radarrussiia"):
+        plain = reports.read(text)
+        assert plain, text
+        plain["kind"] = tracker.fold_kind(plain["kind"])
+        item = tracker._clean({**plain, "id": "c/1"})
+        assert item, text
+        item["by"] = "rules"
+        tracker._record(item, {"id": "c/1", "channel": channel}, "ru")
+        return tracker.current()["events"]
+
+    # ── the rule itself ─────────────────────────────────────────
+
+    def test_east_is_ninety(self):
+        assert tracker.ASSUMED_COURSE == 90.0
+
+    def test_a_courseless_drone_is_pointed_east(self):
+        got = tracker.assume_course({"kind": "drone", "heading": None})
+        assert got is True
+
+    def test_a_stated_course_is_never_overridden(self):
+        """The whole point of the distinction.
+
+        An assumption that could overwrite a reading would make every arrow
+        on the map worth less, because none of them could be trusted to be
+        what somebody said.
+        """
+        event = {"kind": "drone", "heading": 300.0, "course_from": "stated"}
+        assert tracker.assume_course(event) is False
+        assert event["heading"] == 300.0
+        assert event["course_from"] == "stated"
+
+    def test_only_things_with_rotors(self):
+        """A missile over Russia is not the same claim.
+
+        Those are reported where they land rather than crossing the country,
+        so an eastward arrow would be saying something about a weapon in
+        flight that the shape of the report does not support.
+        """
+        for kind in ("missile", "bomb", "aircraft", "alert", "unknown"):
+            event = {"kind": kind, "heading": None}
+            assert tracker.assume_course(event) is False, kind
+            assert event["heading"] is None, kind
+        for kind in tracker.ASSUMES_A_COURSE:
+            assert tracker.assume_course({"kind": kind, "heading": None}), kind
+
+    # ── where it is applied ─────────────────────────────────────
+
+    def test_a_drone_reported_in_russia_gets_it(self):
+        neptun.remember_shapes({"ua": self.UKRAINE})
+        got = [e for e in self.report("БпЛА над Белгородом")
+               if e["kind"] == "drone"]
+        assert got and got[0]["course_from"] == "assumed"
+        assert got[0]["heading"] == 90.0
+
+    def test_a_drone_raised_from_a_warning_gets_it(self):
+        # The mark this was asked for: courseless by construction, so before
+        # this every warning-raised drone in Russia was a ring.
+        neptun.remember_shapes({"ua": self.UKRAINE})
+        got = [e for e in self.report("Rostov Oblast Drone Alert")
+               if e["kind"] == "drone"]
+        assert got and got[0]["course_from"] == "assumed"
+
+    def test_ukraine_does_not_get_it(self):
+        """NEPTUN gives real courses there, and a ring means what it says.
+
+        Not by a country test inside assume_course, but by where it is
+        called: only where NEPTUN's own boundary says the mark is outside
+        Ukraine. A channel reading INSIDE that boundary never becomes a mark
+        at all -- it is shadowed by NEPTUN -- so there is nothing there for
+        an assumption to be put on.
+        """
+        neptun.remember_shapes({"ua": self.UKRAINE})
+        got = self.report("БпЛА над Сумами", channel="lpr1_treugolnik")
+        assert [e for e in got if e["kind"] == "drone"] == [], (
+            "a Ukrainian channel reading reached the map")
+
+    def test_nothing_is_assumed_when_the_border_is_not_known(self):
+        """covers() answers None until NEPTUN's boundary file arrives.
+
+        None is not False. With no border to test against there is no
+        knowing which side a mark is on, and a default applied to both sides
+        would put east on Ukrainian drones that NEPTUN had a real course for.
+        """
+        neptun.forget()
+        got = [e for e in self.report("БпЛА над Белгородом")
+               if e["kind"] == "drone"]
+        assert got and got[0].get("course_from") is None
+        assert got[0].get("heading") is None
+
+    # ── what it must not become ─────────────────────────────────
+
+    def test_it_is_never_averaged_into_a_group(self):
+        """One assumed mark would pull the real bearings around it east."""
+        assumed = {"id": "a", "kind": "drone", "heading": 90.0,
+                   "course_from": "assumed"}
+        real = [{"id": "r1", "kind": "drone", "heading": 300.0,
+                 "course_from": "stated"},
+                {"id": "r2", "kind": "drone", "heading": 300.0,
+                 "course_from": "stated"},
+                {"id": "r3", "kind": "drone", "heading": None,
+                 "course_from": None}]
+        events = [assumed, *real]
+        tracker.borrow_course(events, [{"ids": [e["id"] for e in events]}])
+        assert real[2]["heading"] == 300.0, "east leaked into the group course"
+        assert real[2]["course_from"] == "group"
+
+    def test_a_real_group_course_replaces_it(self):
+        """It is the weakest claim on the map.
+
+        The average of bearings actually reported beside this mark beats a
+        default applied to the whole country.
+        """
+        assumed = {"id": "a", "kind": "drone", "heading": 90.0,
+                   "course_from": "assumed"}
+        real = [{"id": "r1", "kind": "drone", "heading": 300.0,
+                 "course_from": "stated"},
+                {"id": "r2", "kind": "drone", "heading": 300.0,
+                 "course_from": "stated"}]
+        events = [assumed, *real]
+        tracker.borrow_course(events, [{"ids": [e["id"] for e in events]}])
+        assert assumed["heading"] == 300.0
+        assert assumed["course_from"] == "group"
+
+    def test_but_not_one_raised_from_a_warning(self):
+        # That mark is at a province's centre rather than anywhere reported,
+        # so a group's bearing would be a second inference on top of a
+        # position nobody gave.
+        raised = {"id": "a", "kind": "drone", "heading": 90.0,
+                  "course_from": "assumed", "from_warning": True}
+        real = [{"id": "r1", "kind": "drone", "heading": 300.0,
+                 "course_from": "stated"},
+                {"id": "r2", "kind": "drone", "heading": 300.0,
+                 "course_from": "stated"}]
+        events = [raised, *real]
+        tracker.borrow_course(events, [{"ids": [e["id"] for e in events]}])
+        assert raised["heading"] == 90.0
+        assert raised["course_from"] == "assumed"
+
+
 class TestADroneWarningPutsADroneOnTheMap:
     """"Make it so drones are placed over reports in Russia."
 
@@ -2837,16 +3007,24 @@ class TestADroneWarningPutsADroneOnTheMap:
         assert drone["region_wide"] is False
         assert drone["region_scope"] is None
 
-    def test_it_claims_no_course(self):
+    def test_its_course_is_assumed_and_says_so(self):
         """It came from a sentence about a region, not from a track.
 
-        An arrow here would point somewhere nobody said, which is the
-        invention this whole layer exists to avoid.
+        It points east, which was asked for and is true of this traffic in
+        general -- and it is labelled "assumed" rather than passed off as a
+        reading, because nothing about THIS mark's direction was reported.
+        Nothing is carried over from the warning either: the heading is put
+        on by assume_course and by nothing else.
         """
         drone = self.drones(self.one("Rostov Oblast Drone Alert"))[0]
         assert drone["course"] is None
-        assert drone.get("course_from") is None
-        assert drone.get("heading") is None
+        assert drone["heading"] == tracker.ASSUMED_COURSE
+        assert drone["course_from"] == "assumed"
+
+    def test_it_points_east(self):
+        # The request, in the units the map draws in: bearings from north,
+        # so east is ninety.
+        assert tracker.ASSUMED_COURSE == 90.0
 
     def test_it_is_not_marked_area_only(self):
         """Which would be truthful and would hide it.

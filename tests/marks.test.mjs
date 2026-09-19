@@ -9,7 +9,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { floats, regionOnly } from '../frontend/js/tracker.js';
+import { driftKm, floats, glyphParts, regionOnly }
+  from '../frontend/js/tracker.js';
 
 // A drone raised from a warning about drones. It sits at the centre of a
 // province because that is where the warning sits -- see _drone_from_warning
@@ -67,4 +68,51 @@ test('a drone raised from a warning may be moved', () => {
   // land on the same pixel every single time -- which is the exact picture
   // the rule was written for: a drone sitting on top of a warning triangle.
   assert.equal(floats(raised), true);
+});
+
+// A drone over Russia points east when nobody said which way.
+//
+// The request, and the reasoning behind it is sound: what these channels
+// report is long-range drones that came from the west, so on that side the
+// traffic runs broadly eastwards. It is still an assumption, so it is drawn
+// as one -- hollow, like a course borrowed from the group, which is the
+// weight this map has always given an inference.
+
+test('an assumed course is drawn hollow, like a borrowed one', () => {
+  const assumed = glyphParts({ kind: 'drone', course_from: 'assumed' },
+    '#ffd400', 90);
+  const borrowed = glyphParts({ kind: 'drone', course_from: 'group' },
+    '#ffd400', 90);
+  assert.equal(assumed.shape, borrowed.shape);
+  assert.equal(assumed.turn, 90);
+});
+
+test('and a stated course is still solid', () => {
+  const stated = glyphParts({ kind: 'drone', course_from: 'stated' },
+    '#ffd400', 90);
+  const assumed = glyphParts({ kind: 'drone', course_from: 'assumed' },
+    '#ffd400', 90);
+  assert.notEqual(stated.shape, assumed.shape);
+  assert.notEqual(stated.body, assumed.body);
+});
+
+test('a mark with no course at all is still a ring', () => {
+  // The assumption is put on by the backend, for one side of one border.
+  // Where it was not, the ring still means what it always meant.
+  assert.equal(glyphParts({ kind: 'drone' }, '#ffd400', null).shape, 'dot');
+});
+
+test('nothing is ever carried along an assumed course', () => {
+  // Dead reckoning runs on a source's own speed. This is the check that an
+  // assumed heading cannot be flown along even if a speed turns up beside
+  // it -- which is how the version of this that flew marks at a speed from a
+  // lookup table got in.
+  // drift_minutes is the field the feed actually sends; an event without it
+  // never drifts whatever else it carries, so a test built on the wrong
+  // field name would pass however this behaved.
+  const base = { kind: 'drone', speed_kmh: 180, heading: 90,
+                 drift_minutes: 10 };
+  assert.ok(driftKm({ ...base, course_from: 'stated' }) > 0,
+    'the fixture produces no drift at all, so it proves nothing');
+  assert.equal(driftKm({ ...base, course_from: 'assumed' }), 0);
 });

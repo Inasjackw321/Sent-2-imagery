@@ -767,16 +767,26 @@ def borrow_course(events: list[dict[str, Any]],
         members = [by_id[str(i)] for i in mass.get("ids", ()) if str(i) in by_id]
         for kind in {m.get("kind") for m in members}:
             same = [m for m in members if m.get("kind") == kind]
+            # What the group's own course is averaged FROM: courses somebody
+            # actually gave. Not a borrowed one, which would compound an
+            # inference, and not an assumed one -- east is a default, and
+            # letting it into the average would pull the real bearings of the
+            # marks around it towards a number nobody reported.
             stated = [m["heading"] for m in same
                       if m.get("heading") is not None
-                      and m.get("course_from") != "group"]
+                      and m.get("course_from") not in ("group", "assumed")]
             if not stated:
                 continue
             course = mean_bearing(stated)
             if course is None:
                 continue
             for event in same:
-                if event.get("heading") is not None:
+                # An assumed course is replaced. It is the weakest claim on
+                # the map -- a default for the whole Russian side -- and the
+                # average of real bearings reported alongside this mark beats
+                # it on every count.
+                if (event.get("heading") is not None
+                        and event.get("course_from") != "assumed"):
                     continue
                 # Never to a mark raised from a warning. The sentence this
                 # function rests on is "things reported TOGETHER are usually
@@ -1426,6 +1436,51 @@ def photo_paths(urls: Any) -> list[str]:
             if isinstance(url, str) and _CDN.match(url)]
 
 
+# Which way a drone over Russia is drawn when the report did not say.
+#
+# East. Asked for, and the reasoning behind the request is sound: what these
+# channels report is long-range drones that came from the west, so on the
+# Russian side the traffic runs broadly eastwards. A map of rings says less
+# than a map of arrows about something whose direction is, in the aggregate,
+# actually known.
+#
+# It is still an assumption, and it is labelled as one rather than passed off
+# as a reading. course_from is "assumed", which is a third thing alongside
+# "stated" and "group": the arrow is drawn hollow like a borrowed one, the
+# popup says in plain words that nobody reported a course and why it points
+# this way, and the digest counts it with the ones that were not known rather
+# than with the ones that were.
+#
+# Three things it must not do, all of them versions of the same mistake --
+# letting an assumption be treated as a measurement:
+#
+#   it never overrides a course anybody stated;
+#   it is never averaged into a group's course (see borrow_course), or one
+#     assumed mark would put east into the bearing of the real ones around it;
+#   it never carries a mark along itself. Dead reckoning runs on a source's
+#     own speed and this has none, so it does not happen anyway -- and the
+#     page refuses it explicitly, because "it does not happen anyway" is how
+#     the last version of that bug got in.
+ASSUMED_COURSE = 90.0
+
+# The kinds it applies to: things with rotors and a long way to travel. A
+# missile or a guided bomb over Russia is not the same claim -- those are
+# reported where they land, not crossing the country -- so they keep their
+# ring.
+ASSUMES_A_COURSE = ("drone", "jet_drone", "fpv")
+
+
+def assume_course(event: dict[str, Any]) -> bool:
+    """Point a courseless drone east. Returns whether it was changed."""
+    if event.get("kind") not in ASSUMES_A_COURSE:
+        return False
+    if event.get("heading") is not None:
+        return False
+    event["heading"] = ASSUMED_COURSE
+    event["course_from"] = "assumed"
+    return True
+
+
 def _record(item: dict[str, Any], message: dict[str, Any],
             countries: str) -> bool:
     """One classified report: an alert always, a track only if it placed."""
@@ -1457,6 +1512,8 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         if in_ukraine:
             _shadowed += 1
             return False
+        if in_ukraine is False:
+            assume_course(placed)
 
     # An all-clear takes a warning away rather than putting one up.
     #
@@ -1621,16 +1678,17 @@ def _drone_from_warning(placed: dict[str, Any], ident: str,
     # that this function is defending something it is not.
     if not placed["placed"]:
         return False
-    _events.append({
+    drone = {
         **placed,
         "kind": "drone",
         "rank": KINDS["drone"]["rank"],
         "motion": MOTION.get("drone", "track"),
-        # Nothing said which way. Belt and braces: an alert never carries a
-        # heading -- place_event returns before setting one for anything that
-        # is not a track -- so these are here to survive a change that makes
-        # it do so, not because it does today. What actually keeps this mark
-        # courseless is the refusal in borrow_course.
+        # Nothing said which way, so nothing is carried over from the warning.
+        # Belt and braces: an alert never has a heading -- place_event returns
+        # before setting one for anything that is not a track -- so these are
+        # here to survive a change that makes it do so, not because it does
+        # today. assume_course below is what then points it east, and it is
+        # the only thing that may.
         "course": None,
         "course_from": None,
         "heading": None,
@@ -1678,7 +1736,14 @@ def _drone_from_warning(placed: dict[str, Any], ident: str,
         "text": message.get("text", "")[:300],
         "photos": photo_paths(message.get("photos")),
         "link": message.get("link"),
-    })
+    }
+    # East, like every other courseless drone on that side of the border.
+    # This mark is the reason the rule exists: it is courseless by
+    # construction, so before this every warning-raised drone in Russia was a
+    # ring, and a screen of rings says less than a screen of arrows about
+    # traffic whose direction is, in the aggregate, known.
+    assume_course(drone)
+    _events.append(drone)
     return True
 
 
