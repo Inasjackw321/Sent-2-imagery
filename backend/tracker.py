@@ -91,12 +91,27 @@ log = logging.getLogger("sent2.tracker")
 # for a Donbas town with Ukraine first answers with the pre-war name of
 # somewhere else.
 #
-# The others -- eRadarrua, kpszsu, war_monitor, radarrussiia -- are gone for
-# now rather than deleted: they are four lines, and putting one back is
-# adding its row here.
+# @radarrussiia is back, and it is the reason "alerts for Russia don't work".
+#
+# It is the channel that actually posts them: "Ivanovo Oblast, Vladimir
+# Oblast, Drone Alert", "Vologda Oblast Drone Alert", "Aleksin, Tula Oblast.
+# Drone alert." -- one per region, all night. It was taken out with the
+# Ukrainian three when NEPTUN replaced them, and that was right for those
+# three and wrong for this one: NEPTUN covers Ukraine, so the channels
+# duplicating NEPTUN had nothing left to add, while the one covering Russia
+# had everything. With it gone there was no Russian alert feed at all, and
+# the map said so by being empty.
+#
+# Russia only in its country list. It reports on Russia, and a gazetteer
+# asked for "Kaluga" with Ukraine in the list has a Ukrainian answer to give.
+#
+# The others -- eRadarrua, kpszsu, war_monitor -- are gone for now rather
+# than deleted: they are three lines, and putting one back is adding its row
+# here.
 CHANNELS = (
     {"name": "lpr1_treugolnik", "region": "Luhansk and Russia",
      "countries": "ru,ua"},
+    {"name": "radarrussiia", "region": "Russia", "countries": "ru"},
 )
 
 # The public web preview. Not the API: this is the page Telegram serves to a

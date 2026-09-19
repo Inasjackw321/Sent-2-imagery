@@ -1124,11 +1124,57 @@ LISTED_REGIONS = re.compile(
     rf"^(?P<list>[^—–\-:;.]*?(?:{REGION_KIND})[^—–:;.]*?)\s*[—–-]\s*(?P<says>.+)$")
 
 
+# The same list with no dash in it: "Ivanovo Oblast, Vladimir Oblast, Drone
+# Alert". The Russian radar channel writes them this way -- commas all the
+# way, with the thing being said as the last item -- and the dashed pattern
+# above cannot see it, so a post naming three oblasts raised a warning over
+# the first and left the other two with nothing.
+#
+# Told apart by the type word. Every region in the run has to carry one --
+# Oblast, Region, Republic, Krai, область -- and the tail has to lack one.
+# That is stricter than the dashed form, which allows a trailing region to
+# drop its type word, and deliberately: without a dash there is nothing else
+# to say where the list of places stops and the sentence about them begins.
+# A full stop ends the list as readily as a comma: "Belgorod Oblast, Voronezh
+# Oblast. Missile alert." A sentence boundary rather than any dot, so it takes
+# a capital after it.
+#
+# There were lookbehinds here guarding "обл." and "респ." from being split at
+# their own dots. They were removed after being measured: a chunk that loses
+# its dot reads as a bare "обл", REGION_KIND does not match that, so the run
+# of regions fails to form either way and every probe gave the same answer
+# with them and without. A guard that cannot change an answer is a guard
+# against nothing.
+SENTENCE = re.compile(r"\.\s+(?=[A-ZА-ЯЁ])")
+
+
+def _run_of_regions(text: str) -> tuple[list[str], str] | None:
+    pieces = []
+    for part in BETWEEN.split(text.rstrip(" .")):
+        pieces.extend(SENTENCE.split(part))
+    chunks = [_tidy(c) for c in pieces]
+    names: list[str] = []
+    for i, chunk in enumerate(chunks):
+        if chunk and chunk[0].isupper() and re.search(REGION_KIND, chunk):
+            names.append(chunk)
+            continue
+        # The first thing that is not a region ends the list, and everything
+        # from there on is what was said about them.
+        rest = " ".join(c for c in chunks[i:] if c)
+        # Two, because one region is not a list -- read() handles that post
+        # and gives the same answer. Kept as the definition of the thing
+        # rather than because it is currently observable.
+        return (names, rest) if len(names) >= 2 and rest else None
+    # Every chunk was a region and nothing was said about them, which is a
+    # list of places rather than a report.
+    return None
+
+
 def _listed(text: str) -> tuple[list[str], str] | None:
     """The regions a post names before its dash, and what it says about them."""
     match = LISTED_REGIONS.match(text)
     if not match:
-        return None
+        return _run_of_regions(text)
     names = []
     for chunk in BETWEEN.split(match.group("list")):
         name = _tidy(chunk)

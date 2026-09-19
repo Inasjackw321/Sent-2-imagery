@@ -869,17 +869,24 @@ class TestTheSourcesItReadsNow:
     def test_neptun_covers_ukraine(self):
         assert tracker.NEPTUN_SOURCE == "neptun.in.ua"
 
-    def test_one_channel_is_left_and_it_is_the_russian_one(self):
-        # NEPTUN carries the Ukrainian channels' reports already read and
-        # already placed. What it does not cover is the Russian side, which
-        # is the one thing this app would otherwise lose.
-        assert [c["name"] for c in tracker.CHANNELS] == ["lpr1_treugolnik"]
+    def test_the_channels_left_are_the_russian_ones(self):
+        """NEPTUN carries the Ukrainian channels already read and placed.
 
-    def test_it_looks_in_russia_first(self):
-        # Its place names are in Russia and the occupied east. Ukraine first
-        # would have a gazetteer answer a Donbas town with the pre-war
-        # administrative name of somewhere else.
-        assert tracker.CHANNELS[0]["countries"].split(",")[0] == "ru"
+        What it does not cover is the Russian side, which is the one thing
+        this app would otherwise lose -- and did lose: @radarrussiia is the
+        channel that posts Russia's alerts, it went out with the Ukrainian
+        three, and with it gone there was no Russian alert feed at all.
+        """
+        assert [c["name"] for c in tracker.CHANNELS] == [
+            "lpr1_treugolnik", "radarrussiia"]
+
+    def test_they_all_look_in_russia_first(self):
+        # Their place names are in Russia and the occupied east. Ukraine
+        # first would have a gazetteer answer a Donbas town with the pre-war
+        # administrative name of somewhere else -- and answer "Kaluga" with
+        # a Ukrainian village.
+        for channel in tracker.CHANNELS:
+            assert channel["countries"].split(",")[0] == "ru", channel["name"]
 
     def test_the_feed_has_a_row_in_the_panel(self):
         # "I cannot see anything from NEPTUN" has to be answerable from the

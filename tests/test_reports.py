@@ -270,6 +270,95 @@ class TestWhere:
         assert read("Розвідувальний БпЛА над Чорним морем") is None
 
 
+class TestSeveralRegionsInOneLine:
+    """"Alerts for Russia don't work."
+
+    @radarrussiia writes a post per event and names every region it covers,
+    commas all the way with the thing being said as the last item:
+
+        Ivanovo Oblast, Vladimir Oblast, Drone Alert
+
+    The list reader wanted a DASH between the places and the sentence --
+    which is how the Russian-language channels write it -- so a post naming
+    three oblasts raised a warning over the first and left the other two
+    with nothing at all.
+    """
+
+    def kinds(self, text):
+        return [(g["kind"], g["place"]) for g in reports.read_all(text)]
+
+    def test_two_regions_and_a_comma(self):
+        assert self.kinds("Ivanovo Oblast, Vladimir Oblast, Drone Alert") == [
+            ("alert", "Ivanovo oblast"), ("alert", "Vladimir oblast")]
+
+    def test_three_of_them(self):
+        got = self.kinds(
+            "Ryazan Oblast, Tula Oblast, Kaluga Oblast, Drone Alert")
+        assert [place for _kind, place in got] == [
+            "Ryazan oblast", "Tula oblast", "Kaluga oblast"]
+
+    def test_a_full_stop_ends_the_list_too(self):
+        assert self.kinds("Belgorod Oblast, Voronezh Oblast. Missile alert.") \
+            == [("alert", "Belgorod oblast"), ("alert", "Voronezh oblast")]
+
+    def test_a_stand_down_reaches_every_one_of_them(self):
+        """The case that matters most.
+
+        A warning that is lifted for two oblasts and taken down over one
+        leaves the other shaded for its full hour -- the map saying the
+        opposite of what happened.
+        """
+        got = self.kinds("Tula Oblast, Kaluga Oblast. All clear.")
+        assert [kind for kind, _place in got] == ["all_clear", "all_clear"]
+        assert [place for _kind, place in got] == [
+            "Tula oblast", "Kaluga oblast"]
+
+    def test_the_dashed_form_still_reads(self):
+        # The Russian-language channels write it with a dash, and that
+        # pattern is tried first and is unchanged by any of this.
+        got = reports.read_all(
+            "Белгородская область, Курская область — отбой угрозы БпЛА")
+        assert [(g["kind"], g["place"]) for g in got] == [
+            ("all_clear", "Белгородская область"),
+            ("all_clear", "Курская область")]
+
+    def test_one_region_is_not_a_list(self):
+        assert self.kinds("Vologda Oblast Drone Alert") == [
+            ("alert", "Vologda oblast")]
+        assert self.kinds("Moscow Oblast Drone Alert") == [
+            ("alert", "Moscow oblast")]
+
+    def test_a_town_before_its_region_is_not_a_list(self):
+        """"Aleksin, Tula Oblast. Drone alert." is one warning, not two.
+
+        The town carries no type word, so the run of regions never starts
+        and the post is read whole -- which is what puts the warning over
+        the oblast rather than over a comma.
+        """
+        assert self.kinds("Aleksin, Tula Oblast. Drone alert.") == [
+            ("alert", "Tula oblast")]
+        assert self.kinds("Kaluga, Kaluga Oblast, UAV Detection") == [
+            ("drone", "Kaluga oblast")]
+
+    def test_a_list_with_nothing_said_about_it_is_not_a_report(self):
+        # A line of place names is a line of place names.
+        assert reports.read_all("Tula Oblast, Kaluga Oblast") == [] \
+            or all(g["kind"] != "alert"
+                   for g in reports.read_all("Tula Oblast, Kaluga Oblast"))
+
+    def test_an_abbreviated_region_is_not_lost(self):
+        """Whatever the splitting does to it, the post still reads.
+
+        This used to be a test that an abbreviation's own full stop was
+        guarded from the sentence split. The guard was measured and removed
+        -- it could not change an answer -- so what is worth holding is the
+        outcome rather than the mechanism.
+        """
+        got = reports.read_all("Белгородская обл., Курская обл. Отбой")
+        assert got, "the post was lost entirely"
+        assert any("Белгород" in str(g["place"]) for g in got)
+
+
 class TestAnFpvIsNotAShahed:
     """"Grey icons are FPV drones."
 

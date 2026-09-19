@@ -2490,15 +2490,17 @@ class TestDemo:
         # than derived, because the point is that this list is a decision
         # somebody made and not whatever happens to be in the tuple.
         #
-        # One, now. NEPTUN is the source for Ukraine -- it carries these
-        # same channels' reports already read and already placed, with its
-        # own alert feed keyed to real boundaries, so reading them here as
-        # well was two paths to the same facts with only the worse one able
-        # to put a mark in the wrong province.
+        # Two, and both Russian. NEPTUN is the source for Ukraine -- it
+        # carries the Ukrainian channels' reports already read and already
+        # placed, with its own alert feed keyed to real boundaries, so
+        # reading those here as well was two paths to the same facts with
+        # only the worse one able to put a mark in the wrong province.
         #
-        # @lpr1_treugolnik stays because NEPTUN does not cover the Russian
-        # side, which is the one thing this app would otherwise lose.
-        assert names == {"lpr1_treugolnik"}
+        # The Russian side is the one thing NEPTUN does not cover.
+        # @lpr1_treugolnik reports Luhansk and Russia; @radarrussiia is
+        # where Russia's alerts actually come from, and while it was gone
+        # there were none.
+        assert names == {"lpr1_treugolnik", "radarrussiia"}
 
     def test_every_channel_says_which_countries_to_look_in(self):
         # Without it "Sumy" is as likely to match a street in another
