@@ -2268,7 +2268,7 @@ def take_neptun() -> tuple[int, int]:
         drawn += 1
         _record_neptun(track, now)
     raised = 0
-    for alert in declared or ():
+    for alert in fold_alerts(list(declared or ())):
         ident = f"NP-alert-{alert.get('key') or alert['name']}"
         if _is_dismissed({"id": ident, "source": ident}):
             continue
@@ -2367,18 +2367,101 @@ def _record_neptun(track: dict[str, Any], now: float) -> None:
     })
 
 
+def alert_outline(alert: dict[str, Any]) -> Any | None:
+    """The boundary an alert can be drawn on, or None.
+
+    NEPTUN's own index first, by key and then by name, because it is live and
+    it is the only side that has districts. Then the shipped provinces, which
+    is what keeps a province-wide alert shaded on a night when their boundary
+    files cannot be read.
+    """
+    return (neptun.shape_for(alert.get("key"))
+            or neptun.shape_for(alert.get("name"))
+            or neighbours.shape_for(alert.get("name")))
+
+
+def fold_alerts(declared: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """District alerts with no district outline, gathered into their province.
+
+    Their alert feed reports districts as well as provinces, and the district
+    boundaries are the larger of the two files and the one that fails. When it
+    fails, forty district alerts that were shaded provinces become forty
+    triangles on forty guessed points, piled on top of each other across the
+    middle of the country -- which is a map that says less than no map, because
+    a reader cannot tell the pile from forty separate things happening.
+
+    So they are folded. A district alert whose district cannot be drawn is
+    counted against its province and the province is shaded once, with the
+    districts named on it. That draws more ground than is under alert, and the
+    label says so rather than leaving it to be guessed: what is true either way
+    is that there is an alert in that province.
+
+    A district that CAN be drawn is left alone -- that is the better picture
+    and the one this does not disturb. So is one whose province cannot be drawn
+    either, because a point is still better than nothing.
+    """
+    out: list[dict[str, Any]] = []
+    # A province already under its own alert says everything its districts
+    # would; folding into it would only stack a second label on one shape.
+    declared_whole = {a.get("name") for a in declared
+                      if a.get("scope") == "oblast"}
+    orphans: dict[str, list[dict[str, Any]]] = {}
+    for alert in declared:
+        if alert.get("scope") != "raion" or alert_outline(alert):
+            out.append(alert)
+            continue
+        oblast = alert.get("oblast")
+        if not oblast:
+            out.append(alert)
+            continue
+        if oblast not in declared_whole:
+            orphans.setdefault(oblast, []).append(alert)
+    for oblast, rows in orphans.items():
+        if not (neptun.shape_for(oblast) or neighbours.shape_for(oblast)):
+            out.extend(rows)
+            continue
+        since = sorted(row["since"] for row in rows if row.get("since"))
+        out.append({
+            "scope": "oblast", "key": None, "name": oblast, "oblast": oblast,
+            "since": since[0] if since else "",
+            "districts": [row["name"] for row in rows],
+        })
+    return out
+
+
+MOST_DISTRICTS_NAMED = 3
+
+
+def _alert_summary(name: str, districts: list[str]) -> str:
+    """What the alert says it covers.
+
+    A folded alert is drawn over more ground than is under alert, so the line
+    that goes with it names the districts that are and says the province is
+    shaded whole. The reader is told the difference instead of inferring a
+    province-wide alert from a province-wide shape.
+    """
+    if not districts:
+        return f"Air alert — {name}"
+    named = ", ".join(districts[:MOST_DISTRICTS_NAMED])
+    left = len(districts) - MOST_DISTRICTS_NAMED
+    if left > 0:
+        named += f" and {left} more"
+    return f"Air alert — {named} — {name} shaded whole"
+
+
 def _record_neptun_alert(alert: dict[str, Any], ident: str, now: float) -> None:
     """One official alert from NEPTUN, as a warning over its region."""
     name = alert["name"]
-    shape = neptun.shape_for(alert.get("key")) or neptun.shape_for(name)
+    shape = alert_outline(alert)
     here = places.lookup(name) or places.lookup(alert.get("oblast") or "")
+    summary = _alert_summary(name, alert.get("districts") or [])
     if not here and not shape:
         # Nowhere to draw it. Listed rather than dropped, because "an alert
         # was declared for a region this cannot place" is a visible outcome.
         _alerts.append({
             "id": ident, "source": ident, "by": "neptun", "kind": "alert",
             "cause": None, "rank": KINDS["alert"]["rank"],
-            "summary": f"Air alert — {name}", "place": name, "placed": False,
+            "summary": summary, "place": name, "placed": False,
             "why_unplaced": f'"{name}" is not a region this map knows',
             "channel": NEPTUN_SOURCE, "region": alert.get("oblast"),
             "seen": now, "text": "", "photos": [], "link": neptun.BASE,
@@ -2402,14 +2485,14 @@ def _record_neptun_alert(alert: dict[str, Any], ident: str, now: float) -> None:
         "region_scope": "covers" if shape else None,
         "region_wide": bool(shape),
         "official": True,
-        "summary": f"Air alert — {name}",
+        "summary": summary,
         "seen": now, "channel": NEPTUN_SOURCE, "text": "",
         "photos": [], "link": neptun.BASE, "age_minutes": 0.0,
     })
     _alerts.append({
         "id": ident, "source": ident, "by": "neptun", "kind": "alert",
         "cause": None, "rank": KINDS["alert"]["rank"],
-        "summary": f"Air alert — {name}", "place": name, "placed": True,
+        "summary": summary, "place": name, "placed": True,
         "why_unplaced": None, "channel": NEPTUN_SOURCE,
         "region": alert.get("oblast"), "seen": now, "text": "",
         "photos": [], "link": neptun.BASE, "official": True,

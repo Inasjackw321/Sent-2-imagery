@@ -5315,3 +5315,209 @@ class TestThePictureTakesTheGroundYouAskedFor:
         block = self.source()
         block = block[block.index("async function saveShot"):]
         assert "      exactly," in block
+
+
+class TestAlertsWithNoDistrictBoundary:
+    """What an air alert looks like when the district file cannot be read.
+
+    NEPTUN publish two boundary files and report alerts against both. The
+    district file is the larger of the two and the one that fails, and when it
+    failed every district alert -- most of the alerts on a partial night --
+    became a triangle on a guessed point. Forty of them piled across the middle
+    of the country, on a map whose other half was shaded provinces, with
+    nothing on the screen to say why the two halves looked different.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+        neighbours.forget()
+
+    teardown_method = setup_method
+
+    # A province this app ships, so the shipped file can answer for it.
+    SHIPPED = "Львівська область"
+    RING = {"type": "Polygon",
+            "coordinates": [[[30.0, 50.0], [31.0, 50.0], [31.0, 51.0],
+                             [30.0, 50.0]]]}
+
+    def district(self, name, oblast=None, since="2026-09-19T20:00:00Z"):
+        return {"scope": "raion", "key": f"k-{name}", "name": name,
+                "oblast": oblast or self.SHIPPED, "since": since}
+
+    def province(self, name=None):
+        name = name or self.SHIPPED
+        return {"scope": "oblast", "key": f"k-{name}", "name": name,
+                "oblast": name, "since": "2026-09-19T20:00:00Z"}
+
+    def test_a_province_alert_is_shaded_from_the_shipped_file(self):
+        """The half of the fix that needs no folding at all.
+
+        _record_neptun took this fallback and _record_neptun_alert did not,
+        which is why a NEPTUN track shaded its province on a night when the
+        official alert for the same province did not.
+        """
+        assert tracker.alert_outline(self.province()) is not None
+
+    def test_a_province_neither_side_has_still_has_no_outline(self):
+        assert tracker.alert_outline(self.province("Nowhere oblast")) is None
+
+    def test_neptun_is_asked_before_the_shipped_file(self):
+        neptun.remember_shapes({self.SHIPPED.casefold(): self.RING})
+        assert tracker.alert_outline(self.province()) == self.RING
+
+    def test_a_district_with_no_boundary_is_folded_into_its_province(self):
+        got = tracker.fold_alerts([self.district("Дрогобицький район")])
+        assert [a["name"] for a in got] == [self.SHIPPED]
+        assert got[0]["scope"] == "oblast"
+        assert tracker.alert_outline(got[0]) is not None
+
+    def test_several_districts_of_one_province_come_out_as_one_shape(self):
+        got = tracker.fold_alerts([self.district("Дрогобицький район"),
+                                   self.district("Золочівський район"),
+                                   self.district("Самбірський район")])
+        assert len(got) == 1
+        assert got[0]["districts"] == ["Дрогобицький район",
+                                       "Золочівський район",
+                                       "Самбірський район"]
+
+    def test_districts_of_different_provinces_stay_apart(self):
+        got = tracker.fold_alerts([
+            self.district("Дрогобицький район"),
+            self.district("Ковельський район", oblast="Волинська область")])
+        assert sorted(a["name"] for a in got) == sorted(
+            ["Волинська область", self.SHIPPED])
+
+    def test_a_district_that_can_be_drawn_is_left_exactly_as_it_was(self):
+        # The better picture, and the one image two actually shows. Folding it
+        # would throw away district detail that had arrived.
+        neptun.remember_shapes({"k-Дрогобицький район".casefold(): self.RING})
+        one_of = self.district("Дрогобицький район")
+        assert tracker.fold_alerts([one_of]) == [one_of]
+
+    def test_a_district_whose_province_is_already_declared_is_dropped(self):
+        # Two labels on one shape, saying the same thing twice.
+        got = tracker.fold_alerts([self.province(),
+                                   self.district("Дрогобицький район")])
+        assert len(got) == 1
+        assert got[0]["scope"] == "oblast"
+        assert "districts" not in got[0]
+
+    def test_a_district_whose_province_cannot_be_drawn_either_stays_a_point(self):
+        # A point is a worse answer than a shaded province and a better one
+        # than nothing at all.
+        orphan = self.district("Some raion", oblast="Nowhere oblast")
+        assert tracker.fold_alerts([orphan]) == [orphan]
+
+    def test_a_district_with_no_province_named_is_kept(self):
+        orphan = self.district("Some raion")
+        orphan["oblast"] = None
+        assert tracker.fold_alerts([orphan]) == [orphan]
+
+    def test_a_province_alert_is_never_folded(self):
+        whole = self.province()
+        assert tracker.fold_alerts([whole]) == [whole]
+
+    def test_the_folded_alert_starts_when_the_first_district_did(self):
+        got = tracker.fold_alerts([
+            self.district("Дрогобицький район", since="2026-09-19T21:10:00Z"),
+            self.district("Золочівський район", since="2026-09-19T20:05:00Z")])
+        assert got[0]["since"] == "2026-09-19T20:05:00Z"
+
+    def test_folding_nothing_gives_nothing(self):
+        assert tracker.fold_alerts([]) == []
+
+
+class TestWhatAFoldedAlertSays:
+    """Shading a province for a district alert covers ground that is not
+    under alert, so the line that goes with it has to say so.
+
+    A reader who sees a province-shaped shape and a label reading "Air alert"
+    will read it as a province-wide alert. That is the one thing this must not
+    let happen silently.
+    """
+
+    def test_an_ordinary_alert_reads_as_it_always_did(self):
+        assert tracker._alert_summary("Львівська область", []) \
+            == "Air alert — Львівська область"
+
+    def test_a_folded_one_names_the_district(self):
+        got = tracker._alert_summary("Львівська область", ["Дрогобицький район"])
+        assert "Дрогобицький район" in got
+
+    def test_and_says_the_province_is_shaded_whole(self):
+        got = tracker._alert_summary("Львівська область", ["Дрогобицький район"])
+        assert "Львівська область shaded whole" in got
+
+    def test_a_handful_are_all_named(self):
+        got = tracker._alert_summary("X", ["a", "b", "c"])
+        assert "a, b, c" in got
+        assert "more" not in got
+
+    def test_more_than_a_handful_are_counted(self):
+        got = tracker._alert_summary("X", ["a", "b", "c", "d", "e"])
+        assert "a, b, c and 2 more" in got
+
+    def test_the_count_is_of_the_ones_left_out(self):
+        # Not of all of them: "and 5 more" after naming three of five is a
+        # different and wrong number.
+        got = tracker._alert_summary("X", ["a", "b", "c", "d"])
+        assert "and 1 more" in got
+
+
+class TestFoldedAlertsOnTheMap:
+    """The whole of it, from the feed to the mark."""
+
+    def setup_method(self):
+        tracker.reset()
+        neptun.forget()
+        neighbours.forget()
+
+    teardown_method = setup_method
+
+    def record(self, alert):
+        tracker._record_neptun_alert(alert, "NP-alert-x", time.time())
+        return tracker.current()["events"][-1]
+
+    def folded(self):
+        got = tracker.fold_alerts([
+            {"scope": "raion", "key": "k1", "name": "Дрогобицький район",
+             "oblast": "Львівська область", "since": ""}])
+        return got[0]
+
+    def test_it_is_drawn_over_the_province_rather_than_on_a_point(self):
+        got = self.record(self.folded())
+        assert got["shape"] is not None
+        assert got["region_wide"] is True
+
+    def test_the_mark_sits_inside_the_shape_it_draws(self):
+        got = self.record(self.folded())
+        assert tracker._shape_holds(got["shape"], got["lat"], got["lon"])
+
+    def test_the_district_is_named_on_it(self):
+        assert "Дрогобицький район" in self.record(self.folded())["summary"]
+
+    def test_without_the_fold_it_would_have_been_a_point(self):
+        # The measurement the rest of this class is contrasted against. If
+        # this ever stops holding, the fold has stopped being what fixed it.
+        got = self.record({"scope": "raion", "key": "k1",
+                           "name": "Дрогобицький район",
+                           "oblast": "Львівська область", "since": ""})
+        assert got["shape"] is None
+
+    def test_the_poll_itself_folds_them(self, monkeypatch):
+        """The wiring, not the function.
+
+        fold_alerts can be right and unreached, which is the same map as not
+        having written it.
+        """
+        monkeypatch.setattr(neptun, "threats", lambda: [])
+        monkeypatch.setattr(neptun, "alerts", lambda: [
+            {"scope": "raion", "key": "k1", "name": "Дрогобицький район",
+             "oblast": "Львівська область", "since": ""},
+            {"scope": "raion", "key": "k2", "name": "Золочівський район",
+             "oblast": "Львівська область", "since": ""}])
+        tracker.take_neptun()
+        marks = [e for e in tracker.current()["events"] if e["kind"] == "alert"]
+        assert len(marks) == 1
+        assert marks[0]["shape"] is not None
