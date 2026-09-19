@@ -2109,13 +2109,29 @@ def outlines() -> list[dict[str, Any]]:
         keep(name, shape, code, "country")
     # NEPTUN's file IS Ukraine's provinces -- that is what it is a file of --
     # so everything in it is Ukrainian by definition rather than by guess.
+    # It wins where it is there: it is the authoritative source, it is
+    # current, and it carries the RAIONS as well, which no shipped file does.
+    published = set()
     for name, shape in neptun.shapes().items():
         keep(name, shape, "ua", "region")
-    # The neighbours' provinces, from the file that ships with this app.
-    # Before the loose ones below, because these are named regions of a named
-    # country and the pass below would file the same boundary as "elsewhere"
-    # -- and the de-duplication is by identity, so whichever came first won.
+        published.add(_same_name(name))
+    # The provinces that ship with this app: the neighbours' always, and
+    # Ukraine's own when NEPTUN has not answered.
+    #
+    # Ukraine is in that file for the same reason Russia is. Its oblasts came
+    # from NEPTUN and from nowhere else, so a night when that fetch failed
+    # was a night with no Ukrainian outlines at all -- no shaded provinces,
+    # not even the pale borders -- and every alert in the country became a
+    # triangle on a point. The map was reduced to a field of overlapping
+    # labels by one file not arriving.
+    #
+    # Skipped by name where NEPTUN already supplied it, because the
+    # de-duplication below is by identity and two sources' copies of one
+    # oblast are two different objects: Ukraine would have been drawn twice,
+    # once from each.
     for name, row in neighbours.provinces().items():
+        if _same_name(name) in published:
+            continue
         keep(name, row["shape"], row["in"], "region")
     # And these are learned one at a time as warnings are drawn over them.
     # Whatever is east of the listed part of Russia, and "elsewhere" rather
@@ -2268,7 +2284,14 @@ def _record_neptun(track: dict[str, Any], now: float) -> None:
     # Their outline for the region, where this is a region rather than a
     # place. This is what finally gives a region mark its real shape without
     # a geocoding request: their alert keys index the same boundary file.
-    shape = neptun.shape_for(track["region"]) if area_only else None
+    #
+    # And the shipped copy behind it, for the same reason place_event has
+    # one: a track located to an oblast and nothing finer has no point that
+    # means anything, so the region IS the mark -- and when their boundary
+    # file cannot be fetched, taking theirs alone left it with no shape at
+    # all and drew it as a dot on a province's arithmetic centre.
+    shape = ((neptun.shape_for(track["region"])
+              or neighbours.shape_for(track["region"])) if area_only else None)
     here = places.lookup(track["region"]) if area_only else None
 
     _events.append({
@@ -2814,8 +2837,19 @@ DEMO_NEPTUN = (
 DEMO_WITH_PICTURES = "Nikopol"
 
 # The region the demo pretends it has no boundary for. See below.
-DEMO_WITHOUT_AN_OUTLINE = "Вінницька область"
-DEMO_WITHOUT_AN_OUTLINE_EN = "Vinnytsia oblast"
+# The one region the demo deliberately has no boundary for, so the offline
+# build can still reach a report located to an oblast whose outline has not
+# arrived -- the case that used to be drawn as a mark on a province's
+# arithmetic centre.
+#
+# Crimea, and not by preference. It has to be a region this app can NAME and
+# cannot SHAPE, and since Ukraine's oblasts began shipping with the app there
+# is exactly one: every ready-made dataset reachable here files Crimea under
+# Russia, so it is left out of the shipped file rather than shipped as either
+# country's claim. That makes it the only Ukrainian region whose outline is
+# still waited for, which is precisely what this constant needs.
+DEMO_WITHOUT_AN_OUTLINE = "Автономна Республіка Крим"
+DEMO_WITHOUT_AN_OUTLINE_EN = "Crimea"
 
 DEMO_SEED = [
     # kind, place, toward, course, count, summary
@@ -2838,8 +2872,8 @@ DEMO_SEED = [
     # Located to the one oblast the demo has no outline for, so the offline
     # build exercises a region-level report with no boundary -- the case that
     # used to be drawn as a point on the province's centroid.
-    ("drone", "Vinnytsia oblast", None, None, 2,
-     "Two drones over Vinnytsia oblast"),
+    ("drone", "Crimea", None, None, 2,
+     "Two drones over Crimea"),
     # A missile with a named destination, so the demo exercises a heading
     # computed between two places rather than read off a compass word.
     ("missile", "Ochakiv", "Odesa", None, 1,
@@ -3031,6 +3065,11 @@ def _demo_outline(name: str, lat: float, lon: float, half: float) -> Any:
     """
     if name == DEMO_WITHOUT_AN_OUTLINE or name == DEMO_WITHOUT_AN_OUTLINE_EN:
         return None
+    # No shipped-file fallback here, and it was measured rather than assumed:
+    # place_event consults neighbours.shape_for BEFORE it falls back to the
+    # shape this lookup returns, so for any region the file knows, whatever
+    # this hands back is never read. Adding it here looked like symmetry and
+    # was a second answer to a question already settled one layer up.
     return neptun.shape_for(name) or _demo_ring(lat, lon, half)
 
 
@@ -3146,12 +3185,16 @@ def demo() -> dict[str, Any]:
     # picture then did the wrong thing in the one build anybody can check it
     # in, while being right on the live map. Sixth time the offline build
     # could not reach a state; first time it actively misrepresented one.
-    neptun.remember_shapes({
-        name.casefold(): _demo_ring(lat, lon, places.WIDE.get(name, 1.0))
-        for name, (lat, lon) in places.UKRAINE_REGIONS.items()
-        if name != DEMO_WITHOUT_AN_OUTLINE
-    })
-    # The neighbours' own boundaries are not seeded here at all. They ship
+    # Nothing is seeded here any more, for either country.
+    #
+    # This used to hand NEPTUN's index a wobbly ring for each of Ukraine's
+    # oblasts, so the offline build had something to shade. Ukraine's real
+    # outlines ship with the app now, and a seeded ring would WIN over one --
+    # NEPTUN is consulted first, as it should be, being the authoritative and
+    # current source. So the demo would have gone on drawing its own blobs
+    # over the top of the real borders it is meant to be demonstrating.
+    #
+    # The neighbours' own boundaries are not seeded here either. They ship
     # with the app now -- real Natural Earth outlines rather than the rings
     # this function draws -- so seeding would put a second, wobblier copy of
     # every Russian province on the demo's map beside the real one.

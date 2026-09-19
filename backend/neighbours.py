@@ -28,17 +28,13 @@ way of world-atlas, and sane-topojson -- draws Crimea inside Russia. Checked
 rather than assumed: a point at Simferopol falls inside Russia and outside
 Ukraine in both. That is a live territorial dispute and the most emphatic
 thing on this picture is a red line, so this app ships neither country's
-outline rather than shipping that claim in either direction. Ukraine's shape
-on the picture is its own oblasts, which come from NEPTUN; Russia's near side
-is the provinces below.
+outline rather than shipping that claim in either direction. Both countries
+are drawn by their provinces instead, which is the file below.
 
-What is left out with them is the four countries' own provinces. They were the
-bulk half of the queries, they were never asked for -- the request was to see
-the countries and their borders -- and with each country drawn as a named,
-filled area the subdivisions inside it earn very little. Russia's western
-oblasts stay, because nothing else draws that ground until a warning is
-reported over it, and fourteen occasional lookups is ordinary use rather than
-bulk.
+What is left out is the four bordering countries' own provinces. They were
+never asked for -- the request was to see the countries and their borders --
+and with each country drawn as a named, filled area the subdivisions inside it
+earn very little.
 """
 
 from __future__ import annotations
@@ -89,17 +85,22 @@ def forget() -> None:
 
 # The provinces themselves, with their boundaries.
 #
-# This is what makes a Russian warning look like a Ukrainian one. Ukraine's
-# warnings shade their oblast because NEPTUN publish the boundaries; Russia's
-# had none, so the same warning came out as a triangle on a province's
-# arithmetic centre -- the difference between the two halves of the map was
-# never about the warnings, it was about whether an outline existed.
+# This is what makes a Russian warning look like a Ukrainian one, and what
+# makes a Ukrainian one look like itself when NEPTUN is unreachable. A warning
+# shades its province because an outline for that province exists; without one
+# the same warning came out as a triangle on a province's arithmetic centre.
+# The difference between the two halves of the map was never about the
+# warnings, it was about whether an outline existed.
+#
+# NEPTUN still wins for Ukraine where it answers -- it is live, and it carries
+# raions, which no shipped file here does. This is what is drawn when it does
+# not answer, and the only thing drawn east of the border.
 #
 # They used to be fetched, one name at a time, which is the bulk querying the
 # note above describes and which never arrived. Natural Earth publishes them
-# and Natural Earth is public domain: fifty regions, the ones the built-in
-# table can name, thinned to about two hundred and sixty points each and
-# rounded to four decimal places. 230 KB, no network, right on the first poll.
+# and Natural Earth is public domain: seventy-four regions, the ones the
+# built-in table can name, thinned to about two hundred and sixty points each
+# and rounded to four decimal places. 340 KB, no network, on the first poll.
 #
 # Checked rather than trusted: every one of them contains its own capital.
 PROVINCES_FILE = pathlib.Path(__file__).with_name("data") / "provinces.json"

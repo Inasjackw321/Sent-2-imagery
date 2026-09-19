@@ -584,13 +584,20 @@ class TestTheAreaAnAlertCovers:
         for event in tracker.demo()["events"]:
             assert event["area_km"] > 0, event["place"]
 
-    def test_the_demo_has_both_a_wide_alert_and_a_narrow_strike(self):
-        # Otherwise the build with no network draws one size and hides
-        # whether the other is right.
+    def test_the_demo_gives_every_warning_the_reach_of_a_province(self):
+        """It used to demand two sizes, and there are no longer two.
+
+        A warning covers the province it was reported in -- asked for, for
+        both sides of the border -- so every one of them reaches as far as an
+        oblast does. What is worth holding is that the reach is a province's
+        rather than a town's, which is the number the drawing and the
+        stand-down radius both read.
+        """
         sizes = [e["area_km"] for e in tracker.demo()["events"]
                  if e["motion"] == "still"]
         assert len(sizes) >= 2
-        assert max(sizes) > min(sizes)
+        assert min(sizes) >= 100, sizes
+        assert max(sizes) <= 400, sizes
 
 
 class TestRegionWideAlerts:
@@ -618,15 +625,29 @@ class TestRegionWideAlerts:
         assert got["region_wide"] is True
         assert got["shape"] == self.RING
 
-    def test_a_warning_over_a_town_does_not(self):
-        # A town under a warning is a circle. Drawing the municipal boundary
-        # would say the warning stops at the council's border, which is not
-        # what an air-raid warning means.
+    def test_a_warning_over_a_town_is_never_the_town_s_own_boundary(self):
+        """Drawing the municipal boundary would say the warning stops at the
+        council's border, which is not what an air-raid warning means.
+
+        It used to stay a circle. It now covers the PROVINCE the town is in
+        -- asked for, first for Russia and then for both sides alike -- and
+        the thing this test has always been about is unchanged: whatever is
+        drawn, it is not the outline the lookup returned for the town.
+        """
+        town = self.looks_up(kind="city", category="place")
         got = tracker.place_event(one(kind="alert", place="Beirut"), "ua",
-                                lookup=self.looks_up(kind="city", category="place"))
-        assert got["region_wide"] is False
-        assert got["shape"] is None
+                                  lookup=town)
+        assert got["shape"] != self.RING
         assert got["area_km"] > 0
+        # And where no province is known for it, it stays a circle.
+        tracker.reset()
+        away = tracker.place_event(
+            one(kind="alert", place="Beirut"), "ua",
+            lookup=lambda name, countries="": {
+                "lat": 33.9, "lon": 35.5, "name": name, "kind": "city",
+                "category": "place", "shape": self.RING})
+        assert away["region_wide"] is False
+        assert away["shape"] is None
 
     def test_a_drone_located_only_to_a_region_shows_that_region(self):
         # Not because the region is under anything -- it is not -- but because
@@ -673,8 +694,17 @@ class TestRegionWideAlerts:
         Region-wide now, outline or not; the drawing waits for the boundary
         and hasArea() asks about that separately.
         """
-        got = tracker.place_event(one(kind="alert", place="Kyivia oblast"), "ua",
-                                lookup=self.looks_up(shape=None))
+        # Placed where no province this app ships an outline for reaches, so
+        # the state is actually the one being tested. Since Ukraine's oblasts
+        # began shipping with the app, a point inside one of them has a
+        # boundary immediately -- which is the improvement, and would have
+        # made this test pass for the wrong reason.
+        got = tracker.place_event(
+            one(kind="alert", place="Faraway oblast"), "ua",
+            lookup=lambda name, countries="": {
+                "lat": 9.0, "lon": 9.0, "name": name,
+                "kind": "administrative", "category": "boundary",
+                "shape": None})
         assert got["region_wide"] is True
         assert got["region_scope"] == "covers"
         assert got["shape"] is None
@@ -702,16 +732,22 @@ class TestRegionWideAlerts:
         scopes = {e.get("region_scope") for e in tracker.demo()["events"]}
         assert {"covers", "located"} <= scopes
 
-    def test_the_demo_shows_a_region_alert_beside_a_town_one(self):
-        # Otherwise the build with no network only draws circles, and whether
-        # a boundary renders at all cannot be checked.
+    def test_the_demo_draws_its_warnings_as_regions(self):
+        """Otherwise the build with no network only draws circles, and
+        whether a boundary renders at all cannot be checked.
+
+        It used to demand a narrow one beside them as well. That was right
+        when a warning reported at a town stayed a circle; a warning now
+        covers the province the town is in, on both sides of the border
+        alike, so a narrow one is reachable only where no province is known
+        -- which is not a state the demo has any reason to be in.
+        """
         alerts = [e for e in tracker.demo()["events"] if e["kind"] == "alert"]
         assert len(alerts) >= 2
-        assert any(e["region_wide"] for e in alerts)
-        assert any(not e["region_wide"] for e in alerts)
+        assert all(e["region_wide"] for e in alerts), [
+            e["place_match"] for e in alerts if not e["region_wide"]]
         for event in alerts:
-            if event["region_wide"]:
-                assert event["shape"]["type"] in ("Polygon", "MultiPolygon")
+            assert event["shape"]["type"] in ("Polygon", "MultiPolygon")
 
 
 class TestEveryKindIsDrawable:
@@ -4082,6 +4118,16 @@ class TestTheNeighboursAreOnTheMapToo:
             "Ростовская область": (47.2357, 39.7015),
             "Республика Татарстан": (55.7963, 49.1088),
             "Гомельская область": (52.4345, 30.9754),
+            # Ukraine's too, and not as an afterthought: swapping two
+            # oblasts' geometry under the right names shades the wrong
+            # province, looks entirely plausible, and was caught by nothing
+            # until these were listed.
+            "Київська область": (50.0880, 30.5000),
+            "Львівська область": (49.8397, 24.0297),
+            "Харківська область": (49.9935, 36.2304),
+            "Одеська область": (46.4825, 30.7233),
+            "Сумська область": (50.9077, 34.7981),
+            "Закарпатська область": (48.6208, 22.2879),
         }
         for name, (lat, lon) in capitals.items():
             holds = [n for n, row in neighbours.provinces().items()
@@ -4092,7 +4138,11 @@ class TestTheNeighboursAreOnTheMapToo:
         whose = {n: row["in"] for n, row in neighbours.provinces().items()}
         assert whose["Курская область"] == "ru"
         assert whose["Брестская область"] == "by"
-        assert set(whose.values()) == {"ru", "by"}
+        # Ukraine's own are in the file too now. Its oblasts came from NEPTUN
+        # and from nowhere else, so a night when that fetch failed left the
+        # country with no outlines at all -- see the class note.
+        assert whose["Київська область"] == "ua"
+        assert set(whose.values()) == {"ru", "by", "ua"}
 
     def test_a_missing_file_loses_the_shading_and_nothing_else(self):
         was = neighbours.PROVINCES_FILE
@@ -4115,6 +4165,75 @@ class TestTheNeighboursAreOnTheMapToo:
             {"kind": "alert", "place": place, "toward": None, "course": None,
              "count": 1, "summary": f"Air alert — {place}", "region": None},
             "ru,ua")
+
+    def test_ukraine_survives_neptun_being_down(self):
+        """The night the whole map turned into a field of labels.
+
+        Ukraine's oblasts came from NEPTUN and from nowhere else, so when
+        that fetch failed the country had no outlines at all -- not a shaded
+        province, not even the pale borders -- and every alert in it became a
+        triangle on a point.
+
+        Nothing here reaches anything: the gazetteer is stubbed and NEPTUN
+        has published nothing.
+        """
+        assert neptun.shapes() == {}
+        got = self.warning("Київська область")
+        assert got["shape"] is not None
+        assert got["region_wide"] is True
+
+    def test_but_neptun_still_wins_where_it_has_answered(self):
+        """It is the authoritative source, it is current, and it carries the
+        RAIONS, which no shipped file does.
+
+        The shipped copy is a floor, not a replacement.
+        """
+        theirs = {"type": "Polygon", "coordinates": [
+            [[30.0, 50.0], [31.0, 50.0], [31.0, 51.0], [30.0, 50.0]]]}
+        neptun.remember_shapes({"київська область": theirs})
+        assert self.warning("Київська область")["shape"] == theirs
+
+    def test_and_ukraine_is_not_drawn_twice(self):
+        """Two sources' copies of one oblast are two different objects.
+
+        The de-duplication further down is by identity, so without a check on
+        the NAME the country would be drawn once from NEPTUN and again from
+        the file -- every border doubled.
+        """
+        theirs = {"type": "Polygon", "coordinates": [
+            [[30.0, 50.0], [31.0, 50.0], [31.0, 51.0], [30.0, 50.0]]]}
+        neptun.remember_shapes({"київська область": theirs})
+        names = [o["name"].casefold() for o in tracker.outlines()]
+        assert names.count("київська область") == 1
+
+    def test_the_demo_uses_the_real_outlines_for_ukraine_too(self):
+        """It used to seed a wobbly ring per oblast so it had something to
+        shade. Those rings would now WIN over the real boundaries -- NEPTUN's
+        index is consulted first, as it should be -- so the demo would go on
+        drawing blobs over the borders it exists to demonstrate.
+        """
+        got = tracker.demo()
+        shaped = {e["place_match"]: e["shape"] for e in got["events"]
+                  if e.get("shape") and e.get("place_match")}
+        ukrainian = {n: sh for n, sh in shaped.items()
+                     if n in places.UKRAINE_REGIONS}
+        assert ukrainian, sorted(shaped)
+        for name, shape in ukrainian.items():
+            real = neighbours.shape_for(name)
+            if real:
+                assert shape == real, f"{name} is drawn as something else"
+
+    def test_crimea_is_shipped_by_neither_side(self):
+        """Every ready-made dataset reachable here files it under Russia.
+
+        So it is left out rather than shipped as either country's claim --
+        which leaves it the one Ukrainian region whose outline is still
+        waited for, and the demo uses it for exactly that.
+        """
+        assert neighbours.shape_for("Автономна Республіка Крим") is None
+        assert "ua" not in {row["in"] for name, row
+                            in neighbours.provinces().items()
+                            if "Крим" in name}
 
     def test_a_russian_warning_shades_its_province_at_once(self):
         got = self.warning("Белгородская область")
