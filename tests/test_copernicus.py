@@ -552,3 +552,206 @@ class TestReadingACadence:
         # one minute, would be worse than not reading it.
         assert mtg.period_of("a/b/P1Y") is None
         assert mtg.period_of("a/b/P3M") is None
+
+
+class TestHoldingTheTiles:
+    """Eight hours of a ten-minute satellite, fetched once.
+
+    The browser used to ask EUMETSAT for these directly, which meant every
+    loop and every viewer re-downloaded the same forty-eight frames. It also
+    meant every frame was cross-origin -- and a cross-origin image taints a
+    canvas, so the exported picture and the recorded video could not read
+    their own pixels back. One hop fixes both.
+    """
+
+    def setup_method(self):
+        copernicus.forget_tiles()
+
+    teardown_method = setup_method
+
+    def test_a_tile_is_kept_and_found_again(self):
+        copernicus.keep_tile("k", b"png", "image/png")
+        assert copernicus.cached_tile("k") == (b"png", "image/png")
+
+    def test_a_tile_nobody_kept_is_not_invented(self):
+        assert copernicus.cached_tile("k") is None
+
+    def test_the_same_request_written_differently_is_one_tile(self):
+        # Leaflet spells these one way and a hand-written URL another, and WMS
+        # does not care -- so two spellings of one picture must not become two
+        # entries, or the cache holds every tile twice.
+        one = copernicus.tile_params({"LAYERS": "x", "BBOX": "1,2,3,4"})
+        two = copernicus.tile_params({"layers": "x", "bbox": "1,2,3,4"})
+        assert copernicus.tile_key(one) == copernicus.tile_key(two)
+
+    def test_and_so_is_the_same_request_in_a_different_order(self):
+        one = copernicus.tile_key({"a": "1", "b": "2"})
+        two = copernicus.tile_key({"b": "2", "a": "1"})
+        assert one == two
+
+    def test_a_different_time_is_a_different_tile(self):
+        # The whole point of the cache is that frames differ by time.
+        one = copernicus.tile_key(copernicus.tile_params(
+            {"layers": "x", "time": "2026-09-20T18:00:00Z"}))
+        two = copernicus.tile_key(copernicus.tile_params(
+            {"layers": "x", "time": "2026-09-20T17:50:00Z"}))
+        assert one != two
+
+    def test_only_the_parameters_wms_knows_are_forwarded(self):
+        """This endpoint sends requests to somebody else's server on behalf of
+        whoever calls it, so what it forwards is an allow-list."""
+        got = copernicus.tile_params({
+            "layers": "x", "bbox": "1,2,3,4", "time": "t",
+            "callback": "evil", "authorization": "secret", "": "x"})
+        assert set(got) == {"layers", "bbox", "time"}
+
+    def test_an_old_tile_is_let_go(self):
+        copernicus.keep_tile("k", b"png", "image/png", now=0)
+        assert copernicus.cached_tile("k", now=copernicus.TILE_CACHE_SECONDS + 1) \
+            is None
+
+    def test_a_fresh_one_is_not(self):
+        copernicus.keep_tile("k", b"png", "image/png", now=0)
+        assert copernicus.cached_tile("k", now=copernicus.TILE_CACHE_SECONDS - 1) \
+            is not None
+
+    def test_the_cache_is_bounded(self):
+        big = b"x" * (copernicus.TILE_CACHE_BYTES // 4)
+        for n in range(8):
+            copernicus.keep_tile(f"k{n}", big, "image/png")
+        held = copernicus.tiles_held()
+        assert held["bytes"] <= copernicus.TILE_CACHE_BYTES
+        assert held["tiles"] < 8
+
+    def test_and_it_drops_what_nobody_has_asked_for(self):
+        # Least recently USED, not least recently stored: the frames being
+        # looped over have to survive a walk over some other view.
+        big = b"x" * (copernicus.TILE_CACHE_BYTES // 3)
+        copernicus.keep_tile("keep", big, "image/png")
+        copernicus.keep_tile("b", big, "image/png")
+        copernicus.cached_tile("keep")          # used, so it goes to the back
+        copernicus.keep_tile("c", big, "image/png")
+        copernicus.keep_tile("d", big, "image/png")
+        assert copernicus.cached_tile("keep") is not None
+        assert copernicus.cached_tile("b") is None
+
+    def test_a_tile_bigger_than_the_whole_cache_is_not_held(self):
+        # Held, it would evict everything and then not fit.
+        copernicus.keep_tile("small", b"png", "image/png")
+        copernicus.keep_tile("huge", b"x" * (copernicus.TILE_CACHE_BYTES + 1),
+                             "image/png")
+        assert copernicus.cached_tile("huge") is None
+        assert copernicus.cached_tile("small") is not None
+
+    def test_a_request_naming_no_layer_is_refused(self):
+        with pytest.raises(copernicus.CopernicusError, match="name a layer"):
+            copernicus.tile({"bbox": "1,2,3,4"})
+
+    def test_the_browser_is_pointed_at_this_app_rather_than_at_eumetsat(self):
+        """The load-bearing one.
+
+        A tile from another origin taints any canvas it is drawn into, and a
+        tainted canvas will not hand its pixels back -- so the picture export
+        and the video both stop working the moment this points elsewhere.
+        """
+        assert copernicus.demo()["wms"].startswith("/api/")
+        assert not copernicus.demo()["wms"].startswith("http")
+
+
+class TestFetchingATile:
+    """The hop itself, against a stand-in for EUMETSAT."""
+
+    def setup_method(self):
+        copernicus.forget_tiles()
+
+    teardown_method = setup_method
+
+    class Answer:
+        def __init__(self, body=b"PNGDATA", kind="image/png", code=200):
+            self.content = body
+            self.status_code = code
+            self.headers = {"Content-Type": kind}
+            self.ok = code == 200
+
+    def test_a_tile_is_fetched_and_then_remembered(self, monkeypatch):
+        asked = []
+
+        def once(url, params=None, **kw):
+            asked.append(params)
+            return self.Answer()
+
+        monkeypatch.setattr(copernicus.requests, "get", once)
+        first = copernicus.tile({"layers": "x", "bbox": "1,2,3,4"})
+        second = copernicus.tile({"layers": "x", "bbox": "1,2,3,4"})
+        assert first == (b"PNGDATA", "image/png", False)
+        assert second == (b"PNGDATA", "image/png", True)
+        assert len(asked) == 1, "the second ask went back out to EUMETSAT"
+
+    def test_what_is_forwarded_is_what_was_asked_for(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda url, params=None, **kw: (
+                                seen.update(params or {}), self.Answer())[1])
+        copernicus.tile({"LAYERS": "x", "TIME": "t", "nonsense": "no"})
+        assert seen == {"layers": "x", "time": "t"}
+
+    def test_an_error_page_is_not_cached_as_a_tile(self, monkeypatch):
+        # A WMS answers an error as XML with a 200. Held, that would be a
+        # broken tile served for twelve hours.
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda *a, **kw: self.Answer(b"<error/>", "text/xml"))
+        with pytest.raises(copernicus.CopernicusError, match="rather than an image"):
+            copernicus.tile({"layers": "x"})
+        assert copernicus.tiles_held()["tiles"] == 0
+
+    def test_a_refusal_is_said_rather_than_drawn(self, monkeypatch):
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda *a, **kw: self.Answer(code=503))
+        with pytest.raises(copernicus.CopernicusError, match="503"):
+            copernicus.tile({"layers": "x"})
+
+    def test_and_so_is_a_service_that_cannot_be_reached(self, monkeypatch):
+        def refuse(*a, **kw):
+            raise copernicus.requests.RequestException("no route")
+
+        monkeypatch.setattr(copernicus.requests, "get", refuse)
+        with pytest.raises(copernicus.CopernicusError, match="could not be reached"):
+            copernicus.tile({"layers": "x"})
+
+
+class TestEightHoursInHand:
+    """How much history a staring satellite offers, and why that number.
+
+    Asked for: the last eight hours, downloaded ahead of time so the loop
+    runs smooth. The number is the feature -- four hours is a different
+    answer -- and it is the product of two constants, so it is pinned as the
+    product rather than as either one.
+    """
+
+    def test_the_window_is_eight_hours(self):
+        step = copernicus.ASSUMED_STEP_MINUTES["mtg"]
+        assert copernicus.FRAMES_OFFERED * step / 60 == 8
+
+    def test_and_that_is_what_a_layer_actually_carries(self):
+        got = copernicus.sort_layers(capabilities(
+            layer("mtg_fd:rgb_truecolour", title="MTG FCI True Colour",
+                  extent=iso(0.5))), now=NOW)
+        frames = [f for f in got["families"]
+                  if f["key"] == "mtg"][0]["layers"][0]["frames"]
+        first = dt.datetime.fromisoformat(frames[0]["time"].replace("Z", "+00:00"))
+        last = dt.datetime.fromisoformat(frames[-1]["time"].replace("Z", "+00:00"))
+        # Forty-eight frames span forty-seven gaps, so the span is eight hours
+        # less one step -- stated exactly rather than approximately.
+        assert last - first == dt.timedelta(hours=8) - dt.timedelta(
+            minutes=copernicus.ASSUMED_STEP_MINUTES["mtg"])
+
+    def test_a_declared_cadence_still_wins_over_the_assumed_one(self):
+        # The window is a count of frames, so a service publishing every
+        # fifteen minutes offers twelve hours rather than eight. That is the
+        # right trade: the frames are what the animation is made of.
+        got = copernicus.sort_layers(capabilities(
+            layer("mtg_fd:rgb_truecolour", title="MTG FCI True Colour",
+                  extent=f"{iso(30)}/{iso(0.5)}/PT15M")), now=NOW)
+        entry = [f for f in got["families"] if f["key"] == "mtg"][0]["layers"][0]
+        assert entry["step_minutes"] == 15
+        assert len(entry["frames"]) == copernicus.FRAMES_OFFERED

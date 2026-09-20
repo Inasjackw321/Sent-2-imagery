@@ -266,3 +266,102 @@ test('the panel ends at its own width', () => {
     .replace(/\/\*[\s\S]*?\*\//g, '');
   assert.match(block, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
 });
+
+// ── Eight hours in hand, and a video of them ───────────────────
+
+test('the frames cover the eight hours that were asked for', () => {
+  // Read off the backend's own constant through the source, because the
+  // number is the feature: four hours is not eight.
+  const py = readFileSync(
+    new URL('../backend/copernicus.py', import.meta.url), 'utf8');
+  const many = /^FRAMES_OFFERED = (\d+)$/m.exec(py);
+  const step = /"mtg": (\d+)/.exec(py);
+  assert.ok(many && step, 'both constants should be findable');
+  assert.equal((Number(many[1]) * Number(step[1])) / 60, 8);
+});
+
+test('the tiles come through this app rather than from EUMETSAT', () => {
+  // The load-bearing line for both features. Cross-origin tiles cannot be
+  // cached here and taint every canvas they are drawn into, so a recorded
+  // video would be unreadable and the picture export would break with it.
+  const py = readFileSync(
+    new URL('../backend/copernicus.py', import.meta.url), 'utf8');
+  assert.match(py, /^TILES = "\/api\//m);
+  assert.doesNotMatch(py, /"wms": mtg\.WMS/);
+});
+
+test('the frames are walked one at a time, not all at once', () => {
+  // Forty-eight frames of a dozen tiles is six hundred requests. Fired
+  // together they compete with the frame on screen and hammer a free service.
+  const at = SOURCE.indexOf('async function warm()');
+  assert.ok(at > 0);
+  assert.match(SOURCE.slice(at, at + 900), /for \(const frame of frames\)/);
+  assert.match(SOURCE.slice(at, at + 900), /await oneFrame\(frame\)/);
+});
+
+test('and the walk can be stopped', () => {
+  // It outlives a product change and a panel being switched off, so it has to
+  // be interruptible or two walks run over each other.
+  //
+  // Both guards, counted. One of them is enough for a loose match and is not
+  // enough for the feature: the walk has to notice a stop set while it was
+  // waiting on a frame as well as one set before it started.
+  const at = SOURCE.indexOf('async function warm()');
+  const block = SOURCE.slice(at, at + 1100);
+  assert.match(block, /if \(run\.stop \|\| !enabled\) break;/);
+  assert.match(block, /if \(run\.stop\) break;/);
+  assert.match(block, /if \(warming\) warming\.stop = true;/);
+  assert.match(SOURCE, /function stopWarming\(\)/);
+});
+
+test('one frame that never answers does not stall the walk behind it', () => {
+  const at = SOURCE.indexOf('function oneFrame');
+  assert.match(SOURCE.slice(at, at + 900), /setTimeout\(finish, WARM_WAIT_MS\)/);
+});
+
+test('the walk reuses one hidden layer rather than one per frame', () => {
+  // Measured: adding and removing a layer per frame leaves tiles in flight
+  // whose layer has gone, and Leaflet then reaches for a map that is not
+  // there -- twenty-four "_fadeAnimated of null" errors per walk.
+  assert.match(SOURCE, /let oven = null;/);
+  const at = SOURCE.indexOf('function oneFrame');
+  assert.match(SOURCE.slice(at, at + 900), /layer\.setParams\(\{ time: frame\.time \}\)/);
+  assert.doesNotMatch(SOURCE.slice(at, at + 900), /addTo\(map\)/);
+});
+
+test('a frame is drawn into the video while its tiles are still on the page', () => {
+  // A detached <img> still draws, but its bounding box collapses to nothing
+  // and every tile lands in the top-left corner.
+  const at = SOURCE.indexOf('function oneFrame');
+  const block = SOURCE.slice(at, at + 1200);
+  assert.ok(block.indexOf('done([') > 0);
+  assert.ok(!/remove\(\)/.test(block), 'the layer must not be removed before the draw');
+});
+
+test('the recording is offered only where there is something to animate', () => {
+  // A week of orbit strips played as a video is a slideshow of seven days.
+  const at = SOURCE.indexOf('id: \'copRec\'');
+  assert.ok(at > 0);
+  assert.match(SOURCE.slice(at - 260, at), /layer\.animates/);
+});
+
+test('and it says so rather than failing where the browser cannot record', () => {
+  assert.match(SOURCE, /if \(!window\.MediaRecorder\)/);
+  assert.match(SOURCE, /cannot record video/);
+});
+
+test('the video does not draw the basemap', () => {
+  // It comes from somebody else's tile server, and one cross-origin image
+  // taints the canvas and makes the whole recording unreadable.
+  const at = SOURCE.indexOf('async function filmFrame');
+  const block = SOURCE.slice(at, at + 1400);
+  assert.match(block, /drawFilmBorders/);
+  assert.doesNotMatch(block, /basemap|tileLayer\(/);
+});
+
+test('every frame of the video is stamped with its own time', () => {
+  // Without it the video is a loop of pictures with no way to say when any of
+  // them was, which is the first question anybody asks of one.
+  const at = SOURCE.indexOf('async function filmFrame');
+  assert.match(SOURCE.slice(at, at + 1400), /stampFilm\(ctx, canvas, frame\)/);
+});

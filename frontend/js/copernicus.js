@@ -57,6 +57,12 @@ export function initCopernicus(leafletMap) {
   // bar being rebuilt -- and passive: false, because a wheel handler that
   // cannot preventDefault scrolls the page instead of the times.
   $('#copBar')?.addEventListener('wheel', onWheel, { passive: false });
+  // Panning or zooming makes every frame already fetched the wrong tiles, so
+  // the walk starts again over the new view. On moveend rather than on move,
+  // or a drag would start forty-eight walks across one gesture.
+  map.on('moveend', () => {
+    if (enabled && chosen?.layer?.animates) warm();
+  });
   buildDock();
 }
 
@@ -126,6 +132,10 @@ async function load() {
   }
   buildDock();
   show();
+  // Ahead of being asked for, so the loop does not stutter through its first
+  // pass. Only where there is something to animate: a week of orbit strips is
+  // seven pictures nobody is going to play.
+  if (enabled && chosen?.layer?.animates) warm();
 }
 
 /** Which frame is showing: the newest unless scrubbed back. */
@@ -242,7 +252,14 @@ function buildDock() {
             .map((layer) => el('button', {
               class: `cop-layer${layer.id === chosen?.layer?.id ? ' is-on' : ''}`,
               title: `${layer.title} — ${layer.id}`,
-              onclick: () => { chosen = { family, layer }; pause(); buildDock(); show(); },
+              onclick: () => {
+        chosen = { family, layer };
+        pause();
+        stopWarming();
+        buildDock();
+        show();
+        if (layer.animates) warm();
+      },
             }, shortName(layer)))))),
       listed < held || showAll
         ? el('button', {
@@ -326,6 +343,16 @@ function buildBar() {
       title: 'The newest frame, and it stays the newest frame',
       onclick: () => { pause(); frameAt = null; retime(); refreshBar(); },
     }, '⏭'),
+    // How much of the eight hours is in hand. Shown only while it is still
+    // arriving: a bar that reads "48/48" forever is furniture.
+    el('span', { class: 'cop-warm', id: 'copWarm' }, warmSaid()),
+    layer.animates
+      ? el('button', {
+        class: `cop-rec${filming ? ' is-on' : ''}`, id: 'copRec',
+        title: filming ? 'Stop and save' : 'Record the loop as a video',
+        onclick: () => (filming ? stopFilm() : startFilm()),
+      }, filming ? '■' : '●')
+      : null,
   ].filter((node) => node != null));
 }
 
@@ -356,6 +383,12 @@ export function clockLabel(layer, frame) {
   return layer?.animates ? (frame?.label ?? '') : 'all day';
 }
 
+/** "12/48" while the frames are still arriving, and nothing once they are. */
+function warmSaid() {
+  if (!warmOf || warmed >= warmOf) return '';
+  return `${warmed}/${warmOf}`;
+}
+
 function refreshBar() {
   const layer = chosen?.layer;
   const frames = layer?.frames ?? [];
@@ -366,6 +399,14 @@ function refreshBar() {
   if (date) date.textContent = dateLabel(now);
   if (time) time.textContent = clockLabel(layer, now);
   $('#copLatest')?.classList.toggle('is-on', frameAt == null);
+  const warmNode = $('#copWarm');
+  if (warmNode) warmNode.textContent = warmSaid();
+  const rec = $('#copRec');
+  if (rec) {
+    rec.textContent = filming ? '■' : '●';
+    rec.classList.toggle('is-on', Boolean(filming));
+    rec.title = filming ? 'Stop and save' : 'Record the loop as a video';
+  }
   const play = $('#copPlay');
   if (play) {
     play.textContent = playing ? '❚❚' : '▶';
@@ -373,6 +414,281 @@ function refreshBar() {
     play.title = playing ? 'Stop' : 'Play the last few hours, on a loop';
   }
   paint();
+}
+
+// ── Fetching the frames before they are wanted ─────────────────
+//
+// Asked for: have the last eight hours in hand so it runs smooth. A loop that
+// fetches each frame as it reaches it stutters on the first pass through --
+// worse over a slow connection, and worst exactly when somebody is watching
+// something happen.
+//
+// So the frames are walked once, ahead of time, one at a time. One at a time
+// rather than all at once on purpose: forty-eight frames of a dozen tiles is
+// six hundred requests, and firing those together would compete with the
+// frame actually on screen and hammer a free service. Sequential is polite,
+// bounded, and easy to stop.
+//
+// Each frame is drawn into its own layer at zero opacity and removed once it
+// has loaded. Removing it does not lose anything: the tiles are in the
+// browser's cache and in this app's own cache behind it, so when the loop
+// reaches that frame the pictures are already there.
+
+let warming = null;      // the run in progress, so a new one can cancel it
+let warmed = 0;          // how many frames of the current layer are in hand
+let warmOf = 0;
+
+/** Walk the frames, fetching each one, until they are all in hand. */
+async function warm() {
+  const layer = chosen?.layer;
+  const frames = layer?.frames ?? [];
+  if (!map || !enabled || !catalogue || frames.length < 2) return;
+  // Whatever was walking is told to stop before this one starts. Two walks
+  // over one view is twice the requests for the same tiles.
+  if (warming) warming.stop = true;
+  const run = { id: layer.id, stop: false };
+  warming = run;
+  warmed = 0;
+  warmOf = frames.length;
+  refreshBar();
+
+  for (const frame of frames) {
+    if (run.stop || !enabled) break;
+    // eslint-disable-next-line no-await-in-loop
+    await oneFrame(frame);
+    if (run.stop) break;
+    warmed += 1;
+    refreshBar();
+  }
+  if (warming === run) warming = null;
+  if (!filming) coolOven();
+  refreshBar();
+}
+
+/** The hidden layer the walk and the recorder both fetch through.
+ *
+ * ONE layer, retimed, rather than one per frame. Adding and removing
+ * forty-eight layers leaves tiles in flight whose layer has gone, and when
+ * one of those lands Leaflet reaches for a map that is no longer there --
+ * measured: twenty-four "_fadeAnimated of null" errors per walk, one per
+ * frame. Retiming has nothing to orphan.
+ */
+let oven = null;
+
+function heatOven() {
+  if (oven || !map || !catalogue || !chosen) return oven;
+  oven = L.tileLayer.wms(catalogue.wms, {
+    layers: chosen.layer.id,
+    format: 'image/png',
+    transparent: true,
+    version: '1.3.0',
+    pane: 'copernicus',
+    opacity: 0,
+  });
+  oven.addTo(map);
+  return oven;
+}
+
+function coolOven() {
+  oven?.remove();
+  oven = null;
+}
+
+/** Fetch one frame invisibly, and hand back its loaded tile images. */
+function oneFrame(frame) {
+  return new Promise((done) => {
+    const layer = heatOven();
+    if (!layer) { done([]); return; }
+    let settled = false;
+    const bell = setTimeout(finish, WARM_WAIT_MS);
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(bell);
+      layer.off('load', finish);
+      // Handed over while the layer is still on the page. A detached <img>
+      // still draws, but its bounding box collapses to nothing and every
+      // tile would land in the top-left corner.
+      done([...(layer._container?.querySelectorAll('img') ?? [])]);
+    }
+    layer.on('load', finish);
+    try {
+      layer.setParams({ time: frame.time });
+    } catch {
+      finish();
+    }
+  });
+}
+
+/** How long to wait on one frame before moving to the next. */
+const WARM_WAIT_MS = 8000;
+
+/** Stop any walk in progress. */
+function stopWarming() {
+  if (warming) warming.stop = true;
+  warming = null;
+  warmed = 0;
+  warmOf = 0;
+  if (!filming) coolOven();
+}
+
+// ── Recording the loop ─────────────────────────────────────────
+//
+// A video of the eight hours, made from the same frames the loop plays.
+//
+// This is only possible because the tiles come through this app now. A canvas
+// with a cross-origin image drawn into it is tainted, and a tainted canvas
+// refuses to hand back its pixels -- captureStream included. Fetched straight
+// from EUMETSAT, every one of these frames would poison the recording.
+//
+// What goes in it: the satellite, the borders, and the time. NOT the basemap,
+// which comes from somebody else's tile server and would taint the canvas
+// after all -- so the coastlines in the video are the satellite's own, which
+// at true colour is most of what a basemap was drawing anyway.
+
+// How long each satellite frame is held in the video. Slower than the live
+// loop: a video is watched rather than glanced at, and a front crossing the
+// country at eight frames a second is a flicker.
+const FILM_HOLD_MS = 260;
+const FILM_FPS = 25;
+
+let filming = null;
+
+function filmType() {
+  for (const kind of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8',
+                      'video/webm', 'video/mp4']) {
+    if (window.MediaRecorder?.isTypeSupported?.(kind)) return kind;
+  }
+  return '';
+}
+
+async function startFilm() {
+  const layer = chosen?.layer;
+  const frames = layer?.frames ?? [];
+  if (filming || !map || frames.length < 2) return;
+  if (!window.MediaRecorder) {
+    problem = 'This browser cannot record video.';
+    paint();
+    return;
+  }
+  pause();
+
+  const box = map.getContainer().getBoundingClientRect();
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(box.width);
+  canvas.height = Math.round(box.height);
+  const ctx = canvas.getContext('2d');
+  const chunks = [];
+  const kind = filmType();
+  const rec = new MediaRecorder(canvas.captureStream(FILM_FPS),
+                                kind ? { mimeType: kind } : undefined);
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  const done = new Promise((ready) => { rec.onstop = ready; });
+  filming = { stop: false, rec };
+  refreshBar();
+  rec.start();
+
+  const outlines = await bordersForFilm();
+  for (const frame of frames) {
+    if (filming?.stop) break;
+    // eslint-disable-next-line no-await-in-loop
+    await filmFrame(ctx, canvas, frame, outlines, box);
+  }
+  rec.stop();
+  await done;
+  filming = null;
+  if (!warming) coolOven();
+  refreshBar();
+  if (chunks.length) {
+    save(new Blob(chunks, { type: kind || 'video/webm' }), layer, frames);
+  }
+}
+
+function stopFilm() {
+  if (filming) filming.stop = true;
+}
+
+/** Draw one frame of the video and hold it for its share of the running time. */
+async function filmFrame(ctx, canvas, frame, outlines, box) {
+  const tiles = await oneFrame(frame);
+  ctx.fillStyle = '#05070b';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (const img of tiles) {
+    const at = img.getBoundingClientRect();
+    if (!img.complete || !img.naturalWidth) continue;
+    try {
+      ctx.drawImage(img, at.left - box.left, at.top - box.top,
+                    at.width, at.height);
+    } catch { /* one tile that will not draw is not a reason to lose the film */ }
+  }
+  drawFilmBorders(ctx, outlines);
+  stampFilm(ctx, canvas, frame);
+  await held(FILM_HOLD_MS);
+}
+
+async function bordersForFilm() {
+  try {
+    const got = await api.trackerOutlines();
+    return (got.outlines ?? []).filter((o) => o.level === 'country');
+  } catch {
+    // The satellite is the subject; borders are an aid. A video without them
+    // is worth more than no video.
+    return [];
+  }
+}
+
+function drawFilmBorders(ctx, outlines) {
+  if (!outlines.length) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 96, 92, 0.85)';
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  for (const outline of outlines) {
+    const shape = outline.shape;
+    const parts = shape?.type === 'Polygon' ? shape.coordinates
+      : shape?.type === 'MultiPolygon' ? shape.coordinates.flat() : [];
+    for (const ring of parts) {
+      ctx.beginPath();
+      ring.forEach(([lon, lat], i) => {
+        const at = map.latLngToContainerPoint([lat, lon]);
+        if (i === 0) ctx.moveTo(at.x, at.y);
+        else ctx.lineTo(at.x, at.y);
+      });
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function stampFilm(ctx, canvas, frame) {
+  const text = `${dateLabel(frame)}  ${frame.label ?? ''}`.trim();
+  const size = Math.max(14, Math.round(canvas.width * 0.016));
+  ctx.save();
+  ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
+  const wide = ctx.measureText(text).width;
+  ctx.fillStyle = 'rgba(5, 7, 11, 0.72)';
+  ctx.fillRect(14, canvas.height - size * 2.6, wide + size, size * 1.9);
+  ctx.fillStyle = '#e9eef7';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 14 + size / 2, canvas.height - size * 1.65);
+  ctx.restore();
+}
+
+function held(ms) {
+  return new Promise((done) => setTimeout(done, ms));
+}
+
+function save(blob, layer, frames) {
+  const from = frames[0]?.time?.slice(0, 16).replace(/[:T]/g, '') ?? '';
+  const to = frames[frames.length - 1]?.time?.slice(11, 16).replace(':', '') ?? '';
+  const name = `${(layer?.id ?? 'satellite').split(':').pop()}_${from}-${to}`
+    + `_kaldockhi.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 function play() {
@@ -452,6 +768,7 @@ function toggle() {
     clearInterval(timer);
     timer = null;
     pause();
+    stopWarming();
     drawn?.remove();
     drawn = null;
   }

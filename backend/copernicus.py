@@ -50,9 +50,12 @@ to a day and a half.
 from __future__ import annotations
 
 import datetime as dt
+import time
 from typing import Any
 
-from . import mtg
+import requests
+
+from . import config, mtg
 
 # What to look for, and what to call it. The keys are matched against a
 # layer's name and title, lower-cased; the first family that matches wins.
@@ -163,10 +166,13 @@ DAYS_OFFERED = 7
 # Meteosat photographs its whole disc every ten minutes, so its history is not
 # days but the last few hours -- which is the one thing here that can be played
 # as an animation, because consecutive frames are the same view a few minutes
-# apart rather than two different strips of the planet. Twenty-four of them is
-# four hours at ten-minute cadence: long enough to watch a front move, short
-# enough that a loop is a loop rather than a download.
-FRAMES_OFFERED = 24
+# apart rather than two different strips of the planet.
+#
+# Forty-eight of them is eight hours at ten-minute cadence: asked for, and
+# affordable now that the tiles come through this app and are held. Fetched
+# straight from EUMETSAT by the browser it would have been eight hours of
+# imagery downloaded again on every loop.
+FRAMES_OFFERED = 48
 
 # How long to wait for the catalogue to say. Every family declares what it
 # believes its own cadence to be, and the declared one from the service wins
@@ -217,6 +223,10 @@ MOST_EVERYDAY = 5
 LIVE_WITHIN = dt.timedelta(hours=36)
 
 ATTRIBUTION = "Contains modified Copernicus data · EUMETSAT View"
+
+# Where the browser asks for a tile: this app, not EUMETSAT. See tile() at the
+# bottom of this file for why it is worth a hop.
+TILES = "/api/copernicus/wms"
 
 
 class CopernicusError(RuntimeError):
@@ -426,7 +436,7 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
              "live_within_hours": live_within(family).total_seconds() / 3600}
             for family in FAMILIES
         ],
-        "wms": mtg.WMS,
+        "wms": TILES,
         "attribution": ATTRIBUTION,
         "live_within_hours": LIVE_WITHIN.total_seconds() / 3600,
         "days_offered": DAYS_OFFERED,
@@ -497,9 +507,163 @@ def demo() -> dict[str, Any]:
              "live_within_hours": live_within(family).total_seconds() / 3600}
             for family in FAMILIES
         ],
-        "wms": mtg.WMS,
+        "wms": TILES,
         "attribution": "synthetic",
         "live_within_hours": LIVE_WITHIN.total_seconds() / 3600,
         "days_offered": DAYS_OFFERED,
         "catalogue_size": sum(len(v) for v in seeded.values()),
     }
+
+
+# ---------------------------------------------------------------------------
+# The tiles themselves
+# ---------------------------------------------------------------------------
+#
+# The browser used to ask EUMETSAT for these directly. Two things wanted
+# changing, and one endpoint answers both.
+#
+# Playing eight hours of a satellite that publishes every ten minutes is
+# forty-eight frames of a dozen tiles each, fetched again on every loop and
+# again for every person watching. Held here, the second loop and the second
+# viewer are free, and a frame can be fetched BEFORE it is wanted rather than
+# while the animation waits for it.
+#
+# And a cross-origin image taints a canvas. Everything this app draws to a
+# canvas -- the exported picture, and now a recorded video -- is unreadable
+# the moment a tile from another origin is drawn into it: the browser refuses
+# to hand back the pixels. Served from this app's own origin, they are
+# ordinary same-origin images and the canvas stays readable. That is not a
+# convenience; without it a video of the satellite cannot exist at all.
+
+import collections
+import threading
+
+# How much to keep. A tile is a few tens of kilobytes; three hundred megabytes
+# is a few thousand of them, which is several hours of a handful of views.
+# Least-recently-used, so the frames being looped over stay and the ones
+# nobody has asked for in an hour fall out.
+TILE_CACHE_BYTES = 300 * 1024 * 1024
+
+# And how long a tile is worth keeping at all. These are published frames of a
+# fixed past moment, so they never change -- but the cache is memory, and a
+# process left running for a week should not still be holding Tuesday.
+TILE_CACHE_SECONDS = 12 * 3600
+
+# What a request may ask to be forwarded. An allow-list rather than a
+# block-list: this endpoint sends requests to somebody else's server on behalf
+# of whoever calls it, and the set of WMS parameters is small and known, so
+# there is no reason to forward a name nobody here recognises.
+TILE_PARAMS = frozenset({
+    "service", "request", "version", "layers", "styles", "format",
+    "transparent", "width", "height", "crs", "srs", "bbox", "time",
+    "bgcolor", "exceptions", "sld", "sld_body", "tiled", "dim_date",
+})
+
+_tiles: "collections.OrderedDict[str, tuple[bytes, str, float]]" = \
+    collections.OrderedDict()
+_tiles_bytes = 0
+_tiles_lock = threading.Lock()
+
+
+def tile_key(params: dict[str, str]) -> str:
+    """One name for one tile, whatever order the parameters arrived in."""
+    return "&".join(f"{k}={params[k]}" for k in sorted(params))
+
+
+def tile_params(asked: dict[str, str]) -> dict[str, str]:
+    """The parameters worth forwarding, normalised.
+
+    Lower-cased keys, because WMS is case-insensitive about them and Leaflet
+    and a hand-written URL do not agree -- and two spellings of one request
+    would be two entries in the cache for one picture.
+    """
+    out = {}
+    for key, value in asked.items():
+        low = str(key).lower()
+        if low in TILE_PARAMS and value is not None:
+            out[low] = str(value)
+    return out
+
+
+def cached_tile(key: str, now: float | None = None) -> tuple[bytes, str] | None:
+    """A tile already held, or None. Reading one makes it recently used."""
+    now = time.time() if now is None else now
+    with _tiles_lock:
+        had = _tiles.get(key)
+        if had is None:
+            return None
+        body, kind, at = had
+        if now - at > TILE_CACHE_SECONDS:
+            _forget(key)
+            return None
+        _tiles.move_to_end(key)
+        return body, kind
+
+
+def _forget(key: str) -> None:
+    """Drop one tile. The lock is already held."""
+    global _tiles_bytes
+    had = _tiles.pop(key, None)
+    if had is not None:
+        _tiles_bytes -= len(had[0])
+
+
+def keep_tile(key: str, body: bytes, kind: str,
+              now: float | None = None) -> None:
+    """Hold a tile, dropping the least recently used until it fits."""
+    global _tiles_bytes
+    now = time.time() if now is None else now
+    if len(body) > TILE_CACHE_BYTES:
+        # One tile larger than the whole cache would empty it and then not
+        # fit. Not held at all rather than held destructively.
+        return
+    with _tiles_lock:
+        _forget(key)
+        _tiles[key] = (body, kind, now)
+        _tiles_bytes += len(body)
+        while _tiles_bytes > TILE_CACHE_BYTES and len(_tiles) > 1:
+            _forget(next(iter(_tiles)))
+
+
+def tiles_held() -> dict[str, Any]:
+    """What the cache is holding. For the panel and for the tests."""
+    with _tiles_lock:
+        return {"tiles": len(_tiles), "bytes": _tiles_bytes,
+                "cap_bytes": TILE_CACHE_BYTES}
+
+
+def forget_tiles() -> None:
+    """Empty it. For the tests."""
+    global _tiles_bytes
+    with _tiles_lock:
+        _tiles.clear()
+        _tiles_bytes = 0
+
+
+def tile(asked: dict[str, str]) -> tuple[bytes, str, bool]:
+    """One WMS tile, from the cache if it is there. Returns (body, type, hit).
+
+    Raises CopernicusError if EUMETSAT cannot be reached or refuses, so the
+    caller can answer with a status rather than with a broken image.
+    """
+    params = tile_params(asked)
+    if not params.get("layers"):
+        raise CopernicusError("a tile request has to name a layer")
+    key = tile_key(params)
+    had = cached_tile(key)
+    if had is not None:
+        return had[0], had[1], True
+    try:
+        resp = requests.get(mtg.WMS, params=params, timeout=40,
+                            headers={"User-Agent": config.USER_AGENT})
+    except requests.RequestException as exc:
+        raise CopernicusError(f"EUMETSAT View could not be reached: {exc}") from exc
+    if not resp.ok:
+        raise CopernicusError(f"EUMETSAT View answered {resp.status_code}")
+    kind = resp.headers.get("Content-Type", "image/png").split(";")[0].strip()
+    if not kind.startswith("image/"):
+        # A WMS answers an error as XML with a 200. Cached, that would be a
+        # broken tile held for twelve hours.
+        raise CopernicusError(f"EUMETSAT View sent {kind} rather than an image")
+    keep_tile(key, resp.content, kind)
+    return resp.content, kind, False

@@ -1530,6 +1530,28 @@ body.is-walled { overflow: hidden; }
 .cop-nudge:hover { color: var(--ink); border-color: var(--line); }
 .cop-dial.is-minor .cop-nudge { color: rgba(154,168,190,.55); }
 .cop-dial.is-minor .cop-nudge:hover { color: var(--ink); }
+/* How much of the eight hours is in hand, while it is still arriving. */
+.cop-warm {
+  font-size: 10px; color: var(--ink-faint); font-variant-numeric: tabular-nums;
+  min-width: 34px; text-align: center;
+}
+.cop-warm:empty { display: none; }
+/* Record. Red rather than green, because it is the one control here that
+   makes a file rather than changing what is on screen. */
+.cop-rec {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0; cursor: pointer;
+  font: inherit; font-size: 12px; line-height: 1;
+  background: transparent; color: #ff8f8a;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.cop-rec:hover { color: #ffb0ac; border-color: rgba(255,74,68,.55); }
+.cop-rec.is-on {
+  color: #fff; background: rgba(255,74,68,.28);
+  border-color: rgba(255,74,68,.75);
+  animation: frontier-pulse 1.2s ease-in-out infinite;
+}
+
 /* The way to the rest of the catalogue, and back. */
 .cop-more {
   padding: 4px 8px; cursor: pointer; font: inherit; font-size: 10px;

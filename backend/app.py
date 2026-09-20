@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -446,6 +446,39 @@ def copernicus_layers(refresh: bool = Query(False)) -> dict:
         return copernicus.layers(refresh=refresh)
     except copernicus.CopernicusError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/copernicus/wms")
+def copernicus_tile(request: Request) -> Response:
+    """One WMS tile, fetched through this app rather than from the browser.
+
+    Two reasons, and the second is the load-bearing one.
+
+    Held here, a frame fetched once serves every later loop and every other
+    person watching -- which is what makes eight hours of a ten-minute
+    satellite playable rather than a download per pass.
+
+    And served from this origin, a tile is an ordinary same-origin image. A
+    cross-origin one taints any canvas it is drawn into and the browser then
+    refuses to hand the pixels back, so the exported picture and the recorded
+    video would both be impossible. Not a convenience: the feature cannot
+    exist without it.
+    """
+    try:
+        body, kind, _hit = copernicus.tile(dict(request.query_params))
+    except copernicus.CopernicusError as exc:
+        raise _fail(exc)
+    return Response(content=body, media_type=kind, headers={
+        # A published frame of a fixed past moment never changes, so the
+        # browser may keep it as long as it likes.
+        "Cache-Control": "public, max-age=86400, immutable",
+    })
+
+
+@app.get("/api/copernicus/held")
+def copernicus_held() -> dict:
+    """What the tile cache is holding. For the panel's "ready to play"."""
+    return copernicus.tiles_held()
 
 
 @app.get("/api/selftest")
