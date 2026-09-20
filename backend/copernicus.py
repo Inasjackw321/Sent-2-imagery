@@ -143,9 +143,42 @@ FAMILIES: tuple[dict[str, Any], ...] = (
 # A single instant from one of these is one orbit strip, a few hundred
 # kilometres wide -- which on a world map looks like a broken layer rather
 # than a satellite that has not been over the rest of the world yet. A day of
-# strips is the whole globe, and a week of days is a week you can step
+# strips is the whole globe, and a week of days is a week you can scrub back
 # through.
 DAYS_OFFERED = 7
+
+# The few products of each satellite worth having in front of you.
+#
+# EUMETSAT serves a dozen or more per spacecraft and the panel offered every
+# one of them: four satellites, forty-odd buttons, and the four or five anybody
+# opens buried somewhere among them. Nothing is taken away -- the rest are one
+# click behind "all products" -- but a panel that opens showing everything is a
+# panel that opens showing nothing in particular.
+#
+# Matched against a layer's name and title, lower-cased, the same way families
+# are. Deliberately about what the product IS rather than what it is called
+# this year, for the same reason: EUMETSAT renames things.
+EVERYDAY: dict[str, tuple[str, ...]] = {
+    # What the ground looks like, how hot it is, and where it is burning.
+    "sentinel-3": ("truecolour", "true_colour", "true colour", "natural",
+                   "lst", "land surface temperature", "chl", "chlorophyll",
+                   "fire", "frp"),
+    # The four gases anyone comes to TROPOMI for.
+    "sentinel-5p": ("no2", "nitrogen dioxide", "ch4", "methane",
+                    "carbon monoxide", "so2", "sulphur", "sulfur",
+                    "aerosol index"),
+    # A picture of the sky now, by day and by night.
+    "mtg": ("truecolour", "true_colour", "true colour", "natural",
+            "ir108", "ir_108", "infrared", "water vapour", "water_vapour",
+            "dust"),
+    "metop": ("truecolour", "true_colour", "true colour", "natural",
+              "ascat", "wind", "ndvi"),
+}
+
+# And at most this many of them, even where the words above match more. The
+# complaint this answers is the length of the list, so the shortlist has to be
+# short whatever the catalogue does.
+MOST_EVERYDAY = 5
 
 # How fresh a frame has to be to count as live.
 #
@@ -180,6 +213,35 @@ def family_of(name: str, title: str) -> str | None:
         if any(word in low for word in family["words"]):
             return family["key"]
     return None
+
+
+def is_everyday(key: str, name: str, title: str) -> bool:
+    """Whether this is one of the products the panel shows without being asked."""
+    low = f"{name} {title}".lower()
+    return any(word in low for word in EVERYDAY.get(key, ()))
+
+
+def shortlist(key: str, group: list[dict[str, Any]]) -> None:
+    """Mark the few of a family's products that open with the panel.
+
+    Nothing is dropped. This only decides what is in front of you before you
+    ask for the rest, which is the whole of the difference between a panel with
+    five buttons on it and a panel with forty.
+
+    A family where nothing matched gets its first few instead of nothing at
+    all. EUMETSAT renames and reorganises, and "the shortlist went empty so the
+    satellite now offers no products" is a worse failure than the long list
+    this is shortening -- the escape hatch has to work without a deploy.
+    """
+    for entry in group:
+        entry["everyday"] = is_everyday(key, entry["id"], entry["title"])
+    kept = [entry for entry in group if entry["everyday"]]
+    if not kept:
+        for entry in group[:MOST_EVERYDAY]:
+            entry["everyday"] = True
+        return
+    for entry in kept[MOST_EVERYDAY:]:
+        entry["everyday"] = False
 
 
 def live_within(family: dict[str, Any]) -> dt.timedelta:
@@ -240,16 +302,14 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
 
         family = by_key[key]
         newest, entry = mtg._entry(node, name, title)
-        # A day at a time, and the whole week as one composite. What a WMS
-        # does with a TIME range is draw everything in it, so a day of orbit
-        # strips comes back as a covered globe rather than as one pass.
+        # A day at a time. What a WMS does with a TIME range is draw
+        # everything in it, so a day of orbit strips comes back as a covered
+        # globe rather than as one pass.
         #
         # Only for the satellites that fly over. A geostationary one already
         # has the whole disc in every frame, and compositing a day of those
         # would blend a moving sky into mud.
         entry["days"] = days_offered(newest) if family.get("spans_days") else []
-        entry["whole_week"] = (
-            f"{entry['days'][0]}/{entry['days'][-1]}" if entry["days"] else None)
         fresh = newest is not None and now - newest <= live_within(family)
         entry["live"] = fresh
         entry["age_minutes"] = (
@@ -260,8 +320,9 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
         else:
             stale[key] += 1
 
-    for group in found.values():
+    for key, group in found.items():
         group.sort(key=lambda item: item["id"])
+        shortlist(key, group)
 
     return {
         "families": [
@@ -304,11 +365,10 @@ def demo() -> dict[str, Any]:
         stamp = mtg._stamp(now - dt.timedelta(minutes=minutes))
         return {"id": ident, "title": title, "time_default": stamp,
                 "newest": stamp, "age_minutes": minutes, "live": True,
-                # A geostationary layer carries no week, exactly as it would
-                # not live -- otherwise the demo grows a day stepper that the
+                # A geostationary layer carries no days, exactly as it would
+                # not live -- otherwise the demo grows a day scrubber that the
                 # real thing never shows.
-                "days": days if spans else [],
-                "whole_week": f"{days[0]}/{days[-1]}" if spans else None}
+                "days": days if spans else []}
 
     seeded = {
         "sentinel-3": [entry("copernicus:s3_olci_truecolour",
@@ -331,6 +391,8 @@ def demo() -> dict[str, Any]:
                         "Metop AVHRR true colour (demo)"),
                   entry("metop:ascat_winds", "Metop ASCAT ocean winds (demo)")],
     }
+    for key, group in seeded.items():
+        shortlist(key, group)
     return {
         "families": [
             {**family, "layers": seeded[family["key"]], "stale": 0,

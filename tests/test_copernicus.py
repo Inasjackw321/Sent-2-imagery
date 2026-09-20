@@ -163,20 +163,31 @@ class TestAWeekOfWholeEarth:
             layer("x:olci", title="Sentinel-3 OLCI", extent=iso(3))), now=NOW)
         entry = [f for f in got["families"] if f["key"] == "sentinel-3"][0]["layers"][0]
         assert len(entry["days"]) == copernicus.DAYS_OFFERED
-        assert entry["whole_week"] == f"{entry['days'][0]}/{entry['days'][-1]}"
 
-    def test_the_whole_week_is_a_range_a_wms_understands(self):
+    def test_the_days_are_in_order_with_the_newest_last(self):
+        # The panel reads the last one as "live" and scrubs backwards from it,
+        # so the order is not cosmetic.
         got = copernicus.demo()["families"][1]["layers"][0]
-        start, _, end = got["whole_week"].partition("/")
-        assert start < end
-        assert dt.date.fromisoformat(start) < dt.date.fromisoformat(end)
+        assert got["days"] == sorted(got["days"])
 
-    def test_the_demo_carries_it_too(self):
+    def test_the_demo_carries_them_too(self):
         for family in copernicus.demo()["families"]:
             if not family.get("spans_days"):
                 continue
             for entry in family["layers"]:
-                assert entry["days"] and entry["whole_week"], family["key"]
+                assert entry["days"], family["key"]
+
+    def test_nothing_offers_a_week_composited_into_one_picture(self):
+        """There used to be one, and it was the default.
+
+        A whole day of a polar orbiter's passes is already the whole globe, so
+        seven of them added no coverage -- only a mode in which the picture was
+        of no particular day, which is the opposite of what a live layer is
+        for. Asked for: always live.
+        """
+        for family in copernicus.demo()["families"]:
+            for entry in family["layers"]:
+                assert "whole_week" not in entry, entry["id"]
 
     def test_a_geostationary_satellite_is_offered_no_week(self):
         # It photographs the whole disc every ten minutes, so one frame is
@@ -188,7 +199,6 @@ class TestAWeekOfWholeEarth:
                   extent=iso(0.5))), now=NOW)
         entry = [f for f in got["families"] if f["key"] == "mtg"][0]["layers"][0]
         assert entry["days"] == []
-        assert entry["whole_week"] is None
 
     def test_the_demo_agrees_with_that(self):
         # Otherwise the offline build grows a day stepper the live one never
@@ -198,7 +208,7 @@ class TestAWeekOfWholeEarth:
             if family.get("spans_days"):
                 continue
             for entry in family["layers"]:
-                assert entry["days"] == [] and entry["whole_week"] is None
+                assert entry["days"] == []
 
 
 class TestTheAnswer:
@@ -273,3 +283,98 @@ class TestTheAnswer:
         for name in ("metop:avhrr_ndvi", "x:ASCAT_winds", "eo:iasi_ozone",
                      "metop-b_something"):
             assert copernicus.family_of(name, "") == "metop", name
+
+
+class TestTheShortlist:
+    """Four satellites with every product each is forty buttons.
+
+    EUMETSAT serves a dozen or more products per spacecraft and the panel
+    listed all of them, so the four or five anybody actually opens were buried
+    among thirty-odd they never will. Nothing is taken away -- the rest are one
+    button behind "all products" -- but what opens with the panel is now a
+    handful rather than a catalogue.
+    """
+
+    def olci(self, *names: str) -> list[dict]:
+        got = copernicus.sort_layers(capabilities(
+            *[layer(f"x:{n}", title=f"Sentinel-3 OLCI {n}", extent=iso(3))
+              for n in names]), now=NOW)
+        return [f for f in got["families"]
+                if f["key"] == "sentinel-3"][0]["layers"]
+
+    def everyday(self, layers: list[dict]) -> list[str]:
+        return [e["id"] for e in layers if e["everyday"]]
+
+    def test_the_products_worth_opening_are_marked(self):
+        got = self.olci("truecolour", "lst")
+        assert self.everyday(got) == ["x:lst", "x:truecolour"]
+
+    def test_and_the_rest_are_not(self):
+        got = self.olci("truecolour", "aot_uncertainty_flags")
+        assert self.everyday(got) == ["x:truecolour"]
+
+    def test_a_long_shortlist_is_still_short(self):
+        # The complaint is the length of the list, so matching more words
+        # cannot be allowed to give the list back.
+        many = ["truecolour", "natural", "lst", "chlorophyll", "fire", "frp",
+                "true_colour"]
+        got = self.olci(*many)
+        assert len(many) > copernicus.MOST_EVERYDAY
+        assert len(self.everyday(got)) == copernicus.MOST_EVERYDAY
+
+    def test_nothing_is_dropped_from_the_catalogue(self):
+        # Marked, not filtered. The panel's "all products" button has to have
+        # something to show.
+        got = self.olci("truecolour", "aot_uncertainty_flags", "whatever_else")
+        assert len(got) == 3
+
+    def test_a_family_that_matched_nothing_still_offers_something(self):
+        """EUMETSAT renames things.
+
+        A shortlist that went empty would leave the satellite with no products
+        at all until someone shipped a new pattern, which is a worse list than
+        the long one this is shortening.
+        """
+        got = self.olci("zzz_one", "zzz_two")
+        assert self.everyday(got) == ["x:zzz_one", "x:zzz_two"]
+
+    def test_and_not_more_than_a_handful_of_them_either(self):
+        got = self.olci(*[f"zzz_{n}" for n in range(9)])
+        assert len(self.everyday(got)) == copernicus.MOST_EVERYDAY
+
+    def test_every_family_has_words_to_shortlist_by(self):
+        # A family missing from the table would fall through to the "nothing
+        # matched" rule on every catalogue, which is alphabetical order
+        # pretending to be a choice.
+        for family in copernicus.FAMILIES:
+            assert copernicus.EVERYDAY.get(family["key"]), family["key"]
+
+    def test_the_words_pick_out_what_each_satellite_is_for(self):
+        # Spot-checked against what each of these is actually opened for, so a
+        # table edited to something plausible but wrong is caught.
+        for key, name in [("sentinel-5p", "s5p_no2_tropospheric"),
+                          ("sentinel-5p", "tropomi_methane_ch4"),
+                          ("sentinel-3", "s3_olci_truecolour"),
+                          ("sentinel-3", "slstr_lst_day"),
+                          ("mtg", "mtg_fd_rgb_truecolour"),
+                          ("metop", "metop_ascat_winds")]:
+            assert copernicus.is_everyday(key, name, name), name
+
+    def test_and_leave_out_what_they_are_not(self):
+        for key, name in [("sentinel-5p", "s5p_qa_value"),
+                          ("sentinel-3", "olci_ogvi_uncertainty"),
+                          ("mtg", "fci_solar_zenith_angle"),
+                          ("metop", "iasi_channel_radiance_0421")]:
+            assert not copernicus.is_everyday(key, name, name), name
+
+    def test_the_demo_is_shortlisted_the_same_way(self):
+        # Otherwise the offline build opens with every product and the live one
+        # does not, which is the difference nobody notices until a screenshot
+        # from one is used to explain the other.
+        for family in copernicus.demo()["families"]:
+            for entry in family["layers"]:
+                assert isinstance(entry["everyday"], bool), entry["id"]
+
+    def test_the_demo_opens_on_something(self):
+        for family in copernicus.demo()["families"]:
+            assert any(e["everyday"] for e in family["layers"]), family["key"]

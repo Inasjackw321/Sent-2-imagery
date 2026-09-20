@@ -1434,9 +1434,14 @@ body.is-walled { overflow: hidden; }
   display: grid; gap: 8px; padding: 9px 11px;
   border-radius: 9px; background: rgba(13,16,21,.9);
   border: 1px solid var(--line); backdrop-filter: blur(6px);
-  /* Four satellites with every product each, rather than the first six of
-     two, so the panel has to be allowed to end somewhere. */
+  /* The everyday handful per satellite fits; "all products" is four
+     satellites with a dozen each, so the panel has to end somewhere. */
   max-height: min(62vh, 560px); overflow-y: auto;
+  /* And end at its own width. A grid column of width auto is as wide as its
+     widest item, so one row that will not shrink -- the date scrubber -- drags
+     the column out past the panel and every product button stretches with it.
+     Measured: 273px of content in a 204px panel, product buttons included. */
+  grid-template-columns: minmax(0, 1fr);
 }
 .cop-family { display: grid; gap: 4px; }
 .cop-name {
@@ -1476,25 +1481,37 @@ body.is-walled { overflow: hidden; }
 }
 .radar-retry:hover { background: rgba(255,143,94,.3); }
 
-.cop-span { display: flex; align-items: center; gap: 5px; }
-.cop-day {
-  flex: 1; padding: 4px 6px; cursor: pointer; font: inherit; font-size: 10px;
-  background: transparent; color: var(--ink-faint);
-  border: 1px solid var(--line); border-radius: 6px;
+/* Live, and a week to scrub back through. The wheel is handled on this row,
+   so it must not also scroll the panel underneath it. */
+.cop-span {
+  display: flex; align-items: center; gap: 6px; overscroll-behavior: contain;
 }
-.cop-day.is-on {
+.cop-live {
+  padding: 4px 8px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px; flex: none;
+}
+.cop-live:hover { color: var(--ink); }
+.cop-live.is-on {
   color: #e6fff7; background: rgba(76,224,179,.16); border-color: rgba(76,224,179,.55);
 }
-.cop-step {
-  width: 22px; padding: 3px 0; cursor: pointer; font: inherit; font-size: 11px;
-  background: transparent; color: var(--ink-dim);
-  border: 1px solid var(--line); border-radius: 5px;
+/* width: 0 as well as min-width: 0 -- a range input has an intrinsic width it
+   will not give up otherwise, and it is the row that drags the panel wide. */
+.cop-scrub {
+  flex: 1 1 0; width: 0; min-width: 0; accent-color: #4ce0b3; cursor: ew-resize;
 }
-.cop-step:hover { color: var(--ink); }
 .cop-when {
-  min-width: 74px; text-align: center; font-size: 10px; color: var(--ink-dim);
+  min-width: 68px; text-align: right; font-size: 10px; color: var(--ink-dim);
   font-variant-numeric: tabular-nums;
 }
+/* The way to the rest of the catalogue, and back. */
+.cop-more {
+  padding: 4px 8px; cursor: pointer; font: inherit; font-size: 10px;
+  background: transparent; color: var(--ink-faint);
+  border: 1px dashed var(--line); border-radius: 6px;
+}
+.cop-more:hover { color: var(--ink); border-color: #3a4a66; }
+.cop-more.is-on { color: var(--ink-dim); border-style: solid; }
 
 /* ── Air threats, from public Telegram channels ──────────────── */
 
