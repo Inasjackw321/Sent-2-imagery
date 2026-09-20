@@ -18,7 +18,7 @@ import datetime as dt
 
 import pytest
 
-from backend import copernicus
+from backend import copernicus, mtg
 
 NOW = dt.datetime(2026, 9, 11, 12, 0, tzinfo=dt.timezone.utc)
 WMS = "http://www.opengis.net/wms"
@@ -134,6 +134,9 @@ class TestAWeekOfWholeEarth:
     a world map reads as broken rather than as a satellite that has not been
     over the rest of the world yet. A whole day is every pass that day, and at
     three hundred metres that is the globe.
+
+    A satellite that STARES has the opposite problem and the opposite answer,
+    which is the class below this one.
     """
 
     def test_a_week_of_whole_days_is_offered(self):
@@ -162,20 +165,31 @@ class TestAWeekOfWholeEarth:
         got = copernicus.sort_layers(capabilities(
             layer("x:olci", title="Sentinel-3 OLCI", extent=iso(3))), now=NOW)
         entry = [f for f in got["families"] if f["key"] == "sentinel-3"][0]["layers"][0]
-        assert len(entry["days"]) == copernicus.DAYS_OFFERED
+        assert len(entry["frames"]) == copernicus.DAYS_OFFERED
 
-    def test_the_days_are_in_order_with_the_newest_last(self):
+    def test_the_frames_are_in_order_with_the_newest_last(self):
         # The panel reads the last one as "live" and scrubs backwards from it,
         # so the order is not cosmetic.
-        got = copernicus.demo()["families"][1]["layers"][0]
-        assert got["days"] == sorted(got["days"])
+        for family in copernicus.demo()["families"]:
+            for entry in family["layers"]:
+                stamps = [f["time"] for f in entry["frames"]]
+                assert stamps == sorted(stamps), entry["id"]
+
+    def test_a_day_is_asked_for_as_the_range_that_covers_it(self):
+        # A bare date is midnight exactly on some servers, which is one
+        # instant, which is one strip.
+        got = copernicus.sort_layers(capabilities(
+            layer("x:olci", title="Sentinel-3 OLCI", extent=iso(3))), now=NOW)
+        entry = [f for f in got["families"] if f["key"] == "sentinel-3"][0]["layers"][0]
+        assert entry["frames"][-1]["time"] == (
+            "2026-09-11T00:00:00Z/2026-09-11T23:59:59Z")
 
     def test_the_demo_carries_them_too(self):
         for family in copernicus.demo()["families"]:
             if not family.get("spans_days"):
                 continue
             for entry in family["layers"]:
-                assert entry["days"], family["key"]
+                assert len(entry["frames"]) == copernicus.DAYS_OFFERED, family["key"]
 
     def test_nothing_offers_a_week_composited_into_one_picture(self):
         """There used to be one, and it was the default.
@@ -189,33 +203,33 @@ class TestAWeekOfWholeEarth:
             for entry in family["layers"]:
                 assert "whole_week" not in entry, entry["id"]
 
-    def test_a_geostationary_satellite_is_offered_no_week(self):
+    def test_a_geostationary_satellite_is_offered_no_days(self):
         # It photographs the whole disc every ten minutes, so one frame is
         # already the whole picture. Compositing a day of them would blend a
-        # hundred and forty frames of a moving sky into mud, and a day stepper
-        # would be offering something meaningless.
+        # hundred and forty frames of a moving sky into mud.
         got = copernicus.sort_layers(capabilities(
             layer("mtg_fd:rgb_truecolour", title="MTG FCI True Colour",
                   extent=iso(0.5))), now=NOW)
         entry = [f for f in got["families"] if f["key"] == "mtg"][0]["layers"][0]
-        assert entry["days"] == []
+        assert all("/" not in frame["time"] for frame in entry["frames"])
 
     def test_the_demo_agrees_with_that(self):
-        # Otherwise the offline build grows a day stepper the live one never
-        # shows, which is the kind of difference nobody finds until a
+        # Otherwise the offline build animates something the live one never
+        # does, which is the kind of difference nobody finds until a
         # screenshot from the demo is used to explain the real thing.
         for family in copernicus.demo()["families"]:
             if family.get("spans_days"):
                 continue
             for entry in family["layers"]:
-                assert entry["days"] == []
+                assert all("/" not in f["time"] for f in entry["frames"])
 
 
 class TestTheAnswer:
     def test_the_time_handed_to_wms_ends_in_z(self):
         got = copernicus.sort_layers(capabilities(
             layer("x:olci", extent="2026-09-11T08:00:00+00:00")), now=NOW)
-        entry = got["families"][1]["layers"][0]
+        entry = [f for f in got["families"]
+                 if f["key"] == "sentinel-3"][0]["layers"][0]
         assert entry["time_default"].endswith("Z")
 
     def test_every_family_carries_what_the_panel_draws(self):
@@ -231,6 +245,27 @@ class TestTheAnswer:
             for entry in family["layers"]:
                 assert set(entry) >= {"id", "title", "time_default", "live"}
                 assert entry["live"] is True
+
+    def test_meteosat_leads_the_panel(self):
+        """The picture people mean by "the satellite".
+
+        It is the only one here that updates while you watch and the only one
+        that can be played as an animation, so it is what the panel opens on
+        and the rest sit below it. Asked for.
+        """
+        assert copernicus.FAMILIES[0]["key"] == "mtg"
+        assert copernicus.demo()["families"][0]["key"] == "mtg"
+
+    def test_and_it_opens_on_its_true_colour(self):
+        # Not on whichever of its products sorts first.
+        first = copernicus.demo()["families"][0]["layers"][0]
+        assert "truecolour" in first["id"]
+
+    def test_leading_the_panel_takes_no_layer_from_anyone(self):
+        # FAMILIES order is also match order, so putting Meteosat first could
+        # in principle have it claim a layer another family was matching.
+        for name in ("s5p_no2", "sentinel-3 olci", "metop_avhrr", "tropomi_ch4"):
+            assert copernicus.family_of(name, name) != "mtg", name
 
     def test_the_demo_covers_both_satellites(self):
         # Otherwise the build with no network only ever draws one of them.
@@ -307,7 +342,14 @@ class TestTheShortlist:
 
     def test_the_products_worth_opening_are_marked(self):
         got = self.olci("truecolour", "lst")
-        assert self.everyday(got) == ["x:lst", "x:truecolour"]
+        assert self.everyday(got) == ["x:truecolour", "x:lst"]
+
+    def test_and_they_come_out_in_the_order_they_are_wanted_in(self):
+        # Not alphabetical. The first one is what the panel opens on, so
+        # alphabetical order would be choosing what anyone looks at first by
+        # the spelling of its filename.
+        got = self.olci("lst", "truecolour")
+        assert [e["id"] for e in got] == ["x:truecolour", "x:lst"]
 
     def test_and_the_rest_are_not(self):
         got = self.olci("truecolour", "aot_uncertainty_flags")
@@ -378,3 +420,135 @@ class TestTheShortlist:
     def test_the_demo_opens_on_something(self):
         for family in copernicus.demo()["families"]:
             assert any(e["everyday"] for e in family["layers"]), family["key"]
+
+
+class TestASatelliteThatStares:
+    """Meteosat's history is hours, not days, and it can be played.
+
+    A polar orbiter's consecutive frames are two different strips of the
+    planet a day apart; played as a loop that is a slideshow. A geostationary
+    satellite's consecutive frames are the same view ten minutes apart, which
+    is the one thing here that is honestly an animation -- so it is the one
+    thing here that offers instants rather than whole days.
+    """
+
+    def disc(self, extent=None, **kw):
+        got = copernicus.sort_layers(capabilities(
+            layer("mtg_fd:rgb_truecolour", title="MTG FCI True Colour",
+                  extent=extent if extent is not None else iso(0.5))),
+            now=NOW, **kw)
+        return [f for f in got["families"] if f["key"] == "mtg"][0]["layers"][0]
+
+    def test_it_offers_instants_a_few_minutes_apart(self):
+        got = self.disc()
+        assert len(got["frames"]) == copernicus.FRAMES_OFFERED
+        assert got["frames"][-1]["time"] == "2026-09-11T11:30:00Z"
+        assert got["frames"][-2]["time"] == "2026-09-11T11:20:00Z"
+
+    def test_the_cadence_the_service_declares_is_the_one_used(self):
+        # Assuming ten minutes where EUMETSAT said fifteen would animate
+        # frames that do not exist, and every other one would come back blank.
+        got = self.disc(extent=f"{iso(6)}/{iso(0.5)}/PT15M")
+        assert got["step_minutes"] == 15
+        assert got["frames"][-1]["time"] == "2026-09-11T11:30:00Z"
+        assert got["frames"][-2]["time"] == "2026-09-11T11:15:00Z"
+
+    def test_and_the_family_s_own_is_only_a_fallback(self):
+        # A bare list of instants declares no period at all, which is common.
+        assert self.disc()["step_minutes"] == \
+            copernicus.ASSUMED_STEP_MINUTES["mtg"]
+
+    def test_a_satellite_that_flies_over_still_gets_whole_days(self):
+        got = copernicus.sort_layers(capabilities(
+            layer("x:olci", title="Sentinel-3 OLCI",
+                  extent=f"{iso(60)}/{iso(3)}/PT10M")), now=NOW)
+        entry = [f for f in got["families"]
+                 if f["key"] == "sentinel-3"][0]["layers"][0]
+        # Even where the service declares a ten-minute cadence: one instant of
+        # a polar orbiter is one orbit strip whatever the catalogue offers.
+        assert len(entry["frames"]) == copernicus.DAYS_OFFERED
+        assert "/" in entry["frames"][-1]["time"]
+
+    def test_only_the_staring_one_says_it_animates(self):
+        # On the LIVE path, not only the demo's. The demo builds the flag from
+        # its own argument, so a demo-only check passes with sort_layers
+        # setting every layer to animate -- measured: that mutation survived
+        # this class until this test read the live answer.
+        got = copernicus.sort_layers(capabilities(
+            layer("mtg_fd:rgb_truecolour", title="MTG FCI True Colour",
+                  extent=iso(0.5)),
+            layer("x:olci_truecolour", title="Sentinel-3 OLCI true colour",
+                  extent=iso(3)),
+            layer("x:s5p_no2", title="Sentinel-5P NO2", extent=iso(3)),
+            layer("x:metop_avhrr", title="Metop AVHRR", extent=iso(3))), now=NOW)
+        seen = {f["key"]: f["layers"][0]["animates"] for f in got["families"]
+                if f["layers"]}
+        assert seen == {"mtg": True, "sentinel-3": False,
+                        "sentinel-5p": False, "metop": False}
+
+    def test_and_the_demo_says_the_same(self):
+        for family in copernicus.demo()["families"]:
+            for entry in family["layers"]:
+                assert entry["animates"] is (family["key"] == "mtg"), entry["id"]
+
+    def test_the_frames_are_labelled_by_the_clock(self):
+        assert self.disc()["frames"][-1]["label"] == "11:30"
+
+    def test_and_a_day_s_frames_by_the_date(self):
+        got = copernicus.demo()["families"][1]["layers"][0]
+        assert len(got["frames"][-1]["label"]) == 10
+
+    def test_every_frame_carries_the_day_it_is_on(self):
+        # The bar shows a date beside the clock, and four hours back from
+        # half past midnight is yesterday.
+        for frame in self.disc()["frames"]:
+            assert len(frame["at"]) == 10 and frame["at"].count("-") == 2
+
+    def test_a_layer_with_no_time_at_all_offers_no_frames(self):
+        got = copernicus.sort_layers(capabilities(
+            layer("mtg_fd:rgb_truecolour", title="MTG FCI")), now=NOW)
+        assert all(f["layers"] == [] for f in got["families"])
+        assert copernicus.frames_for(copernicus.FAMILIES[0], None, None) == []
+
+
+class TestReadingACadence:
+    """The third term of a WMS time interval, which is where a service that
+    publishes on a cadence writes that cadence down."""
+
+    def test_minutes(self):
+        assert mtg.period_of("2026-09-01T00:00:00Z/2026-09-11T11:30:00Z/PT10M") \
+            == dt.timedelta(minutes=10)
+
+    def test_hours_and_days(self):
+        assert mtg.period_of("a/b/PT3H") == dt.timedelta(hours=3)
+        assert mtg.period_of("a/b/P1D") == dt.timedelta(days=1)
+
+    def test_a_mixture(self):
+        assert mtg.period_of("a/b/P1DT2H30M") == dt.timedelta(days=1, hours=2,
+                                                              minutes=30)
+
+    def test_the_finest_of_several_wins(self):
+        # An archive at a frame a day beside a live interval at one every ten
+        # minutes is a common shape, and the live one is what is animated.
+        assert mtg.period_of("a/b/P1D,c/d/PT10M") == dt.timedelta(minutes=10)
+
+    def test_a_bare_list_of_instants_declares_no_cadence(self):
+        assert mtg.period_of(f"{iso(1)},{iso(2)}") is None
+
+    def test_nor_does_an_interval_without_one(self):
+        assert mtg.period_of(f"{iso(9)}/{iso(1)}") is None
+
+    def test_nothing_is_not_a_cadence(self):
+        assert mtg.period_of("") is None
+        assert mtg.period_of("rubbish") is None
+
+    def test_a_zero_period_is_refused(self):
+        # It would divide the animation into an infinite number of frames all
+        # at the same instant.
+        assert mtg.period_of("a/b/PT0M") is None
+
+    def test_years_and_months_are_not_read_as_something_else(self):
+        # P1Y is not a fixed number of seconds. Reading it as one day, or as
+        # one minute, would be worse than not reading it.
+        assert mtg.period_of("a/b/P1Y") is None
+        assert mtg.period_of("a/b/P3M") is None

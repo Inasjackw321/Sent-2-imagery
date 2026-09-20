@@ -61,36 +61,19 @@ from . import mtg
 # matches nothing shows as empty rather than as an error -- which is the
 # honest outcome and tells whoever is looking that the catalogue has moved.
 FAMILIES: tuple[dict[str, Any], ...] = (
-    {
-        "key": "sentinel-5p",
-        "short": "Sentinel-5P",
-        "label": "Sentinel-5P · atmospheric chemistry",
-        "words": ("sentinel-5p", "sentinel_5p", "s5p", "tropomi"),
-        "colour": "#c58cff",
-        "resolution": "≈7 km",
-        # A polar orbiter: passes over at a fixed local time, so one instant is
-        # one strip and a whole day of strips is the planet.
-        "spans_days": True,
-        "about": "TROPOMI measures the air rather than the ground: nitrogen "
-                 "dioxide over cities and shipping lanes, methane, carbon "
-                 "monoxide from fires, sulphur dioxide from volcanoes. Daily, "
-                 "and coarse by design — a single pixel is a small county.",
-    },
-    {
-        "key": "sentinel-3",
-        "short": "Sentinel-3",
-        "label": "Sentinel-3 · ocean and land, daily",
-        "words": ("sentinel-3", "sentinel_3", "olci", "slstr", "s3a", "s3b"),
-        "colour": "#4ce0b3",
-        "resolution": "300 m – 1 km",
-        "spans_days": True,
-        "about": "Three hundred metres and the whole planet every day or two. "
-                 "Coarse next to Sentinel-2's ten, and the only Sentinel that "
-                 "sees everywhere every day — a weather system rather than a "
-                 "field.",
-    },
-    # Not Sentinels, and offered anyway, because they answer the question the
-    # Sentinels cannot: what is happening right now.
+    # First, and not a Sentinel.
+    #
+    # This tuple's order is two things at once: which family claims a layer
+    # whose name could belong to either, and the order the panel draws them
+    # in. Meteosat leads on the second count -- it is the picture people mean
+    # by "the satellite", the only one that updates while you watch and the
+    # only one that can be played as an animation, so it opens the panel and
+    # the rest sit below it. On the first count nothing changes: no Sentinel
+    # or Metop product matches "meteosat", "seviri", "fci" or "msg", so
+    # putting these words first cannot take a layer from anyone.
+    #
+    # They are here at all because they answer the question the Sentinels
+    # cannot: what is happening right now.
     #
     # A polar orbiter passes over at a fixed local time and is gone. These two
     # families are the alternative -- one parked over a fixed longitude
@@ -124,6 +107,34 @@ FAMILIES: tuple[dict[str, Any], ...] = (
                  "morning.",
     },
     {
+        "key": "sentinel-5p",
+        "short": "Sentinel-5P",
+        "label": "Sentinel-5P · atmospheric chemistry",
+        "words": ("sentinel-5p", "sentinel_5p", "s5p", "tropomi"),
+        "colour": "#c58cff",
+        "resolution": "≈7 km",
+        # A polar orbiter: passes over at a fixed local time, so one instant is
+        # one strip and a whole day of strips is the planet.
+        "spans_days": True,
+        "about": "TROPOMI measures the air rather than the ground: nitrogen "
+                 "dioxide over cities and shipping lanes, methane, carbon "
+                 "monoxide from fires, sulphur dioxide from volcanoes. Daily, "
+                 "and coarse by design — a single pixel is a small county.",
+    },
+    {
+        "key": "sentinel-3",
+        "short": "Sentinel-3",
+        "label": "Sentinel-3 · ocean and land, daily",
+        "words": ("sentinel-3", "sentinel_3", "olci", "slstr", "s3a", "s3b"),
+        "colour": "#4ce0b3",
+        "resolution": "300 m – 1 km",
+        "spans_days": True,
+        "about": "Three hundred metres and the whole planet every day or two. "
+                 "Coarse next to Sentinel-2's ten, and the only Sentinel that "
+                 "sees everywhere every day — a weather system rather than a "
+                 "field.",
+    },
+    {
         "key": "metop",
         "short": "Metop",
         "label": "Metop · dawn and dusk, pole to pole",
@@ -138,7 +149,7 @@ FAMILIES: tuple[dict[str, Any], ...] = (
     },
 )
 
-# How many days of history to offer.
+# How many days of history to offer a satellite that flies over.
 #
 # A single instant from one of these is one orbit strip, a few hundred
 # kilometres wide -- which on a world map looks like a broken layer rather
@@ -146,6 +157,23 @@ FAMILIES: tuple[dict[str, Any], ...] = (
 # strips is the whole globe, and a week of days is a week you can scrub back
 # through.
 DAYS_OFFERED = 7
+
+# And how many frames to offer one that stares.
+#
+# Meteosat photographs its whole disc every ten minutes, so its history is not
+# days but the last few hours -- which is the one thing here that can be played
+# as an animation, because consecutive frames are the same view a few minutes
+# apart rather than two different strips of the planet. Twenty-four of them is
+# four hours at ten-minute cadence: long enough to watch a front move, short
+# enough that a loop is a loop rather than a download.
+FRAMES_OFFERED = 24
+
+# How long to wait for the catalogue to say. Every family declares what it
+# believes its own cadence to be, and the declared one from the service wins
+# where there is one -- this is what gets used when the time dimension is a
+# bare list of instants with no period in it.
+ASSUMED_STEP_MINUTES = {"mtg": 10}
+DAILY_STEP_MINUTES = 24 * 60
 
 # The few products of each satellite worth having in front of you.
 #
@@ -215,10 +243,26 @@ def family_of(name: str, title: str) -> str | None:
     return None
 
 
+def everyday_rank(key: str, name: str, title: str) -> int:
+    """How far up its family's shortlist a product sits, or a large number.
+
+    The position of the first word it matches, so EVERYDAY doubles as an order
+    of preference rather than only a filter. That decides two things: which
+    product the panel opens on -- Meteosat's true colour, which is the picture
+    people mean -- and, where more products match than the shortlist holds,
+    which five survive the cap. Alphabetical order was deciding both, and
+    alphabetical order is not an opinion about what anyone wants to look at.
+    """
+    low = f"{name} {title}".lower()
+    for at, word in enumerate(EVERYDAY.get(key, ())):
+        if word in low:
+            return at
+    return len(EVERYDAY.get(key, ())) + 1
+
+
 def is_everyday(key: str, name: str, title: str) -> bool:
     """Whether this is one of the products the panel shows without being asked."""
-    low = f"{name} {title}".lower()
-    return any(word in low for word in EVERYDAY.get(key, ()))
+    return everyday_rank(key, name, title) <= len(EVERYDAY.get(key, ()))
 
 
 def shortlist(key: str, group: list[dict[str, Any]]) -> None:
@@ -234,7 +278,11 @@ def shortlist(key: str, group: list[dict[str, Any]]) -> None:
     this is shortening -- the escape hatch has to work without a deploy.
     """
     for entry in group:
+        entry["rank"] = everyday_rank(key, entry["id"], entry["title"])
         entry["everyday"] = is_everyday(key, entry["id"], entry["title"])
+    # Most wanted first, and alphabetical within a rank so the order is stable
+    # across polls rather than whatever the catalogue happened to list.
+    group.sort(key=lambda entry: (entry["rank"], entry["id"]))
     kept = [entry for entry in group if entry["everyday"]]
     if not kept:
         for entry in group[:MOST_EVERYDAY]:
@@ -256,7 +304,7 @@ def live_within(family: dict[str, Any]) -> dt.timedelta:
 
 
 def days_offered(newest: dt.datetime | None) -> list[str]:
-    """The last week of whole days, newest last, as WMS date ranges.
+    """The last week of whole days, newest last, as plain dates.
 
     Each entry is one day rather than one instant, because an instant is one
     orbit strip: a few hundred kilometres of the planet and nothing else. A
@@ -269,6 +317,49 @@ def days_offered(newest: dt.datetime | None) -> list[str]:
     end = newest.astimezone(dt.timezone.utc).date()
     return [(end - dt.timedelta(days=n)).isoformat()
             for n in range(DAYS_OFFERED - 1, -1, -1)]
+
+
+def step_for(family: dict[str, Any], declared: int | None) -> int:
+    """How far apart this layer's frames are, in minutes.
+
+    What the service said, where it said anything. A family's own number is a
+    fallback for a catalogue that published a bare list of instants with no
+    period in it, and a day is the fallback to the fallback -- a satellite
+    that flies over has nothing finer to offer than the day it flew over on.
+    """
+    if declared and declared > 0:
+        return declared
+    return ASSUMED_STEP_MINUTES.get(family["key"], DAILY_STEP_MINUTES)
+
+
+def frames_for(family: dict[str, Any], newest: dt.datetime | None,
+               declared: int | None) -> list[dict[str, str]]:
+    """The moments this layer can be shown at, oldest first.
+
+    One list whatever the orbit, because the panel that draws it is one
+    scrubber whatever the orbit -- but the two kinds of moment are genuinely
+    different things and each says which it is.
+
+    A satellite that flies over offers whole DAYS, each asked for as the range
+    that covers it, because one instant of it is one orbit strip. A satellite
+    that stares offers INSTANTS a few minutes apart, because that is what it
+    published and because consecutive ones are the same view moments apart --
+    which is the only thing here that can honestly be played as an animation.
+    """
+    if newest is None:
+        return []
+    if family.get("spans_days"):
+        return [{"label": day, "at": day,
+                 # A bare date is midnight exactly on some servers, which
+                 # would be one instant and one strip again.
+                 "time": f"{day}T00:00:00Z/{day}T23:59:59Z"}
+                for day in days_offered(newest)]
+    step = dt.timedelta(minutes=step_for(family, declared))
+    end = newest.astimezone(dt.timezone.utc).replace(second=0, microsecond=0)
+    moments = [end - step * n for n in range(FRAMES_OFFERED - 1, -1, -1)]
+    return [{"label": when.strftime("%H:%M"), "at": when.date().isoformat(),
+             "time": mtg._stamp(when)}
+            for when in moments]
 
 
 def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
@@ -302,14 +393,16 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
 
         family = by_key[key]
         newest, entry = mtg._entry(node, name, title)
-        # A day at a time. What a WMS does with a TIME range is draw
-        # everything in it, so a day of orbit strips comes back as a covered
-        # globe rather than as one pass.
-        #
-        # Only for the satellites that fly over. A geostationary one already
-        # has the whole disc in every frame, and compositing a day of those
-        # would blend a moving sky into mud.
-        entry["days"] = days_offered(newest) if family.get("spans_days") else []
+        # Every moment this layer can be shown at, oldest first: whole days
+        # for a satellite that flies over, instants a few minutes apart for
+        # one that stares. The panel is one scrubber over either.
+        entry["frames"] = frames_for(family, newest, entry.get("step_minutes"))
+        entry["step_minutes"] = step_for(family, entry.get("step_minutes"))
+        # Only a satellite that stares has frames close enough together for
+        # consecutive ones to be the same view moments apart, which is what an
+        # animation is. A week of orbit strips played as a loop is a slideshow
+        # of seven different days.
+        entry["animates"] = not family.get("spans_days")
         fresh = newest is not None and now - newest <= live_within(family)
         entry["live"] = fresh
         entry["age_minutes"] = (
@@ -321,7 +414,8 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
             stale[key] += 1
 
     for key, group in found.items():
-        group.sort(key=lambda item: item["id"])
+        # shortlist orders them too -- most wanted first, alphabetical within
+        # a rank -- so there is no separate sort to fall out of step with it.
         shortlist(key, group)
 
     return {
@@ -358,17 +452,21 @@ def layers(refresh: bool = False) -> dict[str, Any]:
 def demo() -> dict[str, Any]:
     """The same shape as a live answer, for the build with no network."""
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-    days = days_offered(now)
+    by_key = {f["key"]: f for f in FAMILIES}
 
     def entry(ident: str, title: str, *, spans: bool = True,
               minutes: int = 180) -> dict[str, Any]:
-        stamp = mtg._stamp(now - dt.timedelta(minutes=minutes))
+        when = now - dt.timedelta(minutes=minutes)
+        stamp = mtg._stamp(when)
+        family = by_key["mtg"] if not spans else by_key["sentinel-3"]
         return {"id": ident, "title": title, "time_default": stamp,
                 "newest": stamp, "age_minutes": minutes, "live": True,
-                # A geostationary layer carries no days, exactly as it would
-                # not live -- otherwise the demo grows a day scrubber that the
-                # real thing never shows.
-                "days": days if spans else []}
+                # Built the same way the live answer builds them, so the
+                # offline build cannot grow a scrubber the real one never
+                # shows -- or lose one it does.
+                "frames": frames_for(family, when, None),
+                "step_minutes": step_for(family, None),
+                "animates": not spans}
 
     seeded = {
         "sentinel-3": [entry("copernicus:s3_olci_truecolour",

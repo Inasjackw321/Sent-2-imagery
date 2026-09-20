@@ -9,65 +9,115 @@
 // listed every product EUMETSAT serves, which is forty buttons for the four
 // anybody opens.
 
+// Set BEFORE anything constructs a Date. Every time on the bar is the
+// satellite's, in UTC, and a test that runs in UTC cannot tell a label that
+// says so from one that happens to agree -- so this suite runs fourteen hours
+// ahead, where the two disagree about what day it is.
+process.env.TZ = 'Pacific/Kiritimati';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { dayIndex, productsShown, stepTo, wmsTime }
+import { clockLabel, dateLabel, frameIndex, framesPer, nextFrame,
+         productsShown, stepFrame, wmsTime }
   from '../frontend/js/copernicus.js';
 
+// A week of whole days, as a satellite that flies over offers them.
 const WEEK = ['2026-09-14', '2026-09-15', '2026-09-16', '2026-09-17',
-              '2026-09-18', '2026-09-19', '2026-09-20'];
+              '2026-09-18', '2026-09-19', '2026-09-20'].map((day) => ({
+  label: day, at: day, time: `${day}T00:00:00Z/${day}T23:59:59Z` }));
+
+// And four frames ten minutes apart, as one that stares does.
+const DISC = ['17:30', '17:40', '17:50', '18:00'].map((hm) => ({
+  label: hm, at: '2026-09-20', time: `2026-09-20T${hm}:00Z` }));
 
 // ── Live, and staying live ─────────────────────────────────────
 
-test('nothing chosen means the newest day', () => {
-  assert.equal(dayIndex(WEEK, null), WEEK.length - 1);
+test('nothing chosen means the newest frame', () => {
+  assert.equal(frameIndex(WEEK, null), WEEK.length - 1);
 });
 
-test('and it stays the newest day when a fresher one arrives', () => {
-  // The panel reloads itself every quarter of an hour. Holding an index would
-  // pin the picture to whatever today was when the panel opened, so that a tab
-  // left open overnight quietly shows yesterday while saying "live".
-  const tomorrow = [...WEEK, '2026-09-21'];
-  assert.equal(WEEK[dayIndex(WEEK, null)], '2026-09-20');
-  assert.equal(tomorrow[dayIndex(tomorrow, null)], '2026-09-21');
+test('and it stays the newest when a fresher one arrives', () => {
+  // The panel reloads itself every quarter of an hour, and Meteosat publishes
+  // every ten minutes. Holding an index would pin the picture to whatever was
+  // newest when the panel opened, so a tab left open quietly falls behind
+  // while the button still reads live.
+  const later = [...DISC, { label: '18:10', at: '2026-09-20',
+                            time: '2026-09-20T18:10:00Z' }];
+  assert.equal(DISC[frameIndex(DISC, null)].label, '18:00');
+  assert.equal(later[frameIndex(later, null)].label, '18:10');
 });
 
-test('a day scrubbed back to is the day that is drawn', () => {
-  assert.equal(WEEK[dayIndex(WEEK, 2)], '2026-09-16');
+test('a frame scrubbed back to is the frame that is drawn', () => {
+  assert.equal(WEEK[frameIndex(WEEK, 2)].label, '2026-09-16');
 });
 
-test('an index off either end lands on a real day', () => {
-  assert.equal(dayIndex(WEEK, -4), 0);
-  assert.equal(dayIndex(WEEK, 99), WEEK.length - 1);
+test('an index off either end lands on a real frame', () => {
+  assert.equal(frameIndex(WEEK, -4), 0);
+  assert.equal(frameIndex(WEEK, 99), WEEK.length - 1);
 });
 
-test('no days at all is not an error', () => {
-  assert.equal(dayIndex([], null), 0);
-  assert.equal(dayIndex(undefined, 3), 0);
+test('no frames at all is not an error', () => {
+  assert.equal(frameIndex([], null), 0);
+  assert.equal(frameIndex(undefined, 3), 0);
 });
 
 // ── Scrubbing ──────────────────────────────────────────────────
 
-test('scrolling back walks a day at a time', () => {
-  assert.equal(stepTo(WEEK, null, -1), WEEK.length - 2);
-  assert.equal(stepTo(WEEK, 3, -1), 2);
+test('scrolling back walks a frame at a time', () => {
+  assert.equal(stepFrame(WEEK, null, -1), WEEK.length - 2);
+  assert.equal(stepFrame(WEEK, 3, -1), 2);
 });
 
-test('and stops at the oldest day rather than running off it', () => {
-  assert.equal(stepTo(WEEK, 0, -1), 0);
+test('and stops at the oldest frame rather than running off it', () => {
+  assert.equal(stepFrame(WEEK, 0, -1), 0);
 });
 
 test('scrolling forward off the end goes back to live, not to an index', () => {
-  // This is the whole of what keeps it live. Landing on the last index instead
-  // would look identical today and be a day stale tomorrow.
-  assert.equal(stepTo(WEEK, WEEK.length - 2, 1), null);
-  assert.equal(stepTo(WEEK, null, 1), null);
+  // This is the whole of what keeps it live. Landing on the last index would
+  // look identical now and be a frame stale ten minutes later.
+  assert.equal(stepFrame(WEEK, WEEK.length - 2, 1), null);
+  assert.equal(stepFrame(WEEK, null, 1), null);
 });
 
-test('a layer with no days cannot be scrubbed', () => {
-  assert.equal(stepTo([], null, -1), null);
+test('a layer with no frames cannot be scrubbed', () => {
+  assert.equal(stepFrame([], null, -1), null);
+});
+
+// ── The loop ───────────────────────────────────────────────────
+
+test('playing on past the last frame comes round to the first', () => {
+  assert.equal(nextFrame(DISC, DISC.length - 1), 0);
+  assert.equal(nextFrame(DISC, 0), 1);
+});
+
+test('and it never resolves to live', () => {
+  // The one thing the loop must not do. Live is a moving target, so a loop
+  // that landed on it would stop replaying the same few hours and start
+  // following the clock -- drifting a frame later on every refresh.
+  for (let at = 0; at < DISC.length; at += 1) {
+    assert.notEqual(nextFrame(DISC, at), null, `from ${at}`);
+  }
+  assert.equal(nextFrame(DISC, null), 0);
+});
+
+test('a single frame is not a loop', () => {
+  assert.equal(nextFrame([], null), null);
+});
+
+test('the hour dial steps an hour whatever the cadence is', () => {
+  assert.equal(framesPer(60, 10), 6);
+  assert.equal(framesPer(60, 15), 4);
+  assert.equal(framesPer(60, 60), 1);
+});
+
+test('and never stands still', () => {
+  // A cadence of a day would otherwise round an hour to zero frames, and the
+  // button would be there doing nothing.
+  assert.equal(framesPer(60, 1440), 1);
+  assert.equal(framesPer(60, 0), 1);
+  assert.equal(framesPer(60, undefined), 1);
 });
 
 // ── What the WMS is asked for ──────────────────────────────────
@@ -75,23 +125,55 @@ test('a layer with no days cannot be scrubbed', () => {
 test('a day is asked for as the range that covers it', () => {
   // A bare date is midnight exactly on some servers, which is one instant --
   // and one instant from a polar orbiter is one orbit strip.
-  assert.equal(wmsTime({ days: WEEK }, 2),
+  assert.equal(wmsTime({ frames: WEEK }, 2),
                '2026-09-16T00:00:00Z/2026-09-16T23:59:59Z');
 });
 
-test('live asks for today', () => {
-  assert.match(wmsTime({ days: WEEK }, null), /^2026-09-20T00:00:00Z\//);
+test('and an instant as an instant', () => {
+  assert.equal(wmsTime({ frames: DISC }, 1), '2026-09-20T17:40:00Z');
 });
 
-test('a geostationary layer keeps its own latest frame', () => {
-  // It has no days: every frame is already the whole disc, so there is nothing
-  // to composite and nothing to scrub.
-  assert.equal(wmsTime({ days: [], time_default: '2026-09-20T11:40:00Z' }, null),
+test('live asks for the newest frame', () => {
+  assert.equal(wmsTime({ frames: DISC }, null), '2026-09-20T18:00:00Z');
+});
+
+test('a layer with no frames keeps its own latest', () => {
+  assert.equal(wmsTime({ frames: [], time_default: '2026-09-20T11:40:00Z' }, null),
                '2026-09-20T11:40:00Z');
 });
 
-test('and a layer with neither asks for no time at all', () => {
-  assert.equal(wmsTime({ days: [] }, null), null);
+test('and one with neither asks for no time at all', () => {
+  assert.equal(wmsTime({ frames: [] }, null), null);
+});
+
+// ── What the bar reads ─────────────────────────────────────────
+
+test('the date is the day the frame falls on', () => {
+  assert.equal(dateLabel(DISC[0]), '20 Sept');
+});
+
+test('and it is read in UTC, not in whatever zone the reader is in', () => {
+  // Every time on this bar is the satellite's. A browser far enough east
+  // reading a UTC date as local shows the wrong day -- and this suite is set
+  // to UTC+14 above so that the two genuinely differ here.
+  assert.notEqual(Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC');
+  assert.equal(dateLabel({ at: '2026-01-01' }), '1 Jan');
+});
+
+test('a missing date is blank rather than "Invalid Date"', () => {
+  assert.equal(dateLabel(undefined), '');
+  assert.equal(dateLabel({ at: '' }), '');
+});
+
+test('a satellite that stares reads a clock', () => {
+  assert.equal(clockLabel({ animates: true }, DISC[3]), '18:00');
+});
+
+test('and one that flies over says so instead of reading 00:00', () => {
+  // The frame is a whole day of passes. 00:00 is not when it passed over --
+  // it is where the range this app asked for happens to start, which is a
+  // number nobody can act on.
+  assert.equal(clockLabel({ animates: false }, WEEK[0]), 'all day');
 });
 
 // ── The shortlist ──────────────────────────────────────────────
@@ -140,15 +222,24 @@ test('the week composite is gone from the panel', () => {
   assert.equal(SOURCE.includes('whole_week'), false);
 });
 
-test('the dates can be scrolled', () => {
-  // Asked for in as many words. The slider covers dragging; this is the wheel.
-  assert.match(SOURCE, /onwheel: onWheel/);
+test('the times can be scrolled', () => {
+  // Asked for in as many words. Bound once on the bar rather than per render,
+  // so it survives the bar being rebuilt on every frame of the loop.
+  assert.match(SOURCE, /addEventListener\('wheel', onWheel/);
   assert.match(SOURCE, /function onWheel/);
 });
 
-test('and scrolling the dates does not scroll the panel instead', () => {
+test('and the wheel listener can actually stop the page scrolling', () => {
+  // A wheel listener is passive by default in this position, and a passive
+  // one calling preventDefault does nothing at all except warn.
+  assert.match(SOURCE, /addEventListener\('wheel', onWheel, \{ passive: false \}\)/);
   const block = SOURCE.slice(SOURCE.indexOf('function onWheel'));
   assert.match(block.slice(0, 500), /e\.preventDefault\(\)/);
+});
+
+test('scrolling stops the loop rather than fighting it', () => {
+  const block = SOURCE.slice(SOURCE.indexOf('function onWheel'));
+  assert.match(block.slice(0, 500), /pause\(\)/);
 });
 
 test('scrubbing retimes the layer rather than rebuilding it', () => {

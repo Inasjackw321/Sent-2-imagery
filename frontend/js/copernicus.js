@@ -19,9 +19,11 @@
 import { api } from './api.js';
 import { $, el } from './ui.js';
 
-// How often to ask for a newer frame. These are polar orbiters publishing a
-// few times a day, so this is about catching up after the tab has been open a
-// while rather than about keeping pace with anything.
+// How often to ask the backend what the newest frame is. Meteosat publishes
+// every ten minutes and the rest a few times a day, so this is about a tab
+// that has been open a while catching up rather than about keeping pace --
+// and a quarter of an hour of a ten-minute cadence is at most one frame
+// behind, which the bar says out loud as an age.
 const REFRESH_MS = 15 * 60 * 1000;
 
 let map = null;
@@ -30,11 +32,14 @@ let enabled = false;
 let catalogue = null;
 let chosen = null;      // { family, layer }
 let opacity = 0.8;
-// Which of the days on offer is showing. null is the newest one, and stays
-// the newest one: a refresh that brings a fresher day moves the picture on
-// rather than leaving it a day behind, which is what "live" has to mean for a
-// panel that reloads itself every quarter of an hour.
-let dayAt = null;
+// Which of the moments on offer is showing: an index into the chosen layer's
+// frames, or null for the newest. null STAYS the newest -- a refresh that
+// brings a fresher frame moves the picture on rather than leaving it behind,
+// which is what "live" has to mean for a panel that reloads itself every
+// quarter of an hour.
+let frameAt = null;
+// The loop: a timer id while it is playing, null while it is not.
+let playing = null;
 // Whether the whole catalogue is showing, rather than the handful of products
 // per satellite that the backend marks as the everyday ones.
 let showAll = false;
@@ -48,6 +53,10 @@ export function initCopernicus(leafletMap) {
   // things drawn on top of the map.
   map.createPane('copernicus').style.zIndex = 420;
   map.getPane('copernicus').style.pointerEvents = 'none';
+  // Once, on the bar itself rather than on its contents, so it survives the
+  // bar being rebuilt -- and passive: false, because a wheel handler that
+  // cannot preventDefault scrolls the page instead of the times.
+  $('#copBar')?.addEventListener('wheel', onWheel, { passive: false });
   buildDock();
 }
 
@@ -66,13 +75,15 @@ function show() {
     // 1.3.0 is what the capabilities are read at, and mixing versions is how
     // you get axis order wrong and the picture mirrored.
     version: '1.3.0',
-    // A whole day -- not an instant.
+    // Whichever moment the bar is showing. What that IS depends on the orbit,
+    // and the backend has already decided: a whole day for a satellite that
+    // flies over, an instant for one that stares.
     //
-    // One instant from a polar orbiter is one orbit strip: a few hundred
+    // One instant from a polar orbiter is one orbit strip -- a few hundred
     // kilometres of the planet and nothing else, which on a world map reads
     // as a broken layer rather than as a satellite that has not been over the
     // rest of the world yet. A WMS given a TIME range draws everything inside
-    // it, so a day is every pass that day -- and at three hundred metres that
+    // it, so a day is every pass that day, and at three hundred metres that
     // is the globe.
     ...(timeParam() ? { time: timeParam() } : {}),
     pane: 'copernicus',
@@ -117,39 +128,59 @@ async function load() {
   show();
 }
 
-/** Which day of a layer's week is showing: the newest unless scrubbed back. */
-export function dayIndex(days, at) {
-  if (!days?.length) return 0;
-  if (at == null) return days.length - 1;
-  return Math.min(Math.max(at, 0), days.length - 1);
+/** Which frame is showing: the newest unless scrubbed back. */
+export function frameIndex(frames, at) {
+  if (!frames?.length) return 0;
+  if (at == null) return frames.length - 1;
+  return Math.min(Math.max(at, 0), frames.length - 1);
 }
 
-/** Where a step of the scrubber lands, with the newest day meaning "live".
+/** Where a step of the scrubber lands, with the newest frame meaning "live".
  *
  * Returning null rather than the last index is the whole of what keeps the
- * panel live: an index would pin the picture to whatever today happened to be
- * when you scrubbed, and a quarter of an hour later that is yesterday.
+ * panel live: an index would pin the picture to whatever the newest frame was
+ * when you scrubbed, and ten minutes later that is the one before last.
  */
-export function stepTo(days, at, step) {
-  const last = (days?.length ?? 0) - 1;
+export function stepFrame(frames, at, step) {
+  const last = (frames?.length ?? 0) - 1;
   if (last < 0) return null;
-  const next = dayIndex(days, at) + step;
+  const next = frameIndex(frames, at) + step;
   return next >= last ? null : Math.max(0, next);
 }
 
-/** The TIME parameter for whichever day is selected. */
+/** The next frame of a loop: round the end and back to the start.
+ *
+ * Deliberately NOT stepFrame. A loop that resolved its last frame to null
+ * would land on "live", and live is a moving target -- a loop left running
+ * would silently start following the clock instead of replaying the same few
+ * hours, and the animation would drift a frame later every time the panel
+ * refreshed.
+ */
+export function nextFrame(frames, at) {
+  const last = (frames?.length ?? 0) - 1;
+  if (last < 0) return null;
+  const next = frameIndex(frames, at) + 1;
+  return next > last ? 0 : next;
+}
+
+/** How many frames make up about this many minutes. Always at least one. */
+export function framesPer(minutes, stepMinutes) {
+  // An unknown cadence makes "an hour" meaningless, so the dial moves one
+  // frame. Treating it as one minute would make the hour dial jump sixty
+  // frames past the end of a list that holds twenty-four.
+  if (!(stepMinutes > 0)) return 1;
+  return Math.max(1, Math.round(minutes / stepMinutes));
+}
+
+/** The TIME parameter for whichever frame is selected. */
 export function wmsTime(layer, at) {
-  const days = layer?.days ?? [];
-  if (!days.length) return layer?.time_default ?? null;
-  const day = days[dayIndex(days, at)];
-  // One whole day, expressed as the range that covers it. A bare date works
-  // on some servers and is read as midnight exactly on others, which would
-  // put us back to one instant and one strip.
-  return `${day}T00:00:00Z/${day}T23:59:59Z`;
+  const frames = layer?.frames ?? [];
+  if (!frames.length) return layer?.time_default ?? null;
+  return frames[frameIndex(frames, at)].time;
 }
 
 function timeParam() {
-  return wmsTime(chosen?.layer, dayAt);
+  return wmsTime(chosen?.layer, frameAt);
 }
 
 /** Which of a family's products the panel lists.
@@ -184,7 +215,6 @@ function buildDock() {
   const held = families.reduce((n, f) => n + f.layers.length, 0);
   const listed = families.reduce(
     (n, f) => n + productsShown(f.layers, showAll, chosen?.layer?.id).length, 0);
-  const days = chosen?.layer?.days ?? [];
   dock.innerHTML = '';
   dock.append(
     el('button', { class: 'cop-toggle', id: 'copToggle', onclick: toggle },
@@ -212,38 +242,8 @@ function buildDock() {
             .map((layer) => el('button', {
               class: `cop-layer${layer.id === chosen?.layer?.id ? ' is-on' : ''}`,
               title: `${layer.title} — ${layer.id}`,
-              onclick: () => { chosen = { family, layer }; buildDock(); show(); },
+              onclick: () => { chosen = { family, layer }; pause(); buildDock(); show(); },
             }, shortName(layer)))))),
-      // Live by default, and scrub back through the week from there. There is
-      // no composite any more: a whole day of a polar orbiter's passes is
-      // already the whole globe, so the week added nothing but a mode in which
-      // the picture was never of any particular moment.
-      days.length > 1
-        ? el('div', { class: 'cop-span', onwheel: onWheel },
-          el('button', {
-            class: `cop-live${dayAt == null ? ' is-on' : ''}`, id: 'copLive',
-            title: 'The newest day, and it stays the newest day',
-            onclick: () => { dayAt = null; retime(); refreshSpan(); paint(); },
-          }, 'Live'),
-          el('input', {
-            type: 'range', class: 'cop-scrub', id: 'copScrub',
-            min: '0', max: String(days.length - 1), step: '1',
-            value: String(dayIndex(days, dayAt)),
-            title: 'Scroll or drag back through the week',
-            // Deliberately not a rebuild: rebuilding the panel mid-drag takes
-            // the slider out from under the pointer and the drag stops dead.
-            oninput: (e) => {
-              const last = days.length - 1;
-              const to = Number(e.target.value);
-              dayAt = to >= last ? null : to;
-              retime();
-              refreshSpan();
-              paint();
-            },
-          }),
-          el('span', { class: 'cop-when', id: 'copWhen' },
-            days[dayIndex(days, dayAt)]))
-        : null,
       listed < held || showAll
         ? el('button', {
           class: `cop-more${showAll ? ' is-on' : ''}`,
@@ -265,6 +265,138 @@ function buildDock() {
       el('div', { class: 'cop-count', id: 'copCount' }, 'Loading…'),
       el('div', { class: 'cop-note', id: 'copNote' }, '')));
   paint();
+  buildBar();
+}
+
+// ── The time bar ───────────────────────────────────────────────
+//
+// Out of the side panel and onto the map, because it is not a setting: it is
+// what you are looking at. A geostationary satellite publishes a frame every
+// ten minutes, so the interesting thing about it is not which product is
+// selected but which minute is on screen -- and the way you find out what a
+// front is doing is to play it.
+
+// How long each frame is held when the loop is running. Faster than this and
+// a frame is gone before the tiles for it have arrived; slower and it stops
+// reading as motion.
+const FRAME_MS = 550;
+
+function buildBar() {
+  const bar = $('#copBar');
+  if (!bar) return;
+  const layer = chosen?.layer;
+  const frames = layer?.frames ?? [];
+  bar.innerHTML = '';
+  bar.hidden = !enabled || frames.length < 2;
+  if (bar.hidden) { pause(); return; }
+
+  const now = frames[frameIndex(frames, frameAt)];
+  const hop = (by) => () => {
+    pause();
+    frameAt = stepFrame(frames, frameAt, by);
+    retime();
+    refreshBar();
+  };
+  // An hour at a time on the left dial, one frame on the right, which is what
+  // the two dials mean on every weather map that has them.
+  const anHour = framesPer(60, layer.step_minutes);
+
+  // Filtered, because append() is the DOM's and not el()'s: handed a null it
+  // inserts the text "null" rather than skipping it, which is how a bar with
+  // no clock on it came to read "nullnull".
+  bar.append(...[
+    layer.animates
+      ? el('button', {
+        class: `cop-play${playing ? ' is-on' : ''}`, id: 'copPlay',
+        title: playing ? 'Stop' : 'Play the last few hours, on a loop',
+        onclick: () => (playing ? pause() : play()),
+      }, playing ? '❚❚' : '▶')
+      // A satellite that flies over has no animation to offer: consecutive
+      // frames are two different strips of the planet a day apart, and a loop
+      // of those is a slideshow, not weather moving.
+      : el('span', { class: 'cop-noplay', title: 'Only Meteosat updates fast '
+        + 'enough to animate — these frames are a day apart' }, '·'),
+    el('span', { class: 'cop-date', id: 'copDate' }, dateLabel(now)),
+    dial(layer.animates ? anHour : 1, hop),
+    layer.animates ? el('span', { class: 'cop-colon' }, ':') : null,
+    layer.animates ? dial(1, hop, true) : null,
+    el('span', { class: 'cop-time', id: 'copTime' }, clockLabel(layer, now)),
+    el('button', {
+      class: `cop-latest${frameAt == null ? ' is-on' : ''}`, id: 'copLatest',
+      title: 'The newest frame, and it stays the newest frame',
+      onclick: () => { pause(); frameAt = null; retime(); refreshBar(); },
+    }, '⏭'),
+  ].filter((node) => node != null));
+}
+
+/** One up/down pair, stepping by a fixed number of frames. */
+function dial(by, hop, minor = false) {
+  return el('span', { class: `cop-dial${minor ? ' is-minor' : ''}` },
+    el('button', { class: 'cop-nudge', title: 'Later', onclick: hop(by) }, '⌃'),
+    el('button', { class: 'cop-nudge', title: 'Earlier', onclick: hop(-by) }, '⌄'));
+}
+
+/** "20 Sept", from the day a frame falls on. */
+export function dateLabel(frame) {
+  const on = frame?.at;
+  if (!on) return '';
+  const when = new Date(`${on}T12:00:00Z`);
+  return Number.isNaN(when.valueOf()) ? on
+    : when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short',
+                                         timeZone: 'UTC' });
+}
+
+/** "18:00" for a satellite that stares, and nothing for one that flies over.
+ *
+ * A whole day of orbit strips has no clock reading. Showing 00:00 for it
+ * would be a time nobody can act on -- it is not when the satellite passed
+ * over, it is where the range this app asked for happens to start.
+ */
+export function clockLabel(layer, frame) {
+  return layer?.animates ? (frame?.label ?? '') : 'all day';
+}
+
+function refreshBar() {
+  const layer = chosen?.layer;
+  const frames = layer?.frames ?? [];
+  if (!frames.length) return;
+  const now = frames[frameIndex(frames, frameAt)];
+  const date = $('#copDate');
+  const time = $('#copTime');
+  if (date) date.textContent = dateLabel(now);
+  if (time) time.textContent = clockLabel(layer, now);
+  $('#copLatest')?.classList.toggle('is-on', frameAt == null);
+  const play = $('#copPlay');
+  if (play) {
+    play.textContent = playing ? '❚❚' : '▶';
+    play.classList.toggle('is-on', Boolean(playing));
+    play.title = playing ? 'Stop' : 'Play the last few hours, on a loop';
+  }
+  paint();
+}
+
+function play() {
+  const frames = chosen?.layer?.frames ?? [];
+  if (playing || frames.length < 2) return;
+  // Start from the oldest frame rather than from wherever the scrubber sits,
+  // so pressing play always gives the whole loop instead of the tail of it.
+  frameAt = 0;
+  retime();
+  playing = setInterval(() => {
+    const on = chosen?.layer?.frames ?? [];
+    if (on.length < 2) { pause(); return; }
+    frameAt = nextFrame(on, frameAt);
+    retime();
+    refreshBar();
+  }, FRAME_MS);
+  refreshBar();
+}
+
+function pause() {
+  if (!playing) return;
+  clearInterval(playing);
+  playing = null;
+  refreshBar();
 }
 
 /** How many products the short list holds, for the button that goes back. */
@@ -285,27 +417,17 @@ function retime() {
   drawn.setParams(when ? { time: when } : {});
 }
 
-/** Put the scrubber, its date and the Live chip back in step. */
-function refreshSpan() {
-  const days = chosen?.layer?.days ?? [];
-  const scrub = $('#copScrub');
-  const when = $('#copWhen');
-  if (scrub) scrub.value = String(dayIndex(days, dayAt));
-  if (when) when.textContent = days[dayIndex(days, dayAt)] ?? '';
-  $('#copLive')?.classList.toggle('is-on', dayAt == null);
-}
-
-/** Scrolling over the span row walks the week: down is back in time. */
+/** Scrolling over the bar walks the frames: down is back in time. */
 function onWheel(e) {
-  const days = chosen?.layer?.days ?? [];
-  if (days.length < 2) return;
-  // Otherwise the panel scrolls underneath instead, which is the one thing a
-  // reader cannot mean by scrolling on a row of dates.
+  const frames = chosen?.layer?.frames ?? [];
+  if (frames.length < 2) return;
+  // Otherwise the page scrolls underneath instead, which is the one thing a
+  // reader cannot mean by scrolling on a row of times.
   e.preventDefault();
-  dayAt = stepTo(days, dayAt, e.deltaY > 0 ? -1 : 1);
+  pause();
+  frameAt = stepFrame(frames, frameAt, e.deltaY > 0 ? -1 : 1);
   retime();
-  refreshSpan();
-  paint();
+  refreshBar();
 }
 
 /** A label that fits, from a title that does not. */
@@ -329,10 +451,12 @@ function toggle() {
   } else {
     clearInterval(timer);
     timer = null;
+    pause();
     drawn?.remove();
     drawn = null;
   }
   paint();
+  buildBar();
 }
 
 function paint() {
@@ -351,13 +475,14 @@ function paint() {
     age == null ? 'live' : age < 60 ? `${age} min ago`
       : `${Math.round(age / 60)} h ago`}`;
 
-  const spans = chosen.layer.days?.length > 0;
   const lines = [
-    // A geostationary satellite has no week to offer: every frame is already
-    // the whole disc, so it says what it is rather than which day it is.
-    !spans
-      ? 'The latest full disc, as it was taken.'
-      : dayAt == null
+    chosen.layer.animates
+      ? (playing
+        ? 'Playing the last few hours on a loop.'
+        : 'A frame every '
+          + `${chosen.layer.step_minutes ?? 10} minutes. Press play, or scroll `
+          + 'the times to go back.')
+      : frameAt == null
         ? 'Today: every pass so far, which at this scale is the whole Earth. '
           + 'One instant would be a single orbit strip. Scroll the dates to go '
           + 'back.'

@@ -26,6 +26,7 @@ vocabulary -- which is a guarantee, not a hope.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -120,6 +121,48 @@ def newest_time(extent: str) -> dt.datetime | None:
     return newest
 
 
+_PERIOD = re.compile(
+    r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<mins>\d+)M)?"
+    r"(?:(?P<secs>\d+)S)?)?$", re.I)
+
+
+def period_of(extent: str) -> dt.timedelta | None:
+    """How far apart a WMS time dimension's frames are, if it says.
+
+    The third term of a start/end/period interval, which is where a service
+    that publishes on a cadence writes that cadence down. A satellite
+    photographing its disc every ten minutes says PT10M here, and that is the
+    difference between animating what it actually published and animating a
+    guess about how often it publishes.
+
+    Only the plain shapes. ISO 8601 durations can carry years and months,
+    which are not a fixed number of seconds and are not what any of these
+    services use -- a period this cannot read is no period rather than a
+    wrong one.
+    """
+    if not extent:
+        return None
+    steps: list[dt.timedelta] = []
+    for part in extent.replace("\n", "").split(","):
+        bits = part.strip().split("/")
+        if len(bits) < 3:
+            continue
+        got = _PERIOD.match(bits[2].strip())
+        if not got:
+            continue
+        span = dt.timedelta(
+            days=int(got.group("days") or 0),
+            hours=int(got.group("hours") or 0),
+            minutes=int(got.group("mins") or 0),
+            seconds=int(got.group("secs") or 0))
+        if span > dt.timedelta(0):
+            steps.append(span)
+    # The finest, where a layer declares several intervals: an archive at one
+    # frame a day beside a live interval at one every ten minutes is common,
+    # and the live one is the one being animated.
+    return min(steps) if steps else None
+
+
 def _stamp(when: dt.datetime) -> str:
     """An instant in the form WMS wants: UTC, seconds, trailing Z."""
     return when.astimezone(dt.timezone.utc).replace(
@@ -139,6 +182,12 @@ def _entry(node: ET.Element, name: str,
     return newest, {
         "id": name,
         "title": title,
+        # How often it publishes, where it says so. Read here rather than
+        # assumed per satellite, because the assumption is only needed when
+        # the catalogue is silent.
+        "step_minutes": (
+            round(step.total_seconds() / 60)
+            if (step := period_of(extent) or period_of(default or "")) else None),
         # Handed to WMS as the TIME parameter, so it is normalised to the
         # trailing-Z form servers expect rather than passed on as whatever the
         # catalogue happened to write. GeoServer accepts +00:00 but not every

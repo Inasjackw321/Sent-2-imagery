@@ -1481,29 +1481,55 @@ body.is-walled { overflow: hidden; }
 }
 .radar-retry:hover { background: rgba(255,143,94,.3); }
 
-/* Live, and a week to scrub back through. The wheel is handled on this row,
-   so it must not also scroll the panel underneath it. */
-.cop-span {
-  display: flex; align-items: center; gap: 6px; overscroll-behavior: contain;
+/* The time bar: on the map, bottom centre, over everything the map draws.
+   The wheel is handled here, so it must not also scroll the page. */
+.cop-bar {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+  z-index: 620; display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-radius: 11px;
+  background: rgba(13,16,21,.92); border: 1px solid var(--line);
+  backdrop-filter: blur(7px); box-shadow: 0 6px 22px rgba(0,0,0,.45);
+  overscroll-behavior: contain;
 }
-.cop-live {
-  padding: 4px 8px; cursor: pointer; font: inherit; font-size: 10px;
+.cop-bar[hidden] { display: none; }
+.cop-play, .cop-latest {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; padding: 0; cursor: pointer;
+  font: inherit; font-size: 13px; line-height: 1;
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.cop-play:hover, .cop-latest:hover { color: var(--ink); border-color: #3a4a66; }
+.cop-play.is-on, .cop-latest.is-on {
+  color: #e6fff7; background: rgba(76,224,179,.16);
+  border-color: rgba(76,224,179,.55);
+}
+/* A satellite that flies over cannot be animated, and the gap where the play
+   button would be says so rather than offering a button that does nothing. */
+.cop-noplay {
+  width: 30px; text-align: center; color: var(--ink-faint); font-size: 15px;
+  cursor: help;
+}
+.cop-date {
+  font-size: 12.5px; color: var(--ink); white-space: nowrap;
+}
+.cop-time {
+  font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums;
+  min-width: 52px; text-align: center; font-weight: 600;
+}
+.cop-colon { color: var(--ink-faint); font-size: 15px; }
+/* Up and down, stacked, the way every weather map's clock reads. */
+.cop-dial { display: grid; gap: 1px; }
+.cop-nudge {
+  width: 20px; height: 13px; padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  font: inherit; font-size: 10px; line-height: 1;
   background: transparent; color: var(--ink-faint);
-  border: 1px solid var(--line); border-radius: 6px; flex: none;
+  border: 1px solid transparent; border-radius: 4px;
 }
-.cop-live:hover { color: var(--ink); }
-.cop-live.is-on {
-  color: #e6fff7; background: rgba(76,224,179,.16); border-color: rgba(76,224,179,.55);
-}
-/* width: 0 as well as min-width: 0 -- a range input has an intrinsic width it
-   will not give up otherwise, and it is the row that drags the panel wide. */
-.cop-scrub {
-  flex: 1 1 0; width: 0; min-width: 0; accent-color: #4ce0b3; cursor: ew-resize;
-}
-.cop-when {
-  min-width: 68px; text-align: right; font-size: 10px; color: var(--ink-dim);
-  font-variant-numeric: tabular-nums;
-}
+.cop-nudge:hover { color: var(--ink); border-color: var(--line); }
+.cop-dial.is-minor .cop-nudge { color: rgba(154,168,190,.55); }
+.cop-dial.is-minor .cop-nudge:hover { color: var(--ink); }
 /* The way to the rest of the catalogue, and back. */
 .cop-more {
   padding: 4px 8px; cursor: pointer; font: inherit; font-size: 10px;
