@@ -31,6 +31,7 @@
 // the count and the group's average trajectory.
 
 import { api } from './api.js';
+import { hotSaid, hotSegments } from './frontier.js';
 import { $, el, handOver, toast } from './ui.js';
 import { drawShot } from './trackershot.js';
 
@@ -83,6 +84,10 @@ let drifter = null;
 const drawn = new Map();
 // The mass arrows of concentrate mode.
 const massShapes = [];
+let frontiers = null;
+let frontierInk = null;
+// What the panel says about it, recomputed with the layer.
+let nearBorder = '';
 
 export function initTracker(leafletMap) {
   map = leafletMap;
@@ -117,6 +122,19 @@ export function initTracker(leafletMap) {
   // zoom and a finger apart three levels in.
   map.on('zoomend', declump);
   areas = L.layerGroup([], { pane: 'trackerArea' });
+  // The lit stretch of a watched border, in its own pane between the shaded
+  // provinces and the marks. Under the marks, because the marks are the
+  // subject and this is a statement about the ground they are over; over the
+  // shaded provinces, because a warning wash across the border area would
+  // otherwise bury the one line that is trying to be seen.
+  map.createPane('trackerFrontier').style.zIndex = 430;
+  map.getPane('trackerFrontier').style.pointerEvents = 'none';
+  // An explicit SVG renderer, for the same reason areaInk above has one: the
+  // map is built with preferCanvas, and a canvas-rendered polyline is pixels.
+  // It has no element, so className is dropped and the CSS that makes the lit
+  // border pulse applies to nothing. There are a handful of these at a time.
+  frontierInk = L.svg({ pane: 'trackerFrontier' });
+  frontiers = L.layerGroup([], { pane: 'trackerFrontier' });
   buildDock();
 }
 
@@ -1627,6 +1645,7 @@ async function load() {
     problem = '';
     reconcile(feed.events ?? []);
     drawMasses();
+    lightBorders(feed.events ?? []);
   } catch (err) {
     problem = err.message;
   }
@@ -1658,6 +1677,10 @@ function buildDock() {
           },
         }),
         'Concentrate'),
+      // A row of its own, above the count, because it is the most important
+      // line in the panel on the night it says anything and squeezing it in
+      // beside the count wraps both of them into nonsense.
+      el('div', { class: 'ao-near', id: 'trackerNear', hidden: true }, ''),
       el('div', { class: 'ao-head' },
         el('div', { class: 'ao-count', id: 'trackerCount' }, 'Loading…'),
         // Because "not placed" and "placed somewhere I am not looking" are
@@ -1726,6 +1749,7 @@ function toggle() {
   $('#trackerBody').hidden = !enabled;
   if (enabled) {
     areas.addTo(map);
+    frontiers.addTo(map);
     layer.addTo(map);
     load();
     poller = setInterval(load, POLL_MS);
@@ -1742,6 +1766,9 @@ function toggle() {
     layer.clearLayers();
     areas.remove();
     areas.clearLayers();
+    frontiers.remove();
+    frontiers.clearLayers();
+    nearBorder = '';
     drawn.clear();
   }
   paintDock();
@@ -1753,6 +1780,43 @@ let borders = null;
 // Ukraine's provinces as flat rings, learned from those borders once.
 let ukraine = null;
 let bordersFailed = '';
+
+/** Light the stretch of a watched border that has something flying near it.
+ *
+ * On the live map as well as on the picture, asked for. It is the same
+ * arithmetic both times and deliberately the same module, because a warning
+ * that appears on an exported picture and not on the screen it was exported
+ * from is worse than no warning: the picture stops agreeing with the map.
+ *
+ * Wants the borders, which are fetched once and kept. Until they arrive
+ * nothing is lit -- and nothing is claimed either.
+ */
+async function lightBorders(events) {
+  if (!frontiers) return;
+  const outlines = await regionOutlines();
+  if (!enabled) return;
+  const runs = hotSegments(outlines, events ?? []);
+  frontiers.clearLayers();
+  nearBorder = hotSaid(runs, NEIGHBOUR_NAMES);
+  for (const run of runs) {
+    const line = run.points.map(([lon, lat]) => [lat, lon]);
+    // Two lines on the same points: a wide soft one that carries at a glance
+    // and a bright narrow one that says exactly where.
+    L.polyline(line, {
+      pane: 'trackerFrontier', renderer: frontierInk, interactive: false,
+      color: '#ff4a44', weight: 14, opacity: 0.28, lineCap: 'round',
+    }).addTo(frontiers);
+    L.polyline(line, {
+      pane: 'trackerFrontier', renderer: frontierInk, interactive: false,
+      className: 'ao-frontier-hot',
+      color: '#ff4a44', weight: 4, opacity: 0.95, lineCap: 'round',
+    }).addTo(frontiers);
+  }
+  paintDock();
+}
+
+// What the watched borders are called in a sentence.
+const NEIGHBOUR_NAMES = { pl: 'Poland', ro: 'Romania', md: 'Moldova' };
 
 async function regionOutlines() {
   if (borders) return borders;
@@ -2097,6 +2161,18 @@ function paintDock() {
       : 'Nothing on the map';
   const find = $('#trackerFind');
   if (find) find.disabled = !(n || grouped);
+
+  // How close the nearest thing is to a watched border, in kilometres.
+  //
+  // The lit stretch says WHERE on the map; this says HOW CLOSE, which the
+  // line cannot. "Something is near the Polish border" and "something is four
+  // kilometres from the Polish border" are different statements, and the
+  // picture carries the second one too.
+  const near = $('#trackerNear');
+  if (near) {
+    near.textContent = nearBorder;
+    near.hidden = !nearBorder;
+  }
 
   for (const button of document.querySelectorAll('.ao-show')) {
     const key = button.dataset.group;

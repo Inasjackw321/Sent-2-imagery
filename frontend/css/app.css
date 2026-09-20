@@ -1539,6 +1539,30 @@ body.is-walled { overflow: hidden; }
 .cop-more:hover { color: var(--ink); border-color: #3a4a66; }
 .cop-more.is-on { color: var(--ink-dim); border-style: solid; }
 
+/* The lit stretch of a watched border, and what it says.
+
+   It pulses. A red line on a map full of red is a line nobody finds; a line
+   that moves is the one thing on a static map the eye goes to, and this is
+   the one warning here that is about somebody else's airspace. */
+.ao-frontier-hot {
+  animation: frontier-pulse 1.6s ease-in-out infinite;
+}
+@keyframes frontier-pulse {
+  0%, 100% { stroke-opacity: .95; }
+  50% { stroke-opacity: .35; }
+}
+/* Stillness for anyone who has asked for it. The line stays, and stays red
+   and wide -- what goes is the movement, which is the part that hurts. */
+@media (prefers-reduced-motion: reduce) {
+  .ao-frontier-hot { animation: none; }
+}
+.ao-near {
+  display: block; font-size: 11px; color: #ffb0ac; font-weight: 600;
+  padding: 4px 8px; border-radius: 6px;
+  background: rgba(255,74,68,.14); border: 1px solid rgba(255,74,68,.45);
+}
+.ao-near[hidden] { display: none; }
+
 /* ── Air threats, from public Telegram channels ──────────────── */
 
 .ao-dock { display: grid; gap: 8px; min-width: 0; }

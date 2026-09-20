@@ -118,3 +118,38 @@ function readSource() {
   return readFileSync(
     fileURLToPath(new URL('../frontend/js/cams.js', import.meta.url)), 'utf8');
 }
+
+test('every camera has an id of its own', () => {
+  // The id keys the pin, the wall tile and the refresh timer. Two cameras
+  // sharing one means the second quietly replaces the first everywhere.
+  const seen = CAMS.map((cam) => cam.id);
+  assert.equal(new Set(seen).size, seen.length,
+    `duplicated: ${seen.filter((id, i) => seen.indexOf(id) !== i)}`);
+});
+
+test('every camera has somewhere to be drawn', () => {
+  for (const cam of CAMS) {
+    assert.ok(Number.isFinite(cam.lat) && Number.isFinite(cam.lon), cam.id);
+    assert.ok(Math.abs(cam.lat) <= 90 && Math.abs(cam.lon) <= 180, cam.id);
+  }
+});
+
+// Every shape a camera comes in. An unlisted one is a typo that shows as a
+// pin with nothing behind it, which looks exactly like a camera that is down.
+const KINDS = [undefined, 'still', 'hls', 'dated', 'embed'];
+
+test('every camera is a kind the app can draw', () => {
+  for (const cam of CAMS) {
+    assert.ok(KINDS.includes(cam.kind), `${cam.id}: ${cam.kind}`);
+  }
+});
+
+test('every camera has something to show, over https', () => {
+  for (const cam of CAMS) {
+    // A dated camera builds its address from the clock, so it has a template
+    // where the others have a src -- but it still has to be https, because
+    // the page is and a mixed-content image is silently blocked.
+    const from = cam.kind === 'dated' ? cam.template : cam.src;
+    assert.match(from ?? '', /^https:\/\//, cam.id);
+  }
+});

@@ -12,6 +12,7 @@
 // thing in the frame.
 
 import { WATERMARK } from './capture.js';
+import { hotSegments } from './frontier.js';
 
 // The picture's width in pixels. Height follows from the shape of the area
 // asked for, so a country comes out landscape and an oblast can come out
@@ -104,6 +105,12 @@ const COUNTRY_LABEL = 'rgba(226, 236, 250, 0.82)';
 // apart from it by being a line rather than a filled glyph on a dark disc.
 // See drawFrontiers for what this may be drawn around and what it may not.
 const FRONTIER = 'rgba(255, 96, 92, 0.95)';
+// The stretch of a watched border with something flying near it. Brighter and
+// wider than the line it sits on, with a glow under it, because the whole
+// point is that it must be findable at a glance on a picture of a country --
+// a slightly different red would be a difference nobody sees.
+const FRONTIER_HOT = 'rgba(255, 74, 68, 1)';
+const FRONTIER_GLOW = 'rgba(255, 74, 68, 0.38)';
 
 // The bands top and bottom. Text over a map needs something behind it or it
 // sits on whichever border happens to be under it.
@@ -305,7 +312,7 @@ export async function drawShot({ bounds, marks, warnings, outlines, credit,
   ctx.fillRect(0, 0, frame.width, frame.height);
 
   const bands = bandSizes(frame, marks, warnings);
-  drawLand(ctx, frame, outlines);
+  drawLand(ctx, frame, outlines, marks);
   // Under the names and the marks: a warning is the ground's state, and the
   // things in the air are drawn on top of it.
   drawWarnings(ctx, frame, warnings);
@@ -399,7 +406,7 @@ export function isFrontier(outline) {
   return outline?.level === 'country';
 }
 
-function drawLand(ctx, frame, outlines) {
+function drawLand(ctx, frame, outlines, marks) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
@@ -442,6 +449,41 @@ function drawLand(ctx, frame, outlines) {
   for (const path of paths) ctx.stroke(path);
 
   drawFrontiers(ctx, frame, frontiers);
+  drawHotFrontier(ctx, frame, outlines, marks);
+}
+
+/**
+ * The stretch of a watched border with something flying within 25 km.
+ *
+ * Drawn after the borders and over them, on the same coordinates, so it reads
+ * as that border lit rather than as a second line beside it. A glow first and
+ * much wider, which is what carries at the size these pictures are looked at
+ * -- a reader scrolling past sees the glow and then finds the line in it.
+ *
+ * Nothing near anything draws nothing at all. A picture where every border is
+ * lit all the time is a picture where the lighting means nothing.
+ */
+function drawHotFrontier(ctx, frame, outlines, marks) {
+  const runs = hotSegments(outlines, marks ?? []);
+  if (!runs.length) return;
+  const width = Math.max(2, Math.round(frame.width * 0.0022));
+  const paths = runs.map((run) => {
+    const path = new Path2D();
+    run.points.forEach(([lon, lat], i) => {
+      const [x, y] = frame.at(lat, lon);
+      if (i === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+    });
+    return path;
+  });
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = FRONTIER_GLOW;
+  ctx.lineWidth = width * 5;
+  for (const path of paths) ctx.stroke(path);
+  ctx.strokeStyle = FRONTIER_HOT;
+  ctx.lineWidth = width * 1.9;
+  for (const path of paths) ctx.stroke(path);
 }
 
 /**

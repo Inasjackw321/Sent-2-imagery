@@ -228,6 +228,33 @@ export const CAMS = [
   // the Suwałki gap, which is the stretch of NATO ground most often named in
   // the same sentence as this map's subject.
   {
+    // Named by where the pin is rather than by a district, because the
+    // coordinates are what came with the camera and a district name would be
+    // my guess at what the coordinates mean.
+    id: 'moscow-south-east', name: 'Moscow, south-east', place: 'Moscow, Russia',
+    tz: 'Europe/Moscow',
+    lat: 55.6927, lon: 37.7354, precision: 'given position',
+    kind: 'still',
+    src: 'https://imgproxy.windy.com/_/full/plain/current/1693841571/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'moscow-south', name: 'Moscow, south', place: 'Moscow, Russia',
+    tz: 'Europe/Moscow',
+    lat: 55.6781, lon: 37.6954, precision: 'given position',
+    kind: 'still',
+    src: 'https://imgproxy.windy.com/_/full/plain/current/1793899954/original.jpg',
+    host: 'windy.com',
+  },
+  {
+    id: 'netanya', name: 'Netanya', place: 'Israel',
+    tz: 'Asia/Jerusalem',
+    lat: 32.3258, lon: 34.8575, precision: 'given position',
+    kind: 'still',
+    src: 'https://imgproxy.windy.com/_/full/plain/current/1793904023/original.jpg',
+    host: 'windy.com',
+  },
+  {
     id: 'suwalki-gap', name: 'Suwałki gap', place: 'Kalvarija, Lithuania',
     tz: 'Europe/Vilnius',
     lat: 54.3230, lon: 23.1449, precision: 'given position',
