@@ -546,6 +546,14 @@ def lookout_sweep(body: dict = Body(...)) -> dict:
         raise _fail(ValueError("no clear enough pass over that area to sweep"), 400)
     scene = scenes[0]
 
+    # Checked once, here, rather than raised identically on every square. A
+    # composite this app does not have used to fail fifty times over and show
+    # as "49 could not be answered" with the name nowhere on the screen.
+    try:
+        preset = lookout.composite_for(scene.get("satellite"), body.get("preset"))
+    except lookout.LookoutError as exc:
+        raise _fail(exc, 400)
+
     def picture(square: dict) -> str:
         """One square, rendered from the sweep's own pass."""
         made = service.render({
@@ -553,7 +561,7 @@ def lookout_sweep(body: dict = Body(...)) -> dict:
             "scene": scene,
             "size": int(body.get("size") or 512),
             "mode": "composite",
-            "preset": body.get("preset") or "true_colour",
+            "preset": preset,
             "format": "png",
         })
         return lookout.as_data_url(made["bytes"], made["media_type"])

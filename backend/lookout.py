@@ -205,6 +205,29 @@ def squares(area: dict[str, Any], km: float = SQUARE_KM,
     return out
 
 
+def composite_for(satellite: str | None = None, asked: Any = None) -> str:
+    """Which composite a square is rendered with.
+
+    Taken from the satellite's own default rather than written out here.
+    A name spelled by hand is a name that can be spelled wrong, and this one
+    was: "true_colour" for a composite the app calls "true_color" raised on
+    every square, so a sweep of the Kyiv area came back as forty-nine squares
+    that "could not be answered" with the spelling nowhere on the screen.
+
+    A name asked for by the caller is checked against the same table, and a
+    bad one is refused before a sweep starts rather than fifty times over.
+    """
+    sat = config.satellite(satellite or config.DEFAULT_SATELLITE)
+    if asked is None:
+        return sat["default_composite"]
+    name = str(asked)
+    if name not in config.COMPOSITES:
+        raise LookoutError(
+            f"{name!r} is not a composite this app has; "
+            f"try {sat['default_composite']!r}")
+    return name
+
+
 def square_polygon(bbox: tuple[float, float, float, float]) -> dict[str, Any]:
     """A square as the GeoJSON the render pipeline takes."""
     south, north, west, east = bbox
@@ -373,6 +396,27 @@ _state: dict[str, Any] = {
 _stop = False
 
 
+def blanks(looked: list[dict[str, Any]]) -> dict[str, Any]:
+    """What went wrong with the squares that could not be answered for.
+
+    Rolled up because the useful sentence is "all forty-nine failed the same
+    way, and here is the way" -- which is a bug report, where "49 could not be
+    answered" on its own is a shrug. The commonest reason is the one shown:
+    forty-nine identical failures is one cause, and a reader chasing it needs
+    the cause rather than the count.
+    """
+    why: dict[str, int] = {}
+    for square in looked:
+        said = square.get("trouble")
+        if said:
+            why[said] = why.get(said, 0) + 1
+    if not why:
+        return {"count": 0, "why": "", "kinds": 0}
+    worst = max(why.items(), key=lambda pair: pair[1])
+    return {"count": sum(why.values()), "why": worst[0], "worst": worst[1],
+            "kinds": len(why)}
+
+
 def state() -> dict[str, Any]:
     """What the sweep is doing. Copied, so a poll cannot see it half-written."""
     with _lock:
@@ -380,6 +424,7 @@ def state() -> dict[str, Any]:
             **{k: v for k, v in _state.items() if k not in ("hits", "looked")},
             "hits": list(_state["hits"]),
             "looked": list(_state["looked"]),
+            "blanks": blanks(_state["looked"]),
             "areas": [{"key": k, "name": v["name"], "bbox": list(v["bbox"]),
                        "about": v["about"]} for k, v in AREAS.items()],
             "questions": [{"id": q["id"], "ask": q.get("ask", ""),

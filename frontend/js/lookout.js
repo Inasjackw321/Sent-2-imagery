@@ -162,6 +162,10 @@ function buildDock() {
         el('button', { class: 'lk-save', type: 'button', onclick: saveKey },
           'Use')),
       el('div', { class: 'lk-count', id: 'lookoutCount' }, ''),
+      // Why they could not be answered, not only how many. Its own row and
+      // its own colour, because on the sweep where it says anything it is the
+      // only line on this panel worth reading.
+      el('div', { class: 'lk-why', id: 'lookoutWhy', hidden: true }, ''),
       el('div', { class: 'lk-list', id: 'lookoutList' }),
       el('details', { class: 'lk-asked' },
         el('summary', {}, 'What it asks'),
@@ -236,7 +240,7 @@ function toggle() {
   paint();
 }
 
-/** "12 of 49 · 2 hits · 3 blank", or what is stopping it. */
+/** "12 of 49 · 2 hits · 3 could not be answered", or what is stopping it. */
 export function progressLine(said) {
   if (!said) return 'Loading…';
   const blank = (said.looked ?? []).filter(isBlank).length;
@@ -246,6 +250,40 @@ export function progressLine(said) {
     `${(said.hits ?? []).length} hit${(said.hits ?? []).length === 1 ? '' : 's'}`,
     blank ? `${blank} could not be answered` : null,
   ].filter(Boolean).join(' · ');
+}
+
+/** WHY the squares that could not be answered could not be answered.
+ *
+ * The line this panel was missing. A sweep where every square failed the same
+ * way is one cause with a count in front of it, and the count on its own is a
+ * shrug -- "49 could not be answered" sent somebody back to me with "???",
+ * which is the correct response to it.
+ */
+export function blankLine(said) {
+  const blank = said?.blanks;
+  if (!blank?.count || !blank.why) return '';
+  const all = blank.worst === blank.count && blank.count > 1;
+  const many = blank.kinds > 1 ? `, and ${blank.kinds - 1} other reason`
+    + `${blank.kinds > 2 ? 's' : ''}` : '';
+  return `${all ? 'All ' : ''}${blank.worst} of them: ${clamp(blank.why)}${many}`;
+}
+
+// How much of a reason fits on the line before it stops being read.
+//
+// A urllib connection error runs to two hundred and fifty characters of
+// retry counts and nested exception names, and a panel that shows all of it
+// is a panel where the first eight words -- the part that says what went
+// wrong -- are buried. The whole text is still on the square itself, which
+// is where somebody goes once they know what they are chasing.
+const MOST_WHY = 120;
+
+export function clamp(said, most = MOST_WHY) {
+  const text = String(said ?? '');
+  if (text.length <= most) return text;
+  // Cut at a word rather than mid-word, where there is one to cut at.
+  const cut = text.slice(0, most);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > most * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
 function paint() {
@@ -283,6 +321,12 @@ function paint() {
     el('span', { class: 'lk-asked-q' }, q.ask),
     el('span', { class: 'lk-asked-hit' },
       q.hit == null ? 'for interest' : `hit when ${q.hit}`))));
+
+  const why = $('#lookoutWhy');
+  if (why) {
+    why.textContent = blankLine(state);
+    why.hidden = !why.textContent;
+  }
 
   if (note) {
     note.textContent = [

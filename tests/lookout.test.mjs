@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { isBlank, isHit, progressLine, saidOf, whyNot }
+import { blankLine, clamp, isBlank, isHit, progressLine, saidOf, whyNot }
   from '../frontend/js/lookout.js';
 
 const ASKED = [
@@ -207,4 +207,85 @@ test('all three outcomes are drawn differently, in outline and in fill', () => {
   // And a hit is not merely a different colour: it is heavier and more solid.
   assert.match(line('weight'), /hit \?/);
   assert.match(line('fillOpacity'), /hit \?/);
+});
+
+// ── Why a square could not be answered ─────────────────────────
+//
+// The line this panel was missing. A sweep where every square failed the same
+// way is one cause with a count in front of it, and the count on its own sent
+// somebody back with "???" -- which is the right response to it.
+
+test('nothing wrong says nothing', () => {
+  assert.equal(blankLine({ blanks: { count: 0, why: '', kinds: 0 } }), '');
+  assert.equal(blankLine({}), '');
+  assert.equal(blankLine(null), '');
+});
+
+test('one cause behind every blank square is named, and said to be all', () => {
+  const said = blankLine({ blanks: { count: 49, worst: 49, kinds: 1,
+    why: "Unknown composite 'true_colour'" } });
+  assert.match(said, /All 49 of them/);
+  assert.match(said, /true_colour/);
+});
+
+test('and a mixture says there was a mixture', () => {
+  // Otherwise naming the commonest reason reads as naming the only one, and
+  // the other three squares quietly have a different problem.
+  const said = blankLine({ blanks: { count: 5, worst: 3, kinds: 2,
+    why: 'cloud' } });
+  assert.doesNotMatch(said, /All /);
+  assert.match(said, /3 of them: cloud/);
+  assert.match(said, /1 other reason/);
+});
+
+test('three causes is "reasons", not "reason"', () => {
+  const said = blankLine({ blanks: { count: 9, worst: 4, kinds: 3,
+    why: 'cloud' } });
+  assert.match(said, /2 other reasons/);
+});
+
+test('a single blank square is not announced as "All 1 of them"', () => {
+  const said = blankLine({ blanks: { count: 1, worst: 1, kinds: 1,
+    why: 'cloud' } });
+  assert.doesNotMatch(said, /All /);
+  assert.match(said, /1 of them: cloud/);
+});
+
+test('a reason too long to read is cut rather than shown whole', () => {
+  // Measured: a urllib connection failure is 250 characters of retry counts
+  // and nested exception names, and the eight words that say what went wrong
+  // are at the front. The whole text stays on the square itself.
+  const long = "Codiv could not be reached: HTTPConnectionPool(host='127.0.0.1',"
+    + " port=8791): Max retries exceeded with url: /v1/systemone (Caused by"
+    + ' NewConnectionError("HTTPConnection(host=\'127.0.0.1\', port=8791):'
+    + ' Failed to establish a new connection: [Errno 111] Connection refused"))';
+  const said = blankLine({ blanks: { count: 49, worst: 49, kinds: 1, why: long } });
+  assert.ok(said.length < 160, `${said.length} characters`);
+  assert.match(said, /Codiv could not be reached/);
+  assert.match(said, /…/);
+});
+
+test('and a reason that fits is shown whole', () => {
+  const said = blankLine({ blanks: { count: 2, worst: 2, kinds: 1,
+    why: 'Codiv refused the key' } });
+  assert.match(said, /Codiv refused the key$/);
+  assert.doesNotMatch(said, /…/);
+});
+
+test('the cut lands on a word, not in the middle of one', () => {
+  // Where there is a word boundary far enough along to be worth using.
+  assert.equal(clamp('one two three four five', 16), 'one two three…');
+});
+
+test('but not on one so early it throws most of the line away', () => {
+  // Cutting at a space three characters in would leave "Codiv…" where the
+  // useful half of the sentence had fitted. Past 60% of the line it is used;
+  // before that the line is cut where it runs out.
+  assert.equal(clamp('a bbbbbbbbbbbbbbbbbbbb', 12), 'a bbbbbbbbbb…');
+});
+
+test('a word longer than the whole line is cut anyway', () => {
+  // Otherwise a single 300-character token comes through untouched, which is
+  // the case that made this necessary.
+  assert.equal(clamp('x'.repeat(50), 10).length, 11);
 });

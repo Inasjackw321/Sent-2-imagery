@@ -483,3 +483,70 @@ class TestASweep:
         lookout.set_key("sk-codiv-secret")
         assert lookout.set_key("") is False
         assert lookout.have_key() is False
+
+
+class TestTheCompositeASweepRendersWith:
+    """The bug that made a whole sweep look broken.
+
+    A composite named by hand as "true_colour", for a table that spells it
+    "true_color", raised on every square. Forty-nine squares came back as
+    "could not be answered" and the spelling was nowhere on the screen.
+
+    Two things stop that shape of failure rather than that one instance of
+    it: the name comes from the table instead of from a person, and a name
+    that does come from a person is checked once instead of failing fifty
+    times.
+    """
+
+    def test_the_default_is_one_the_app_actually_has(self):
+        from backend import config
+        for key in config.SATELLITES:
+            assert lookout.composite_for(key) in config.COMPOSITES, key
+
+    def test_a_composite_nobody_has_is_refused(self):
+        with pytest.raises(lookout.LookoutError, match="not a composite"):
+            lookout.composite_for("sentinel-2", "true_colour")
+
+    def test_and_the_refusal_says_what_to_use_instead(self):
+        # "Unknown composite" with no suggestion is the message that sent
+        # somebody back here with a question mark.
+        with pytest.raises(lookout.LookoutError, match="true_color"):
+            lookout.composite_for("sentinel-2", "true_colour")
+
+    def test_one_that_does_exist_is_taken(self):
+        assert lookout.composite_for("sentinel-2", "urban") == "urban"
+
+    def test_a_radar_pass_gets_a_radar_composite(self):
+        # Sentinel-1 has no true colour at all, so a sweep over a radar pass
+        # asking for one would fail on every square the same way.
+        assert lookout.composite_for("sentinel-1").startswith("radar")
+
+
+class TestSayingWhyASquareCouldNotBeAnswered:
+    """"49 could not be answered" is a count. The cause is what is wanted."""
+
+    def test_nothing_wrong_says_nothing(self):
+        assert lookout.blanks([{"hit": True}, {"hit": False}])["count"] == 0
+        assert lookout.blanks([])["why"] == ""
+
+    def test_one_cause_is_named(self):
+        got = lookout.blanks([{"trouble": "Codiv refused the key"}] * 49)
+        assert got["count"] == 49
+        assert got["worst"] == 49
+        assert got["why"] == "Codiv refused the key"
+        assert got["kinds"] == 1
+
+    def test_the_commonest_of_several_is_the_one_named(self):
+        got = lookout.blanks(
+            [{"trouble": "cloud"}] * 3 + [{"trouble": "Codiv answered 503"}])
+        assert got["why"] == "cloud"
+        assert got["kinds"] == 2
+        assert got["count"] == 4
+
+    def test_squares_that_were_answered_for_are_not_counted(self):
+        got = lookout.blanks([{"trouble": "cloud"}, {"hit": True},
+                              {"hit": False, "missed": ["refinery"]}])
+        assert got["count"] == 1
+
+    def test_it_reaches_the_state_a_panel_polls(self):
+        assert "blanks" in lookout.state()

@@ -1627,6 +1627,12 @@ body.is-walled { overflow: hidden; }
   border-color: rgba(255,210,63,.55);
 }
 .lk-count { font-size: 11.5px; color: var(--ink); }
+.lk-why {
+  font-size: 10.5px; color: #ffb0ac; line-height: 1.45;
+  padding: 4px 8px; border-radius: 6px;
+  background: rgba(255,74,68,.12); border: 1px solid rgba(255,74,68,.4);
+}
+.lk-why[hidden] { display: none; }
 .lk-list { display: grid; gap: 4px; }
 .lk-row-hit {
   text-align: left; padding: 4px 7px; cursor: pointer;
