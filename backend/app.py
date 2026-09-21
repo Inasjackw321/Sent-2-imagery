@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, copernicus, fires, gazetteer, mtg,
+    aisstream, composite, config, copernicus, fires, gazetteer, lookout, mtg,
     ollama, passes, seismic, service, stac, tracker, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
@@ -479,6 +480,101 @@ def copernicus_tile(request: Request) -> Response:
 def copernicus_held() -> dict:
     """What the tile cache is holding. For the panel's "ready to play"."""
     return copernicus.tiles_held()
+
+
+# ---------------------------------------------------------------------------
+# The lookout: a model asked the same questions about every square of an area
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/lookout/key")
+def lookout_key(body: dict = Body(...)) -> dict:
+    """Hand the app a Codiv API key, or take it away again.
+
+    Kept in memory for as long as the process lives and written nowhere -- the
+    same rule the AIS key follows, for the same reason. It is the operator's
+    own key on the operator's own machine and it should not outlive the run.
+    """
+    return {"set": lookout.set_key(body.get("key")), "model": lookout.MODEL}
+
+
+@app.get("/api/lookout")
+def lookout_state() -> dict:
+    """What the sweep is doing, and what it has found so far."""
+    return lookout.state()
+
+
+@app.post("/api/lookout/stop")
+def lookout_stop() -> dict:
+    """Give up at the next square."""
+    lookout.stop()
+    return lookout.state()
+
+
+@app.post("/api/lookout/sweep")
+def lookout_sweep(body: dict = Body(...)) -> dict:
+    """Start a sweep over an area.
+
+    One satellite pass for the whole sweep, found once here rather than per
+    square: every square is then the same day in the same light, and two
+    squares that look different are different rather than a week apart.
+
+    Started on a thread and answered immediately. A sweep is tens of renders
+    and tens of requests to somebody else's service; holding an HTTP
+    connection open for minutes to report on it is how a browser times out
+    halfway through and leaves the operator with no idea what happened.
+    """
+    if lookout.state()["running"]:
+        raise _fail(ValueError("a sweep is already running"), 409)
+    area_key = str(body.get("area") or "kyiv")
+    area = lookout.AREAS.get(area_key)
+    if area is None:
+        raise _fail(ValueError(f"{area_key} is not an area this app knows"), 400)
+    if not lookout.have_key():
+        raise _fail(ValueError("no Codiv API key has been given to this app"), 400)
+
+    whole = lookout.square_polygon(area["bbox"])
+    try:
+        found = stac.search_scenes(
+            whole, start=body.get("start"), end=body.get("end"),
+            max_cloud=float(body.get("max_cloud", 20)), limit=6,
+            satellites=body.get("satellite") or "sentinel-2")
+    except (ValueError, stac.SceneSearchError) as exc:
+        raise _fail(exc)
+    scenes = found.get("scenes") or []
+    if not scenes:
+        raise _fail(ValueError("no clear enough pass over that area to sweep"), 400)
+    scene = scenes[0]
+
+    def picture(square: dict) -> str:
+        """One square, rendered from the sweep's own pass."""
+        made = service.render({
+            "aoi": lookout.square_polygon(square["bbox"]),
+            "scene": scene,
+            "size": int(body.get("size") or 512),
+            "mode": "composite",
+            "preset": body.get("preset") or "true_colour",
+            "format": "png",
+        })
+        return lookout.as_data_url(made["bytes"], made["media_type"])
+
+    lookout.reset()
+    threading.Thread(
+        target=_run_sweep, args=(area_key, picture, scene),
+        name="lookout-sweep", daemon=True).start()
+    return {**lookout.state(), "scene": {"id": scene.get("id"),
+                                         "date": scene.get("date")}}
+
+
+def _run_sweep(area_key: str, picture, scene: dict) -> None:
+    """The sweep itself, off the request thread."""
+    try:
+        lookout.sweep(area_key, picture)
+    except lookout.LookoutError as exc:
+        lookout.note_trouble(str(exc))
+    with lookout._lock:                    # noqa: SLF001 -- one field, one place
+        lookout._state["scene"] = {"id": scene.get("id"),
+                                   "date": scene.get("date")}
 
 
 @app.get("/api/selftest")

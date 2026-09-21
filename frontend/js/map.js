@@ -15,6 +15,7 @@ import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
 import { initMTG } from './mtg.js';
 import { initCopernicus } from './copernicus.js';
+import { initLookout } from './lookout.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
 import { initSeismic } from './seismic.js';
@@ -152,6 +153,7 @@ export function initMap() {
   initRadar(map);
   initMTG(map);
   initCopernicus(map);
+  initLookout(map);
   initTracker(map);
   initVessels(map);
   initSeismic(map);

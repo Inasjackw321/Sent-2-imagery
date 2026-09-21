@@ -1,0 +1,30 @@
+[
+  {
+    "id": "is_there_a_building",
+    "type": "choice",
+    "ask": "is there a building",
+    "criteria": {
+      "yes": "",
+      "no": ""
+    },
+    "hit": "yes"
+  },
+  {
+    "id": "is_there_a_colour_circle",
+    "type": "noul",
+    "ask": "is there a colour circle",
+    "hit": "yes"
+  },
+  {
+    "id": "refinery",
+    "type": "noul",
+    "ask": "is it a refinery or a place with oil",
+    "hit": "no"
+  },
+  {
+    "id": "circle_and_building",
+    "type": "noul",
+    "ask": "is the circle over the building",
+    "hit": "yes"
+  }
+]

@@ -45,6 +45,13 @@ export const api = {
   // whatever is installed.
   copernicus: () => request('/api/copernicus', { method: 'GET' }),
 
+  // The lookout. The key goes in a POST body rather than a query string so
+  // it does not end up in a server log or in the browser's history.
+  lookout: () => request('/api/lookout', { method: 'GET' }),
+  lookoutKey: (key) => request('/api/lookout/key', { body: { key } }),
+  lookoutSweep: (area) => request('/api/lookout/sweep', { body: { area } }),
+  lookoutStop: () => request('/api/lookout/stop', { body: {} }),
+
   quakes: ({ west, south, east, north, hours, minMagnitude }) => request(
     `/api/quakes?${new URLSearchParams({
       west: west.toFixed(4), south: south.toFixed(4),
