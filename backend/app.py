@@ -15,7 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, composite, config, copernicus, fires, gazetteer, mtg,
+    aisstream, animate as animation, composite, config, copernicus,
+    fires, gazetteer, mtg,
     ollama, passes, seismic, service, stac, tracker, version, vessels, weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
@@ -479,6 +480,40 @@ def copernicus_tile(request: Request) -> Response:
 def copernicus_held() -> dict:
     """What the tile cache is holding. For the panel's "ready to play"."""
     return copernicus.tiles_held()
+
+
+@app.post("/api/animate")
+def animate(body: dict = Body(...)):
+    """Several passes over one place, as one animated GIF.
+
+    Each frame goes through the same render path a single picture does, so a
+    frame and a saved picture are the same pixels rather than two code paths
+    that drift apart.
+    """
+    scenes = body.get("scenes") or []
+    if not scenes:
+        raise _fail(ValueError("pick some dates to animate"), 400)
+
+    def one(scene: dict) -> bytes:
+        made = service.render({**body, "scenes": [scene], "scene": scene,
+                               "format": "png"})
+        return made["bytes"]
+
+    try:
+        gif, dates = animation.animate(
+            scenes, one,
+            ms=int(body.get("ms") or animation.FRAME_MS),
+            bounce=bool(body.get("bounce")))
+    except animation.AnimateError as exc:
+        raise _fail(exc, 400)
+    except (ValueError, service.RenderError) as exc:
+        raise _fail(exc, 400)
+    except (BandReadError, stac.SceneSearchError) as exc:
+        raise _fail(exc)
+    stem = f"{scenes[0].get('satellite', 'imagery')}_{dates[0]}-{dates[-1]}"
+    return Response(content=gif, media_type="image/gif", headers={
+        "Content-Disposition": f'attachment; filename="{stem}_kaldockhi.gif"',
+    })
 
 
 @app.get("/api/selftest")

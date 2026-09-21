@@ -185,15 +185,28 @@ test('a caveat is not dressed up as an error', () => {
   assert.match(css, /\.toast\.warn \{/);
 });
 
-test('choosing a pass rebuilds the picture list', () => {
-  // Measured, the hard way: the rebuild went into the wrong function first
-  // and the filter never ran with a scene in hand -- the picker still offered
-  // every VV picture after an HH pass was chosen. Pinned by FUNCTION, not by
-  // "somewhere in the file", because that is exactly what failed to catch it.
-  for (const fn of ['function pick(date, on) {', 'function tickBest(n) {']) {
+test('the picture list is rebuilt from one place, not per call site', () => {
+  // Twice I wired this at the call sites that change the pass, and twice I
+  // missed one: first the search path, which sets the date itself, and that
+  // is how a picker came to offer a picture that failed on every render --
+  // seven identical red toasts and no imagery.
+  //
+  // So it lives in sync(), which every state change already goes through.
+  // Pinned there, and the call sites are pinned to call sync() rather than
+  // to call the rebuild, which is a contract with four fewer ways to be
+  // wrong.
+  const at = PANEL.indexOf('function sync() {');
+  assert.ok(at > 0, 'sync() should exist');
+  assert.match(PANEL.slice(at, PANEL.indexOf('\n}\n', at)),
+               /buildVisualisationOptions\(\);/);
+});
+
+test('and every path that changes the chosen pass goes through it', () => {
+  for (const fn of ['function pick(date, on) {', 'function tickBest(n) {',
+                    'async function runSearch() {']) {
     const at = PANEL.indexOf(fn);
     assert.ok(at > 0, `${fn} should exist`);
     const body = PANEL.slice(at, PANEL.indexOf('\n}\n', at));
-    assert.match(body, /buildVisualisationOptions\(\);/, fn);
+    assert.match(body, /\bsync\(\);/, fn);
   }
 });

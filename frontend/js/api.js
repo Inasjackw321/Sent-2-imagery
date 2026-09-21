@@ -45,6 +45,11 @@ export const api = {
   // whatever is installed.
   copernicus: () => request('/api/copernicus', { method: 'GET' }),
 
+  // Several passes as one animated GIF. Raw, because it comes back as
+  // a file rather than as JSON with a data URL in it -- a dozen frames
+  // base64'd through a JSON body is a third larger for no reason.
+  animate: (body) => request('/api/animate', { body, raw: true }),
+
   quakes: ({ west, south, east, north, hours, minMagnitude }) => request(
     `/api/quakes?${new URLSearchParams({
       west: west.toFixed(4), south: south.toFixed(4),

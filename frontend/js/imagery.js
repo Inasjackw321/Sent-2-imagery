@@ -11,6 +11,7 @@
 
 import { api } from './api.js';
 import { canMake, sarLabel, sarPolarisations } from './sarview.js';
+import { openMarkup } from './markup.js';
 import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
 import * as adjust from './adjust.js';
@@ -208,6 +209,12 @@ export function initImagery() {
   $('#showBtn').addEventListener('click', showImagery);
   $('#downloadPng').addEventListener('click', () => downloadImagery('png'));
   $('#downloadTif').addEventListener('click', () => downloadImagery('geotiff'));
+  // The picture that is on screen, opened in a box to be marked up. Not a
+  // fresh render: what gets annotated has to be what was being looked at.
+  $('#markupBtn').addEventListener('click', () => {
+    if (store.image?.src) openMarkup(store.image.src, exportStem());
+  });
+  $('#animateBtn').addEventListener('click', makeAnimation);
   $('#renderMode').addEventListener('change', () => {
     buildRenderSliders();
     updateHint();
@@ -635,11 +642,6 @@ function tickBest(n) {
     : [...mine].sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100));
   store.selected = new Set(order.slice(0, n).map((d) => d.id));
   renderDateList();
-  // The list of pictures depends on the pass now, not only on the satellite.
-  // Without this the filter never ran with a scene in hand: choosing an HH
-  // pass left every VV picture on the menu, which is the failure this whole
-  // change is about, moved one step later.
-  buildVisualisationOptions();
   sync();
 }
 
@@ -706,11 +708,6 @@ function pick(date, on) {
     store.selected.delete(date.id);
   }
   renderDateList();
-  // The list of pictures depends on the pass now, not only on the satellite.
-  // Without this the filter never ran with a scene in hand: choosing an HH
-  // pass left every VV picture on the menu, which is the failure this whole
-  // change is about, moved one step later.
-  buildVisualisationOptions();
   sync();
 }
 
@@ -721,6 +718,13 @@ const cloudColour = (pct) => (pct < 10 ? '#37e0a0' : pct < 30 ? '#ffd166' : '#ff
 function sync() {
   const hasAoi = Boolean(store.aoi);
   const dates = chosenDates();
+  // Which pictures are on offer depends on the chosen PASS, not only on the
+  // satellite -- a Sentinel-1 pass in HH/HV cannot draw any of the VV ones.
+  // Rebuilt here, from the one function every state change already goes
+  // through, rather than at the call sites that change the pass: there are
+  // four of those, I wired two of them, and the two I missed were how a
+  // picker came to offer a picture that then failed on every render.
+  buildVisualisationOptions();
 
   $('#stepDates').classList.toggle('is-locked', !hasAoi);
   $('#stepLook').classList.toggle('is-locked', !store.dates.length);
@@ -758,6 +762,10 @@ function sync() {
       : (ready ? (store.image ? 'Show this date' : 'Show imagery') : 'Pick a date');
   $('#planSummary').innerHTML = planSummary(dates, plan);
   $('#downloadPng').disabled = $('#downloadTif').disabled = !lastRequest;
+  // Annotating needs a picture on screen; animating needs two dates and not
+  // a picture at all, so the two are not the same condition.
+  $('#markupBtn').disabled = !store.image?.src;
+  $('#animateBtn').disabled = chosenDates().length < 2;
   $('#copyRegion').disabled = $('#saveRegion').disabled = !store.image;
 }
 
@@ -887,6 +895,7 @@ function describeResult(meta) {
  * told is the difference between a choice and a surprise.
  */
 function reportSar(meta) {
+  if (meta.sar_swapped) toast(meta.sar_swapped, 'warn');
   if (meta.sar_merge) toast(meta.sar_merge, 'warn');
 }
 
@@ -924,14 +933,57 @@ function reportCoverage(meta, dateCount) {
         pct < VERY_THIN_COVER ? 'err' : '');
 }
 
-async function downloadImagery(format) {
-  if (!lastRequest) return;
-  const ext = format === 'geotiff' ? 'tif' : 'png';
+/** What a file of this picture is called, without its extension. */
+function exportStem() {
+  if (!lastRequest) return 'imagery';
   const when = lastRequest.scenes?.length
     ? `${lastRequest.scenes.length}dates_${lastRequest.scene.date}`
     : lastRequest.scene.date;
   const who = (lastRequest.satellite ?? 'sentinel-2').replace('-', '');
-  const name = `${who}_${when}_${lastRequest.index ?? lastRequest.preset}.${ext}`;
+  return `${who}_${when}_${lastRequest.index ?? lastRequest.preset}`;
+}
+
+/**
+ * Flicker between the ticked dates as an animated GIF.
+ *
+ * A pair of dates side by side answers "is it different". An animation
+ * answers "what changed", which is usually the question: the eye finds a
+ * moved ship the moment it flickers and does not find it at all in two
+ * pictures a screen apart.
+ *
+ * Built on the server, where each frame goes through the same render path a
+ * single picture does -- so a frame and a saved picture are the same pixels
+ * rather than two routes that drift.
+ */
+async function makeAnimation() {
+  const dates = chosenDates();
+  if (dates.length < 2) {
+    toast('Tick two or more dates to animate between them');
+    return;
+  }
+  // The picture on screen where there is one, so the animation is the same
+  // rendering as what is being looked at, and a fresh one otherwise.
+  const body = { ...(lastRequest ?? buildRequest(dates)), scenes: dates,
+                 // Two dates bounce into the same two-frame loop, so the
+                 // flicker comparison is what you get either way; three or
+                 // more run forward and back rather than jumping from the
+                 // last frame to the first.
+                 bounce: dates.length > 2 };
+  delete body.scene;
+  try {
+    const blob = await withBusy(
+      `Rendering ${dates.length} frames…`, () => api.animate(body));
+    download(blob, `${exportStem()}_${dates.length}frames.gif`);
+    toast(`${dates.length} dates, oldest first`, 'ok');
+  } catch (err) {
+    toast(`Could not animate that: ${err.message}`, 'err');
+  }
+}
+
+async function downloadImagery(format) {
+  if (!lastRequest) return;
+  const ext = format === 'geotiff' ? 'tif' : 'png';
+  const name = `${exportStem()}.${ext}`;
 
   try {
     // The PNG is what you are looking at, at full size, adjustments included.

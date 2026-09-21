@@ -14,6 +14,8 @@ than as the satellite having been in a different mode.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from backend import config, sar
@@ -335,16 +337,33 @@ class TestSarReachesThePicture:
         # lightings together is never exercised in the demo.
         assert len({s["orbit_state"] for s in got}) == 2
 
-    def test_a_pass_that_cannot_make_the_picture_says_which_it_can(self):
+    def test_a_pass_that_cannot_make_the_picture_is_shown_another_one(self):
+        """Swapped, not refused.
+
+        It used to raise, and that was wrong twice over: the choice came from
+        a menu this app had put in front of somebody, so refusing it blamed
+        them for taking what was offered -- and it left them with no picture
+        at all when a good one of the same ground was one substitution away.
+
+        Driven through the swap itself rather than through a full render,
+        because what is being pinned is which picture is chosen and what is
+        said about it, not the pixels.
+        """
+        from backend import config
+        asked = "radar_color"
+        short = sar.missing_for(ICE, config.COMPOSITES[asked]["bands"])
+        assert short == ["VV", "VH"]
+        instead = sar.default_composite(ICE)
+        assert instead != asked
+        assert sar.can_make(ICE, instead)
+
+    def test_and_the_swap_is_said_out_loud(self):
+        # A silent swap is a different lie: the picture would not be the one
+        # that was asked for and nothing would say so.
         from backend import service
-        with pytest.raises(service.RenderError) as caught:
-            service.render({
-                "aoi": {"type": "Polygon",
-                        "coordinates": [[[30.4, 50.4], [30.5, 50.4],
-                                         [30.5, 50.5], [30.4, 50.5],
-                                         [30.4, 50.4]]]},
-                "scene": ICE, "size": 128, "preset": "radar_color",
-            })
-        said = str(caught.value)
-        assert "HH+HV" in said and "VV" in said
-        assert "Radar colour (HH/HV)" in said
+        source = pathlib.Path(service.__file__).read_text(encoding="utf-8")
+        at = source.index("swapped = \"\"")
+        block = source[at:at + 1200]
+        assert "sar_swapped" in source
+        assert "could not be drawn" in block
+        assert "preset = instead" in block

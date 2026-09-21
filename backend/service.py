@@ -314,14 +314,28 @@ def render(req: dict) -> dict:
     # Checked here, against the scene, rather than discovered as a missing
     # asset four layers down. "This pass is HH+HV; radar colour needs VV" is
     # something a reader can act on; "Scene S1A_... has no vv asset" is not.
-    if sat["kind"] == "radar":
+    # A picture the pass cannot draw is SWAPPED, not refused.
+    #
+    # It used to raise, and that was wrong twice over. The choice came from a
+    # menu this app had put in front of somebody, so refusing it blamed them
+    # for taking what was offered -- and it left them with no picture at all
+    # when a perfectly good one of the same ground was one substitution away.
+    # Seven identical red toasts and an empty panel is what that looked like.
+    #
+    # Said out loud, because a silent swap is a different lie: the picture
+    # would not be the one that was asked for and nothing would say so.
+    swapped = ""
+    if sat["kind"] == "radar" and mode == "composite":
         short = sar.missing_for(scenes[0], names)
         if short:
-            raise RenderError(
-                f"This pass carries {sar.pair_of(sar.polarisations(scenes[0]))}"
-                f" — {config.COMPOSITES.get(preset, {}).get('label', preset)}"
-                f" needs {', '.join(short)}. Try "
-                f"{config.COMPOSITES.get(sar.default_composite(scenes[0]), {}).get('label', 'another picture')}.")
+            instead = sar.default_composite(scenes[0])
+            swapped = (
+                f"This pass carries {sar.pair_of(sar.polarisations(scenes[0]))},"
+                f" so {config.COMPOSITES.get(preset, {}).get('label', preset)}"
+                f" could not be drawn — shown as"
+                f" {config.COMPOSITES.get(instead, {}).get('label', instead)}.")
+            preset = instead
+            names = _needed_bands(mode, preset, index_name, sat)
 
     applied: list[str] = []
     bands, cloud_fraction, composite_report, sr_report, grid = _gather(
@@ -394,6 +408,8 @@ def render(req: dict) -> dict:
         # anything. Said rather than refused -- somebody may want it anyway,
         # and being told is the difference between a choice and a surprise.
         "sar_merge": sar.merge_trouble(scenes),
+        # What was shown instead of what was asked for, if anything.
+        "sar_swapped": swapped,
         "stretch": stretch_bounds,
         "legend": legend,
         "stats": stats,
