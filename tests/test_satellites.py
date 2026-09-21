@@ -174,11 +174,33 @@ def test_radar_false_colour_puts_each_surface_where_it_belongs():
     """The colours have to mean something, or the picture is decoration.
 
     Every surface is pushed through the same path the renderer uses -- power
-    plus the instrument's noise floor, then the composite's fixed windows --
-    and has to land where a radar reader expects it: black water, white towns,
-    green vegetation, violet bare ground.
+    plus the instrument's noise floor, then the composite's windows -- and has
+    to land where a radar reader expects it: black water, white towns, green
+    vegetation, violet bare ground.
+
+    The windows are built from the scene now rather than written down, because
+    the product is uncalibrated and a written-down window cannot be right for
+    it. The multipliers are the same shape the fixed numbers were, so the
+    surfaces have to land in the same places; that is what this checks.
     """
-    windows = config.COMPOSITES["radar_color"]["windows"]
+    from backend import composite as comp
+
+    # The endmembers as a scene, so radar_windows measures a level off them
+    # the way it would off real ground.
+    #
+    # Mostly bare ground, because the window is scaled by the scene's MEDIAN
+    # and the median of a radar scene is its typical land. A fixture that is
+    # mostly vegetation moves the median 3.5 dB up and widens the window by
+    # the same, which is a statement about the fixture rather than about the
+    # renderer -- and it puts a city at 0.62 instead of white.
+    covers = ("water", "soil", "soil", "soil", "veg", "urban")
+    power = {b: np.ma.masked_array(np.array(
+        [[10 ** (raster._RADAR_ENDMEMBERS[c][b] / 10) + raster.NOISE_FLOOR
+          for c in covers]], dtype="float32")) for b in ("vv", "vh")}
+    bands = {"vv": power["vv"], "vh": power["vh"],
+             "vvvh": power["vv"] / power["vh"]}
+    spec = config.COMPOSITES["radar_color"]
+    windows = comp.radar_windows(spec, bands, spec["bands"], 50)
 
     def colour(cover):
         db = raster._RADAR_ENDMEMBERS[cover]
@@ -241,7 +263,11 @@ def test_a_featureless_radar_scene_is_not_stretched_into_structure():
     steady, _, info = composite.render_composite(flat, "radar_color", {})
     loud, _, _ = composite.render_composite(flat, "radar_color", {"stretch": "percentile"})
 
-    assert info["mode"] == "fixed"
+    # The window follows the scene's level now -- it has to, because the
+    # product is uncalibrated -- but its WIDTH is still fixed, which is what
+    # keeps flat ground flat. Scaling rather than percentiles is the whole
+    # difference between the two pictures below.
+    assert info["mode"] == "radar"
     # One kind of ground, so one colour: a little grain, and nothing more.
     assert steady.std(axis=(0, 1)).max() < 8
     # Percentiles turn that same fraction of a decibel into the whole gamut.
@@ -789,3 +815,219 @@ class TestAnOpticalPassIsInDaylight:
                 if sat["kind"] != "optical":
                     continue
                 assert sat["next"]["daylight"] is True, (sat["short"], lon, lat)
+
+
+# ── Uncalibrated radar ─────────────────────────────────────────
+
+
+def _dn_scene(rng=None, town=True):
+    """A Sentinel-1 scene as it is actually published: amplitude DN.
+
+    Not sigma0. Earth Search and the Planetary Computer serve sentinel-1-grd
+    as uncalibrated amplitude, which is the whole reason the windows cannot
+    be absolute figures.
+    """
+    rng = rng or np.random.default_rng(7)
+    h = w = 160
+    vv = np.full((h, w), 260.0)
+    vh = np.full((h, w), 95.0)
+    vv[:48, :] = 22.0                      # still water
+    vh[:48, :] = 9.0
+    if town:
+        vv[110:, 90:] = 1100.0
+        vh[110:, 90:] = 420.0
+    vv = vv * rng.gamma(9.0, 1 / 9.0, size=(h, w))
+    vh = vh * rng.gamma(9.0, 1 / 9.0, size=(h, w))
+    bands = {"vv": raster._to_decibels(np.ma.masked_array(vv.astype("float32"))),
+             "vh": raster._to_decibels(np.ma.masked_array(vh.astype("float32")))}
+    bands["vvvh"] = bands["vv"] - bands["vh"]
+    bands["hh"], bands["hv"], bands["hhhv"] = (
+        bands["vv"], bands["vh"], bands["vvvh"])
+    return bands
+
+
+def _radar_presets():
+    for name, spec in config.COMPOSITES.items():
+        sats = [spec["sat"]] if isinstance(spec["sat"], str) else spec["sat"]
+        if "sentinel-1" in sats:
+            yield name, spec
+
+
+def test_an_uncalibrated_radar_scene_does_not_render_white():
+    """The bug that was reported, and the measurement of it.
+
+    The windows used to be absolute figures in linear power, taken from
+    CALIBRATED sigma0. What arrives is uncalibrated amplitude DN, which the
+    decibel conversion puts around +28 to +70 dB where sigma0 would be -25 to
+    0 -- sixty decibels out, a factor of a million in power. Every pixel of
+    every radar scene landed above the top of its window.
+
+    Measured before the fix: radar_grey rendered 100.0% pure white and
+    radar_color averaged RGB 255,255,123, which is exactly the saturated
+    yellow that was reported.
+    """
+    bands = _dn_scene()
+    for name, _ in _radar_presets():
+        rgb, *_ = composite.render_composite(bands, name, {})
+        flat = rgb.reshape(-1, rgb.shape[-1])[:, :3]
+        white = float(np.mean(np.all(flat >= 250, axis=1)))
+        assert white < 0.35, f"{name} is {white:.0%} white"
+
+
+def test_and_it_reads_the_way_the_ground_is():
+    """Water black, fields mid, town bright, ships brightest.
+
+    The picture being un-blown-out is not enough on its own: a uniform
+    mid-grey would also pass the check above.
+    """
+    bands = _dn_scene()
+    rgb, *_ = composite.render_composite(bands, "radar_grey", {})
+    grey = rgb[..., :3].mean(axis=2)
+    water = grey[:44, :].mean()
+    fields = grey[60:105, :40].mean()
+    town = grey[118:, 100:].mean()
+    assert water < 40, f"still water should be near black, got {water:.0f}"
+    assert fields > water * 3
+    assert town > fields * 1.8
+    assert town > 180, f"a town is the bright thing in a radar scene, got {town:.0f}"
+
+
+def test_the_window_follows_the_scene_rather_than_the_other_way_round():
+    """Twice the amplitude is the same ground through a different gain.
+
+    An uncalibrated product has no fixed level, so the same place can arrive
+    at any brightness. The picture has to come out the same either way.
+    """
+    one = _dn_scene(np.random.default_rng(3))
+    # +6 dB across the board: exactly what an unknown gain does.
+    other = {k: v + 6.0 for k, v in one.items()}
+    other["vvvh"] = one["vvvh"]            # a ratio is unchanged by a gain
+    first, *_ = composite.render_composite(one, "radar_grey", {})
+    second, *_ = composite.render_composite(other, "radar_grey", {})
+    assert np.abs(first[..., :3].astype(int)
+                  - second[..., :3].astype(int)).mean() < 2
+
+
+def test_a_ratio_channel_is_given_no_level_at_all():
+    """It is a difference of two decibel figures, so the gain cancels in it.
+
+    Scaling it by the scene as well would undo that and make the one
+    channel that IS comparable between passes stop being so.
+    """
+    spec = config.COMPOSITES["radar_color"]
+    assert spec["db_windows"][2][0] == "abs"
+
+    # In LINEAR POWER, which is what the renderer hands it -- from_db runs
+    # first. Six decibels of gain is four times the power, and the window has
+    # to follow it by four.
+    bands = _dn_scene()
+    power = {k: composite.from_decibels(v) for k, v in bands.items()}
+    louder = {k: composite.from_decibels(v + 6.0) for k, v in bands.items()}
+    louder["vvvh"] = power["vvvh"]        # a ratio is unchanged by a gain
+
+    windows = composite.radar_windows(spec, power, spec["bands"], 50)
+    moved = composite.radar_windows(spec, louder, spec["bands"], 50)
+    assert windows[2] == (1.0, 8.0)
+    assert moved[2] == windows[2], "the ratio window must not follow the gain"
+    assert moved[0][1] == pytest.approx(windows[0][1] * 4, rel=0.02)
+
+
+def test_flat_ground_is_still_flat():
+    """The failure the fixed windows existed to prevent.
+
+    VV and VH measure the same ground twice and their ratio's spread is two
+    or three decibels. Stretched to its own percentiles that becomes full
+    scale and flat ground comes back a saturated rainbow. Scaling a window of
+    fixed WIDTH cannot do that: a narrow spread inside a wide window is
+    still narrow.
+    """
+    rng = np.random.default_rng(7)
+    shape = (96, 96)
+    flat = {}
+    for band, level in (("vv", 46.0), ("vh", 39.0)):     # DN decibels
+        flat[band] = np.ma.masked_array(
+            (level + rng.normal(0, 0.4, shape)).astype("float32"),
+            np.zeros(shape, bool))
+    flat["vvvh"] = np.ma.masked_array(
+        ndimage.uniform_filter((flat["vv"] - flat["vh"]).data, raster.RATIO_LOOKS),
+        np.zeros(shape, bool))
+    steady, _, info = composite.render_composite(flat, "radar_color", {})
+    loud, _, _ = composite.render_composite(flat, "radar_color", {"stretch": "percentile"})
+    assert info["mode"] == "radar"
+    assert steady.std(axis=(0, 1))[:3].max() < 8, "flat ground grew structure"
+    assert loud.std(axis=(0, 1))[:3].min() > 40, "percentiles should blow it up"
+
+
+@pytest.mark.parametrize("band", [
+    pytest.param(lambda: np.ma.masked_array(np.zeros((8, 8), "float32"),
+                                            np.ones((8, 8), bool)),
+                 id="every pixel masked"),
+    pytest.param(lambda: np.ma.masked_array(np.zeros((8, 8), "float32"),
+                                            np.zeros((8, 8), bool)),
+                 id="a level of exactly zero"),
+])
+def test_a_scene_of_nothing_does_not_divide_the_picture_by_zero(band):
+    """Two different nothings, and they take different paths.
+
+    A fully masked scene has no figures to take a level from at all. A scene
+    of real zeros has a level, and it is zero -- which multiplied by anything
+    is still zero, and a window from zero to zero is a division by it.
+    """
+    empty = {k: band() for k in ("vv", "vh", "vvvh")}
+    spec = config.COMPOSITES["radar_color"]
+    windows = composite.radar_windows(spec, empty, spec["bands"], 50)
+    for lo, hi in windows:
+        assert hi > lo, (lo, hi)
+
+
+def test_every_radar_composite_is_windowed_in_linear_power():
+    """The logarithm is what spreads speckle; the conversion compresses it.
+
+    Windowing in decibels was tried and measured: flat ground came back with
+    a spread of 33 out of 255 where the linear conversion gives 5. A radar
+    composite that forgot this would not blow out -- it would just look
+    grainy and low-contrast, which is exactly the kind of wrong that gets
+    shipped.
+    """
+    for name, spec in _radar_presets():
+        assert spec.get("from_db") is True, name
+        assert spec["default_stretch"]["mode"] == "radar", name
+
+
+def test_the_colour_composite_separates_the_ground_too():
+    # Not only the grey one. radar_color is what a radar scene opens on, and
+    # it is the picture that came back saturated yellow.
+    bands = _dn_scene()
+    rgb, *_ = composite.render_composite(bands, "radar_color", {})
+    grey = rgb[..., :3].mean(axis=2)
+    water = grey[:44, :].mean()
+    town = grey[118:, 100:].mean()
+    assert town > water * 2.5, f"water {water:.0f}, town {town:.0f}"
+    assert town > 150 and water < 90
+
+
+def test_the_multipliers_reproduce_the_windows_they_replaced():
+    """Continuity, checked rather than asserted in a comment.
+
+    Each multiplier is the old absolute window top divided by that channel's
+    level for bare ground, which is what a radar scene's median is. So a
+    scene of typical land has to get the old window back.
+    """
+    old_tops = {
+        "radar_color": [0.35, 0.08, None],
+        "radar_grey": [0.35, 0.35, 0.35],
+        "radar_interference": [0.30, 0.15, 0.18],
+        "radar_water": [0.06, 0.35, 0.35],
+    }
+    soil = {b: 10 ** (raster._RADAR_ENDMEMBERS["soil"][b] / 10) + raster.NOISE_FLOOR
+            for b in ("vv", "vh")}
+    for name, tops in old_tops.items():
+        spec = config.COMPOSITES[name]
+        bands = {b: np.ma.masked_array(np.array([[soil[b]]], "float32"))
+                 for b in ("vv", "vh")}
+        bands["vvvh"] = bands["vv"] / bands["vh"]
+        got = composite.radar_windows(spec, bands, spec["bands"], 50)
+        for (_, hi), want in zip(got, tops):
+            if want is None:
+                continue
+            assert hi == pytest.approx(want, rel=0.05), (name, hi, want)

@@ -289,12 +289,40 @@ def test_the_interference_view_is_a_picture_of_the_whole_swath():
     assert preset["bands"] == ["vv", "vh", "vv"]
     assert preset["from_db"] is True
 
-    red, green, blue = preset["windows"]
-    # Forest returns about -13 dB in VH, which is 0.045 in power.
-    assert green[1] > 0.045 * 2, "green saturates on vegetation"
-    # And interference, nearer -10 dB, must reach the top of it.
-    assert green[1] <= 10 ** (-8.0 / 10.0)
-    assert red[1] > green[1] and blue[1] > green[1], "the base would not read violet"
+    # The windows are multipliers of the scene's own level now, not absolute
+    # figures -- the product is uncalibrated, so an absolute figure cannot be
+    # right for it. What the design needs is unchanged and is checked against
+    # a scene rather than against the table.
+    red, green, blue = preset["db_windows"]
+    assert red[0] == green[0] == blue[0] == "x", "all three follow the scene"
+
+    # A scene of bare ground, because the window is scaled by the scene's
+    # MEDIAN and the median of a radar scene is its typical land. The
+    # assertions below are still about VEGETATION, which is what the design is
+    # about -- a fixture that is all vegetation moves the median onto the very
+    # thing being tested and the check stops meaning anything.
+    import numpy as np
+
+    from backend import composite as comp, raster
+
+    def power(cover, band):
+        return (10 ** (raster._RADAR_ENDMEMBERS[cover][band] / 10)
+                + raster.NOISE_FLOOR)
+
+    bands = {b: np.ma.masked_array(
+        np.array([[power("soil", b)]], dtype="float32")) for b in ("vv", "vh")}
+    veg = {b: np.ma.masked_array(
+        np.array([[power("veg", b)]], dtype="float32")) for b in ("vv", "vh")}
+    (_, r_hi), (_, g_hi), (_, b_hi) = comp.radar_windows(
+        preset, bands, preset["bands"], 50)
+
+    vh_veg = float(veg["vh"][0, 0])
+    # Forest must not saturate the green channel, or every field blazes and
+    # the streaks vanish into a uniformly green scene.
+    assert g_hi > vh_veg * 2, "green saturates on vegetation"
+    # And interference, some 3 dB above the forest, must reach the top of it.
+    assert g_hi <= vh_veg * 10 ** (5.0 / 10.0)
+    assert r_hi > g_hi and b_hi > g_hi, "the base would not read violet"
 
 
 def _terrain(seed=0, n=420, with_streak=False):

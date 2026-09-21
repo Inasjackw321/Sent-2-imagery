@@ -108,8 +108,11 @@ SATELLITES = {
         "swath_hint": "C-band radar, VV and VH polarisation, 10 m pixels at ~20 m detail",
         "attribution": "Contains modified Copernicus Sentinel data",
         "provider": "Earth Search (AWS Open Data)",
-        "notes": "Ground Range Detected amplitude, shown in decibels. Sees through "
-                 "cloud and works at night; not radiometrically terrain-corrected.",
+        "notes": "Ground Range Detected amplitude, shown in decibels. Sees "
+                 "through cloud and works at night. Not calibrated and not "
+                 "terrain-corrected, so brightness is relative to the scene: "
+                 "bright is rougher than the rest of this pass, not a "
+                 "backscatter figure you can carry to another one.",
         "units": "dB (uncalibrated amplitude)",
         "default_composite": "radar_color",
         "cloud_filter": False,
@@ -415,26 +418,46 @@ COMPOSITES = {
     # red-to-cyan axis and inventing structure out of noise. Fixed windows keep
     # the channels in their true proportions, so water comes out black, towns
     # white, vegetation green -- and two dates are comparable.
+    # Radar is stretched from the scene's own figures, in decibels.
+    #
+    # There used to be a fixed window per channel here, in linear power, with
+    # numbers taken from CALIBRATED sigma0 -- forest at -13 dB, and so on.
+    # Nothing in this app produces calibrated sigma0. What Earth Search and
+    # the Planetary Computer publish under sentinel-1-grd is uncalibrated
+    # amplitude DN, which raster._to_decibels turns into +28 to +70 dB where
+    # sigma0 would be -25 to 0. Those two scales are about sixty decibels
+    # apart -- a factor of a million in power -- so every pixel of every radar
+    # scene landed above the top of its window.
+    #
+    # Measured on a synthetic scene of real DN values: radar_grey rendered
+    # 100% pure white and radar_color averaged RGB 255,255,123, which is
+    # exactly the saturated yellow that was reported.
+    #
+    # An absolute window needs an absolute scale and an uncalibrated product
+    # has not got one -- the calibration LUT that would give it is not in the
+    # STAC assets. So the levels here are RELATIVE to the scene, which is what
+    # every viewer of this product does and what the satellite's note says out
+    # loud. The cost is that two dates are stretched independently.
     "radar_color": {
         "label": "Radar colour",
         "sat": "sentinel-1",
         "bands": ["vv", "vh", "vvvh"],
         "hint": "The standard radar false colour. Towns white, vegetation green, water black.",
-        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
+        "from_db": True,
+        "db_windows": [("x", 4.7), ("x", 6.2), ("abs", 1.0, 8.0)],
         # Linear power, not decibels -- see composite.from_decibels. VH returns
         # roughly a quarter of what VV does, and the ratio is a ratio, so all
         # three windows differ.
-        "from_db": True,
-        "windows": [[0.0, 0.35], [0.0, 0.08], [1.0, 8.0]],
     },
     "radar_grey": {
         "label": "Radar (VV only)",
         "sat": "sentinel-1",
         "bands": ["vv", "vv", "vv"],
         "hint": "Plain backscatter. Bright is rough or metal, black is smooth water.",
-        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
         "from_db": True,
-        "windows": [[0.0, 0.35]] * 3,
+        "db_windows": [("x", 4.7)] * 3,
     },
     # The interference view, and the reason it is a picture rather than a
     # number. Ground radars transmitting in Sentinel-1's band put energy
@@ -450,8 +473,9 @@ COMPOSITES = {
         "hint": "Violet is ordinary ground; cities are bright here too, so it "
                 "is the long straight bands across the swath that are a radar "
                 "transmitting in Sentinel-1's band.",
-        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
         "from_db": True,
+        "db_windows": [("x", 4.0), ("x", 11.6), ("x", 2.4)],
         # The green window is the one that matters, and it is set from what
         # the two channels actually read. Cross-polarised return from ordinary
         # ground runs about -22 dB over bare soil to -13 dB over forest, which
@@ -460,7 +484,6 @@ COMPOSITES = {
         # a streak saturate. Tighter than that -- an earlier try used 0.045 --
         # and every field saturates too, and the whole scene comes out green
         # with nothing standing out of it.
-        "windows": [[0.0, 0.30], [0.0, 0.15], [0.0, 0.18]],
     },
     # The same three pictures for the other pair. Not a copy for its own sake:
     # a scene in HH/HV cannot make any of the ones above, and without these it
@@ -471,29 +494,29 @@ COMPOSITES = {
         "bands": ["hh", "hv", "hhhv"],
         "hint": "The standard radar false colour, for a pass in the co-polarised "
                 "pair the instrument uses over ice and open ocean.",
-        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
         "from_db": True,
+        "db_windows": [("x", 6.0), ("x", 4.7), ("abs", 1.0, 10.0)],
         # HH returns more than VV off the sea and HV rather less than VH, so
         # the windows are not the VV/VH ones with the names changed.
-        "windows": [[0.0, 0.45], [0.0, 0.06], [1.0, 10.0]],
     },
     "radar_grey_hh": {
         "label": "Radar (HH only)",
         "sat": "sentinel-1",
         "bands": ["hh", "hh", "hh"],
         "hint": "Plain backscatter in HH. Sea ice is bright against black water.",
-        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
         "from_db": True,
-        "windows": [[0.0, 0.45], [0.0, 0.45], [0.0, 0.45]],
+        "db_windows": [("x", 6.0)] * 3,
     },
     "radar_water": {
         "label": "Radar water & flood",
         "sat": "sentinel-1",
         "bands": ["vh", "vv", "vv"],
         "hint": "Cross-polarised first: still water goes to near black, so floods stand out.",
-        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
         "from_db": True,
-        "windows": [[0.0, 0.06], [0.0, 0.35], [0.0, 0.35]],
+        "db_windows": [("x", 4.7), ("x", 4.7), ("x", 4.7)],
     },
 }
 

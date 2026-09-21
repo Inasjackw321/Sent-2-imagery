@@ -98,6 +98,54 @@ def soft_highlights(x: np.ndarray, knee: float = 0.72) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def radar_windows(spec, bands, keys, ref_pct):
+    """Windows for an uncalibrated radar scene: fixed shape, per-scene level.
+
+    Three answers were tried and the first two were both wrong.
+
+    A FIXED window needs an absolute scale, and Sentinel-1 GRD as published
+    has not got one: it is uncalibrated amplitude, so the same ground can sit
+    sixty decibels from where a calibrated figure would put it. Every pixel of
+    every scene then landed above the top of the window and rendered white,
+    which is what was reported -- measured at 100% white for radar_grey and a
+    mean of RGB 255,255,123 for radar_color, the exact yellow in the report.
+
+    A PERCENTILE window adapts to the scene and manufactures structure. VV and
+    VH measure the same ground twice and their ratio's real spread is two or
+    three decibels; stretched to its own percentiles that becomes full scale,
+    and flat ground with a little speckle comes back a saturated rainbow. That
+    was reported too, earlier, and is why the fixed windows existed.
+
+    What is unknown is a GAIN. In linear power that is a multiplication, so
+    the window is MULTIPLIED by the scene's own level rather than shifted:
+    [0, m x level], with m fixed. That keeps the shape of the old windows
+    exactly -- flat ground still sits low in a window several times wider than
+    it, so it still looks flat -- while following a scene wherever its
+    arbitrary gain puts it.
+
+    Shifting instead of scaling was tried and measured: in decibels a window
+    wide enough to hold water and a city is twenty-odd decibels, speckle alone
+    is two or three of them, and flat ground came back with a spread of 33 out
+    of 255 where the old windows gave 5. The logarithm is what spreads it; the
+    linear conversion above is what compresses it again.
+
+    The level is a median, because a median is the ground rather than the
+    brightest thing on it. A ratio channel takes an absolute window and no
+    level at all: it is a difference of two decibel figures, so the gain
+    cancels in it.
+    """
+    out = []
+    for key, window in zip(keys, spec["db_windows"]):
+        if window[0] == "abs":
+            out.append((float(window[1]), float(window[2])))
+            continue
+        got = bands[key].compressed()
+        level = float(np.percentile(got, ref_pct)) if got.size else 1.0
+        # A scene of nothing but no-data would divide the picture by zero.
+        out.append((0.0, max(level, 1e-9) * float(window[1])))
+    return out
+
+
 def from_decibels(band: np.ma.MaskedArray) -> np.ma.MaskedArray:
     """Decibels back to linear power, for display.
 
@@ -173,7 +221,10 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
     if spec.get("from_db"):
         bands = {k: from_decibels(bands[k]) for k in keys}
 
-    if mode == "percentile_linked":
+    if mode == "radar":
+        per_band = radar_windows(spec, bands, keys,
+                                 float(defaults.get("ref", 50)))
+    elif mode == "percentile_linked":
         pool = np.concatenate([b.compressed() for b in (bands[k] for k in keys)])
         if pool.size:
             lo, hi = (float(v) for v in np.percentile(pool, [low, high]))

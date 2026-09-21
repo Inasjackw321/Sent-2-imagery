@@ -279,8 +279,20 @@ class TestTheBandsAndCompositesThatShipped:
         # HH returns more than VV off the sea and HV rather less than VH. The
         # same numbers under different names would be a guess presented as a
         # calibration.
-        assert config.COMPOSITES["radar_color_hh"]["windows"] != \
-            config.COMPOSITES["radar_color"]["windows"]
+        assert config.COMPOSITES["radar_color_hh"]["db_windows"] != \
+            config.COMPOSITES["radar_color"]["db_windows"]
+
+    def test_every_radar_composite_says_how_to_window_each_channel(self):
+        # One entry per channel. A short list would silently window the last
+        # channel with whatever zip() happened to leave out -- which is
+        # nothing, so the channel would be dropped from the picture.
+        for name, spec in config.COMPOSITES.items():
+            sats = [spec["sat"]] if isinstance(spec["sat"], str) else spec["sat"]
+            if "sentinel-1" not in sats:
+                continue
+            assert len(spec["db_windows"]) == len(spec["bands"]), name
+            for window in spec["db_windows"]:
+                assert window[0] in ("x", "abs"), (name, window)
 
 
 class TestSarReachesThePicture:
