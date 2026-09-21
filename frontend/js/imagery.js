@@ -10,6 +10,7 @@
 // A merge is what the ground looks like, put together from several passes.
 
 import { api } from './api.js';
+import { canMake, sarLabel, sarPolarisations } from './sarview.js';
 import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
 import * as adjust from './adjust.js';
@@ -388,8 +389,15 @@ function buildVisualisationOptions() {
   const idxGroup = $('#optIndices');
   compGroup.innerHTML = idxGroup.innerHTML = '';
 
+  // Which polarisations the chosen pass actually carries. Over land the
+  // instrument sends VV and VH; over sea ice and much open ocean it sends HH
+  // instead, and a pass in that pair cannot make any of the VV pictures. A
+  // picker that lists four and can draw two teaches people the app is
+  // unreliable, so it lists what this pass can do.
+  const pol = new Set(sarPolarisations(chosenScene()));
   for (const [key, spec] of Object.entries(composites)) {
     if (!spec.sat.includes(sat.key)) continue;
+    if (pol.size && !canMake(spec, pol)) continue;
     compGroup.append(el('option', { value: `composite:${key}` }, spec.label));
   }
   for (const [key, spec] of Object.entries(indices)) {
@@ -402,8 +410,23 @@ function buildVisualisationOptions() {
   // to the satellite's own default rather than to whatever sorts first.
   const select = $('#renderMode');
   select.value = wanted;
-  if (!select.value) select.value = `composite:${sat.default_composite}`;
+  // The choice may no longer be on offer -- picking an HH pass after a VV one
+  // takes every VV picture off the list. Falling through to the satellite's
+  // own default would put it back on a picture this pass cannot make, so it
+  // falls back to the first one that is actually there.
+  if (!select.value) {
+    select.value = compGroup.querySelector(
+      `option[value="composite:${sat.default_composite}"]`)
+      ? `composite:${sat.default_composite}`
+      : (compGroup.firstElementChild?.value ?? '');
+  }
   updateHint();
+}
+
+/** The scene the render will use, for questions about what it can do. */
+function chosenScene() {
+  return (store.dates ?? []).find((d) => d.id === store.activeDateId)
+    ?? (store.dates ?? [])[0] ?? null;
 }
 
 function currentMode() {
@@ -612,6 +635,11 @@ function tickBest(n) {
     : [...mine].sort((a, b) => (a.cloud ?? 100) - (b.cloud ?? 100));
   store.selected = new Set(order.slice(0, n).map((d) => d.id));
   renderDateList();
+  // The list of pictures depends on the pass now, not only on the satellite.
+  // Without this the filter never ran with a scene in hand: choosing an HH
+  // pass left every VV picture on the menu, which is the failure this whole
+  // change is about, moved one step later.
+  buildVisualisationOptions();
   sync();
 }
 
@@ -649,7 +677,8 @@ function renderDateList() {
         el('div', { class: 'scene-date' },
           el('span', { class: 'scene-sat', style: `background:${spec.colour}` }),
           fmt.date(date.date)),
-        el('div', { class: 'scene-meta' }, date.tile || date.platform)),
+        el('div', { class: 'scene-meta' }, sarLabel(date) || date.tile
+          || date.platform)),
       cloud,
     ));
   }
@@ -677,6 +706,11 @@ function pick(date, on) {
     store.selected.delete(date.id);
   }
   renderDateList();
+  // The list of pictures depends on the pass now, not only on the satellite.
+  // Without this the filter never ran with a scene in hand: choosing an HH
+  // pass left every VV picture on the menu, which is the failure this whole
+  // change is about, moved one step later.
+  buildVisualisationOptions();
   sync();
 }
 
@@ -810,6 +844,7 @@ async function showImagery() {
     sync();
     toast(describeResult(data.meta), 'ok');
     reportCoverage(data.meta, dates.length);
+    reportSar(data.meta);
   } catch (err) {
     toast(`Could not show that: ${err.message}`, 'err');
   }
@@ -837,6 +872,22 @@ function describeResult(meta) {
   const clear = meta.composite_report?.combined_pct;
   if (clear != null) bits.push(`${clear}% clear`);
   return bits.join(' · ');
+}
+
+/**
+ * Say what is wrong with averaging these particular radar passes.
+ *
+ * Merging dates over radar speckle-averages several passes, which is a real
+ * and useful thing to do -- when the passes are the same geometry. Averaging
+ * an ascending pass with a descending one averages two different lightings of
+ * the same hill: the result is not a cleaner picture of the ground, it is a
+ * blur of two, and nothing in the picture says so.
+ *
+ * A warning rather than a refusal. Somebody may want it anyway, and being
+ * told is the difference between a choice and a surprise.
+ */
+function reportSar(meta) {
+  if (meta.sar_merge) toast(meta.sar_merge, 'warn');
 }
 
 // Below this, a picture with holes in it needs explaining rather than

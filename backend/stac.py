@@ -260,6 +260,18 @@ def scene_summary(item: dict, satellite: str | None = None,
         "epsg": props.get("proj:epsg"),
         "orbit": props.get("sat:relative_orbit"),
         "orbit_state": props.get("sat:orbit_state"),
+        # The SAR extension. Fetched for every scene and meaningless for an
+        # optical one, which is why sar.describe() answers nothing for those
+        # rather than this being filtered here -- a scene is one shape.
+        #
+        # These are what make a radar pass readable: which pair of
+        # polarisations it carries decides which pictures it can make at all,
+        # and the mode decides how sharp it is.
+        "polarisations": [str(p).upper() for p in
+                          (props.get("sar:polarizations") or [])
+                          if str(p).strip()],
+        "mode": props.get("sar:instrument_mode"),
+        "product": props.get("sar:product_type"),
         "boa_offset_applied": bool(props.get("earthsearch:boa_offset_applied", False)),
         "sun_elevation": props.get("view:sun_elevation"),
         "thumbnail": (assets.get("thumbnail") or {}).get("href"),
@@ -437,6 +449,12 @@ def _demo_scene(day: dt.date, cloud: float, seed: int, satellite: str | None = N
     key = satellite or config.DEFAULT_SATELLITE
     sat = config.satellite(key)
     radar = sat["kind"] == "radar"
+    # Which way this pass was going. Off the DAY rather than off the seed,
+    # because the seed is one value per area and every pass then came out the
+    # same way round -- which never exercises the warning about averaging two
+    # lightings of the same hill. Off the day it also survives the round trip
+    # through a scene id, which is how a chosen date is re-fetched.
+    up = (day.toordinal() // 6) % 2 == 0
     tag = _DEMO_TAG.get(key, "")
     suffix = f"-{tag}" if tag else ""
     return {
@@ -448,13 +466,26 @@ def _demo_scene(day: dt.date, cloud: float, seed: int, satellite: str | None = N
         # date list lie about what the pass can see through.
         "cloud": None if radar else cloud,
         "platform": f"{sat['platform']} (synthetic)",
-        "tile": "IW ASC #59" if radar else ("199/024" if key == "landsat" else "DEMO"),
+        "tile": (f"IW {'ASC' if up else 'DSC'} #{59 if up else 36}"
+                 if radar else ("199/024" if key == "landsat" else "DEMO")),
         "epsg": 3857,
-        "orbit": 59 if radar else 108,
-        "orbit_state": "ascending" if radar else None,
+        "orbit": (59 if up else 36) if radar else 108,
+        "orbit_state": ("ascending" if up else "descending")
+                       if radar else None,
         "boa_offset_applied": True,
         "sun_elevation": None if radar else 45.0,
         "thumbnail": None,
+        # The same SAR fields a live radar pass carries, so the offline build
+        # shows the same line under a scene that the real one does -- and a
+        # screenshot from the demo explains the real thing rather than a
+        # different app.
+        #
+        # Alternating passes, because the whole point of showing the direction
+        # is that it changes: a demo where every pass is ascending never
+        # exercises the warning about averaging two lightings together.
+        "polarisations": ["VV", "VH"] if radar else [],
+        "mode": "IW" if radar else None,
+        "product": "GRD" if radar else None,
         "assets": {},
         "demo": True,
     }

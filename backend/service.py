@@ -9,7 +9,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from . import composite, config, enhance, raster, stac, superres
+from . import composite, config, enhance, raster, sar, stac, superres
 from .geo import (Grid, circle_to_polygon, geodesic_area_km2, geometry_bounds,
                   normalise_aoi)
 
@@ -302,9 +302,26 @@ def render(req: dict) -> dict:
 
     sat = satellite_of(scenes)
     mode = req.get("mode", "composite")
-    preset = req.get("preset") or sat["default_composite"]
+    # A radar scene opens on a picture it can make. The satellite's default is
+    # a VV/VH one, and over sea ice the instrument transmits HH instead -- so
+    # for those the default used to be a picture out of bands the scene does
+    # not carry, and the first thing anybody saw was "has no vv asset".
+    preset = req.get("preset") or (
+        sar.default_composite(scenes[0]) if sat["kind"] == "radar"
+        else sat["default_composite"])
     index_name = req.get("index") or ("radar_ratio" if sat["kind"] == "radar" else "ndvi")
     names = _needed_bands(mode, preset, index_name, sat)
+    # Checked here, against the scene, rather than discovered as a missing
+    # asset four layers down. "This pass is HH+HV; radar colour needs VV" is
+    # something a reader can act on; "Scene S1A_... has no vv asset" is not.
+    if sat["kind"] == "radar":
+        short = sar.missing_for(scenes[0], names)
+        if short:
+            raise RenderError(
+                f"This pass carries {sar.pair_of(sar.polarisations(scenes[0]))}"
+                f" — {config.COMPOSITES.get(preset, {}).get('label', preset)}"
+                f" needs {', '.join(short)}. Try "
+                f"{config.COMPOSITES.get(sar.default_composite(scenes[0]), {}).get('label', 'another picture')}.")
 
     applied: list[str] = []
     bands, cloud_fraction, composite_report, sr_report, grid = _gather(
@@ -370,6 +387,13 @@ def render(req: dict) -> dict:
         "label": label,
         "bands": names,
         "band_labels": [config.BANDS[b]["label"] for b in names],
+        # What this pass actually was: which way it looked, which track, which
+        # mode, which polarisations. Empty for anything that is not radar.
+        "sar": sar.describe(scenes[0]),
+        # And what is wrong with averaging these particular passes, if
+        # anything. Said rather than refused -- somebody may want it anyway,
+        # and being told is the difference between a choice and a surprise.
+        "sar_merge": sar.merge_trouble(scenes),
         "stretch": stretch_bounds,
         "legend": legend,
         "stats": stats,

@@ -554,6 +554,9 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 }
 .toast.err { border-color: rgba(255,107,107,.55); background: #2a1a1e; }
 .toast.ok { border-color: rgba(55,224,160,.45); background: #12251f; }
+/* Not an error: the app did what was asked. It is a caveat about what the
+   picture means, which is worth its own colour and a longer dwell. */
+.toast.warn { border-color: rgba(255,179,71,.55); background: #2a2216; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 
 .busy {

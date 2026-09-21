@@ -62,7 +62,9 @@ export function toast(message, kind = '') {
     node.style.transition = 'opacity .3s';
     node.style.opacity = '0';
     setTimeout(() => node.remove(), 320);
-  }, kind === 'err' ? 7000 : 3800);
+    // A caveat takes as long to read as an error and is just as easy to
+    // miss, so it gets the same dwell.
+  }, kind === 'err' || kind === 'warn' ? 7000 : 3800);
 }
 
 let busyDepth = 0;

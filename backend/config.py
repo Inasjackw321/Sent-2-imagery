@@ -261,7 +261,29 @@ BANDS = {
     # in decibels is their ratio. Read as one so a composite can use it.
     "vvvh": {"derive": ("vv", "vh"), "res": 10, "label": "VV − VH ratio",
              "sat": "sentinel-1", "unit": "dB"},
+    # The other pair Sentinel-1 transmits.
+    #
+    # Over land in Europe it is always VV and VH, which is why they were the
+    # only two here. But the instrument is switched to HH and HV over sea ice
+    # and much open ocean -- the whole Arctic, the Antarctic, and the wide-swath
+    # ocean mode -- and a scene in that pair has no vv asset at all. Asking for
+    # radar colour over Svalbard did not come back a different colour; it came
+    # back "Scene ... has no vv asset", which reads as the app being broken
+    # rather than as the satellite having been in a different mode.
+    "hh": {"asset": "hh", "res": 10, "label": "HH backscatter",
+           "sat": "sentinel-1", "unit": "dB"},
+    "hv": {"asset": "hv", "res": 10, "label": "HV backscatter",
+           "sat": "sentinel-1", "unit": "dB"},
+    "hhhv": {"derive": ("hh", "hv"), "res": 10, "label": "HH − HV ratio",
+             "sat": "sentinel-1", "unit": "dB"},
 }
+
+# Which polarisation each band needs the scene to carry.
+#
+# A derived band needs both of its parts. Read once, here, so the question
+# "can this scene make this picture" has one answer rather than one per
+# caller -- see sar.py.
+BAND_POLARISATION = {"vv": "VV", "vh": "VH", "hh": "HH", "hv": "HV"}
 
 # Landsat carries most of the same wavelengths under different asset names, so
 # a band says where it lives on each satellite that has it rather than being
@@ -439,6 +461,30 @@ COMPOSITES = {
         # and every field saturates too, and the whole scene comes out green
         # with nothing standing out of it.
         "windows": [[0.0, 0.30], [0.0, 0.15], [0.0, 0.18]],
+    },
+    # The same three pictures for the other pair. Not a copy for its own sake:
+    # a scene in HH/HV cannot make any of the ones above, and without these it
+    # could make nothing at all.
+    "radar_color_hh": {
+        "label": "Radar colour (HH/HV)",
+        "sat": "sentinel-1",
+        "bands": ["hh", "hv", "hhhv"],
+        "hint": "The standard radar false colour, for a pass in the co-polarised "
+                "pair the instrument uses over ice and open ocean.",
+        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "from_db": True,
+        # HH returns more than VV off the sea and HV rather less than VH, so
+        # the windows are not the VV/VH ones with the names changed.
+        "windows": [[0.0, 0.45], [0.0, 0.06], [1.0, 10.0]],
+    },
+    "radar_grey_hh": {
+        "label": "Radar (HH only)",
+        "sat": "sentinel-1",
+        "bands": ["hh", "hh", "hh"],
+        "hint": "Plain backscatter in HH. Sea ice is bright against black water.",
+        "default_stretch": {"mode": "fixed", "gamma": 1.0},
+        "from_db": True,
+        "windows": [[0.0, 0.45], [0.0, 0.45], [0.0, 0.45]],
     },
     "radar_water": {
         "label": "Radar water & flood",
