@@ -17,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from . import (
     aisstream, animate as animation, composite, config, copernicus,
     fires, gazetteer, mtg,
-    ollama, passes, seismic, service, stac, tracker, version, vessels, weather,
+    ollama, passes, seismic, service, shake, stac, tracker, version, vessels,
+    weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError
@@ -190,6 +191,7 @@ def get_config() -> dict[str, Any]:
             "trace_minutes": {str(k): v for k, v in seismic.TRACE_MINUTES.items()},
             "events": seismic.ATTRIBUTION["events"],
             "stations": seismic.ATTRIBUTION["stations"],
+            "shake": shake.ATTRIBUTION,
         },
         "max_size": config.MAX_SIZE,
         "max_superres": config.MAX_SUPERRES,
@@ -596,6 +598,20 @@ def seismographs(
         return seismic.stations(box)
     except seismic.SeismicLookupError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/shake")
+def raspberry_shakes(refresh: bool = Query(False)) -> dict:
+    """The Raspberry Shake seismographs, kept apart from the professional ones.
+
+    Not a rectangle query like the one above, because these are four named
+    instruments rather than an index: they were asked for by station code, and
+    which four they are is a decision in the source rather than whatever
+    happens to be inside the current view.
+    """
+    if config.DEMO_MODE:
+        return shake.demo_stations()
+    return shake.stations(refresh=refresh)
 
 
 @app.get("/api/seismographs/trace.png")

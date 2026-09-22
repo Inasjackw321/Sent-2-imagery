@@ -61,6 +61,9 @@ export const api = {
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4),
     })}`, { method: 'GET' }),
+  // No rectangle: the Raspberry Shakes are four named instruments rather than
+  // an index, so there is nothing to query by area.
+  shakes: () => request('/api/shake', { method: 'GET' }),
   // A URL rather than a request: it goes straight into an <img src>.
   traceUrl: ({ network, station, channel, loc = '', minutes }) =>
     `/api/seismographs/trace.png?${new URLSearchParams({

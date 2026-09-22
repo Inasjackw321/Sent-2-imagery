@@ -31,7 +31,7 @@ import time
 import numpy as np
 import requests
 
-from . import config, miniseed
+from . import config, miniseed, shake
 
 
 class SeismicLookupError(RuntimeError):
@@ -417,6 +417,19 @@ def _rank(channel: str) -> int:
 # ── The trace itself ───────────────────────────────────────────
 
 
+def centres_for(network: str) -> list[tuple[str, str]]:
+    """Which archives could hold this network's recordings.
+
+    Everything open is tried in turn, with one exception: network AM, the
+    Raspberry Shakes, is archived by Raspberry Shake and by nobody else. The
+    federated nodes have never held it, so asking them is six timeouts and a
+    minute of somebody's afternoon for a guaranteed nothing.
+    """
+    if shake.ours(network):
+        return [(shake.ATTRIBUTION, shake.DATA_URL)]
+    return list(DATA_CENTRES)
+
+
 def trace(network: str, station: str, channel: str, loc: str = "", minutes: int = 60) -> bytes:
     """A plotted seismogram: the last `minutes` of ground motion, as a PNG.
 
@@ -436,7 +449,7 @@ def trace(network: str, station: str, channel: str, loc: str = "", minutes: int 
         locations.append("*")
 
     troubles: list[str] = []
-    for label, url in DATA_CENTRES:
+    for label, url in centres_for(network):
         for location in locations:
             try:
                 resp = _get(url, {

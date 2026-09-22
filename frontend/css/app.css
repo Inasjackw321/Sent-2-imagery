@@ -721,7 +721,12 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 
 /* ── Seismic ────────────────────────────────────────────────── */
 
-.seismic-dock { display: grid; gap: 8px; }
+/* Same constraint as the column this sits in, for the same reason: a grid
+   item will not shrink below its own content's minimum, so one long line --
+   a station code, or a service explaining at length why it did not answer --
+   widened this panel past the dock and off the side of the window. */
+.seismic-dock { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+.seis-body { min-width: 0; overflow-wrap: anywhere; }
 .seis-toggle {
   display: flex; align-items: center; justify-content: center; gap: 7px;
   padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
@@ -742,9 +747,13 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   color: var(--ink-dim); backdrop-filter: blur(6px);
 }
 .seis-check {
-  display: flex; align-items: center; gap: 7px; cursor: pointer;
-  margin-bottom: 5px;
+  /* Baseline rather than centre, and allowed to wrap: "Raspberry Shake
+     seismographs" does not fit one line of a 208px dock, and a label that
+     refuses to wrap takes the panel off the edge of the window. */
+  display: flex; align-items: baseline; gap: 7px; cursor: pointer;
+  margin-bottom: 5px; line-height: 1.35;
 }
+.seis-check input { flex: 0 0 auto; }
 .seis-check input { accent-color: #7ed6ff; }
 /* Indented under the checkbox that governs it, so which options belong to
    which layer is a matter of looking rather than of reading. */
@@ -775,6 +784,22 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
   border: 2px solid currentColor; background: none !important;
 }
 .seis-hint { font-size: 9.5px; line-height: 1.45; color: var(--ink-faint); }
+/* The four Raspberry Shakes, named. Few enough to list, and two of them are
+   in cities somebody is likely to be watching for other reasons. */
+.seis-list { display: grid; gap: 3px; margin-top: 6px; font-size: 9.5px; }
+/* The name takes what it needs and wraps; the two scraps after it stay on one
+   line at the right. Left to wrap together, "Zaporizhzhia · RD834 (town)
+   live ↗" breaks in the middle of every part of itself. */
+.seis-list-row {
+  display: flex; align-items: baseline; gap: 6px; justify-content: space-between;
+}
+.seis-list-row > .seis-link { flex: 1 1 auto; min-width: 0; }
+.seis-list-meta { flex: 0 0 auto; white-space: nowrap; display: flex; gap: 5px; }
+.seis-link {
+  background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+  color: #ffb3c9; text-decoration: none; text-align: left;
+}
+.seis-link:hover { color: #ffd0de; text-decoration: underline; }
 .seis-count { margin-top: 4px; color: var(--ink); font-size: 11px; line-height: 1.5; }
 .seis-note {
   margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--line);

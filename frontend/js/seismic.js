@@ -17,13 +17,16 @@ import { openWindow, closeWindow, closeAll, isOpen } from './windows.js';
 let map = null;
 let quakeLayer = null;
 let stationLayer = null;
+let shakeLayer = null;
 // One canvas for the stations and one for the quakes, rather than the default
 // shared renderer: redrawing one layer then leaves the other alone.
 let stationCanvas = null;
 let quakeCanvas = null;
+let shakeCanvas = null;
 
 let showQuakes = false;
 let showStations = false;
+let showShakes = false;
 let hours = 168;
 let minMagnitude = 2.5;
 let traceMinutes = 60;
@@ -74,6 +77,14 @@ function hitTarget(latlng, renderer, radius = HIT_RADIUS) {
 // cool ramp now, and the marker below is a ring with a dot in the middle
 // rather than a disc: colour separates them at a glance, shape separates them
 // for anyone who cannot rely on colour.
+// The Raspberry Shakes get their own colour, because they are a different
+// kind of claim from the station next to them. The federated stations are
+// research instruments in vaults; a Shake is a geophone on somebody's floor,
+// on which a door closing registers. Drawn in the same blue, a reader would
+// compare the two traces as though they measured the same thing.
+const SHAKE_COLOUR = '#ff5d8f';
+const SHAKE_EDGE = '#ffd0de';
+
 const DEPTHS = [
   { under: 30, colour: '#7ef0ff', edge: '#d6faff', label: 'shallow, under 30 km' },
   { under: 100, colour: '#4cc2ff', edge: '#9adcff', label: '30 – 100 km' },
@@ -87,8 +98,10 @@ export function initSeismic(leafletMap) {
   // not expose an unpainted edge before the next redraw.
   quakeCanvas = L.canvas({ padding: 0.4 });
   stationCanvas = L.canvas({ padding: 0.4 });
+  shakeCanvas = L.canvas({ padding: 0.4 });
   quakeLayer = L.layerGroup();
   stationLayer = L.layerGroup();
+  shakeLayer = L.layerGroup();
   buildDock();
   map.on('moveend', debounce(() => refresh(), 700));
 }
@@ -148,6 +161,30 @@ function buildDock() {
           'Click a station to plot that much of its ground motion. The '
           + 'recording is fetched from whichever data centre holds it.')),
 
+      // A layer of its own rather than four more dots among the federated
+      // stations. They are not the same kind of instrument and the panel says
+      // so, because the pins would otherwise look identical.
+      el('label', { class: 'seis-check' },
+        el('input', {
+          type: 'checkbox', id: 'seisShakes',
+          onchange: (e) => setLayer('shakes', e.target.checked),
+        }),
+        'Raspberry Shake seismographs'),
+      el('div', { class: 'seis-sub', id: 'seisShakeOpts', hidden: true },
+        el('div', { class: 'seis-key' },
+          el('div', { class: 'seis-key-row' },
+            el('span', { class: 'seis-dot', style: `color:${SHAKE_COLOUR}` }),
+            'hobby instrument, in a building')),
+        el('div', { class: 'seis-hint' },
+          'Home seismographs in Ukraine: Zaporizhzhia, Kharkiv, '
+          + 'Khrystynivka and Rivne. They are here because the open '
+          + 'research networks have almost nothing in the country. They are '
+          + 'also a geophone on somebody’s floor — a door closing '
+          + 'registers on one, so a busy trace is not on its own evidence of '
+          + 'anything, and these should not be read beside a vault '
+          + 'instrument as though the two measured the same thing.'),
+        el('div', { class: 'seis-list', id: 'seisShakeList' })),
+
       el('div', { class: 'seis-count', id: 'seisCount' }, 'Nothing loaded yet'),
       el('div', { class: 'seis-note', id: 'seisNote' },
         'USGS events · EarthScope/FDSN stations · no account needed')),
@@ -161,6 +198,19 @@ function togglePanel() {
 }
 
 function setLayer(which, on) {
+  if (which === 'shakes') {
+    showShakes = on;
+    $('#seisShakeOpts').hidden = !on;
+    if (on) {
+      shakeLayer.addTo(map);
+      loadShakes();
+    } else {
+      shakeLayer.remove();
+      shakeLayer.clearLayers();
+      closeAll(isShakeWindow);
+    }
+    return;
+  }
   if (which === 'quakes') {
     showQuakes = on;
     $('#seisQuakeOpts').hidden = !on;
@@ -170,7 +220,13 @@ function setLayer(which, on) {
     showStations = on;
     $('#seisStationOpts').hidden = !on;
     if (on) stationLayer.addTo(map);
-    else { stationLayer.remove(); stationLayer.clearLayers(); closeAll((id) => id.startsWith(WIN)); }
+    else {
+      stationLayer.remove();
+      stationLayer.clearLayers();
+      // Not every trace window: the Shakes have their own layer and turning
+      // this one off should not take theirs down with it.
+      closeAll((id) => id.startsWith(WIN) && !isShakeWindow(id));
+    }
   }
   covered = null;
   if (showQuakes || showStations) refresh({ force: true });
@@ -342,6 +398,97 @@ function drawStations(data) {
       + `${quiet ? `, ${quiet} did not` : ''}</span>` : '');
 }
 
+// ── The Raspberry Shakes ───────────────────────────────────────
+
+// Kept once fetched. They are four fixed stations, not a query over the
+// view, so panning is not a reason to ask again.
+let shakes = null;
+let shakesInFlight = false;
+
+/** Whether a trace window belongs to a Shake rather than a station. */
+export function isShakeWindow(id) {
+  return id.startsWith(`${WIN}AM.`);
+}
+
+async function loadShakes() {
+  if (shakes) { drawShakes(shakes); return; }
+  if (shakesInFlight) return;
+  shakesInFlight = true;
+  const list = $('#seisShakeList');
+  if (list) list.textContent = 'Asking…';
+  try {
+    shakes = await api.shakes();
+    drawShakes(shakes);
+  } catch (err) {
+    if (list) list.textContent = `Could not be reached: ${err.message}`;
+    toast(`Raspberry Shakes: ${err.message}`, 'err');
+  } finally {
+    shakesInFlight = false;
+  }
+}
+
+/**
+ * Draw the four Shakes, and name them in the panel.
+ *
+ * Named in a list as well as pinned, because four is few enough to read and
+ * because two of them are in cities a reader is likely to be watching for
+ * other reasons. The list also carries the link to Raspberry Shake's own
+ * viewer, which shows the live helicorder this app plots on request.
+ */
+function drawShakes(data) {
+  shakeLayer.clearLayers();
+  const rows = [];
+  for (const s of data.stations ?? []) {
+    L.circleMarker([s.lat, s.lon], {
+      renderer: shakeCanvas,
+      radius: 5, weight: 1.6,
+      color: SHAKE_COLOUR, fillColor: '#1a0a11', fillOpacity: 0.85, opacity: 0.95,
+      interactive: false,
+    }).addTo(shakeLayer);
+    // A dot inside the ring, so a Shake and a station are told apart by shape
+    // as well as by colour.
+    L.circleMarker([s.lat, s.lon], {
+      renderer: shakeCanvas, radius: 1.5,
+      color: SHAKE_EDGE, weight: 0, fillColor: SHAKE_EDGE, fillOpacity: 0.95,
+      interactive: false,
+    }).addTo(shakeLayer);
+
+    hitTarget([s.lat, s.lon], shakeCanvas)
+      .bindTooltip(`${s.place} · ${s.network}.${s.station}`,
+                   { direction: 'top', offset: [0, -12] })
+      .on('click', () => plotStation({ ...s, shake: true }))
+      .addTo(shakeLayer);
+
+    rows.push(el('div', { class: 'seis-list-row' },
+      el('button', {
+        class: 'seis-link', type: 'button',
+        title: `Plot the last stretch of ground motion at ${s.station}`,
+        onclick: () => plotStation({ ...s, shake: true }),
+      }, s.place, el('span', { class: 'dim' }, ` ${s.station}`)),
+      el('span', { class: 'seis-list-meta' },
+        // Whether the pin is the instrument's own position or just the town.
+        // The two look identical on a map and are different claims.
+        s.placed === 'station' ? null : el('span', { class: 'dim' }, 'town'),
+        el('a', {
+          class: 'seis-link', href: s.view, title: 'Raspberry Shake’s own viewer',
+          target: '_blank', rel: 'noopener noreferrer',
+        }, 'live ↗'))));
+  }
+  const list = $('#seisShakeList');
+  if (list) {
+    list.replaceChildren(...rows);
+    if (data.trouble) {
+      // The reason ends where the service stopped talking, which is rarely on
+      // a full stop, and two sentences run together read as one broken one.
+      const said = /[.!?]$/.test(data.trouble) ? data.trouble : `${data.trouble}.`;
+      list.append(el('div', { class: 'seis-hint' },
+        `${said} Pins are on the towns.`));
+    }
+    list.append(el('div', { class: 'seis-note' },
+      data.attribution ?? 'Raspberry Shake community network (AM)'));
+  }
+}
+
 // ── The trace ──────────────────────────────────────────────────
 
 // Window ids are prefixed so the cameras' windows and these cannot collide.
@@ -387,7 +534,9 @@ function plotStation(station, { redraw = false } = {}) {
     openWindow({
       id,
       title: `${label} · ${station.channel}`,
-      where: station.instrument || fmt.coord(station.lon, station.lat),
+      where: station.shake
+        ? `Raspberry Shake · ${station.place}`
+        : station.instrument || fmt.coord(station.lon, station.lat),
       body: plot,
       // A trace is wide and short, so bigger means wider rather than square.
       sizes: [420, 'min(820px, calc(100vw - 40px))'],
@@ -400,6 +549,19 @@ function plotStation(station, { redraw = false } = {}) {
 }
 
 function footnote(station, span) {
+  if (station.shake) {
+    // Said on every one of these traces rather than once in the panel,
+    // because the window is what gets screenshotted and sent on, and a
+    // seismogram with no instrument named beside it reads as a research
+    // recording. The elevation is left out: it is whatever the station index
+    // holds for a device in a building, which is not a surveyed figure.
+    return `Last ${span} of vertical ground motion at a Raspberry Shake in `
+      + `${station.place}, ${fmt.coord(station.lon, station.lat)}`
+      + `${station.placed === 'station' ? '' : ' (the town, not the instrument)'}. `
+      + 'A hobby seismograph indoors, not a research instrument: local noise — '
+      + 'traffic, a door — shows up on it, so read it for timing rather than '
+      + `as a measurement. ${store.config.seismic?.shake ?? 'Raspberry Shake community network (AM)'}.`;
+  }
   // What else this instrument records. A station offering only an
   // accelerometer channel is deaf to small distant events by design, and that
   // is worth knowing before reading a flat trace as a quiet afternoon.
