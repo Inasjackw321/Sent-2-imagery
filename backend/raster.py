@@ -88,6 +88,12 @@ def scene_is_safe(scene: Any) -> None:
     """
     if not isinstance(scene, dict):
         return
+    # A folded pass carries the tiles it was cut into, each with assets of its
+    # own that the renderer opens. Checking only the outer scene would leave
+    # every one of them unexamined, which is the whole check walked around.
+    for piece in scene.get("pieces") or []:
+        if piece is not scene:
+            scene_is_safe(piece)
     assets = scene.get("assets")
     if isinstance(assets, dict):
         for href in assets.values():

@@ -621,7 +621,13 @@ async function runSearch() {
       renderDateList();
       sync();
     }
-    toast(`${data.scenes.length} date${data.scenes.length === 1 ? '' : 's'} found`, 'ok');
+    // Passes, not scenes. The catalogue hands out a scene per tile, and an
+    // ordinary area sits across several -- so "18 dates found" for six
+    // flights over reads as three times as many chances to see the ground as
+    // there were.
+    const folded = (data.fetched ?? data.scenes.length) - data.scenes.length;
+    toast(`${data.scenes.length} pass${data.scenes.length === 1 ? '' : 'es'} found`
+      + (folded > 0 ? ` · ${folded} tiles folded in` : ''), 'ok');
   } catch (err) {
     toast(`Search failed: ${err.message}`, 'err');
   }
@@ -679,8 +685,8 @@ function renderDateList() {
         el('div', { class: 'scene-date' },
           el('span', { class: 'scene-sat', style: `background:${spec.colour}` }),
           fmt.date(date.date)),
-        el('div', { class: 'scene-meta' }, sarLabel(date) || date.tile
-          || date.platform)),
+        el('div', { class: 'scene-meta' },
+          sarLabel(date) || passLabel(date) || date.platform)),
       cloud,
     ));
   }
@@ -689,6 +695,23 @@ function renderDateList() {
   // The clearest date is rarely the newest, so it is rarely at the top: show
   // the user what has been picked for them rather than leaving it off-screen.
   list.querySelector('.scene.is-active')?.scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * What a row says about itself under the date.
+ *
+ * A pass over an ordinary area comes back from the catalogue as several
+ * tiles -- same minute, same track, different hundred-kilometre squares --
+ * and they are folded into one row here. The row says so, because "6 tiles
+ * of one pass" and six rows of one date each are different claims about how
+ * many chances there were to see the ground.
+ */
+function passLabel(date) {
+  const pieces = date.pieces?.length ?? 0;
+  if (pieces > 1) {
+    return `${pieces} tiles laid together · ${date.tiles?.[0] ?? ''}…`;
+  }
+  return date.tile;
 }
 
 function pick(date, on) {

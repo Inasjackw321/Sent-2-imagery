@@ -109,11 +109,122 @@ def search_scenes(
         matched += count or 0
 
     scenes.sort(key=lambda s: s["datetime"], reverse=True)
+    pieces = len(scenes)
+    scenes = fold_passes(scenes, geometry_bounds(geometry))
     # `matched` is what the catalogue holds; `scenes` is what was fetched. The
     # two differ once a search runs past the page budget, and the front end
     # says so rather than implying the archive stops here.
     return {"scenes": scenes, "demo": False, "matched": matched,
-            "fetched": len(scenes), "satellites": wanted}
+            "fetched": pieces, "passes": len(scenes), "satellites": wanted}
+
+
+# ── One pass, not six pieces of one ────────────────────────────
+#
+# A satellite does not take a picture of your area; it flies over, recording
+# continuously, and the catalogue cuts what it recorded into squares. For
+# Sentinel-2 those are the hundred-kilometre MGRS tiles, and an ordinary area
+# of interest sits across several of them -- so one pass over one town comes
+# back as six entries, same date, same minute, different squares.
+#
+# Listed as six, that is wrong twice over. It reads as six chances to see the
+# ground when it is one, and it offers a picture per tile: pick any single one
+# and the area is rendered with the parts that fell in the other tiles simply
+# missing. The six cloud figures make it worse, because they are six readings
+# of six different hundred-kilometre squares and none of them is the cloud
+# over the area asked for.
+#
+# So the pieces of a pass are folded into one entry that carries them all, and
+# rendering it lays them side by side. Which pieces belong together is decided
+# by the satellite, the instant and the track -- not by the date alone, since
+# two passes on the same day from adjacent tracks are two passes.
+
+# How far apart two acquisitions can be and still be the same flight over.
+# A Sentinel-2 orbit crosses a continent in minutes and the tiles of one pass
+# carry timestamps seconds apart; two passes over the same ground are days
+# apart, or at the very least a whole orbit -- ninety minutes.
+SAME_PASS_MINUTES = 20
+
+
+def pass_key(scene: dict[str, Any]) -> tuple:
+    """What makes two scenes pieces of the same flight over.
+
+    The track as well as the day: a place near the edge of two adjacent
+    tracks is photographed by both, sometimes within a day of each other, and
+    those are genuinely two passes with two views of the ground.
+    """
+    when = _parse_time(scene.get("datetime"))
+    slot = int(when.timestamp() // (SAME_PASS_MINUTES * 60)) if when else scene.get("date")
+    return (scene.get("satellite"), scene.get("orbit"), slot)
+
+
+def _overlap(box: Any, area: tuple[float, float, float, float] | None) -> float:
+    """How much of the area asked for this piece covers, as a fraction.
+
+    Rectangles rather than footprints: a Sentinel-2 tile is very nearly a
+    rectangle in its own projection, the area asked for is usually a box the
+    reader drew, and the answer is only used to weigh one cloud figure
+    against another. A polygon intersection here would be more arithmetic for
+    the same decision.
+    """
+    if not box or len(box) < 4 or not area:
+        return 1.0
+    west, south, east, north = area
+    wide = max(0.0, min(box[2], east) - max(box[0], west))
+    tall = max(0.0, min(box[3], north) - max(box[1], south))
+    whole = max(1e-12, (east - west) * (north - south))
+    return max(0.0, min(1.0, (wide * tall) / whole))
+
+
+def fold_passes(scenes: list[dict[str, Any]],
+                area: tuple[float, float, float, float] | None = None
+                ) -> list[dict[str, Any]]:
+    """The tiles of each pass, folded into one entry per pass.
+
+    The entry is the first piece with the rest attached: same shape as any
+    other scene, so everything downstream that reads a date or a satellite off
+    it carries on working, and `pieces` is there for the renderer to lay side
+    by side.
+    """
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for scene in scenes:
+        groups.setdefault(pass_key(scene), []).append(scene)
+
+    out = []
+    for pieces in groups.values():
+        if len(pieces) == 1:
+            out.append(pieces[0])
+            continue
+        # The piece covering most of the area leads, so the entry's id, tile
+        # and assets are the ones a reader would have picked by hand.
+        pieces = sorted(pieces, key=lambda s: -_overlap(s.get("bbox"), area))
+        folded = dict(pieces[0])
+        folded["pieces"] = [dict(p) for p in pieces]
+        folded["tile"] = f"{len(pieces)} tiles of one pass"
+        folded["tiles"] = [p.get("tile") for p in pieces if p.get("tile")]
+        cloud = _pass_cloud(pieces, area)
+        if cloud is not None:
+            folded["cloud"] = cloud
+        out.append(folded)
+    out.sort(key=lambda s: s.get("datetime") or "", reverse=True)
+    return out
+
+
+def _pass_cloud(pieces: list[dict[str, Any]],
+                area: tuple[float, float, float, float] | None) -> float | None:
+    """One cloud figure for a folded pass, weighted by what each piece covers.
+
+    Averaging the pieces flat would let a tile clipping one corner of the area
+    count as much as the one holding the rest of it -- and on the pass that
+    prompted this, the six figures ran from 59% to 99%.
+    """
+    weighed = [(s, _overlap(s.get("bbox"), area)) for s in pieces
+               if s.get("cloud") is not None]
+    if not weighed:
+        return None
+    total = sum(weight for _, weight in weighed)
+    if total <= 0:
+        return round(sum(float(s["cloud"]) for s, _ in weighed) / len(weighed), 1)
+    return round(sum(float(s["cloud"]) * weight for s, weight in weighed) / total, 1)
 
 
 def sources_for(sat: dict) -> list[dict]:
@@ -258,6 +369,12 @@ def scene_summary(item: dict, satellite: str | None = None,
         "platform": props.get("platform") or sat["platform"],
         "tile": _tile_label(props) or _radar_label(props),
         "epsg": props.get("proj:epsg"),
+        # Where this piece of the pass actually is. Kept because a pass is
+        # delivered as a row of tiles and, folded back together, the tiles
+        # have to be weighed by how much of the area asked for each one
+        # covers -- a tile clipping one corner should not decide the cloud
+        # figure for the whole picture.
+        "bbox": [float(v) for v in (item.get("bbox") or [])[:4]] or None,
         "orbit": props.get("sat:relative_orbit"),
         "orbit_state": props.get("sat:orbit_state"),
         # The SAR extension. Fetched for every scene and meaningless for an
