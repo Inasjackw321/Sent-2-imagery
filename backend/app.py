@@ -23,7 +23,7 @@ from . import (
     weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
-from .raster import BandReadError
+from .raster import BandReadError, scenes_are_safe
 
 log = logging.getLogger("sent2")
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
@@ -134,9 +134,28 @@ async def security_headers(request, call_next):
     return response
 
 
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
+# Who may talk to this API from a browser other than by being this app.
+#
+# Nobody, which is the point. This used to allow every origin, and that was a
+# real hole rather than an untidy default: this server listens on loopback,
+# and a page on any website the operator happened to have open could reach it
+# — read every answer, drive a render, clear the AIS key — because the
+# browser will happily send a cross-origin request to 127.0.0.1 and, with a
+# wildcard, hand back the reply. The same-origin policy is the thing that
+# normally stops a web page rummaging through what is running on your own
+# machine, and the wildcard was switching it off.
+#
+# Nothing needed it. The page is served by this app, so every call it makes is
+# same-origin and no CORS header is involved at all. The list below is empty
+# rather than absent so that a deployment which really does serve the front
+# end from somewhere else has one obvious place to name it.
+CORS_ORIGINS: list[str] = []
+
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware, allow_origins=CORS_ORIGINS,
+        allow_methods=["GET", "POST"], allow_headers=["Content-Type"],
+    )
 
 
 # The last complaint written to the log, when it was written, and how many
@@ -305,6 +324,13 @@ def overpasses(
 @app.post("/api/probe")
 def probe(body: dict = Body(...)) -> dict:
     """What the satellite measured at one point, in its own units."""
+    # The scene comes back from the page, so its asset addresses are whatever
+    # the caller put in them. See raster.scene_is_safe. Refused with 400
+    # rather than 502: the request is the thing at fault, not an upstream.
+    try:
+        scenes_are_safe(body)
+    except BandReadError as exc:
+        raise _fail(exc, 400)
     try:
         return service.probe(body)
     except (KeyError, ValueError, service.RenderError) as exc:
@@ -538,6 +564,10 @@ def animate(body: dict = Body(...)):
     scenes = body.get("scenes") or []
     if not scenes:
         raise _fail(ValueError("pick some dates to animate"), 400)
+    try:
+        scenes_are_safe(body)
+    except BandReadError as exc:
+        raise _fail(exc, 400)
 
     def one(scene: dict) -> bytes:
         made = service.render({**body, "scenes": [scene], "scene": scene,
@@ -763,6 +793,24 @@ def geocode(q: str = Query(..., min_length=2)) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# What a download's filename may be made of.
+#
+# The stem is built from the scene, and a scene arrives in the request body,
+# so a quote or a newline in it lands in a response header. A newline there is
+# header injection; a quote is a second filename in the same Content-
+# Disposition. Neither is a plausible date, so the answer is to keep the
+# characters a filename actually needs and drop the rest.
+FILENAME_OK = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+
+
+def filename_stem(stem: str, fallback: str = "imagery") -> str:
+    """A download filename with nothing in it that could be a header."""
+    kept = "".join(c if c in FILENAME_OK else "_" for c in str(stem))
+    kept = kept.strip("._")[:120]
+    return kept or fallback
+
+
 def _render_response(result: dict, download: bool, stem: str):
     if download:
         ext = {"image/tiff": "tif", "image/jpeg": "jpg",
@@ -770,7 +818,8 @@ def _render_response(result: dict, download: bool, stem: str):
         return Response(
             content=result["bytes"],
             media_type=result["media_type"],
-            headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'},
+            headers={"Content-Disposition":
+                     f'attachment; filename="{filename_stem(stem)}.{ext}"'},
         )
     return JSONResponse({
         "image": f"data:{result['media_type']};base64,"
@@ -781,6 +830,11 @@ def _render_response(result: dict, download: bool, stem: str):
 
 @app.post("/api/render")
 def render(body: dict = Body(...), download: bool = Query(False)):
+    # See the note in probe(): the addresses in a scene are the caller's.
+    try:
+        scenes_are_safe(body)
+    except BandReadError as exc:
+        raise _fail(exc, 400)
     try:
         result = service.render(body)
     except (ValueError, service.RenderError) as exc:

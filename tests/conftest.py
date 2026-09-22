@@ -62,3 +62,19 @@ def no_gazetteer_network(monkeypatch):
     gazetteer.forget()
     yield
     gazetteer.forget()
+
+
+@pytest.fixture
+def client():
+    """The app itself, driven the way a browser drives it.
+
+    A real request through the real routing, because several of the checks
+    worth having are about whether a route remembered to call something --
+    which a direct call to the function underneath cannot tell you.
+    """
+    from fastapi.testclient import TestClient
+
+    from backend.app import app
+
+    with TestClient(app) as made:
+        yield made

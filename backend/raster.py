@@ -7,6 +7,7 @@ import hashlib
 import math
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from typing import Any
 
 import numpy as np
 import rasterio
@@ -22,6 +23,89 @@ from .geo import WGS84, Grid
 
 class BandReadError(RuntimeError):
     pass
+
+
+# Where a band may be read from, when the scene came in over HTTP.
+#
+# A scene arrives in the request body: the page hands back the one it got from
+# the catalogue, which is convenient and means the asset addresses in it are
+# whatever the caller says they are. They go to rasterio.open, and GDAL will
+# open a great deal more than an HTTPS URL -- a path on this disk, a
+# /vsicurl/ or /vsizip/ address, anything its driver list recognises.
+#
+# So an unguarded render is two things it was never meant to be. It reads
+# files off the machine running it: point a band at a GeoTIFF on disk and the
+# pixels come back through the picture. And it makes requests from inside
+# whatever network this process sits in -- a cloud metadata service on
+# 169.254.169.254, a database on loopback, another container -- addresses the
+# caller cannot reach and this process can.
+#
+# Hence: https only, and no address that names this machine or a private
+# network.
+#
+# Applied at the HTTP boundary rather than here, in the reader, and the
+# distinction is the whole design. What makes an address dangerous is not
+# rasterio opening it, it is a stranger having chosen it. This app's own code
+# reads local files on purpose -- every render test in the suite does -- so a
+# check in the reader would have to be switched off for those, and a security
+# check with an off switch is one that will be found off. See scene_is_safe,
+# which app.py calls on the way in.
+ALLOWED_SCHEMES = ("https://",)
+
+# Hosts that mean "in here". Matched on the literal address rather than on
+# what it resolves to: resolving invites a DNS answer that changes between
+# the check and the open, and the point is to refuse plainly rather than to
+# win a race.
+PRIVATE_HOSTS = (
+    "localhost", "127.", "0.0.0.0", "169.254.", "10.",
+    "192.168.", "[::1]", "[::", "metadata.google.internal",
+)
+PRIVATE_172 = tuple(f"172.{n}." for n in range(16, 32))
+
+
+def safe_href(href: str) -> str:
+    """An asset address, or a refusal saying why it will not be opened."""
+    said = str(href or "").strip()
+    if not said.lower().startswith(ALLOWED_SCHEMES):
+        raise BandReadError(
+            f"An asset has to be an https address; {said[:60]!r} is not one. "
+            "A scene's assets are read straight from the catalogue that "
+            "published them, and nothing else is opened.")
+    host = said.split("://", 1)[1].split("/", 1)[0].split("@")[-1].lower()
+    if host.startswith(PRIVATE_HOSTS) or host.startswith(PRIVATE_172):
+        raise BandReadError(
+            f"An asset cannot be read from {host}: that address is this "
+            "machine or a private network, not a satellite catalogue.")
+    return said
+
+
+def scene_is_safe(scene: Any) -> None:
+    """Check every asset address in a scene that arrived from outside.
+
+    Raises BandReadError naming the first address it will not open. Called at
+    the HTTP boundary, on the scenes in a request body, before any of them
+    reaches the reader.
+    """
+    if not isinstance(scene, dict):
+        return
+    assets = scene.get("assets")
+    if isinstance(assets, dict):
+        for href in assets.values():
+            # An asset can be a bare address or the STAC object that holds
+            # one, and both shapes turn up in a request body.
+            if isinstance(href, dict):
+                href = href.get("href")
+            if href is not None:
+                safe_href(href)
+
+
+def scenes_are_safe(body: Any) -> None:
+    """The same, for every scene a request body carries."""
+    if not isinstance(body, dict):
+        return
+    scene_is_safe(body.get("scene"))
+    for one in body.get("scenes") or []:
+        scene_is_safe(one)
 
 
 # How wide a neighbourhood the VV/VH ratio is averaged over. Five cells is

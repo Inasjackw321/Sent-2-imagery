@@ -553,10 +553,17 @@ TILE_CACHE_SECONDS = 12 * 3600
 # block-list: this endpoint sends requests to somebody else's server on behalf
 # of whoever calls it, and the set of WMS parameters is small and known, so
 # there is no reason to forward a name nobody here recognises.
+#
+# sld and sld_body used to be on this list and are deliberately not any more.
+# A WMS SLD is a styling document, and `sld` is a URL the *upstream* server
+# fetches -- so forwarding one lends this proxy out as the first step of a
+# request EUMETSAT makes on behalf of whoever called here, at an address of
+# their choosing. Nothing in this app has ever set either, so nothing is lost
+# by not passing them on.
 TILE_PARAMS = frozenset({
     "service", "request", "version", "layers", "styles", "format",
     "transparent", "width", "height", "crs", "srs", "bbox", "time",
-    "bgcolor", "exceptions", "sld", "sld_body", "tiled", "dim_date",
+    "bgcolor", "exceptions", "tiled", "dim_date",
 })
 
 # How long one tile gets. A tile is a few tens of kilobytes of a picture that
