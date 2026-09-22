@@ -48,10 +48,13 @@ AM|R2DB7|49.9700|36.2500|140.0|Kharkiv Shake|2021-06-01T00:00:00|
 # ── The stations asked for ─────────────────────────────────────
 
 
-def test_the_four_asked_for_are_all_there():
+ASKED_FOR = ["RD834", "R2DB7", "S29F5", "SE569",
+             "S5D35", "R1F39", "S994C", "R85A6"]
+
+
+def test_every_one_asked_for_is_there():
     got = shake.stations(get=_refuses)
-    assert [s["station"] for s in got["stations"]] == [
-        "RD834", "R2DB7", "S29F5", "SE569"]
+    assert [s["station"] for s in got["stations"]] == ASKED_FOR
 
 
 def test_every_one_is_on_the_am_network():
@@ -64,14 +67,44 @@ def test_every_one_carries_a_place_name():
 
 def test_the_places_are_the_ones_asked_for():
     places = {s["station"]: s["place"] for s in shake.stations(get=_refuses)["stations"]}
-    assert places == {"RD834": "Zaporizhzhia", "R2DB7": "Kharkiv",
-                      "S29F5": "Khrystynivka", "SE569": "Rivne"}
+    assert places == {
+        "RD834": "Zaporizhzhia", "R2DB7": "Kharkiv",
+        "S29F5": "Khrystynivka", "SE569": "Rivne",
+        "S5D35": "Sillam\u00e4e, Estonia",
+        "R1F39": "Dubai, United Arab Emirates",
+        "S994C": "Dubai, United Arab Emirates",
+        "R85A6": "Abu Dhabi, United Arab Emirates"}
 
 
-def test_all_of_them_are_inside_ukraine():
+def test_no_station_code_is_listed_twice():
+    """Two entries for one code would be two pins on one instrument and two
+    windows with the same id."""
+    assert len(ASKED_FOR) == len(set(ASKED_FOR))
+
+
+def test_every_position_is_a_real_one():
     for s in shake.stations(get=_refuses)["stations"]:
-        assert 44.0 < s["lat"] < 53.0, s
-        assert 22.0 < s["lon"] < 41.0, s
+        assert -90.0 <= s["lat"] <= 90.0, s
+        assert -180.0 <= s["lon"] <= 180.0, s
+        assert (s["lat"], s["lon"]) != (0.0, 0.0), s
+
+
+def test_each_one_is_in_the_country_its_name_says():
+    """A digit lost out of a coordinate puts a Shake in the sea, and nothing
+    on the map would say so -- the pin is a pin."""
+    boxes = {
+        "Zaporizhzhia": (44.0, 53.0, 22.0, 41.0),
+        "Kharkiv": (44.0, 53.0, 22.0, 41.0),
+        "Khrystynivka": (44.0, 53.0, 22.0, 41.0),
+        "Rivne": (44.0, 53.0, 22.0, 41.0),
+        "Sillam\u00e4e, Estonia": (57.5, 60.0, 21.5, 28.3),
+        "Dubai, United Arab Emirates": (24.7, 25.4, 55.0, 55.8),
+        "Abu Dhabi, United Arab Emirates": (24.0, 24.7, 54.0, 55.0),
+    }
+    for s in shake.stations(get=_refuses)["stations"]:
+        south, north, west, east = boxes[s["place"]]
+        assert south < s["lat"] < north, s
+        assert west < s["lon"] < east, s
 
 
 def test_the_channel_is_the_vertical_geophone():
@@ -105,9 +138,33 @@ def test_a_station_the_index_does_not_know_keeps_its_town():
     assert one["placed"] == "town"
 
 
-def test_an_unreachable_index_leaves_every_pin_on_its_town():
+def test_an_unreachable_index_leaves_every_pin_on_what_was_published():
     got = shake.stations(get=_refuses)
-    assert all(s["placed"] == "town" for s in got["stations"])
+    assert all(s["placed"] in ("town", "given") for s in got["stations"])
+    assert not any(s["placed"] == "station" for s in got["stations"])
+
+
+def test_a_station_that_came_with_coordinates_is_not_called_a_town():
+    """It is the position published for the instrument, which is a better
+    claim than the middle of a city and should not be marked as a worse one."""
+    got = shake.stations(get=_refuses)
+    one = next(s for s in got["stations"] if s["station"] == "R1F39")
+    assert one["placed"] == "given"
+
+
+def test_a_station_that_came_with_only_a_name_still_says_town():
+    got = shake.stations(get=_refuses)
+    one = next(s for s in got["stations"] if s["station"] == "RD834")
+    assert one["placed"] == "town"
+
+
+def test_the_index_still_outranks_a_published_position():
+    given = ("#h\n"
+             "AM|R1F39|25.3000|55.4000|12.0|Dubai Shake|2021-01-01T00:00:00|\n")
+    one = next(s for s in shake.stations(get=_answer(given))["stations"]
+               if s["station"] == "R1F39")
+    assert (one["lat"], one["lon"]) == (25.3, 55.4)
+    assert one["placed"] == "station"
 
 
 def test_an_unreachable_index_is_said_rather_than_raised():
@@ -272,7 +329,7 @@ def test_forgetting_drops_what_was_fetched():
     shake.stations(get=_answer(REAL))
     shake.forget()
     got = shake.stations(get=_refuses)
-    assert all(s["placed"] == "town" for s in got["stations"])
+    assert not any(s["placed"] == "station" for s in got["stations"])
 
 
 def test_a_later_refusal_keeps_the_positions_already_found():
@@ -293,7 +350,7 @@ def test_the_index_is_asked_for_exactly_these_stations():
 
     shake.stations(get=watching)
     assert seen["net"] == "AM"
-    assert set(seen["sta"].split(",")) == {"RD834", "R2DB7", "S29F5", "SE569"}
+    assert set(seen["sta"].split(",")) == set(ASKED_FOR)
 
 
 def test_the_index_is_asked_in_the_text_format():
@@ -393,10 +450,9 @@ def test_the_panel_credits_raspberry_shake():
     assert "Raspberry Shake" in shake.stations(get=_refuses)["attribution"]
 
 
-def test_the_demo_panel_holds_the_same_four():
+def test_the_demo_panel_holds_the_same_stations():
     got = shake.demo_stations()
-    assert [s["station"] for s in got["stations"]] == [
-        "RD834", "R2DB7", "S29F5", "SE569"]
+    assert [s["station"] for s in got["stations"]] == ASKED_FOR
 
 
 def test_the_demo_panel_says_it_is_a_demo():

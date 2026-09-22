@@ -23,9 +23,10 @@ leaving as a styling choice:
   them: Ukraine has very few open federated stations, and the Shakes are in
   Zaporizhzhia, Kharkiv, Rivne. For watching for the ground shaking near a
   city under attack, an amateur instrument in the city beats a research one
-  in another country.
+  in another country. The same is true along the Gulf of Finland and in the
+  Emirates, which is why those are here too.
 
-The four below were asked for by name. Their recordings come from Raspberry
+The ones below were asked for by name. Their recordings come from Raspberry
 Shake's own FDSN service rather than from the federated data centres -- the AM
 network archives its own data and the EarthScope and ORFEUS nodes have never
 held it, so asking them is a guaranteed round trip to nothing.
@@ -62,11 +63,27 @@ ATTRIBUTION = "Raspberry Shake community network (AM)"
 # pin is the town it is in. Said out loud in the panel rather than quietly
 # presented as a surveyed position -- these are somebody's front room and the
 # difference between the two matters when reading a trace.
+# An entry marked `given` arrived with its own coordinates rather than only a
+# place name, so its pin is the position that was published for the
+# instrument instead of the middle of the town it is in. Told apart in the
+# panel, because "in this city somewhere" and "here" are different claims and
+# a pin looks identical either way.
 SHAKES: tuple[dict[str, Any], ...] = (
     {"code": "RD834", "place": "Zaporizhzhia", "lat": 47.8388, "lon": 35.1396},
     {"code": "R2DB7", "place": "Kharkiv", "lat": 49.9935, "lon": 36.2304},
     {"code": "S29F5", "place": "Khrystynivka", "lat": 48.8114, "lon": 29.9686},
     {"code": "SE569", "place": "Rivne", "lat": 50.6199, "lon": 26.2516},
+    # Estonia, on the Gulf of Finland between Sillamäe and Narva -- about
+    # twenty kilometres from the Russian border.
+    {"code": "S5D35", "place": "Sillamäe, Estonia",
+     "lat": 59.2364007, "lon": 27.3449578, "given": True},
+    # Three in the Emirates: two in Dubai and one in Abu Dhabi.
+    {"code": "R1F39", "place": "Dubai, United Arab Emirates",
+     "lat": 25.2361516, "lon": 55.3570216, "given": True},
+    {"code": "S994C", "place": "Dubai, United Arab Emirates",
+     "lat": 25.0898023, "lon": 55.4304727, "given": True},
+    {"code": "R85A6", "place": "Abu Dhabi, United Arab Emirates",
+     "lat": 24.4302849, "lon": 54.4478012, "given": True},
 )
 
 # Every one of them records the same way: a vertical geophone at 100 samples a
@@ -198,10 +215,12 @@ def stations(refresh: bool = False, get: Any = None) -> dict[str, Any]:
             "lat": real.get("lat", shake["lat"]),
             "lon": real.get("lon", shake["lon"]),
             "elevation_m": real.get("elevation_m"),
-            # Which of the two positions this is. The panel says so, because
-            # "somewhere in Kharkiv" and "at this address" are different
-            # claims and a pin looks identical either way.
-            "placed": "station" if real.get("lat") is not None else "town",
+            # Whose figure this position is, in order of how much it is worth:
+            # the station index's own, the one published with the station, or
+            # the middle of the town. The panel says which, because the three
+            # look identical as a pin and are three different claims.
+            "placed": ("station" if real.get("lat") is not None
+                       else "given" if shake.get("given") else "town"),
             "view": VIEW_URL.format(net=NETWORK, code=shake["code"],
                                     loc=LOCATION, channel=CHANNEL),
         })

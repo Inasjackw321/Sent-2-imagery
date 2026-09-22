@@ -176,9 +176,8 @@ function buildDock() {
             el('span', { class: 'seis-dot', style: `color:${SHAKE_COLOUR}` }),
             'hobby instrument, in a building')),
         el('div', { class: 'seis-hint' },
-          'Home seismographs in Ukraine: Zaporizhzhia, Kharkiv, '
-          + 'Khrystynivka and Rivne. They are here because the open '
-          + 'research networks have almost nothing in the country. They are '
+          'Home seismographs, listed below. They are here because the open '
+          + 'research networks have almost nothing where these are. They are '
           + 'also a geophone on somebody’s floor — a door closing '
           + 'registers on one, so a busy trace is not on its own evidence of '
           + 'anything, and these should not be read beside a vault '
@@ -466,9 +465,9 @@ function drawShakes(data) {
         onclick: () => plotStation({ ...s, shake: true }),
       }, s.place, el('span', { class: 'dim' }, ` ${s.station}`)),
       el('span', { class: 'seis-list-meta' },
-        // Whether the pin is the instrument's own position or just the town.
-        // The two look identical on a map and are different claims.
-        s.placed === 'station' ? null : el('span', { class: 'dim' }, 'town'),
+        // Marked only when the pin is the middle of a town rather than a
+        // position for the instrument. The two look identical on a map.
+        s.placed === 'town' ? el('span', { class: 'dim' }, 'town') : null,
         el('a', {
           class: 'seis-link', href: s.view, title: 'Raspberry Shake’s own viewer',
           target: '_blank', rel: 'noopener noreferrer',
@@ -557,7 +556,7 @@ function footnote(station, span) {
     // holds for a device in a building, which is not a surveyed figure.
     return `Last ${span} of vertical ground motion at a Raspberry Shake in `
       + `${station.place}, ${fmt.coord(station.lon, station.lat)}`
-      + `${station.placed === 'station' ? '' : ' (the town, not the instrument)'}. `
+      + `${station.placed === 'town' ? ' (the town, not the instrument)' : ''}. `
       + 'A hobby seismograph indoors, not a research instrument: local noise — '
       + 'traffic, a door — shows up on it, so read it for timing rather than '
       + `as a measurement. ${store.config.seismic?.shake ?? 'Raspberry Shake community network (AM)'}.`;

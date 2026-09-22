@@ -394,6 +394,22 @@ export const CAMS = [
     host: 'windy.com',
   },
   {
+    id: 'giurgiulesti-crossing', name: 'Giurgiulești crossing',
+    place: 'Giurgiulești, Moldova',
+    tz: 'Europe/Chisinau',
+    // Moldova's southernmost point and its only stretch of Danube: the border
+    // post where Romania, Moldova and Ukraine meet, six hundred metres of
+    // river frontage and the country's only port. Pinned to the crossing
+    // rather than to a lens -- the address carries no coordinates.
+    lat: 45.4747, lon: 28.2036, precision: 'town',
+    // The published address ends in a bare cache-busting number. Dropped,
+    // because the player appends its own on every refresh and the two
+    // together would be one stale number and one live one.
+    kind: 'still',
+    src: 'https://customs.gov.md/api/media/images/giurgiulesti/snapshot.jpg',
+    host: 'customs.gov.md',
+  },
+  {
     id: 'tulcea-danube', name: 'Tulcea', place: 'Tulcea, Romania',
     tz: 'Europe/Bucharest',
     // The Danube's last Romanian port before the delta, and forty kilometres

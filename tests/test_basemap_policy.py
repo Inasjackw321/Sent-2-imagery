@@ -105,7 +105,8 @@ def test_the_policy_does_not_allow_tile_hosts_it_no_longer_needs() -> None:
     others = {
         "api.rainviewer.com", "gibs.earthdata.nasa.gov", "imgproxy.windy.com",
         "www.ndbc.noaa.gov", "airtw.moenv.gov.tw", "ristmikud.tallinn.ee",
-        "pics.starvisor.net", "www.customs.gov.by", "eismoinfo.lt",
+        "pics.starvisor.net", "www.customs.gov.by", "customs.gov.md",
+        "eismoinfo.lt",
         "view.eumetsat.int", "cdn.jsdelivr.net",
         # A webcam still on the Polish side of the Ukrainian border, served
         # from its own host rather than through Windy's proxy like the others.

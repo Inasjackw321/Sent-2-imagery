@@ -84,6 +84,7 @@ CSP = "; ".join([
     "https://imgproxy.windy.com https://www.ndbc.noaa.gov "
     "https://airtw.moenv.gov.tw https://ristmikud.tallinn.ee "
     "https://pics.starvisor.net https://www.customs.gov.by "
+    "https://customs.gov.md "
     "https://eismoinfo.lt https://view.eumetsat.int "
     "https://imageserver.webcamera.pl",
     # Everything the browser fetches by script: this backend, the radar index,

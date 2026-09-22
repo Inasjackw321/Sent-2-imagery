@@ -129,7 +129,12 @@ test('the trace footnote says it is not a research instrument', () => {
 });
 
 test('a pin on the town says so rather than passing for a position', () => {
-  assert.match(code, /placed === 'station'/);
+  // Marked when it IS a town, not when it is not a surveyed station: a
+  // position published with the instrument is a better claim than the middle
+  // of a city and must not be labelled as a worse one.
+  assert.match(code, /placed === 'town'/);
+  assert.ok(!/placed === 'station'/.test(code),
+    'the town marker is deciding on the wrong end of the three positions');
 });
 
 test('each one links to Raspberry Shake’s own live viewer', () => {
