@@ -12,7 +12,6 @@ import numpy as np
 from . import composite, config, enhance, raster, sar, stac, superres
 from .geo import (Grid, circle_to_polygon, geodesic_area_km2, geometry_bounds,
                   normalise_aoi)
-from .raster import BandReadError
 
 
 class RenderError(RuntimeError):
@@ -104,8 +103,7 @@ def load_bands(scene: dict, geometry: dict, grid: Grid, names: list[str], req: d
     # two different scenes sharing one -- a mistake, a stale copy, or a
     # crafted body naming a real scene and pointing its bands somewhere else
     # -- are one entry in this cache, and each would be served the other's
-    # pixels. Found by a test that fed a broken tile the same id as a good
-    # one and got the good one's picture back.
+    # pixels.
     key = _cache_key("bands", scene["id"],
                      sorted((scene.get("assets") or {}).items()),
                      grid.bounds3857, grid.shape,
@@ -122,78 +120,6 @@ def load_bands(scene: dict, geometry: dict, grid: Grid, names: list[str], req: d
 
     _cache.put(key, (bands, cloud_fraction))
     return bands, cloud_fraction
-
-
-def load_pass(scene: dict, geometry: dict, grid: Grid, names: list[str],
-              req: dict, merging: bool = False):
-    """One pass, including the tiles the catalogue cut it into.
-
-    A satellite does not photograph your area; it flies over recording, and
-    the catalogue cuts what it recorded into squares. An ordinary area sits
-    across several, so one flight over comes back as several entries -- and
-    rendering any one of them leaves the parts that fell in the others simply
-    missing from the picture.
-
-    The pieces are laid side by side rather than averaged. They are the same
-    instant over different ground: where one has pixels the others have none,
-    so the first piece with something to say wins and the rest fill its gaps.
-    Averaging would be arithmetic on one real number and several absences.
-
-    The piece covering most of the area leads, which matters at the seams:
-    neighbouring tiles overlap by a few kilometres, and in that strip the
-    picture should come from the tile the area is mostly in rather than from
-    whichever happened to be read first.
-    """
-    pieces = scene.get("pieces") or [scene]
-    if len(pieces) == 1:
-        bands, cloud = load_bands(scene, geometry, grid, names, req,
-                                  merging=merging)
-        return bands, cloud, {}
-
-    stacks, clouds = [], []
-    trouble = []
-    for piece in pieces:
-        try:
-            bands, cloud = load_bands(piece, geometry, grid, names, req,
-                                      merging=merging)
-        except (BandReadError, KeyError) as exc:
-            # One tile of six being unreadable is a gap in the picture, not a
-            # failed render: the rest of the pass is still the ground the
-            # reader asked about. Said in the report rather than raised.
-            trouble.append(f"{piece.get('tile') or piece.get('id')}: {exc}")
-            continue
-        stacks.append(bands)
-        clouds.append(cloud)
-    if not stacks:
-        raise BandReadError(
-            "No tile of this pass could be read. " + " ".join(trouble))
-
-    merged = enhance.composite(stacks, "first") if len(stacks) > 1 else stacks[0]
-    # The cloud over the area, from whichever tile each part of it came from.
-    # The pieces' own figures are for their whole hundred-kilometre squares,
-    # most of which is not the area asked for.
-    note = {"tiles": len(pieces), "laid": len(stacks)}
-    if trouble:
-        note["trouble"] = trouble
-    return merged, _mosaic_cloud(merged, stacks, clouds, names), note
-
-
-def _mosaic_cloud(merged: dict, stacks: list[dict], clouds: list[float],
-                  names: list[str]) -> float:
-    """How cloudy the laid-out pass is, weighted by what each tile supplied."""
-    if not stacks:
-        return 0.0
-    key = names[0] if names and names[0] in stacks[0] else next(iter(stacks[0]))
-    supplied = []
-    filled = np.zeros_like(np.ma.getmaskarray(stacks[0][key]), dtype=bool)
-    for stack in stacks:
-        here = ~np.ma.getmaskarray(stack[key]) & ~filled
-        supplied.append(float(here.mean()))
-        filled |= ~np.ma.getmaskarray(stack[key])
-    total = sum(supplied)
-    if total <= 0:
-        return min(clouds) if clouds else 0.0
-    return sum(c * w for c, w in zip(clouds, supplied)) / total
 
 
 def auto_scale(dates: int) -> int:
@@ -273,14 +199,11 @@ def _gather(scenes: list[dict], geometry, grid, names, req, sat=None):
 
     stacks = []
     clouds = []
-    laid = []
     for scene in scenes:
-        bands, cloud, note = load_pass(scene, geometry, grid, names, req,
-                                       merging=plan["sharpening"])
+        bands, cloud = load_bands(scene, geometry, grid, names, req,
+                                  merging=plan["sharpening"])
         stacks.append(bands)
         clouds.append(cloud)
-        if note:
-            laid.append(note)
 
     cloud_fraction = min(clouds) if clouds else 0.0
     report = enhance.composite_report(stacks, names[0]) if len(stacks) > 1 else None
@@ -296,7 +219,7 @@ def _gather(scenes: list[dict], geometry, grid, names, req, sat=None):
             register=req.get("superres_register", True) is not False,
             dates=[s.get("date") for s in scenes],
         )
-        return merged, cloud_fraction, report, sr_report, grid, laid
+        return merged, cloud_fraction, report, sr_report, grid
 
     # One date, or a grid no finer than the satellite sampled it: nothing to
     # sharpen, so the middle of the stack is the best answer available.
@@ -308,7 +231,7 @@ def _gather(scenes: list[dict], geometry, grid, names, req, sat=None):
     # nothing is lost by preferring the average.
     method = "mean" if plan.get("despeckling") else "median"
     merged = enhance.composite(stacks, method) if len(stacks) > 1 else stacks[0]
-    return merged, cloud_fraction, report, None, grid, laid
+    return merged, cloud_fraction, report, None, grid
 
 
 def _enhance_bands(bands: dict, req: dict, applied: list[str],
@@ -423,7 +346,7 @@ def render(req: dict) -> dict:
             names = _needed_bands(mode, preset, index_name, sat)
 
     applied: list[str] = []
-    bands, cloud_fraction, composite_report, sr_report, grid, laid = _gather(
+    bands, cloud_fraction, composite_report, sr_report, grid = _gather(
         scenes, geometry, grid, names, req, sat)
     if sr_report:
         applied.append(f"{sr_report['scale']}× merge of {sr_report['scenes']} dates")
@@ -501,11 +424,6 @@ def render(req: dict) -> dict:
         "histogram": hist,
         "enhancements": applied,
         "composite_report": composite_report,
-        # Which tiles of a pass were laid side by side to make this, and any
-        # that could not be read. A picture assembled from several files
-        # should say so, and a gap in it should have a name rather than being
-        # a mysterious straight edge.
-        "pass_tiles": laid,
         "superres": sr_report,
         # Pixel size is not resolution. A small area asked for at 2048 px has
         # tiny pixels and still cannot resolve anything Sentinel-2 did not: the
