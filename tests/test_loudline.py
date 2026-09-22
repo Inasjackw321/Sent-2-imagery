@@ -212,3 +212,162 @@ class TestTheLineOnThePicture:
     def test_the_plot_is_still_a_png_of_the_expected_size(self):
         image = drawn(noise(72_000, 100.0, 31))
         assert image.size == seismic.PLOT_SIZE
+
+
+# ── Stations whose own background is loud ──────────────────────
+
+
+def house(count: int = 360_000, every: int = 400, amplitude: float = 600.0,
+          seed: int = 1, quiet: float = 100.0) -> np.ndarray:
+    """A floor rather than a vault: quiet noise with short bursts through it.
+
+    What a Raspberry Shake indoors actually records. The bursts are the door,
+    the boiler, somebody on the stairs, a lorry outside -- short, sharp, and
+    many times the quiet level.
+    """
+    rng = np.random.default_rng(seed)
+    values = rng.normal(0, quiet, count)
+    for start in range(0, count, every):
+        # Clipped at the end, or the last burst is longer than the room left
+        # for it and numpy refuses to add it.
+        length = min(int(rng.integers(20, 80)), count - start)
+        values[start:start + length] += rng.normal(0, amplitude, length)
+    return values - np.median(values)
+
+
+class TestABusyFloor:
+    def test_a_bursty_station_gets_a_higher_line(self):
+        """The thing that was wrong: a Shake in a house crossed a line drawn
+        for a vault a dozen times an hour, which marks everything and
+        therefore means nothing."""
+        _, vault = seismic.loud_level(noise(360_000, 100.0, 1))
+        _, floor = seismic.loud_level(house())
+        assert floor > vault * 2.5, (vault, floor)
+
+    @pytest.mark.parametrize("every,amplitude", [(400, 600.0), (150, 1200.0),
+                                                 (80, 2000.0), (900, 400.0)])
+    def test_a_busy_floor_stays_under_its_own_line(self, every, amplitude):
+        for seed in range(6):
+            values = house(every=every, amplitude=amplitude, seed=seed)
+            level, _ = seismic.loud_level(values)
+            assert float(np.abs(values).max()) <= level, (
+                f"a background of bursts every {every} samples crossed its own "
+                f"line -- the line marks the household, not an event")
+
+    def test_something_genuinely_loud_still_crosses_it(self):
+        values = house(seed=9)
+        spread = float(np.median(np.abs(values))) * seismic.MAD_TO_SIGMA
+        values[200_000:200_500] += np.random.default_rng(2).normal(
+            0, 90 * spread, 500)
+        level, _ = seismic.loud_level(values)
+        assert float(np.abs(values).max()) > level
+
+    def test_a_quiet_station_stays_where_a_quiet_station_belongs(self):
+        """Measuring the background rather than assuming it must not move a
+        vault station somewhere silly. It sits a little above where the
+        clean-noise arithmetic put it, because it is now placed above what
+        the noise actually did rather than what it was expected to do."""
+        values = noise(360_000, 100.0, 4)
+        level, sigmas = seismic.loud_level(values)
+        spread = float(np.median(np.abs(values))) * seismic.MAD_TO_SIGMA
+        loudest = float(np.abs(values).max()) / spread
+        assert loudest < sigmas < 2 * seismic.loud_sigmas(360_000), (
+            f"line at {sigmas}, background reached {loudest:.1f}")
+
+    def test_the_background_of_a_quiet_station_does_not_cross_it_either(self):
+        crossed = 0
+        for seed in range(40):
+            values = noise(360_000, 137.0, seed)
+            level, _ = seismic.loud_level(values)
+            if float(np.abs(values).max()) > level:
+                crossed += 1
+        assert crossed <= 2, f"{crossed} of 40 clean hours crossed their line"
+
+    def test_the_line_cannot_run_away(self):
+        wild = house(every=40, amplitude=50_000.0, seed=3)
+        _, sigmas = seismic.loud_level(wild)
+        assert sigmas <= seismic.LOUD_CEILING
+
+
+class TestAnEventDoesNotRaiseTheBar:
+    """The trap in measuring the background from the trace.
+
+    Whatever the measurement is, the events are in the data being measured --
+    so a measurement they can move is one where the largest thing in the
+    window lifts the line above itself, and the one event worth marking is
+    the one that goes unmarked. Hence the chunking: an event is in a minute
+    or two of sixty, and the middle minute never heard it.
+    """
+
+    def test_a_short_event_does_not_move_the_line(self):
+        quiet = noise(360_000, 100.0, 6)
+        before, _ = seismic.loud_level(quiet)
+        loud = quiet.copy()
+        loud[100_000:101_000] += 4000.0
+        after, _ = seismic.loud_level(loud)
+        assert abs(after - before) / before < 0.1
+
+    def test_a_long_teleseism_does_not_move_it_either(self):
+        """Four hundred seconds of an hour is eleven per cent of the window.
+        Measured over the window as a whole it dominates every percentile,
+        and the line ends up above the earthquake."""
+        rng = np.random.default_rng(8)
+        quiet = noise(360_000, 100.0, 8)
+        before, _ = seismic.loud_level(quiet)
+        loud = quiet.copy()
+        loud[100_000:140_000] += rng.normal(0, 2500, 40_000)
+        after, level_sigmas = seismic.loud_level(loud)
+        assert abs(after - before) / before < 0.15, (before, after)
+        assert float(np.abs(loud).max()) > after, "the quake did not cross"
+
+    def test_an_event_on_a_busy_floor_does_not_move_it(self):
+        floor = house(seed=11)
+        before, _ = seismic.loud_level(floor)
+        with_event = floor.copy()
+        spread = float(np.median(np.abs(floor))) * seismic.MAD_TO_SIGMA
+        with_event[150_000:160_000] += np.random.default_rng(12).normal(
+            0, 40 * spread, 10_000)
+        after, _ = seismic.loud_level(with_event)
+        assert abs(after - before) / before < 0.2
+        assert float(np.abs(with_event).max()) > after
+
+
+class TestTheMeasurementItself:
+    def test_clean_noise_measures_about_where_clean_noise_should(self):
+        """The 99.9th percentile of a normal distribution is 3.29 sigma, and
+        the measurement is calibrated on that -- if it drifted, every line in
+        the app would move with it."""
+        values = noise(360_000, 100.0, 13)
+        spread = float(np.median(np.abs(values))) * seismic.MAD_TO_SIGMA
+        assert 3.0 < seismic.burst_level(values, spread) < 3.7
+
+    def test_a_busy_floor_measures_far_above_that(self):
+        values = house(seed=14)
+        spread = float(np.median(np.abs(values))) * seismic.MAD_TO_SIGMA
+        assert seismic.burst_level(values, spread) > 8
+
+    def test_it_is_cut_into_pieces_rather_than_read_whole(self):
+        """Stated as a property rather than as an implementation: a window
+        with an event in one part of it must measure the same as the same
+        window without that part."""
+        quiet = noise(360_000, 100.0, 15)
+        spread = float(np.median(np.abs(quiet))) * seismic.MAD_TO_SIGMA
+        loud = quiet.copy()
+        loud[0:30_000] += 6000.0
+        assert seismic.burst_level(loud, spread) == pytest.approx(
+            seismic.burst_level(quiet, spread), rel=0.1)
+
+    def test_too_little_data_to_measure_says_so(self):
+        assert seismic.burst_level(np.zeros(4), 1.0) == 0.0
+        assert seismic.burst_level(np.array([]), 1.0) == 0.0
+
+    def test_a_flat_trace_does_not_divide_by_its_own_silence(self):
+        assert seismic.burst_level(np.zeros(5000), 0.0) == 0.0
+
+    def test_the_line_never_goes_below_the_clean_noise_one(self):
+        """A station quieter than clean noise -- which happens when the
+        background is dominated by one steady tone -- must not pull the line
+        down below where chance alone would reach."""
+        steady = np.sin(np.arange(360_000) * 0.01) * 100.0
+        _, sigmas = seismic.loud_level(steady)
+        assert sigmas >= seismic.loud_sigmas(360_000)

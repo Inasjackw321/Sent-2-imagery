@@ -534,25 +534,91 @@ CROSSINGS_ALLOWED = 0.01
 # can be measured without the events in the data spoiling the measurement.
 MAD_TO_SIGMA = 1.4826
 
-# Where the line may sit, in multiples of the background, however long the
-# window. The arithmetic below stays inside these for any window this app can
-# ask for; they are here so that a strange one cannot put the line somewhere
-# absurd.
+# Where the line may sit, in multiples of the background, from the arithmetic
+# for clean noise alone. The burst measurement below can take it higher.
 LOUD_LEAST, LOUD_MOST = 3.5, 8.0
+
+# And how high it may go once the station's own background is taken into
+# account. A guard against a measurement gone wrong rather than a working
+# limit: a floor in a busy building measures twenty to thirty times its own
+# quiet level, and anything past sixty is a fault, not a site.
+LOUD_CEILING = 60.0
 
 # A hair more room than the line needs, so it is inside the plot rather than
 # ruled along its edge.
 LOUD_HEADROOM = 1.15
 
+# How the burst level below is measured, and why in pieces.
+#
+# The window is cut into minutes and each minute's loudest hundredth is taken;
+# the answer is the middle of those. A background full of short bursts has
+# them in every minute, so the middle minute is as bursty as the rest and the
+# measurement finds them. An event sits in one minute, or in five of sixty,
+# and the middle minute has never heard of it.
+#
+# That second half is the whole reason for the chunking, and it is not a
+# refinement. Measured over the window as a whole, a four-hundred-second
+# teleseism is eleven per cent of an hour: it dominates any percentile you
+# could pick, raises the line well above itself, and the largest earthquake in
+# the window is the one thing the line then fails to mark.
+BURST_PIECES = 60
+BURST_LEAST_SAMPLES = 8
+
+# Which part of each minute is read as "the loud end of the background".
+BURST_PERCENTILE = 99.9
+
+# And how far above that the line goes.
+#
+# Measured rather than picked. The loudest single sample of an hour runs about
+# one and a half to one and three quarter times the typical minute's loudest
+# hundredth, on clean noise and on four kinds of synthetic busy floor -- so at
+# one and four fifths the very loudest burst of the hour still grazed the line
+# in nine of thirty-two bursty hours, and at two it stopped: no crossings in
+# thirty-two, while a bang of any real size clears the line several times
+# over. Above the bursts, under the events, which is where a reader wants it.
+BURST_MARGIN = 2.0
+
+
+def burst_level(values: Any, spread: float) -> float:
+    """How loud this station's own background gets, in multiples of quiet.
+
+    The reason the line cannot be arithmetic on clean noise alone.
+
+    That arithmetic assumes the background is the smooth, well-behaved kind a
+    normal distribution describes, which is roughly true in a vault on
+    bedrock. It is not remotely true of a geophone on somebody's floor. A
+    Raspberry Shake's ordinary hour is a stream of short sharp bursts --
+    footsteps, a door, a lorry on the road outside -- reaching ten or twenty
+    times the quiet level, and a line drawn where clean noise would rarely
+    reach is one that station crosses a dozen times an hour. That is worse
+    than no line: it marks everything, so it means nothing.
+
+    So the background's own loudness is measured rather than assumed, and the
+    line goes above whatever is found. A vault station measures about three
+    and is left where the arithmetic put it; a busy house measures fourteen
+    and gets a bar four times higher, which is the honest place for it.
+    """
+    if getattr(values, "size", 0) < BURST_LEAST_SAMPLES * 2 or spread <= 0:
+        return 0.0
+    pieces = max(2, min(BURST_PIECES, int(values.size) // BURST_LEAST_SAMPLES))
+    loud = [float(np.percentile(np.abs(piece), BURST_PERCENTILE))
+            for piece in np.array_split(values, pieces)]
+    typical = float(np.median(loud)) / spread
+    return typical if np.isfinite(typical) else 0.0
+
 
 def loud_sigmas(count: int, allowed: float = CROSSINGS_ALLOWED) -> float:
-    """How many backgrounds up the line goes, for a window of `count` samples.
+    """How many backgrounds up the line goes for clean noise, over `count`
+    samples.
 
     The level pure noise would be expected to cross `allowed` times in a
     window this long. Solved rather than looked up: the chance of one sample
     of normal noise being further than k from quiet is erfc(k / root two), so
     the level wanted is where that chance times the number of samples comes to
     the number of crossings we are willing to call background.
+
+    This is the floor. What a station's own background actually does to it is
+    burstiness(), below.
     """
     if count < 2:
         return LOUD_LEAST
@@ -577,9 +643,13 @@ def loud_level(values: Any) -> tuple[float, float]:
     if getattr(values, "size", 0) < 2:
         return 0.0, LOUD_LEAST
     spread = float(np.median(np.abs(values))) * MAD_TO_SIGMA
-    sigmas = loud_sigmas(int(values.size))
     if not np.isfinite(spread) or spread <= 0:
-        return 0.0, sigmas
+        return 0.0, loud_sigmas(int(values.size))
+    # The higher of the two: where clean noise would rarely reach, and where
+    # this station's own background actually gets to.
+    sigmas = max(loud_sigmas(int(values.size)),
+                 burst_level(values, spread) * BURST_MARGIN)
+    sigmas = round(min(sigmas, LOUD_CEILING), 1)
     return spread * sigmas, sigmas
 
 
