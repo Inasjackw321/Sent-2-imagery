@@ -518,7 +518,11 @@ function plotStation(station, { redraw = false } = {}) {
   const waiting = el('div', { class: 'trace-wait' },
     el('span', {}, `Plotting ${label}…`),
     el('small', {}, 'The data centre draws it on request, which takes a moment.'));
-  plot.append(waiting);
+  // When the picture on screen was fetched. A trace that refreshes itself is
+  // indistinguishable from one that has quietly stopped, and the difference
+  // matters: a flat line is either a quiet hour or a dead connection.
+  const stamp = el('div', { class: 'trace-live', 'data-live': '' }, 'fetching…');
+  plot.append(waiting, stamp);
 
   // Redrawing replaces the body of a window that is already open, rather than
   // closing and reopening it -- which would throw away wherever it was dragged
@@ -540,12 +544,44 @@ function plotStation(station, { redraw = false } = {}) {
       // A trace is wide and short, so bigger means wider rather than square.
       sizes: [420, 'min(820px, calc(100vw - 40px))'],
       foot: footnote(station, span),
-      onClose: () => showing.delete(id),
+      onClose: () => {
+        showing.delete(id);
+        stopTicking(id);
+      },
     });
   }
 
   fetchTrace(id, station, label, span, plot, waiting);
+
+  // And again every minute for as long as it is open.
+  //
+  // The window ends a few minutes ago and moves on, so a trace fetched once
+  // is a photograph: it stops being the present without ever saying so, and
+  // a reader watching for something happening now would be watching a
+  // picture of ten minutes ago. Refetched quietly -- the picture on screen
+  // stays until the new one has arrived, so it does not blink.
+  stopTicking(id);
+  ticking.set(id, setInterval(() => {
+    if (!isOpen(id)) { stopTicking(id); return; }
+    fetchTrace(id, showing.get(id) ?? station, label, span, plot, waiting,
+               { quiet: true });
+  }, REFRESH_MS));
 }
+
+/** Stop refreshing one window. */
+function stopTicking(id) {
+  clearInterval(ticking.get(id));
+  ticking.delete(id);
+}
+
+// What the red lines are. Said on every trace rather than once in the
+// panel, because a window is what gets screenshotted and sent on, and a
+// line across a seismogram with nothing to say what it is will be read
+// as whatever the reader was hoping for.
+const REDLINE = 'The red lines are where this window\u2019s own background '
+  + 'noise stops explaining the trace \u2014 an arrival, a blast, a lorry, a '
+  + 'door. Crossing one is not by itself an earthquake. Refreshes every '
+  + 'minute while it is open.';
 
 function footnote(station, span) {
   if (station.shake) {
@@ -559,7 +595,8 @@ function footnote(station, span) {
       + `${station.placed === 'town' ? ' (the town, not the instrument)' : ''}. `
       + 'A hobby seismograph indoors, not a research instrument: local noise — '
       + 'traffic, a door — shows up on it, so read it for timing rather than '
-      + `as a measurement. ${store.config.seismic?.shake ?? 'Raspberry Shake community network (AM)'}.`;
+      + `as a measurement. ${REDLINE} `
+      + `${store.config.seismic?.shake ?? 'Raspberry Shake community network (AM)'}.`;
   }
   // What else this instrument records. A station offering only an
   // accelerometer channel is deaf to small distant events by design, and that
@@ -568,6 +605,7 @@ function footnote(station, span) {
   return `Last ${span} of vertical ground motion at `
     + `${fmt.coord(station.lon, station.lat)}, ${station.elevation_m} m elevation. `
     + (also.length ? `Also records ${also.join(', ')}. ` : '')
+    + `${REDLINE} `
     + `${store.config.seismic?.stations ?? 'EarthScope / FDSN'}.`;
 }
 
@@ -580,7 +618,8 @@ function footnote(station, span) {
  * every failure ended up reading as the same unhelpful "no data". Fetching it
  * means the reason reaches the reader.
  */
-async function fetchTrace(id, station, label, span, plot, waiting) {
+async function fetchTrace(id, station, label, span, plot, waiting,
+                          { quiet = false } = {}) {
   const token = (traceTokens.get(id) ?? 0) + 1;
   traceTokens.set(id, token);
 
@@ -588,6 +627,7 @@ async function fetchTrace(id, station, label, span, plot, waiting) {
     network: station.network, station: station.station,
     channel: station.channel, loc: station.loc, minutes: traceMinutes,
   });
+  const stamp = plot.querySelector('[data-live]');
 
   let blobUrl = null;
   try {
@@ -605,23 +645,68 @@ async function fetchTrace(id, station, label, span, plot, waiting) {
     // The window length was changed, or the window closed, while this was in
     // the air: this answer is about a picture nobody is waiting for now.
     if (traceTokens.get(id) !== token) return;
+    // A refresh that fails leaves the picture that is already there rather
+    // than replacing a real trace with an error. It does say so, though --
+    // an hour-old picture presented as the present is the thing worth
+    // avoiding here, and silence is how that happens.
+    if (quiet && plot.querySelector('img')) {
+      if (stamp) {
+        stamp.textContent = `not updating — ${err.message}`;
+        stamp.classList.add('is-stale');
+      }
+      return;
+    }
     waiting.replaceChildren(
       el('span', {}, `${label} could not be plotted`),
       el('small', {}, err.message));
+    if (stamp) stamp.remove();
     return;
   }
 
   if (traceTokens.get(id) !== token) { URL.revokeObjectURL(blobUrl); return; }
 
-  const image = el('img', { src: blobUrl, alt: `Ground motion at ${label}, last ${span}` });
-  // The bytes are held by the object URL, not the element, so it has to be
-  // handed back once the browser has decoded them or the blob leaks for the
-  // life of the page.
-  image.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
-  waiting.remove();
-  plot.append(image);
+  // The same element every time, with a new picture in it. Replacing the
+  // element makes the window blink once a minute; swapping the source leaves
+  // the old picture up until the new one has decoded.
+  let image = plot.querySelector('img');
+  const previous = image?.src;
+  if (!image) {
+    image = el('img', { alt: `Ground motion at ${label}, last ${span}` });
+    waiting.remove();
+    plot.prepend(image);
+  }
+  // The bytes are held by the object URL, not the element, so the old one has
+  // to be handed back once the browser has decoded its replacement, or every
+  // refresh leaks a picture for the life of the page.
+  image.addEventListener('load', () => {
+    if (previous && previous !== blobUrl) URL.revokeObjectURL(previous);
+  }, { once: true });
+  image.src = blobUrl;
+  if (stamp) {
+    stamp.textContent = `updated ${clockNow()}`;
+    stamp.classList.remove('is-stale');
+  }
+}
+
+/** The time on this machine's clock, to the second. */
+function clockNow() {
+  return new Date().toLocaleTimeString(undefined,
+    { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 // One per window, so a slow answer for a trace that has since been redrawn or
 // closed cannot overwrite the picture that replaced it.
 const traceTokens = new Map();
+
+// How often an open trace refetches itself.
+//
+// A minute, because that is roughly the resolution of the thing being
+// watched: the window ends six minutes ago (telemetry takes that long to
+// reach an archive) and each refresh adds a minute of ground motion to the
+// right-hand end. Faster would ask more of somebody else's free service for
+// pictures that differ by a few pixels.
+const REFRESH_MS = 60000;
+
+// The timer behind each open window, so closing one stops its refreshing
+// rather than leaving it fetching into a window nobody can see.
+const ticking = new Map();

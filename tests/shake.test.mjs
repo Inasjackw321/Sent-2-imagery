@@ -149,3 +149,63 @@ test('the list has somewhere to be drawn', () => {
 test('the Shake links are styled, not left as default blue', () => {
   assert.match(css, /\.seis-link\s*\{/);
 });
+
+// ── The trace refreshing itself ────────────────────────────────
+//
+// A trace window shows the last stretch of ground motion, which stops being
+// the last stretch the moment it is drawn. Fetched once, it is a photograph:
+// it goes stale without ever saying so, and somebody watching for something
+// happening now would be watching a picture of ten minutes ago.
+
+test('an open trace refetches itself every minute', () => {
+  assert.match(code, /const REFRESH_MS = 60000;/);
+  assert.match(code, /setInterval\(\(\) => \{[\s\S]*?fetchTrace\([\s\S]*?\}, REFRESH_MS\)/);
+});
+
+test('closing a window stops its timer', () => {
+  // Otherwise it keeps fetching into a window nobody can see, for the life of
+  // the page, once a minute, per window ever opened.
+  assert.match(code, /onClose: \(\) => \{[\s\S]*?stopTicking\(id\);/);
+  assert.match(code, /function stopTicking\(id\) \{\s*clearInterval\(ticking\.get\(id\)\);/);
+});
+
+test('a window that has gone stops the timer from the other end too', () => {
+  assert.match(code, /if \(!isOpen\(id\)\) \{ stopTicking\(id\); return; \}/);
+});
+
+test('reopening does not leave the old timer running', () => {
+  // plotStation runs again on a redraw, and a second interval for one window
+  // would double the asking rate every time the window length was changed.
+  const body = code.slice(code.indexOf('function plotStation'));
+  assert.ok(/stopTicking\(id\);\s*\n\s*ticking\.set\(id, setInterval/.test(body),
+    'the previous timer is not cleared before a new one is set');
+});
+
+test('a refresh does not throw the picture away while it waits', () => {
+  // Replacing the image element once a minute makes the window blink; so does
+  // putting the "Plotting…" notice back. The source is swapped instead.
+  assert.match(code, /let image = plot\.querySelector\('img'\);/);
+  assert.match(code, /image\.src = blobUrl;/);
+});
+
+test('a refresh that fails leaves the trace that is there', () => {
+  assert.match(code, /if \(quiet && plot\.querySelector\('img'\)\)/);
+});
+
+test('but it says so rather than showing an old picture as the present', () => {
+  assert.match(code, /not updating/);
+  assert.match(code, /is-stale/);
+  assert.match(css, /\.trace-live\.is-stale/);
+});
+
+test('every refresh hands back the picture it replaced', () => {
+  // The bytes live in the object URL, not the element. One a minute, for as
+  // long as a window is open, is a leak with a clock on it.
+  assert.match(code, /URL\.revokeObjectURL\(previous\)/);
+});
+
+test('the window says when what is on screen was fetched', () => {
+  assert.match(code, /data-live/);
+  assert.match(code, /updated \$\{clockNow\(\)\}/);
+  assert.match(css, /\.trace-live \{/);
+});

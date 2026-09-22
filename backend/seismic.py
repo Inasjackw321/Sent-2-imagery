@@ -27,6 +27,7 @@ import math
 import re
 import threading
 import time
+from typing import Any
 
 import numpy as np
 import requests
@@ -493,6 +494,94 @@ def _short(message: str, limit: int = 120) -> str:
 
 PLOT_SIZE = (760, 250)
 
+# The line across the trace, and what it means.
+#
+# A seismogram from this app is raw counts from an instrument nobody here has
+# calibrated, and the vertical scale is whatever that hour happened to need.
+# So a line at a fixed number of counts would mean one thing on one station
+# and something else on the next, and nothing at all on a third.
+#
+# What can be said instrument by instrument is how loud a thing is against the
+# ground's own background at that place. That background is measured from the
+# trace itself, robustly -- the median of the absolute deviations, which the
+# constant below turns into the standard deviation it would imply for ordinary
+# noise. Robust because the events are in the data too, and an average that
+# includes them raises the line by exactly the amount the event was worth.
+#
+# How far above the background the line sits is NOT a fixed multiple, and the
+# reason is worth stating because a fixed one is the obvious thing to write.
+# An hour of a 20 Hz station is seventy thousand samples; six hours of a 100 Hz
+# Raspberry Shake is two million. Ordinary background noise reaches further
+# from quiet the more often you look at it -- over two million samples it will
+# touch five times its own spread with no event anywhere near -- so one
+# multiple cannot mean the same thing in both windows. Drawn at five, the line
+# would be a fair "that was something" on the short window and a line the
+# noise crosses on its own on the long one.
+#
+# So the level is set from the length of the window: high enough that
+# background alone would be expected to cross it about once in a hundred
+# windows like this one. The number of multiples that works out to is printed
+# on the plot, because it changes.
+#
+# It is NOT a line above which something is an earthquake. A lorry on a nearby
+# road crosses it. So does a door, on a Shake in somebody's house. What it
+# says is "something happened here that this window's ordinary noise does not
+# explain", which is the question a reader of this panel is actually asking.
+CROSSINGS_ALLOWED = 0.01
+
+# Turns a median absolute deviation into the standard deviation of the normal
+# distribution that would produce it. Standard, and the reason the background
+# can be measured without the events in the data spoiling the measurement.
+MAD_TO_SIGMA = 1.4826
+
+# Where the line may sit, in multiples of the background, however long the
+# window. The arithmetic below stays inside these for any window this app can
+# ask for; they are here so that a strange one cannot put the line somewhere
+# absurd.
+LOUD_LEAST, LOUD_MOST = 3.5, 8.0
+
+# A hair more room than the line needs, so it is inside the plot rather than
+# ruled along its edge.
+LOUD_HEADROOM = 1.15
+
+
+def loud_sigmas(count: int, allowed: float = CROSSINGS_ALLOWED) -> float:
+    """How many backgrounds up the line goes, for a window of `count` samples.
+
+    The level pure noise would be expected to cross `allowed` times in a
+    window this long. Solved rather than looked up: the chance of one sample
+    of normal noise being further than k from quiet is erfc(k / root two), so
+    the level wanted is where that chance times the number of samples comes to
+    the number of crossings we are willing to call background.
+    """
+    if count < 2:
+        return LOUD_LEAST
+    want = max(1e-15, allowed / count)
+    low, high = LOUD_LEAST, LOUD_MOST
+    for _ in range(60):
+        middle = (low + high) / 2
+        if math.erfc(middle / math.sqrt(2)) > want:
+            low = middle
+        else:
+            high = middle
+    return round((low + high) / 2, 1)
+
+
+def loud_level(values: Any) -> tuple[float, float]:
+    """Where loud starts for this trace: (counts, multiples of background).
+
+    Zero counts when there is nothing to measure -- a flat channel, or one
+    that is all spike -- and the line is left off rather than drawn somewhere
+    arbitrary.
+    """
+    if getattr(values, "size", 0) < 2:
+        return 0.0, LOUD_LEAST
+    spread = float(np.median(np.abs(values))) * MAD_TO_SIGMA
+    sigmas = loud_sigmas(int(values.size))
+    if not np.isfinite(spread) or spread <= 0:
+        return 0.0, sigmas
+    return spread * sigmas, sigmas
+
 
 def plot(reading: dict, title: str, source: str, minutes: int) -> bytes:
     """Draw a seismogram.
@@ -526,12 +615,36 @@ def plot(reading: dict, title: str, source: str, minutes: int) -> bytes:
     # so that one spike of instrument noise does not flatten the whole trace.
     peak = float(np.percentile(np.abs(values), 99.9)) or float(np.abs(values).max()) or 1.0
 
+    # The line is a reference, so the scale has to include it -- otherwise a
+    # quiet hour, whose largest excursion is three times the background, would
+    # put the line off the top of the picture and leave nothing to compare the
+    # trace against. Including it also does something useful on its own: on a
+    # quiet hour the trace draws small and well inside the lines, which is
+    # what a quiet hour looks like.
+    level, sigmas = loud_level(values)
+    if level > 0:
+        peak = max(peak, level * LOUD_HEADROOM)
+
     columns = np.array_split(values, min(width, values.size))
     for x, column in enumerate(columns):
         low, high = float(column.min()), float(column.max())
         y1 = middle - max(-1.0, min(1.0, high / peak)) * span
         y2 = middle - max(-1.0, min(1.0, low / peak)) * span
         draw.line([(x, y1), (x, y2)], fill=(126, 214, 255))
+
+    # Drawn after the trace, so it is legible over the busy part, and dashed
+    # so it reads as a line somebody put there rather than as something the
+    # ground did.
+    if level > 0:
+        for edge in (middle - (level / peak) * span, middle + (level / peak) * span):
+            for x in range(0, width, 12):
+                draw.line([(x, edge), (min(x + 6, width), edge)], fill=(232, 70, 70))
+        # On the left, under the station name. The right-hand end of the plot
+        # is where the reader is told when the picture was fetched, and the
+        # line moves up and down with how quiet the hour was -- so a label
+        # over there would sooner or later land on top of that.
+        draw.text((10, max(22, middle - (level / peak) * span - 15)),
+                  f"louder than background x{sigmas:g}", fill=(232, 110, 110))
 
     rate = reading.get("rate") or 1.0
     seconds = values.size / rate
