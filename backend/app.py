@@ -97,12 +97,15 @@ CSP = "; ".join([
     # as a perfectly valid picture, and an <img> never reveals that it came
     # with a 403 on it. This allows a GET of a URL already permitted as an
     # image, which widens nothing.
+    # galata.ai numbers its CDN hosts (cdn-101, and a playlist may name
+    # another for its segments), so it is a wildcard for the same reason
+    # EarthCam is.
     "connect-src 'self' https://api.rainviewer.com "
     "https://server.arcgisonline.com "
     "https://*.streamlock.net https://*.vdotcameras.com "
-    "https://*.earthcam.com https://cdn.jsdelivr.net",
+    "https://*.earthcam.com https://*.galata.ai https://cdn.jsdelivr.net",
     "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
-    "https://*.earthcam.com",
+    "https://*.earthcam.com https://*.galata.ai",
     # The camera embeds, named one host at a time.
     "frame-src https://ipcamlive.com https://rtsp.me https://vkvideo.ru "
     "https://www.earthcam.com https://balticlivecam.com",

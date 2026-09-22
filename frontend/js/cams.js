@@ -394,6 +394,23 @@ export const CAMS = [
     host: 'windy.com',
   },
   {
+    id: 'tulcea-danube', name: 'Tulcea', place: 'Tulcea, Romania',
+    tz: 'Europe/Bucharest',
+    // The Danube's last Romanian port before the delta, and forty kilometres
+    // from Izmail across the water -- which is why it is worth a view.
+    //
+    // Pinned to the city rather than to a lens: the address came without
+    // coordinates, so the marker says where this is, not where it points.
+    lat: 45.1717, lon: 28.7914, precision: 'city',
+    // The playlist address carries a signed token. Tokens expire, and when
+    // this one does the stream will stop with an error from the host rather
+    // than quietly showing an old frame -- which is the failure worth having,
+    // but it does mean this entry has a shelf life the others do not.
+    kind: 'hls',
+    src: 'https://cdn-101.galata.ai/062eaa89497546399031dbae6b71d6f5/index.m3u8?token=dE1DMXppdkJKYVhsdUtRMDhGR0duaHovNDhyUGpqSENrVWlwNG5lY2dHOHVESE9vQUMvM04xQVlrc3ltbXlmM1p6ajBxT3VJNmFQQ0FEN2JRNzVLcmc9PQ==',
+    host: 'galata.ai',
+  },
+  {
     id: 'tallinn-cam024', name: 'Tallinn junction camera', place: 'Tallinn, Estonia',
     tz: 'Europe/Tallinn',
     lat: 59.4178, lon: 24.7648, precision: 'given position',
