@@ -40,6 +40,7 @@ from typing import Any
 import requests
 
 from . import config
+from .reasons import why
 
 NETWORK = "AM"
 
@@ -135,29 +136,6 @@ def _number(said: str) -> float | None:
         return None
 
 
-def _why(exc: Exception, limit: int = 90) -> str:
-    """One readable line out of a requests exception.
-
-    Unabridged, one of these is the whole connection pool, the full query
-    string and a nested cause -- three hundred characters of which the useful
-    part is "timed out". It goes in a side panel nine pixels tall, so the
-    untrimmed version does not inform anybody; it buries the one sentence
-    that would.
-    """
-    said = " ".join(str(exc).split())
-    # Most specific first. "Max retries exceeded" is the wrapper around every
-    # one of the others, so matching it early would throw away the cause and
-    # report the retry loop instead.
-    for phrase in ("Read timed out", "connection timed out", "Connection timed out",
-                   "Tunnel connection failed", "Name or service not known",
-                   "Connection refused", "certificate verify failed",
-                   "Max retries exceeded"):
-        if phrase in said:
-            said = phrase
-            break
-    return said[:limit] + ("…" if len(said) > limit else "")
-
-
 def places(refresh: bool = False,
            get: Any = None) -> tuple[dict[str, dict[str, float]], str]:
     """Where these Shakes actually are, and why they are not, if they are not.
@@ -183,7 +161,7 @@ def places(refresh: bool = False,
     except requests.RequestException as exc:
         with _lock:
             _trouble = ("Raspberry Shake's station index could not be reached: "
-                        f"{_why(exc)}")
+                        f"{why(exc)}")
             return dict(_placed), _trouble
     if not getattr(resp, "ok", False):
         with _lock:

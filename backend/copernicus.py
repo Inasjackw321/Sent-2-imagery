@@ -55,7 +55,7 @@ from typing import Any
 
 import requests
 
-from . import config, mtg
+from . import config, mtg, reasons
 
 # What to look for, and what to call it. The keys are matched against a
 # layer's name and title, lower-cased; the first family that matches wins.
@@ -559,6 +559,29 @@ TILE_PARAMS = frozenset({
     "bgcolor", "exceptions", "sld", "sld_body", "tiled", "dim_date",
 })
 
+# How long one tile gets. A tile is a few tens of kilobytes of a picture that
+# already exists on somebody's disk; if it has not arrived in this long, the
+# service is not slow, it is not answering.
+#
+# It used to be forty seconds, which was the flaw behind the wall of identical
+# timeouts in the log: one playable loop asks for tens of tiles at once, so an
+# unreachable EUMETSAT meant tens of requests each sitting for forty seconds
+# and then failing separately.
+TILE_TIMEOUT = 12
+
+# And how long to stop asking after a tile could not be fetched at all.
+#
+# The failure that matters here is not one tile's -- it is the host being
+# unreachable, which every other tile in flight is about to discover for
+# itself at its own timeout. Once one has found out, the rest are refused
+# straight away: the answer is the same and it arrives immediately rather
+# than twelve seconds later.
+#
+# Short, because it has to stop being true the moment the service comes back.
+TILE_SULK_SECONDS = 20
+
+_tile_trouble: tuple[str, float] = ("", 0.0)
+
 _tiles: "collections.OrderedDict[str, tuple[bytes, str, float]]" = \
     collections.OrderedDict()
 _tiles_bytes = 0
@@ -634,10 +657,34 @@ def tiles_held() -> dict[str, Any]:
 
 def forget_tiles() -> None:
     """Empty it. For the tests."""
-    global _tiles_bytes
+    global _tiles_bytes, _tile_trouble
     with _tiles_lock:
         _tiles.clear()
         _tiles_bytes = 0
+        _tile_trouble = ("", 0.0)
+
+
+def sulking(now: float | None = None) -> str:
+    """Why a tile is not even being asked for, or "" if it is.
+
+    A tile is not retried while the host is known to be unreachable. What is
+    remembered is the reason, so the refusal says the same thing the request
+    would have -- just immediately.
+    """
+    said, at = _tile_trouble
+    if not said:
+        return ""
+    now = time.time() if now is None else now
+    if now - at >= TILE_SULK_SECONDS:
+        return ""
+    return said
+
+
+def _tile_trouble_was(said: str, now: float | None = None) -> None:
+    """Remember that the host could not be reached. Or, with "", that it could."""
+    global _tile_trouble
+    with _tiles_lock:
+        _tile_trouble = (said, time.time() if now is None else now) if said else ("", 0.0)
 
 
 def tile(asked: dict[str, str]) -> tuple[bytes, str, bool]:
@@ -653,11 +700,19 @@ def tile(asked: dict[str, str]) -> tuple[bytes, str, bool]:
     had = cached_tile(key)
     if had is not None:
         return had[0], had[1], True
+    # Cache first, breaker second: a frame already held is served even while
+    # the host is unreachable, which is most of what the cache is for.
+    known = sulking()
+    if known:
+        raise CopernicusError(known)
     try:
-        resp = requests.get(mtg.WMS, params=params, timeout=40,
+        resp = requests.get(mtg.WMS, params=params, timeout=TILE_TIMEOUT,
                             headers={"User-Agent": config.USER_AGENT})
     except requests.RequestException as exc:
-        raise CopernicusError(f"EUMETSAT View could not be reached: {exc}") from exc
+        said = f"EUMETSAT View could not be reached: {reasons.why(exc)}"
+        _tile_trouble_was(said)
+        raise CopernicusError(said) from exc
+    _tile_trouble_was("")
     if not resp.ok:
         raise CopernicusError(f"EUMETSAT View answered {resp.status_code}")
     kind = resp.headers.get("Content-Type", "image/png").split(";")[0].strip()

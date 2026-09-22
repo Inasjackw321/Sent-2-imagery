@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -133,9 +135,46 @@ app.add_middleware(
 )
 
 
+# The last complaint written to the log, when it was written, and how many
+# identical ones have arrived since. See _fail.
+_said: tuple[str, float, int] = ("", 0.0, 0)
+_said_lock = threading.Lock()
+SAY_AGAIN_SECONDS = 60
+
+
+def worth_saying(message: str, now: float,
+                 last: tuple[str, float, int]) -> tuple[bool, str, tuple[str, float, int]]:
+    """Whether to write this complaint to the log, and what to write.
+
+    Returns (write it, what to write, the new state).
+
+    Pulled out and pure because of what it is fixing. One playable loop of a
+    ten-minute satellite is tens of tiles, all in flight together, all
+    against the same host -- so when EUMETSAT stops answering, every one of
+    them times out separately and writes the same three-line requests
+    exception to the log. The reader gets a wall of identical text, in which
+    the one fact ("EUMETSAT is not answering") is no easier to find than it
+    would have been in silence, and any *other* failure that happens in the
+    same minute is buried in it.
+
+    So an identical message inside the window is counted rather than
+    written, and the count is attached to the next thing that is.
+    """
+    was, at, missed = last
+    if message == was and now - at < SAY_AGAIN_SECONDS:
+        return False, "", (was, at, missed + 1)
+    extra = f" (and {missed} more like the last one)" if missed else ""
+    return True, message + extra, (message, now, 0)
+
+
 def _fail(exc: Exception, status: int = 502) -> HTTPException:
-    log.warning("request failed: %s", exc)
-    return HTTPException(status_code=status, detail=str(exc))
+    global _said
+    message = str(exc)
+    with _said_lock:
+        write, said, _said = worth_saying(message, time.time(), _said)
+    if write:
+        log.warning("request failed: %s", said)
+    return HTTPException(status_code=status, detail=message)
 
 
 # ---------------------------------------------------------------------------

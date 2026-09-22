@@ -15,6 +15,7 @@ product, a layer with no time at all, a range that ended years ago.
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 import pytest
 
@@ -717,6 +718,133 @@ class TestFetchingATile:
         monkeypatch.setattr(copernicus.requests, "get", refuse)
         with pytest.raises(copernicus.CopernicusError, match="could not be reached"):
             copernicus.tile({"layers": "x"})
+
+
+class TestNotAskingFortyTimesOver:
+    """What happens when EUMETSAT stops answering.
+
+    One playable loop is tens of tiles, all in flight together against one
+    host. When that host goes quiet, every one of them used to sit for forty
+    seconds and then fail separately, and each failure wrote its own
+    three-line requests exception to the log -- a wall of identical text in
+    which the one fact was no easier to find than it would have been in
+    silence, and which buried anything else that failed in the same minute.
+
+    So the first failure is remembered for a few seconds and the rest are
+    refused immediately with the same reason.
+    """
+
+    def setup_method(self):
+        copernicus.forget_tiles()
+
+    teardown_method = setup_method
+
+    class Answer:
+        def __init__(self, body=b"PNGDATA", kind="image/png", code=200):
+            self.content = body
+            self.status_code = code
+            self.headers = {"Content-Type": kind}
+            self.ok = code == 200
+
+    @staticmethod
+    def _unreachable(count):
+        def refuse(*a, **kw):
+            count.append(1)
+            raise copernicus.requests.RequestException("Read timed out")
+        return refuse
+
+    def test_a_host_that_is_not_answering_is_asked_once(self, monkeypatch):
+        tries = []
+        monkeypatch.setattr(copernicus.requests, "get", self._unreachable(tries))
+        for n in range(8):
+            with pytest.raises(copernicus.CopernicusError):
+                copernicus.tile({"layers": "x", "bbox": f"{n}"})
+        assert len(tries) == 1
+
+    def test_the_refusal_still_says_why(self, monkeypatch):
+        tries = []
+        monkeypatch.setattr(copernicus.requests, "get", self._unreachable(tries))
+        with pytest.raises(copernicus.CopernicusError):
+            copernicus.tile({"layers": "x"})
+        with pytest.raises(copernicus.CopernicusError, match="Read timed out"):
+            copernicus.tile({"layers": "y"})
+
+    def test_the_reason_is_a_sentence_rather_than_a_stack(self, monkeypatch):
+        def refuse(*a, **kw):
+            raise copernicus.requests.ConnectionError(
+                "HTTPSConnectionPool(host='view.eumetsat.int', port=443): "
+                "Max retries exceeded with url: /geoserver/wms?service=WMS "
+                "(Caused by ReadTimeoutError('Read timed out. (read "
+                "timeout=12)'))")
+
+        monkeypatch.setattr(copernicus.requests, "get", refuse)
+        with pytest.raises(copernicus.CopernicusError) as caught:
+            copernicus.tile({"layers": "x"})
+        assert "HTTPSConnectionPool" not in str(caught.value)
+        assert len(str(caught.value)) < 120
+
+    def test_a_tile_already_held_is_still_served_while_the_host_is_quiet(
+            self, monkeypatch):
+        """The cache is most of the point of the breaker not covering it: an
+        hour of frames already fetched should keep playing."""
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda *a, **kw: self.Answer())
+        copernicus.tile({"layers": "x", "bbox": "held"})
+        monkeypatch.setattr(copernicus.requests, "get", self._unreachable([]))
+        with pytest.raises(copernicus.CopernicusError):
+            copernicus.tile({"layers": "x", "bbox": "new"})
+        assert copernicus.tile({"layers": "x", "bbox": "held"})[2] is True
+
+    def test_it_stops_sulking_after_a_few_seconds(self, monkeypatch):
+        tries = []
+        monkeypatch.setattr(copernicus.requests, "get", self._unreachable(tries))
+        with pytest.raises(copernicus.CopernicusError):
+            copernicus.tile({"layers": "x"})
+        assert copernicus.sulking()
+        later = time.time() + copernicus.TILE_SULK_SECONDS + 1
+        assert copernicus.sulking(later) == ""
+
+    def test_the_sulk_is_short_enough_to_notice_a_recovery(self):
+        """A satellite that publishes every ten minutes is unusable if a
+        thirty-second outage costs a minute of refusals."""
+        assert copernicus.TILE_SULK_SECONDS <= 30
+
+    def test_a_host_that_answers_clears_the_memory_of_one_that_did_not(
+            self, monkeypatch):
+        monkeypatch.setattr(copernicus.requests, "get", self._unreachable([]))
+        with pytest.raises(copernicus.CopernicusError):
+            copernicus.tile({"layers": "x"})
+        assert copernicus.sulking(), "the failure was not remembered at all"
+        # The sulk expired, so this one goes out and succeeds. The memory of
+        # the outage has to go with it, or the next failure's twenty seconds
+        # would start from an outage that is over.
+        monkeypatch.setattr(copernicus, "TILE_SULK_SECONDS", 0)
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda *a, **kw: self.Answer())
+        assert copernicus.tile({"layers": "x"})[0] == b"PNGDATA"
+        monkeypatch.setattr(copernicus, "TILE_SULK_SECONDS", 20)
+        assert copernicus.sulking() == ""
+
+    def test_a_refusal_with_a_status_is_not_a_reason_to_stop_asking(
+            self, monkeypatch):
+        """503 for one layer says nothing about the next: the host is there."""
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda *a, **kw: self.Answer(code=503))
+        for n in range(3):
+            with pytest.raises(copernicus.CopernicusError, match="503"):
+                copernicus.tile({"layers": f"x{n}"})
+        assert copernicus.sulking() == ""
+
+    def test_one_tile_does_not_wait_the_best_part_of_a_minute(self):
+        """It is a few tens of kilobytes of a picture that already exists."""
+        assert copernicus.TILE_TIMEOUT <= 15
+
+    def test_the_timeout_asked_for_is_the_one_declared(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(copernicus.requests, "get",
+                            lambda *a, **kw: (seen.update(kw), self.Answer())[1])
+        copernicus.tile({"layers": "x"})
+        assert seen["timeout"] == copernicus.TILE_TIMEOUT
 
 
 class TestEightHoursInHand:
