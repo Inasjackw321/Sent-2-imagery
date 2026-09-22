@@ -175,117 +175,290 @@ function settle(lat, lon, guess, horizon) {
 }
 
 /**
+ * Where the sun is, seen from the far side of the earth.
+ *
+ * The point with the sun straight down, which is the middle of the night and
+ * the centre of every curve below.
+ */
+export function antisolar(at = new Date()) {
+  const sun = subsolar(at);
+  return { lat: -sun.lat, lon: wrap180(sun.lon + 180) };
+}
+
+/**
+ * How far the dark region reaches from the antisolar point, in degrees.
+ *
+ * The sun's altitude at a place is ninety degrees minus that place's distance
+ * from the subsolar point. So "darker than `altitude`" is "further than
+ * 90 - altitude from the sun", which is the same as "within 90 + altitude of
+ * the antisolar point". Night is a circle, and this is its radius: ninety
+ * degrees for the terminator itself, seventy-two for astronomical twilight.
+ */
+export const darkRadius = (altitude = 0) => 90 + altitude;
+
+/**
  * The line around the earth where the sun is at a given altitude.
  *
  * At altitude 0 this is the terminator itself -- the edge of the lit half. The
  * twilight bands are the same curve computed a few degrees lower.
  *
- * Returned as [lat, lon] pairs from one edge of the map to the other, which is
- * the order a polyline wants. Near an equinox the declination approaches zero
- * and the curve straightens into the two meridians through the poles; the
- * clamp keeps that from becoming a division that runs away.
+ * Walked around the antisolar point rather than solved meridian by meridian,
+ * and that is the whole of it. The old version asked, for each longitude in
+ * turn, "at what latitude is the sun this low here?" -- which has no answer on
+ * some meridians and TWO on others, and neither case is rare:
+ *
+ *   Near an equinox the sun tracks the equator, so along the meridians near
+ *   the terminator it skims the horizon from pole to pole and never reaches
+ *   eighteen degrees down at all. There is no astronomical-twilight point on
+ *   that meridian, and the old code answered with the pole -- a vertex
+ *   thousands of miles from the curve it claimed to be on.
+ *
+ *   On the meridians where the band does exist it is a band: it has a northern
+ *   edge and a southern one, and picking whichever the arcsine handed back
+ *   first made the curve jump between them from one sample to the next.
+ *
+ * Measured on the equinox before this was rewritten: of 181 points on the
+ * civil-twilight curve, 96 were not on it, the worst by 5.7 degrees; on the
+ * astronomical curve, 109 of 181, the worst by 17.7. Drawn, those wrong
+ * vertices are spikes from the curve to the pole and back, and a dozen bands
+ * of them stack into the vertical stripes ruled down the night side of the
+ * map.
+ *
+ * A circle has none of those cases. Every bearing from the centre gives
+ * exactly one point, the curve closes on itself, and the arithmetic is the
+ * same at an equinox as at a solstice.
+ *
+ * Returned as [lat, lon] pairs going round once, with longitudes running
+ * continuously rather than wrapped at the date line -- so a curve that passes
+ * behind the map's edge carries on past 180 instead of jumping back to -180
+ * and drawing a line across the world.
  */
-export function terminator(at = new Date(), altitude = 0, step = 1, wraps = 1) {
-  const sun = subsolar(at);
-  const declination = sun.declination * RAD;
-  const wanted = Math.sin(altitude * RAD);
-
-  // `wraps` says how many copies of the world to span. Zoomed out, Leaflet
-  // repeats the map sideways, and a shape that stops at the date line stops
-  // there on every copy -- leaving hard vertical edges down the map wherever
-  // one copy ends and the next begins. The curve is periodic in longitude, so
-  // running it out past the ends costs nothing but points.
-  const reach = 180 * wraps;
-  const ring = [];
-  for (let lon = -reach; lon <= reach; lon += step) {
-    const hourAngle = (lon - sun.lon) * RAD;
-    // Solving sin(alt) = sin(lat)sin(dec) + cos(lat)cos(dec)cos(H) for lat.
-    // Written as one sine of a shifted angle rather than as a tangent: the
-    // tangent form divides by tan(dec), which runs away to infinity twice a
-    // year at the equinoxes, and this form does not divide by it at all.
-    const a = Math.sin(declination);
-    const b = Math.cos(declination) * Math.cos(hourAngle);
-    const size = Math.hypot(a, b);
-    const phase = Math.atan2(b, a);
-    // The altitude asked for is sometimes one the sun never reaches anywhere
-    // along this meridian, and that is a fact about the sky rather than a
-    // failure. At an equinox the meridian a quarter turn from the sun runs
-    // pole to pole through sunrise: the sun sits within two degrees of the
-    // horizon the whole way along it, and civil twilight never begins. The
-    // band simply does not exist here, so its edge goes to the dark pole and
-    // encloses nothing. Solving anyway returns the least-wrong latitude, which
-    // is a line of night drawn across the middle of the daylight.
-    if (size < 1e-9 || Math.abs(wanted) > size) {
-      ring.push([sun.declination > 0 ? -90 : 90, lon]);
-      continue;
-    }
-    const lift = Math.max(-1, Math.min(1, wanted / size));
-    // A sine has two solutions per turn, and which one is the real latitude
-    // changes with the season: taking the first every time throws the curve
-    // past the pole for half the year, where it gets clamped into a straight
-    // line along the top of the map that looks deliberate and is not.
-    const candidates = [
-      Math.asin(lift) - phase,
-      Math.PI - Math.asin(lift) - phase,
-    ].map((r) => wrap180(r * DEG));
-
-    // Both roots solve the shifted sine, but only one is a latitude on this
-    // meridian: past the pole you are on the far side of the world, at a
-    // longitude half a turn away. So each is checked back against the altitude
-    // it is supposed to have, and the one that is actually right wins.
-    //
-    // Sometimes neither lands on the globe, and that is an answer rather than
-    // a failure: on the meridian under the sun in September the sun never gets
-    // eighteen degrees down however far towards the pole you walk, because the
-    // pole is only eight degrees short of it. The curve has run off the end of
-    // the world, so it belongs against the pole it ran past -- the one it
-    // misses by least. Anywhere else, the equator especially, draws a band of
-    // night across the daylight.
-    const lat = candidates
-      .map((deg) => {
-        const clamped = Math.max(-90, Math.min(90, deg));
-        const a = clamped * RAD;
-        const has = Math.sin(a) * Math.sin(declination)
-          + Math.cos(a) * Math.cos(declination) * Math.cos(hourAngle);
-        return { deg: clamped, off: outside(deg), miss: Math.abs(has - wanted) };
-      })
-      .sort((x, y) => (x.off - y.off) || (x.miss - y.miss))[0].deg;
-    ring.push([lat, lon]);
-  }
-  return ring;
+export function terminator(at = new Date(), altitude = 0, step = 1) {
+  const centre = antisolar(at);
+  const radius = darkRadius(altitude);
+  return capRing(centre.lat, centre.lon, radius, step);
 }
 
 /**
- * The dark half of the earth as a closed ring, ready to be drawn.
+ * A circle on the globe: every point a fixed angle from one centre.
  *
- * The terminator alone is an open curve; to shade the night it has to be
- * closed along whichever pole is in darkness, which is the one on the opposite
- * side of the equator from the sun. Getting that backwards shades the daylight
- * instead, and looks entirely plausible until you check it against a clock.
+ * Longitudes come back unwrapped -- continuous, possibly outside -180..180 --
+ * because that is what a polygon needs. Wrapping each point into range is what
+ * puts a horizontal line across a map whenever a shape crosses the date line.
+ */
+export function capRing(centreLat, centreLon, radius, step = 1) {
+  const lat0 = centreLat * RAD;
+  const rho = Math.max(0, Math.min(180, radius)) * RAD;
+  const turn = Math.max(0.1, Math.min(45, step));
+  const out = [];
+  let last = null;
+  for (let bearing = 0; bearing <= 360 + 1e-9; bearing += turn) {
+    const theta = bearing * RAD;
+    const lat = Math.asin(
+      Math.sin(lat0) * Math.cos(rho)
+      + Math.cos(lat0) * Math.sin(rho) * Math.cos(theta));
+    let lon = centreLon + Math.atan2(
+      Math.sin(theta) * Math.sin(rho) * Math.cos(lat0),
+      Math.cos(rho) - Math.sin(lat0) * Math.sin(lat)) * DEG;
+    // Unwrapped: each point is put on the same turn as the one before it, so
+    // the longitudes run on past 180 instead of jumping the width of the map.
+    // A wrapped longitude here is a vertex on the far side of the world from
+    // its neighbour, which draws as an edge straight across the map and a
+    // fill to match.
+    //
+    // Both directions, though walking the bearings upwards only ever needs
+    // the second: the arc tangent's jump comes at the far side of the circle
+    // and always goes the same way. The first is there for a caller that
+    // walks the other way round, and a mutation test will not kill it -- said
+    // here so that nobody has to work that out twice.
+    if (last !== null) {
+      while (lon - last > 180) lon -= 360;
+      while (last - lon > 180) lon += 360;
+    }
+    last = lon;
+    out.push([lat * DEG, lon]);
+  }
+  return out;
+}
+
+/**
+ * Whether the dark region reaches over a pole, and which one.
+ *
+ * 1 for the north, -1 for the south, 0 for neither. The dark pole is the one
+ * away from the sun, so this is also the answer to which way up the night is.
+ */
+export function poleInside(centreLat, radius) {
+  if (90 - centreLat < radius) return 1;      // north
+  if (90 + centreLat < radius) return -1;     // south
+  return 0;
+}
+
+/**
+ * How far round the world a curve travels, in whole turns.
+ *
+ * This, and not which pole is inside it, is what decides how the shape has to
+ * be closed. The difference is not a nicety; both cases are ordinary:
+ *
+ *   AT A SOLSTICE the terminator is a circle tilted from the equator that
+ *   goes right round the earth, through every longitude once. It winds. Drawn
+ *   on a flat map it is not a loop at all, it is a line from one side to the
+ *   other, and the night is everything between it and the pole -- so it has
+ *   to be closed along that pole's edge.
+ *
+ *   AT AN EQUINOX the same curve runs up over one pole and back down the far
+ *   side. It covers half the longitudes, twice each, and returns to where it
+ *   started. It does not wind. Drawn as it is it closes itself and encloses
+ *   exactly the night; closing it along a pole as well lays a hairline across
+ *   the daylight and hangs a band of shading under it.
+ *
+ * Deciding by which pole is inside gets the second case wrong, because the
+ * pole IS inside the dark region and the curve still does not wind around it.
+ */
+export function turns(ring) {
+  if (ring.length < 2) return 0;
+  // The `|| 0` is not decoration: rounding a small negative gives -0, which
+  // is falsy like 0 but not equal to it, so a caller comparing turns to 0
+  // gets different answers for the same shape depending on which way round
+  // it was walked.
+  return Math.round((ring[ring.length - 1][1] - ring[0][1]) / 360) || 0;
+}
+
+/**
+ * The dark part of the earth as polygons, ready to be drawn.
+ *
+ * Returns a list of rings. Several, because at low zoom the map repeats
+ * sideways and a shape that stops at the date line stops on every copy,
+ * leaving hard vertical edges wherever one copy ends and the next begins.
+ *
+ * Every ring is held inside the latitudes Web Mercator can place. The
+ * projection sends ninety degrees to infinity, so a polygon with a vertex
+ * there is handed to the clipper as a coordinate it cannot hold; what comes
+ * back is folded, and draws as seams across the shading.
+ */
+export function nightRings(at = new Date(), altitude = 0, step = 1,
+                           span = { west: -180, east: 180 }) {
+  const centre = antisolar(at);
+  const radius = darkRadius(altitude);
+  if (radius <= 0) return [];
+  const ring = capRing(centre.lat, centre.lon, radius, step);
+  const { west, east } = asSpan(span);
+  const edgeLat = MERCATOR_LIMIT - 0.6;
+
+  if (!turns(ring)) {
+    // A curve that comes back to where it started encloses the night on its
+    // own. Clamping is what turns the part that runs over a pole into a flat
+    // top, which is right: everything between the curve and the pole is dark
+    // as well, and none of it is drawable anyway.
+    return tile(ring, west, east).map(clampRing);
+  }
+
+  // A curve that goes right round the world is a line across the map rather
+  // than a loop, and the night is everything between it and the dark pole:
+  // laid out in longitude order, tiled sideways, closed along that edge.
+  const pole = poleInside(centre.lat, radius) || (centre.lat > 0 ? 1 : -1);
+  const edge = pole > 0 ? edgeLat : -edgeLat;
+  const walk = ring[ring.length - 1][1] > ring[0][1] ? ring : [...ring].reverse();
+  const long = tile(walk, west, east).flat();
+
+  // Split where the curve leaves the band the projection can draw, and keep
+  // the stretches that enclose something.
+  //
+  // Near an equinox the terminator is very nearly the two meridians through
+  // the poles: it crosses the drawable latitudes almost vertically and spends
+  // the rest of its length beyond 85 degrees, off the map. Over those
+  // longitudes there is no night to draw between the curve and the edge --
+  // all of it is past the edge already. Clamping those vertices instead of
+  // dropping them leaves a polygon of no height lying along the bottom of the
+  // map, and a fill of no height still paints: it came out as a hairline
+  // ruled across the daylight at eighty-four degrees south.
+  const runs = [];
+  let run = [];
+  for (const [lat, lon] of long) {
+    if (pole > 0 ? lat < edge : lat > edge) {
+      run.push([Math.max(-edgeLat, Math.min(edgeLat, lat)), lon]);
+    } else if (run.length) {
+      runs.push(run);
+      run = [];
+    }
+  }
+  if (run.length) runs.push(run);
+
+  return runs
+    .filter((one) => one.length > 1)
+    .map((one) => [...one, [edge, one[one.length - 1][1]], [edge, one[0][1]]]);
+}
+
+/**
+ * The longitudes a drawing has to cover.
+ *
+ * A number is the old way of asking -- so many copies of the world either
+ * side of the meridian -- and is kept because it reads well at a call site
+ * that has no map to ask. A map should pass what it can actually see: it can
+ * be panned to any longitude at all, and a shape tiled around zero runs out
+ * partway across the screen.
+ */
+function asSpan(span) {
+  if (typeof span === 'number') {
+    const copies = Math.max(1, Math.min(5, Math.round(span)));
+    return { west: -180 * copies, east: 180 * copies };
+  }
+  return { west: Number(span?.west ?? -180), east: Number(span?.east ?? 180) };
+}
+
+/**
+ * One copy of a shape per turn of longitude, enough to cover a span.
+ *
+ * Tiled from the shape's own position rather than from the meridian, so a
+ * curve that happens to sit at longitude 100 still covers a view at -170.
+ */
+export function tile(ring, west, east) {
+  if (!ring.length) return [];
+  const lons = ring.map(([, lon]) => lon);
+  const low = Math.min(...lons);
+  const high = Math.max(...lons);
+  const from = Math.floor((west - high) / 360);
+  const to = Math.ceil((east - low) / 360);
+  const out = [];
+  // A guard rather than a limit anybody should reach: a view spanning more
+  // than a few dozen turns is a bug somewhere else, and this stops it
+  // becoming an unbounded loop here.
+  for (let n = from; n <= Math.min(to, from + 40); n += 1) {
+    out.push(ring.map(([lat, lon]) => [lat, lon + n * 360]));
+  }
+  return out;
+}
+
+/**
+ * A curve cut into the pieces of it a Mercator map can show.
+ *
+ * Latitudes beyond about 85 degrees are not drawable, and Leaflet pins
+ * anything past them to the edge -- so a curve that spends most of its length
+ * near a pole, which is what the terminator does near an equinox, comes out
+ * as a line ruled along the bottom of the map instead of disappearing off it.
+ * Dropping those stretches is the honest version: the curve is not there.
+ */
+export function withinMap(curve, limit = MERCATOR_LIMIT - 0.6) {
+  const out = [];
+  let run = [];
+  for (const point of curve) {
+    if (Math.abs(point[0]) <= limit) run.push(point);
+    else if (run.length) { out.push(run); run = []; }
+  }
+  if (run.length) out.push(run);
+  return out.filter((one) => one.length > 1);
+}
+
+/** Held inside the latitudes Web Mercator can actually place. */
+function clampRing(ring) {
+  const edge = MERCATOR_LIMIT - 0.6;
+  return ring.map(([lat, lon]) => [Math.max(-edge, Math.min(edge, lat)), lon]);
+}
+
+/**
+ * The dark half of the earth as one ring. Kept for callers that want a single
+ * shape; the layer itself uses nightRings, which can say "two separate
+ * pieces" when that is what the sky is doing.
  */
 export function nightRing(at = new Date(), altitude = 0, step = 1, wraps = 1) {
-  const sun = subsolar(at);
-  const darkPole = sun.declination > 0 ? -MERCATOR_LIMIT : MERCATOR_LIMIT;
-  // Held inside the projection's own range. Web Mercator sends the poles to
-  // infinity, so a polygon with a vertex at ninety degrees is asking the
-  // clipper to work with a coordinate it cannot hold: it comes back folded,
-  // and the fill draws as a run of vertical seams across the whole shaded
-  // half -- which looks like a rendering artefact of the map rather than a
-  // mistake in the shape handed to it.
-  // The curve is held a little short of the closing edge, not level with it.
-  // Where a band runs off the globe its points are already pinned at the pole,
-  // and closing the shape along that same latitude makes the outline double
-  // back down the line it just came along. A polygon with a repeated edge has
-  // no inside at that point, and the canvas fills it as a run of vertical
-  // seams ruled across the whole shaded half -- which reads as a fault in the
-  // map rather than in the shape handed to it.
-  const edge = MERCATOR_LIMIT - 0.6;
-  const reach = 180 * wraps;
-  const ring = terminator(at, altitude, step, wraps)
-    .map(([lat, lon]) => [Math.max(-edge, Math.min(edge, lat)), lon]);
-  return [
-    ...ring,
-    [darkPole, reach],
-    [darkPole, -reach],
-  ];
+  return nightRings(at, altitude, step, wraps)[0] ?? [];
 }

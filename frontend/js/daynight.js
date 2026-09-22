@@ -14,7 +14,8 @@
 // would be saying something untrue about the picture.
 
 import { $, el } from './ui.js';
-import { subsolar, nightRing, sunTimes, elevation, TWILIGHT } from './sun.js';
+import { subsolar, nightRings, terminator, tile, withinMap, sunTimes, elevation,
+  TWILIGHT } from './sun.js';
 
 // The bands, lightest first. Each is drawn over the one before, so the alpha
 // accumulates and the night deepens towards the antisolar point without any
@@ -45,20 +46,18 @@ function bandsFor(zoom) {
 const TOTAL_DARK = 0.42;
 
 /**
- * How far apart to sample the terminator, in degrees of longitude.
+ * How far apart to sample the curve, in degrees of bearing around it.
  *
  * Chosen from the zoom so the points land roughly ten pixels apart whatever
  * the scale, and not from taste. Too coarse and the curve shows its corners
  * when you zoom in on it. Too fine is worse and less obvious: with vertices
  * closer together than a pixel, each band's antialiased edge leaves a
- * sub-pixel seam, and ten of them stacked turn those seams into vertical
- * stripes ruled down the whole night side. Measured at zoom 2: sampling every
- * half degree gave 202 reversals along one scanline, every five degrees gave
- * ten.
+ * sub-pixel seam, and several of them stacked turn those seams into vertical
+ * stripes ruled down the night side.
  */
 function stepFor(zoom) {
   const pixelsPerDegree = (256 * 2 ** zoom) / 360;
-  return Math.min(6, Math.max(0.25, 10 / pixelsPerDegree));
+  return Math.min(6, Math.max(0.4, 10 / pixelsPerDegree));
 }
 
 // How often the layer catches up with the sky. The terminator moves a quarter
@@ -104,27 +103,51 @@ function draw() {
 
   const zoom = map.getZoom();
   const step = stepFor(zoom);
-  // How many copies of the world are on screen at this zoom, so the shading
-  // covers all of them rather than stopping at the date line on each.
-  const worlds = Math.ceil(map.getSize().x / (256 * 2 ** zoom));
-  const wraps = Math.min(5, Math.max(1, worlds + 1));
+  // What the map can actually see, rather than a count of copies of the
+  // world. Leaflet lets you pan sideways for ever, so the shading is tiled
+  // over the longitudes on screen -- a shape tiled around the meridian runs
+  // out partway across a view of the Pacific.
+  const bounds = map.getBounds();
+  const span = { west: bounds.getWest() - 20, east: bounds.getEast() + 20 };
+
   for (const band of bandsFor(zoom)) {
-    shapes.push(L.polygon(nightRing(at, band.altitude, step, wraps), {
+    // A list of rings rather than one: near an equinox the deeper bands do
+    // not reach a pole, so night at that depth is a closed ring lying across
+    // the globe with daylight on both sides of it -- and at low zoom there is
+    // one copy of the whole thing per copy of the world on screen. Handed to
+    // Leaflet as a multipolygon, which is what several separate outlines are.
+    const rings = nightRings(at, band.altitude, step, span);
+    if (!rings.length) continue;
+    shapes.push(L.polygon(rings.map((ring) => [ring]), {
       pane: 'daynight',
       interactive: false,
-      // Only the outermost band is outlined, and faintly: the terminator is a
-      // real line worth seeing, and the eight behind it are a gradient that
-      // stops being one the moment any of them is given an edge.
-      // The terminator itself is worth a line; the bands behind it are a
-      // gradient and stop being one the moment any of them is given an edge.
-      // Kept faint -- at a low zoom the curve runs nearly north-south for
-      // thousands of miles, and a firm line there reads as a border.
-      stroke: band.altitude === 0,
+      // No outline on any of them. The bands are a gradient and stop being
+      // one the moment any of them is given an edge -- and where a band is
+      // closed along the top or bottom of the projection, that closing edge
+      // is not a real line in the sky at all: it would draw a hairline at 84
+      // degrees south straight across the daylight. The terminator itself is
+      // worth seeing and is drawn below, as the curve alone.
+      stroke: false,
+      fillColor: '#050a16',
+      fillOpacity: band.fill,
+    }).addTo(map));
+  }
+
+  // The terminator, as a line.
+  //
+  // Drawn from the curve rather than taken from the shaded polygon's outline,
+  // because the polygon has edges in it that the sky does not: the side it is
+  // closed along, and the seams where one copy of the world meets the next.
+  // Kept faint -- at a low zoom it runs nearly north-south for thousands of
+  // miles, and a firm line there reads as a border.
+  for (const curve of curves(terminator(at, 0, step), span)) {
+    shapes.push(L.polyline(curve, {
+      pane: 'daynight',
+      interactive: false,
       color: '#9fb6e0',
       weight: 1,
       opacity: 0.16,
-      fillColor: '#050a16',
-      fillOpacity: band.fill,
+      fill: false,
     }).addTo(map));
   }
 
@@ -148,6 +171,14 @@ function draw() {
   shapes.push(sunPin);
 
   paintDock();
+}
+
+/** One copy of a curve per turn of longitude on screen. */
+function curves(curve, span) {
+  // Only the parts of it the map can place. The rest is pinned to the edge
+  // by the projection and draws as a line along the bottom of the world,
+  // which is nowhere near where the terminator is.
+  return tile(curve, span.west, span.east).flatMap((one) => withinMap(one));
 }
 
 function clear() {
