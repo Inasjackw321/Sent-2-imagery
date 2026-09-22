@@ -118,11 +118,62 @@ export async function handOver(blob, filename, title = '') {
 
 export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
-  const a = el('a', { href: url, download: filename });
+  const a = el('a', {
+    href: url, download: filename, rel: 'noopener', target: '_self',
+  });
   document.body.append(a);
   a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  // Left in the document for a moment rather than removed on the next line.
+  // The click is queued, not performed, and a browser that gets round to it
+  // after the element has gone does nothing at all -- silently, which is the
+  // worst way for a save to fail.
+  setTimeout(() => a.remove(), 2000);
+  setTimeout(() => URL.revokeObjectURL(url), 20000);
+  return url;
+}
+
+/**
+ * Save a picture, say what happened, and never leave somebody with nothing.
+ *
+ * The one route every export in this app takes, and it exists because "I
+ * press save and nothing happens" is a real thing that browsers do. An
+ * <a download> click is a request, not an action: an installed app, a locked
+ * -down profile or an embedded view can drop it on the floor without an
+ * error, without a file, and without telling the page. The picture is made,
+ * the button appears to work, and there is nothing on disk.
+ *
+ * So, in order: the share sheet, which is the route a phone actually has and
+ * the only one that offers "Save Image" on iOS; then the ordinary download;
+ * then, if the download cannot be seen to have started, the picture is opened
+ * in a tab so it can be saved by hand. Whichever happened is said out loud,
+ * because a save nobody confirmed is a save nobody can trust.
+ */
+export async function savePicture(blob, filename, { title = '', what = '' } = {}) {
+  if (!blob || !blob.size) {
+    toast(`${what || 'That picture'} could not be made — nothing to save`, 'err');
+    return 'failed';
+  }
+  let went = 'downloaded';
+  try {
+    went = await handOver(blob, filename, title);
+  } catch (err) {
+    // Even the fallback can refuse. Rather than swallowing it, the picture
+    // goes to a tab of its own, where it can be saved the ordinary way.
+    const url = URL.createObjectURL(blob);
+    const opened = window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    toast(opened
+      ? `Saving was blocked — the picture is in a new tab, save it from there`
+      : `Saving was blocked by the browser: ${err.message}`, 'warn');
+    return opened ? 'opened' : 'failed';
+  }
+  if (went === 'cancelled') return went;
+  const size = blob.size >= 1e6
+    ? `${(blob.size / 1e6).toFixed(1)} MB` : `${Math.round(blob.size / 1024)} kB`;
+  toast(went === 'shared'
+    ? `${what || 'Picture'} ready — pick Save Image`
+    : `Saved ${filename} · ${size}`, 'ok');
+  return went;
 }
 
 export function loadImage(src) {

@@ -8,7 +8,7 @@
 
 import { store } from './store.js';
 import * as adjust from './adjust.js';
-import { toast, download } from './ui.js';
+import { toast, savePicture } from './ui.js';
 
 export const WATERMARK = '@Kaldockhi';
 
@@ -123,8 +123,8 @@ export async function copyRegion(rect) {
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
     toast(`Copied — ${canvas.width}×${canvas.height} px, marked ${WATERMARK}`, 'ok');
   } catch {
-    download(blob, name);
-    toast(`Clipboard not allowed here — saved ${name} instead`);
+    toast('Clipboard not allowed here — saving it instead');
+    await savePicture(blob, name, { title: 'Imagery', what: 'The crop' });
   }
   return canvas;
 }
@@ -137,8 +137,10 @@ export async function saveRegion(rect) {
     return null;
   }
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  download(blob, filename());
-  toast(`Saved — ${canvas.width}×${canvas.height} px, marked ${WATERMARK}`, 'ok');
+  await savePicture(blob, filename(), {
+    title: 'Imagery',
+    what: `The crop — ${canvas.width}×${canvas.height} px, marked ${WATERMARK}`,
+  });
   return canvas;
 }
 

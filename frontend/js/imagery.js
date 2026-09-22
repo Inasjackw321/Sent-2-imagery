@@ -16,7 +16,7 @@ import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
 import * as adjust from './adjust.js';
 import {
-  $, $$, el, toast, withBusy, download, loadImage, fmt, sliderBank, debounce,
+  $, $$, el, toast, withBusy, savePicture, loadImage, fmt, sliderBank, debounce,
 } from './ui.js';
 
 let renderControls = {};
@@ -973,8 +973,8 @@ async function makeAnimation() {
   try {
     const blob = await withBusy(
       `Rendering ${dates.length} frames…`, () => api.animate(body));
-    download(blob, `${exportStem()}_${dates.length}frames.gif`);
-    toast(`${dates.length} dates, oldest first`, 'ok');
+    await savePicture(blob, `${exportStem()}_${dates.length}frames.gif`,
+      { title: 'Imagery', what: `${dates.length} dates, oldest first` });
   } catch (err) {
     toast(`Could not animate that: ${err.message}`, 'err');
   }
@@ -991,13 +991,22 @@ async function downloadImagery(format) {
     if (format === 'png' && store.image?.element) {
       const canvas = adjust.renderToCanvas(store.image.element, adjustmentValues());
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-      download(blob, name);
-      return;
+      // A canvas hands back nothing rather than raising when it cannot make
+      // the file -- too large for this browser, most often -- so the picture
+      // is asked for again from the server rather than the button appearing
+      // to do nothing.
+      if (blob) {
+        await savePicture(blob, name, { title: 'Imagery', what: 'The picture' });
+        return;
+      }
     }
     const blob = await withBusy('Preparing the file…', () =>
       api.renderFile({ ...lastRequest, format }));
-    download(blob, name);
+    await savePicture(blob, name, {
+      title: 'Imagery',
+      what: format === 'geotiff' ? 'The GeoTIFF' : 'The picture',
+    });
   } catch (err) {
-    toast(`Download failed: ${err.message}`, 'err');
+    toast(`Could not save that: ${err.message}`, 'err');
   }
 }

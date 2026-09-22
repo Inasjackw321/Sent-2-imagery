@@ -27,7 +27,7 @@
 //   IT DOES NOT TOUCH THE MAP. This is a picture editor over a still. The map
 //   underneath keeps whatever was on it.
 
-import { $, el } from './ui.js';
+import { $, el, savePicture } from './ui.js';
 
 // What a mark looks like, as a fraction of the picture's smaller side, so a
 // mark on a 512 px picture and on a 4096 px one are the same weight.
@@ -265,13 +265,12 @@ function save() {
   const ctx = out.getContext('2d');
   ctx.drawImage(picture, 0, 0);
   paint(ctx, marks, out.width, out.height);
+  // Through the one save path the rest of the app uses. A bare anchor click
+  // -- which this was -- is a request a browser may simply drop, and a
+  // marked-up picture that does not arrive looks exactly like a button that
+  // does nothing.
   out.toBlob((blob) => {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${name}_marked_kaldockhi.png`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 20000);
+    savePicture(blob, `${name}_marked_kaldockhi.png`,
+      { title: 'Imagery', what: 'The marked-up picture' });
   }, 'image/png');
 }
