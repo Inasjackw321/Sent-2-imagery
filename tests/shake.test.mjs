@@ -76,28 +76,12 @@ test('the Shakes have their own canvas, so a redraw leaves the rest alone', () =
 test('their pins are drawn in the Shake colour, not the stations’', () => {
   // The pin itself, not just the constant: a named colour that nothing uses
   // is a comment, and the map would still show two identical blue dots.
-  assert.match(code, /color: air \? MIC_COLOUR : SHAKE_COLOUR,/);
+  assert.match(code, /color: SHAKE_COLOUR,/);
   const stations = code.match(/color: '(#[0-9a-f]{6})', fillColor: '#0d1015'/i);
   assert.ok(stations, 'the station pin colour moved');
   const shakeColour = code.match(/const SHAKE_COLOUR = '(#[0-9a-f]{6})'/i);
   assert.ok(shakeColour, 'the Shake pin colour moved');
   assert.notEqual(shakeColour[1].toLowerCase(), stations[1].toLowerCase());
-});
-
-test('and a Boom is a third colour, not a second Shake', () => {
-  // Same network and same panel, different instrument. Drawn identically,
-  // the only way to find out that a trace is air pressure rather than ground
-  // motion is to open it.
-  const mic = code.match(/const MIC_COLOUR = '(#[0-9a-f]{6})'/i);
-  const shakeColour = code.match(/const SHAKE_COLOUR = '(#[0-9a-f]{6})'/i);
-  const stations = code.match(/color: '(#[0-9a-f]{6})', fillColor: '#0d1015'/i);
-  assert.ok(mic, 'the Boom pin colour moved');
-  for (const other of [shakeColour[1], stations[1]]) {
-    assert.notEqual(mic[1].toLowerCase(), other.toLowerCase());
-  }
-  // And it is the colour the key shows beside the word, rather than a
-  // fourth one written out again next to it.
-  assert.match(code, /color:\$\{MIC_COLOUR\}/);
 });
 
 test('the legend shows the Shake colour rather than hard-coding it again', () => {
@@ -117,32 +101,17 @@ test('turning the Shakes off closes only theirs', () => {
 // ── Asking for them ────────────────────────────────────────────
 
 test('they are fetched from their own endpoint', () => {
-  assert.match(api, /\/api\/shake/);
+  assert.match(api, /'\/api\/shake'/);
 });
 
-test('and asked for by rectangle, so what is in view is found', () => {
-  // The named stations are a decision; what else of this network is under
-  // the current view is a question, and it can only be answered by asking
-  // about the rectangle. This is what puts an instrument on a coast nobody
-  // thought to name.
+test('they are not asked for by rectangle', () => {
   const line = api.match(/shakes: \([^)]*\)/);
   assert.ok(line, 'the shakes accessor moved');
-  assert.equal(line[0], 'shakes: (box)');
-  assert.match(api, /west: box\.west\.toFixed\(4\)/);
+  assert.equal(line[0], 'shakes: ()');
 });
 
-test('but the rectangle is optional, so a first look still works', () => {
-  // Before the map has settled there is no view worth asking about, and an
-  // endpoint that demanded one would leave the named list empty until it had.
-  assert.match(api, /\/api\/shake\$\{box \?/);
-});
-
-test('a view inside one already asked about does not ask again', () => {
-  assert.match(code, /if \(!force && shakes && shakesCovered\?\.contains\(view\)\)/);
-});
-
-test('and a pan that leaves it does', () => {
-  assert.match(code, /if \(showShakes\) loadShakes\(\);/);
+test('a second look does not ask again', () => {
+  assert.match(code, /if \(shakes\) \{ drawShakes\(shakes\); return; \}/);
 });
 
 test('two clicks at once only ask once', () => {
@@ -239,74 +208,4 @@ test('the window says when what is on screen was fetched', () => {
   assert.match(code, /data-live/);
   assert.match(code, /updated \$\{clockNow\(\)\}/);
   assert.match(css, /\.trace-live \{/);
-});
-
-// ── Booms: the same network, a different instrument ────────────
-//
-// A Raspberry Boom is a barometer sampling fast enough to hear. What crosses
-// a red line on one is a pressure wave in the air -- a blast, a sonic boom,
-// thunder -- and the ground may not have moved at all. Drawn and captioned
-// as a seismograph, it turns a sonic boom into an earthquake.
-
-test('a Boom is told apart on the map by shape as well as colour', () => {
-  assert.match(code, /radius: air \? 2\.6 : 1\.5/);
-});
-
-test('and in the list, where a colour alone is not enough', () => {
-  assert.match(code, /el\('span', \{ class: 'seis-mic' \}, 'mic'\)/);
-  assert.match(css, /\.seis-mic \{/);
-});
-
-test('its trace is captioned as air pressure, not ground motion', () => {
-  const at = code.indexOf('function footnote(');
-  const block = code.slice(at, code.indexOf('\n}\n', at));
-  const mic = block.indexOf("station.kind === 'microphone'");
-  assert.ok(mic > 0, 'the footnote should answer a microphone first');
-  assert.ok(mic < block.indexOf('vertical ground motion'),
-            'a Boom must be answered before the seismograph wording');
-  assert.match(block, /air pressure at a Raspberry Boom/);
-  assert.match(block, /An infrasound microphone, not a seismograph/);
-});
-
-test('and its window is titled a Boom rather than a Shake', () => {
-  assert.match(code, /'Raspberry Boom' : 'Raspberry Shake'/);
-});
-
-// ── What the rectangle found ───────────────────────────────────
-
-test('the panel says how many are in view, not how many are listed', () => {
-  // Eight named stations elsewhere in the world plus two here is not "ten in
-  // view", and it is the second number somebody watching a coast wants.
-  const at = code.indexOf('function foundHere(');
-  const block = code.slice(at, code.indexOf('\n}\n', at));
-  assert.match(block, /data\.in_view/);
-  assert.match(block, /in view/);
-  assert.match(block, /nearest shown/);
-});
-
-test('an empty rectangle says so rather than saying nothing', () => {
-  const at = code.indexOf('function foundHere(');
-  const block = code.slice(at, code.indexOf('\n}\n', at));
-  assert.match(block, /None of this network in view/);
-  // And says where the list above came from, so it is not read as this
-  // coast's instruments.
-  assert.match(block, /named ones/);
-});
-
-test('the microphones in view are counted apart from the named ones', () => {
-  const at = code.indexOf('function foundHere(');
-  const block = code.slice(at, code.indexOf('\n}\n', at));
-  assert.match(block, /!s\.asked_for && s\.kind === 'microphone'/);
-});
-
-test('a station labelled with its own position does not say it twice', () => {
-  // Its place IS its coordinates when nobody named it, and "in 48.974°N
-  // 2.322°E, 48.9735° N, 2.3225° E" reads as two different places.
-  const at = code.indexOf('function whereItIs(');
-  const block = code.slice(at, code.indexOf('\n}\n', at));
-  assert.match(block, /station\.named === false \? `at \$\{at\}`/);
-  const foot = code.indexOf('function footnote(');
-  const body = code.slice(foot, code.indexOf('\n}\n', foot));
-  assert.ok(!/\$\{station\.place\}, \$\{fmt\.coord/.test(body),
-            'the footnote is writing the place and the coordinates itself again');
 });

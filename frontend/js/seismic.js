@@ -84,11 +84,6 @@ function hitTarget(latlng, renderer, radius = HIT_RADIUS) {
 // compare the two traces as though they measured the same thing.
 const SHAKE_COLOUR = '#ff5d8f';
 const SHAKE_EDGE = '#ffd0de';
-// The Booms. Same family of colour as the Shakes, because they are the same
-// network and the same panel, and far enough from it to be a different
-// instrument at a glance.
-const MIC_COLOUR = '#c08bff';
-const MIC_EDGE = '#e9d7ff';
 
 const DEPTHS = [
   { under: 30, colour: '#7ef0ff', edge: '#d6faff', label: 'shallow, under 30 km' },
@@ -108,12 +103,7 @@ export function initSeismic(leafletMap) {
   stationLayer = L.layerGroup();
   shakeLayer = L.layerGroup();
   buildDock();
-  map.on('moveend', debounce(() => {
-    refresh();
-    // The Shakes follow the view too, now that half of the answer is a
-    // question about the rectangle rather than a fixed list.
-    if (showShakes) loadShakes();
-  }, 700));
+  map.on('moveend', debounce(() => refresh(), 700));
 }
 
 // ── The panel ──────────────────────────────────────────────────
@@ -184,15 +174,11 @@ function buildDock() {
         el('div', { class: 'seis-key' },
           el('div', { class: 'seis-key-row' },
             el('span', { class: 'seis-dot', style: `color:${SHAKE_COLOUR}` }),
-            'hobby instrument, in a building'),
-          el('div', { class: 'seis-key-row' },
-            el('span', { class: 'seis-dot', style: `color:${MIC_COLOUR}` }),
-            'Boom — a microphone for the air, not the ground')),
+            'hobby instrument, in a building')),
         el('div', { class: 'seis-hint' },
-          'Home seismographs: the ones asked for by name, plus whatever else '
-          + 'of this network is inside the view. They are here because the '
-          + 'open research networks have almost nothing where these are. They '
-          + 'are also a geophone on somebody’s floor — a door closing '
+          'Home seismographs, listed below. They are here because the open '
+          + 'research networks have almost nothing where these are. They are '
+          + 'also a geophone on somebody’s floor — a door closing '
           + 'registers on one, so a busy trace is not on its own evidence of '
           + 'anything, and these should not be read beside a vault '
           + 'instrument as though the two measured the same thing.'),
@@ -413,38 +399,27 @@ function drawStations(data) {
 
 // ── The Raspberry Shakes ───────────────────────────────────────
 
-// The named stations never change, but what else of this network is in view
-// does, so a pan is a reason to ask again -- over the same padded rectangle
-// the professional stations use, and only when it has left what was covered.
+// Kept once fetched. They are four fixed stations, not a query over the
+// view, so panning is not a reason to ask again.
 let shakes = null;
 let shakesInFlight = false;
-let shakesCovered = null;
 
 /** Whether a trace window belongs to a Shake rather than a station. */
 export function isShakeWindow(id) {
   return id.startsWith(`${WIN}AM.`);
 }
 
-async function loadShakes({ force = false } = {}) {
+async function loadShakes() {
+  if (shakes) { drawShakes(shakes); return; }
   if (shakesInFlight) return;
-  const view = map.getBounds();
-  // Already asked about ground that contains this view: the answer for a
-  // rectangle inside one already fetched is the same answer.
-  if (!force && shakes && shakesCovered?.contains(view)) {
-    drawShakes(shakes);
-    return;
-  }
   shakesInFlight = true;
   const list = $('#seisShakeList');
-  if (list && !shakes) list.textContent = 'Asking…';
+  if (list) list.textContent = 'Asking…';
   try {
-    const asked = view.pad(MARGIN);
-    shakes = await api.shakes(askableBounds(map, MARGIN));
-    shakesCovered = asked;
+    shakes = await api.shakes();
     drawShakes(shakes);
   } catch (err) {
-    shakesCovered = null;
-    if (list && !shakes) list.textContent = `Could not be reached: ${err.message}`;
+    if (list) list.textContent = `Could not be reached: ${err.message}`;
     toast(`Raspberry Shakes: ${err.message}`, 'err');
   } finally {
     shakesInFlight = false;
@@ -452,43 +427,33 @@ async function loadShakes({ force = false } = {}) {
 }
 
 /**
- * Draw the Shakes, and name them in the panel.
+ * Draw the four Shakes, and name them in the panel.
  *
- * Named in a list as well as pinned, because the ones asked for by name are
- * in cities a reader is likely to be watching for other reasons. The list
- * also carries the link to Raspberry Shake's own viewer, which shows the live
- * helicorder this app plots on request.
- *
- * A Boom is drawn as a microphone rather than as another seismograph: it is
- * not measuring the ground at all. Same network, same panel, different
- * instrument, and a reader who cannot tell them apart will read a sonic boom
- * as an earthquake.
+ * Named in a list as well as pinned, because four is few enough to read and
+ * because two of them are in cities a reader is likely to be watching for
+ * other reasons. The list also carries the link to Raspberry Shake's own
+ * viewer, which shows the live helicorder this app plots on request.
  */
 function drawShakes(data) {
   shakeLayer.clearLayers();
   const rows = [];
   for (const s of data.stations ?? []) {
-    const air = s.kind === 'microphone';
     L.circleMarker([s.lat, s.lon], {
       renderer: shakeCanvas,
       radius: 5, weight: 1.6,
-      color: air ? MIC_COLOUR : SHAKE_COLOUR,
-      fillColor: '#1a0a11', fillOpacity: 0.85, opacity: 0.95,
+      color: SHAKE_COLOUR, fillColor: '#1a0a11', fillOpacity: 0.85, opacity: 0.95,
       interactive: false,
     }).addTo(shakeLayer);
     // A dot inside the ring, so a Shake and a station are told apart by shape
-    // as well as by colour. A microphone gets a wider, hollower middle: told
-    // apart from a Shake at a glance and still not mistakable for a station.
+    // as well as by colour.
     L.circleMarker([s.lat, s.lon], {
-      renderer: shakeCanvas, radius: air ? 2.6 : 1.5,
-      color: air ? MIC_EDGE : SHAKE_EDGE, weight: air ? 1.2 : 0,
-      fillColor: air ? MIC_EDGE : SHAKE_EDGE, fillOpacity: air ? 0.25 : 0.95,
+      renderer: shakeCanvas, radius: 1.5,
+      color: SHAKE_EDGE, weight: 0, fillColor: SHAKE_EDGE, fillOpacity: 0.95,
       interactive: false,
     }).addTo(shakeLayer);
 
     hitTarget([s.lat, s.lon], shakeCanvas)
-      .bindTooltip(`${s.place} · ${s.network}.${s.station}`
-                   + (air ? ' · infrasound' : ''),
+      .bindTooltip(`${s.place} · ${s.network}.${s.station}`,
                    { direction: 'top', offset: [0, -12] })
       .on('click', () => plotStation({ ...s, shake: true }))
       .addTo(shakeLayer);
@@ -496,14 +461,10 @@ function drawShakes(data) {
     rows.push(el('div', { class: 'seis-list-row' },
       el('button', {
         class: 'seis-link', type: 'button',
-        title: air
-          ? `Plot the last stretch of air pressure at ${s.station}`
-          : `Plot the last stretch of ground motion at ${s.station}`,
+        title: `Plot the last stretch of ground motion at ${s.station}`,
         onclick: () => plotStation({ ...s, shake: true }),
       }, s.place, el('span', { class: 'dim' }, ` ${s.station}`)),
       el('span', { class: 'seis-list-meta' },
-        // What it is, when it is not the geophone everything else here is.
-        air ? el('span', { class: 'seis-mic' }, 'mic') : null,
         // Marked only when the pin is the middle of a town rather than a
         // position for the instrument. The two look identical on a map.
         s.placed === 'town' ? el('span', { class: 'dim' }, 'town') : null,
@@ -522,28 +483,9 @@ function drawShakes(data) {
       list.append(el('div', { class: 'seis-hint' },
         `${said} Pins are on the towns.`));
     }
-    // What the rectangle turned up, said separately from the named list.
-    // "Four stations" over a coast where three of them are somewhere else
-    // entirely is not an answer about this coast.
-    if (data.searched) list.append(el('div', { class: 'seis-hint' }, foundHere(data)));
     list.append(el('div', { class: 'seis-note' },
       data.attribution ?? 'Raspberry Shake community network (AM)'));
   }
-}
-
-/** What the search over the current view found, in a line. */
-function foundHere(data) {
-  const here = data.in_view ?? 0;
-  if (!here) {
-    return 'None of this network in view — the list above is the named ones, '
-      + 'which are elsewhere.';
-  }
-  const mics = (data.stations ?? []).filter(
-    (s) => !s.asked_for && s.kind === 'microphone').length;
-  return `${here.toLocaleString()} in view`
-    + (data.capped ? ' (nearest shown)' : '')
-    + (mics ? `, ${mics} of them air microphones rather than seismographs` : '')
-    + '.';
 }
 
 // ── The trace ──────────────────────────────────────────────────
@@ -596,8 +538,7 @@ function plotStation(station, { redraw = false } = {}) {
       id,
       title: `${label} · ${station.channel}`,
       where: station.shake
-        ? `${station.kind === 'microphone' ? 'Raspberry Boom' : 'Raspberry Shake'}`
-          + ` · ${station.place}`
+        ? `Raspberry Shake · ${station.place}`
         : station.instrument || fmt.coord(station.lon, station.lat),
       body: plot,
       // A trace is wide and short, so bigger means wider rather than square.
@@ -642,37 +583,15 @@ const REDLINE = 'The red lines are where this window\u2019s own background '
   + 'door. Crossing one is not by itself an earthquake. Refreshes every '
   + 'minute while it is open.';
 
-/**
- * Where a Shake is, in a phrase.
- *
- * A station nobody named is labelled with its own position, and saying that
- * and then the coordinates again reads as two different places written out
- * one after the other: "in 48.974°N 2.322°E, 48.9735° N, 2.3225° E".
- */
-function whereItIs(station) {
-  const at = fmt.coord(station.lon, station.lat);
-  return station.named === false ? `at ${at}` : `in ${station.place}, ${at}`;
-}
-
 function footnote(station, span) {
-  if (station.shake && station.kind === 'microphone') {
-    // A Boom's trace is not a seismogram and must not be captioned as one.
-    // What crosses the line here is a pressure wave in the air: a blast, a
-    // sonic boom, thunder, a door. The ground may not have moved at all.
-    return `Last ${span} of air pressure at a Raspberry Boom ${whereItIs(station)}. `
-      + 'An infrasound microphone, not a seismograph: this is sound below '
-      + 'hearing — explosions, sonic booms, thunder, machinery — and not '
-      + `ground motion. ${REDLINE} `
-      + `${store.config.seismic?.shake ?? 'Raspberry Shake community network (AM)'}.`;
-  }
   if (station.shake) {
     // Said on every one of these traces rather than once in the panel,
     // because the window is what gets screenshotted and sent on, and a
     // seismogram with no instrument named beside it reads as a research
     // recording. The elevation is left out: it is whatever the station index
     // holds for a device in a building, which is not a surveyed figure.
-    return `Last ${span} of vertical ground motion at a Raspberry Shake `
-      + `${whereItIs(station)}`
+    return `Last ${span} of vertical ground motion at a Raspberry Shake in `
+      + `${station.place}, ${fmt.coord(station.lon, station.lat)}`
       + `${station.placed === 'town' ? ' (the town, not the instrument)' : ''}. `
       + 'A hobby seismograph indoors, not a research instrument: local noise — '
       + 'traffic, a door — shows up on it, so read it for timing rather than '

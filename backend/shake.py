@@ -34,8 +34,6 @@ held it, so asking them is a guaranteed round trip to nothing.
 
 from __future__ import annotations
 
-import datetime as dt
-import math
 import threading
 import time
 from typing import Any
@@ -88,20 +86,9 @@ SHAKES: tuple[dict[str, Any], ...] = (
      "lat": 24.4302849, "lon": 54.4478012, "given": True},
 )
 
-# What one of these can be asked for, best first.
-#
-# EHZ is the geophone every Shake has. SHZ is the same thing on the older
-# boards. ENZ is the accelerometer in a 4D, which hears a lorry rather than a
-# distant earthquake. HDF is the other instrument entirely: a Boom is a
-# barometer sampling fast enough to hear, and what it records is pressure in
-# the air rather than motion in the ground -- explosions, sonic booms, thunder,
-# machinery. It is a microphone, and it is listed as one.
-CHANNELS = ("EHZ", "SHZ", "ENZ", "HDF")
-MICROPHONE = "HDF"
-
-# Every named station above records the same way: a vertical geophone at 100
-# samples a second, on location 00. Written once rather than repeated per
-# station, so a fifth is a line rather than four.
+# Every one of them records the same way: a vertical geophone at 100 samples a
+# second, on location 00. Written once rather than repeated per station, so a
+# fifth is a line rather than four.
 LOCATION = "00"
 CHANNEL = "EHZ"
 
@@ -111,28 +98,10 @@ CHANNEL = "EHZ"
 PLACES_SECONDS = 12 * 3600
 PLACES_TIMEOUT = 20
 
-# How many of them a rectangle may come back with, and how long that answer is
-# kept. The limit is not politeness to the index -- it is that a thousand dots
-# over a European city is a smear rather than a map, and the nearest sixty to
-# the middle of the view are the ones somebody is looking at.
-NEARBY_LIMIT = 60
-NEARBY_SECONDS = 30 * 60
-NEARBY_TIMEOUT = 25
-# How many rectangles are remembered at once. Panning a map makes a new one
-# every time, and without a ceiling this would grow for as long as the process
-# lives.
-NEARBY_BOXES = 24
-
-# An owner's own description of their station. Kept because "Muscat rooftop"
-# says more than any coordinate, and cut short because it is free text from a
-# stranger and the panel has a column, not a paragraph.
-NAME_LIMIT = 48
-
 _lock = threading.Lock()
 _placed: dict[str, dict[str, float]] = {}
 _placed_at = 0.0
 _trouble = ""
-_boxes: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 class ShakeError(RuntimeError):
@@ -144,7 +113,6 @@ def forget() -> None:
     global _placed_at, _trouble
     with _lock:
         _placed.clear()
-        _boxes.clear()
         _placed_at = 0.0
         _trouble = ""
 
@@ -228,210 +196,11 @@ def places(refresh: bool = False,
         return dict(_placed), _trouble
 
 
-def read_channels(text: str) -> dict[str, dict[str, Any]]:
-    """One entry per station out of a channel-level FDSN reply.
-
-    A station answers with a row per channel, and often several instrument
-    generations of each. They are one dot on the map, so the rows are folded
-    together: the position off the first of them, every channel kept so the
-    panel can say what the thing actually is, and the best one chosen for the
-    trace button.
-
-    Rows for an instrument that has been switched off are dropped here rather
-    than asked about in the query. `endafter` is in the standard and the
-    federated nodes honour it, but a filter written down the wire is a filter
-    this cannot test, and a station that stopped recording in 2019 has no
-    live trace to draw.
-    """
-    out: dict[str, dict[str, Any]] = {}
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) < 8:
-            continue
-        net, code, loc, cha = parts[0], parts[1], parts[2], parts[3]
-        if not ours(net) or not code:
-            continue
-        try:
-            lat, lon = float(parts[4]), float(parts[5])
-        except ValueError:
-            continue
-        # 0,0 is where a station with no position set lands, and it is in the
-        # Atlantic. Better no dot than a dot off Ghana.
-        if lat == 0.0 and lon == 0.0:
-            continue
-        if not still_running(parts[16] if len(parts) > 16 else ""):
-            continue
-        entry = out.setdefault(code, {
-            "code": code, "lat": lat, "lon": lon,
-            "elevation_m": _number(parts[6]) if len(parts) > 6 else None,
-            "channels": [], "channel": cha, "loc": loc,
-        })
-        if cha not in entry["channels"]:
-            entry["channels"].append(cha)
-        if _rank(cha) < _rank(entry["channel"]):
-            entry["channel"], entry["loc"] = cha, loc
-    return out
-
-
-def _rank(channel: str) -> int:
-    return (CHANNELS.index(channel) if channel in CHANNELS else len(CHANNELS))
-
-
-def still_running(ended: str) -> bool:
-    """Whether a channel row is for an instrument that has not been retired.
-
-    An empty end time means open-ended, which is the usual case for something
-    sitting in a living room. Anything unparseable is kept: a station is not
-    written off over a date this could not read.
-    """
-    said = (ended or "").strip()
-    if not said:
-        return True
-    try:
-        when = dt.datetime.fromisoformat(said.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=dt.timezone.utc)
-    return when > dt.datetime.now(dt.timezone.utc)
-
-
-def read_names(text: str) -> dict[str, str]:
-    """What each station's owner called it, out of a station-level reply.
-
-    Free text from a stranger, so it is cut to a column's worth and otherwise
-    left alone -- it is shown as a text node, never as markup.
-    """
-    out: dict[str, str] = {}
-    for code, found in read_places(text).items():
-        name = " ".join(str(found.get("name") or "").split())[:NAME_LIMIT]
-        if name:
-            out[code] = name
-    return out
-
-
-def nearby(box: tuple[float, float, float, float],
-           refresh: bool = False, get: Any = None) -> dict[str, Any]:
-    """Every Shake and Boom inside a rectangle, from the AM index.
-
-    The named list above is a decision; this is a question. Most of this
-    network is nowhere near anything that was asked for by name, and the only
-    way to know what is watching a given coast is to ask what is there --
-    which is the same thing the professional panel next door does, against a
-    different index.
-
-    Never raises. A rectangle the index would not answer for comes back empty
-    with the reason attached, because the named stations are still worth
-    drawing and a panel that throws loses them too.
-    """
-    west, south, east, north = box
-    key = f"{west:.2f},{south:.2f},{east:.2f},{north:.2f}"
-    with _lock:
-        held = _boxes.get(key)
-        if held and not refresh and time.time() - held[0] < NEARBY_SECONDS:
-            return dict(held[1])
-
-    where = {
-        "net": NETWORK,
-        "minlatitude": max(south, -90.0), "maxlatitude": min(north, 90.0),
-        "minlongitude": west, "maxlongitude": east,
-        "format": "text", "nodata": "204",
-    }
-    text, trouble = _ask({**where, "level": "channel",
-                          "cha": ",".join(CHANNELS)}, get)
-    found = read_channels(text)
-    # Names are worth having and not worth failing over: a list of codes is a
-    # usable panel, and a second request that went wrong must not empty the
-    # first one.
-    names = read_names(_ask({**where, "level": "station"}, get)[0]) if found else {}
-
-    middle = ((west + east) / 2, (south + north) / 2)
-    order = sorted(found.values(),
-                   key=lambda s: math.hypot(s["lon"] - middle[0],
-                                            s["lat"] - middle[1]))
-    answer = {
-        "stations": [_discovered(s, names.get(s["code"], ""))
-                     for s in order[:NEARBY_LIMIT]],
-        "count": len(order),
-        "capped": len(order) > NEARBY_LIMIT,
-        "trouble": trouble,
-    }
-    with _lock:
-        if len(_boxes) >= NEARBY_BOXES:
-            _boxes.pop(min(_boxes, key=lambda k: _boxes[k][0]), None)
-        _boxes[key] = (time.time(), answer)
-    return dict(answer)
-
-
-def _discovered(found: dict[str, Any], name: str) -> dict[str, Any]:
-    """One station off the index, in the shape the panel draws."""
-    channel = found["channel"]
-    return {
-        "network": NETWORK,
-        "station": found["code"],
-        # Its owner's description if it has one, and otherwise where it is.
-        # Not a town: this app has no offline gazetteer, and guessing the
-        # nearest city from a coordinate is how a Shake in Seeb gets labelled
-        # Muscat and then quoted as though somebody had checked.
-        "place": name or _position(found["lat"], found["lon"]),
-        "named": bool(name),
-        "loc": found["loc"],
-        "channel": channel,
-        "channels": list(found["channels"]),
-        # Which instrument the trace button will draw from. A Boom is not a
-        # seismograph and its trace is not ground motion.
-        "kind": "microphone" if channel == MICROPHONE else "seismograph",
-        "hears_air": MICROPHONE in found["channels"],
-        "lat": found["lat"],
-        "lon": found["lon"],
-        "elevation_m": found["elevation_m"],
-        "placed": "station",
-        "asked_for": False,
-        "view": VIEW_URL.format(net=NETWORK, code=found["code"],
-                                loc=found["loc"], channel=channel),
-    }
-
-
-def _position(lat: float, lon: float) -> str:
-    return (f"{abs(lat):.3f}°{'N' if lat >= 0 else 'S'} "
-            f"{abs(lon):.3f}°{'E' if lon >= 0 else 'W'}")
-
-
-def _ask(params: dict[str, Any], get: Any = None) -> tuple[str, str]:
-    """One request to the AM station index. Never raises."""
-    send = get or requests.get
-    try:
-        resp = send(STATION_URL, params=params, timeout=NEARBY_TIMEOUT,
-                    headers={"User-Agent": config.USER_AGENT})
-    except requests.RequestException as exc:
-        return "", ("Raspberry Shake's station index could not be reached: "
-                    f"{why(exc)}")
-    # A 204 needs no branch of its own. It is the index saying there are none
-    # inside this rectangle, it is a success as far as the response is
-    # concerned, and it arrives with an empty body -- which falls through to
-    # an empty answer with nothing to report, which is exactly right. That is
-    # what `nodata=204` in the query is for: the alternative, 404, would have
-    # to be told apart from a genuine one.
-    if not getattr(resp, "ok", False):
-        return "", ("Raspberry Shake's station index answered "
-                    f"{getattr(resp, 'status_code', '?')}")
-    return getattr(resp, "text", "") or "", ""
-
-
-def stations(refresh: bool = False, get: Any = None,
-             box: tuple[float, float, float, float] | None = None) -> dict[str, Any]:
-    """The Shakes the panel draws: the named ones, and what is in view.
+def stations(refresh: bool = False, get: Any = None) -> dict[str, Any]:
+    """The four Shakes, as the panel draws them.
 
     Each carries where it is, whether that position is the instrument's own or
     the town it is in, and what to ask for to plot it.
-
-    The named ones are always in the answer, wherever the map happens to be
-    looking. They were asked for by name because somebody is watching those
-    places, and a list that emptied itself when the map moved would be a list
-    that is only ever right by accident.
     """
     found, trouble = places(refresh=refresh, get=get)
     out = []
@@ -452,78 +221,30 @@ def stations(refresh: bool = False, get: Any = None,
             # look identical as a pin and are three different claims.
             "placed": ("station" if real.get("lat") is not None
                        else "given" if shake.get("given") else "town"),
-            "kind": "seismograph",
-            "channels": [CHANNEL],
-            "hears_air": False,
-            "asked_for": True,
-            "named": True,
             "view": VIEW_URL.format(net=NETWORK, code=shake["code"],
                                     loc=LOCATION, channel=CHANNEL),
         })
-
-    in_view: dict[str, Any] = {"stations": [], "count": 0, "capped": False,
-                               "trouble": ""}
-    if box is not None:
-        in_view = nearby(box, refresh=refresh, get=get)
-        seen = {s["station"] for s in out}
-        out.extend(s for s in in_view["stations"] if s["station"] not in seen)
-
-    # One trouble line, not two. Both halves ask the same index, so when it is
-    # down they fail together and saying it twice reads like two faults.
-    said = trouble or in_view["trouble"]
     return {
         "stations": out,
         "network": NETWORK,
         "channel": CHANNEL,
-        "in_view": in_view["count"],
-        "capped": in_view["capped"],
-        "searched": box is not None,
-        "microphones": sum(1 for s in out if s["kind"] == "microphone"),
         "source": ATTRIBUTION,
         "attribution": ATTRIBUTION,
-        "trouble": said,
+        "trouble": trouble,
         "about": ("Hobby seismographs, not research instruments: a geophone on "
                   "somebody's floor. A door closing registers on one. They are "
-                  "here because they are where the federated networks are not. "
-                  "Some are Booms instead: a microphone for the air rather "
-                  "than the ground."),
+                  "here because they are where the federated networks are not."),
     }
 
 
-def demo_stations(box: tuple[float, float, float, float] | None = None) -> dict[str, Any]:
-    """The named ones on their towns, without asking anybody.
+def demo_stations() -> dict[str, Any]:
+    """The same four, on their towns, without asking anybody.
 
     The stations are named in the source rather than looked up, so the offline
     panel is the real one with the pins a shade less precise -- which is
     exactly what the live panel shows until the station index answers.
-
-    A rectangle gets a few synthetic neighbours inside it, one of them a Boom.
-    Not decoration: the offline build is where this panel gets looked at
-    without a network, and a search that always comes back empty there cannot
-    be told apart from a search that is broken.
     """
     out = stations(get=_nobody)
-    if box is not None:
-        west, south, east, north = box
-        seen = {s["station"] for s in out["stations"]}
-        made = []
-        for i, (dx, dy, channel) in enumerate((
-                (0.35, 0.40, "EHZ"), (0.62, 0.30, "EHZ"), (0.48, 0.66, "HDF"))):
-            code = f"R{(abs(int((west + south) * 97)) + i) % 9973:04X}"
-            if code in seen:
-                continue
-            made.append(_discovered({
-                "code": code,
-                "lat": round(south + (north - south) * dy, 4),
-                "lon": round(west + (east - west) * dx, 4),
-                "elevation_m": 20 + i * 15,
-                "channels": [channel], "channel": channel, "loc": LOCATION,
-            }, ""))
-        out["stations"].extend(made)
-        out["in_view"] = len(made)
-        out["searched"] = True
-        out["microphones"] = sum(1 for s in out["stations"]
-                                 if s["kind"] == "microphone")
     out["demo"] = True
     out["trouble"] = ""
     return out
