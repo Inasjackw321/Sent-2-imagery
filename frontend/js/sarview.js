@@ -56,6 +56,55 @@ export function canMake(spec, have) {
   return true;
 }
 
+// ── Comparing two passes ───────────────────────────────────────
+//
+// A change render subtracts one pass from the other, and the two sentences
+// about it -- before, on the button, and after, over the picture -- are the
+// only things on screen that say it is not an average. Both live here, as
+// functions of their arguments, so they can be read back in a test rather
+// than matched as text in the panel: a branch turned off still contains the
+// words, and a test that only greps for them passes over a dead one.
+
+/** Whole days between two scenes, however their dates were written. */
+function daysApart(a, b) {
+  const one = Date.parse(`${String(a ?? '').slice(0, 10)}T00:00:00Z`);
+  const two = Date.parse(`${String(b ?? '').slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(one) || Number.isNaN(two)) return null;
+  return Math.abs(Math.round((one - two) / 86400000));
+}
+
+/** The line above the button: what pressing it would compare. */
+export function changePlan(dates, px) {
+  if (dates.length !== 2) {
+    return `Tick exactly two passes — <b>${dates.length} ticked</b>.`;
+  }
+  const apart = daysApart(dates[0].date, dates[1].date);
+  return [`<b>2 passes</b>`, px, apart != null ? `${apart} days apart` : '',
+          'what changed between them, in decibels'].filter(Boolean).join(' · ');
+}
+
+/**
+ * The line over the picture: what actually came back.
+ *
+ * How much of the frame moved is the headline. A change picture that is a
+ * pale wash could be a quiet fortnight or a render that failed, and they look
+ * the same -- the percentage is what tells them apart. It is said with the
+ * threshold it was measured against, because a bare percentage of "moved" is
+ * not a measurement of anything.
+ */
+export function changeSaid(meta, showDate = (d) => d) {
+  const ch = meta?.change;
+  if (!ch) return '';
+  const when = ch.days != null ? `over ${ch.days} days ` : '';
+  const which = ch.older && ch.newer
+    ? `(${showDate(ch.older)} → ${showDate(ch.newer)}) ` : '';
+  const moved = ch.moved_pct != null
+    ? `— ${ch.moved_pct}% of it moved by over ${ch.moved_above_db} dB `
+    : '';
+  return `${String(ch.band ?? '').toUpperCase()} change ${when}${which}${moved}`
+    .trim();
+}
+
 /** What the pass was, for the panel under the picture. */
 export function sarSaid(meta) {
   const said = meta?.sar;

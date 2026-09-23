@@ -442,6 +442,16 @@ def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:
         elif name == "radar_ratio":
             # Already in decibels, so subtracting is dividing.
             out = b["vv"] - b["vh"]
+        elif name == "rvi":
+            # In power. The bands arrive as decibels, which are its logarithm,
+            # and a fraction of returned energy has to be worked out in the
+            # energy. The unknown gain this product carries is the same
+            # multiplier on both channels and divides out of the ratio.
+            vh = from_decibels(b["vh"])
+            vv = from_decibels(b["vv"])
+            out = np.clip(4.0 * vh / np.maximum(vv + vh, 1e-12), 0.0, 1.0)
+        elif name == "radar_texture":
+            out = roughness(b["vv"])
         elif name == "evi":
             num = b["nir"] - b["red"]
             den = b["nir"] + 6.0 * b["red"] - 7.5 * b["blue"] + 1.0
@@ -455,23 +465,75 @@ def compute_index(bands: dict, name: str) -> np.ma.MaskedArray:
     return np.ma.masked_array(np.ma.filled(out, 0.0), mask=np.ma.getmaskarray(out))
 
 
+# How wide a neighbourhood the texture index looks at.
+#
+# Five pixels is fifty metres on Sentinel-1's grid, which is a building and
+# its yard rather than a district. Wider smears a town's edge out over half a
+# field; narrower measures speckle, which is present everywhere in equal
+# measure and would make the whole scene read as rough.
+TEXTURE_PIXELS = 5
+
+
+def roughness(values: np.ma.MaskedArray, size: int = TEXTURE_PIXELS
+              ) -> np.ma.MaskedArray:
+    """How much the brightness varies within a few pixels, in decibels.
+
+    The standard deviation of a small neighbourhood, worked out as the square
+    root of the mean of the squares less the square of the mean -- which is
+    two box filters rather than a pass per pixel, and is what makes this
+    affordable on a full scene.
+
+    Masked pixels are held out of both filters rather than filled with a
+    number, because a zero at the edge of a swath is not a dark pixel and
+    would draw a false wall of texture along it.
+    """
+    data = np.ma.filled(values.astype("float64"), 0.0)
+    good = (~np.ma.getmaskarray(values)).astype("float64")
+    seen = ndimage.uniform_filter(good, size=size, mode="nearest")
+    mean = ndimage.uniform_filter(data * good, size=size, mode="nearest")
+    squares = ndimage.uniform_filter(data * data * good, size=size, mode="nearest")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean = mean / np.maximum(seen, 1e-6)
+        squares = squares / np.maximum(seen, 1e-6)
+    spread = np.sqrt(np.maximum(squares - mean * mean, 0.0))
+    # A neighbourhood with almost nothing in it says nothing about texture.
+    thin = seen < 0.35
+    return np.ma.masked_array(
+        spread.astype("float32"),
+        mask=np.ma.getmaskarray(values) | thin)
+
+
 def render_index(index: np.ma.MaskedArray, name: str, opts: dict):
     spec = config.INDICES[name]
+    return render_ramp(index, spec["label"], spec["range"], spec["colormap"],
+                       opts)
+
+
+def render_ramp(values: np.ma.MaskedArray, label: str,
+                span: "tuple[float, float] | list[float]", cmap: str,
+                opts: dict | None = None):
+    """A measured layer as a coloured picture, with the key to read it by.
+
+    Shared by the indices and by the change between two passes, which are the
+    same job -- one number per pixel, a ramp, and a legend saying what the
+    colours mean -- and were briefly two copies of it.
+    """
+    opts = opts or {}
     vmin = opts.get("index_min")
     vmax = opts.get("index_max")
     if vmin is None or vmax is None:
-        vmin, vmax = spec["range"]
+        vmin, vmax = span
     vmin, vmax = float(vmin), float(vmax)
-    norm = np.clip((np.ma.filled(index, vmin) - vmin) / max(vmax - vmin, 1e-6), 0, 1)
-    cmap = opts.get("colormap") or spec["colormap"]
+    norm = np.clip((np.ma.filled(values, vmin) - vmin) / max(vmax - vmin, 1e-6), 0, 1)
+    cmap = opts.get("colormap") or cmap
     rgb = apply_colormap(norm, cmap)
-    valid = ~np.ma.getmaskarray(index)
+    valid = ~np.ma.getmaskarray(values)
     legend = {
         "type": "continuous",
         "colormap": cmap,
         "vmin": vmin,
         "vmax": vmax,
-        "label": spec["label"],
+        "label": label,
         "stops": [
             {"pos": p, "color": _hex(colormap_lut(cmap)[int(p * 255)])}
             for p in (0.0, 0.25, 0.5, 0.75, 1.0)

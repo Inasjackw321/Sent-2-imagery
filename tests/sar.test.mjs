@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { canMake, sarLabel, sarPolarisations, sarSaid }
+import { canMake, changePlan, changeSaid, sarLabel, sarPolarisations, sarSaid }
   from '../frontend/js/sarview.js';
 
 const LAND = { satellite: 'sentinel-1', polarisations: ['VV', 'VH'],
@@ -149,7 +149,7 @@ const PANEL = readFileSync(
 
 test('the picker lists only what the chosen pass can draw', () => {
   const at = PANEL.indexOf('function buildVisualisationOptions');
-  const block = PANEL.slice(at, at + 1600);
+  const block = PANEL.slice(at, PANEL.indexOf('\n}\n', at));
   assert.match(block, /sarPolarisations\(chosenScene\(\)\)/);
   assert.match(block, /if \(pol\.size && !canMake\(spec, pol\)\) continue;/);
 });
@@ -158,14 +158,18 @@ test('and nothing is hidden when the pass is not known either way', () => {
   // pol.size guards it. Without that, a scene list whose properties have not
   // arrived would show an empty picker, which looks exactly like a broken app.
   const at = PANEL.indexOf('function buildVisualisationOptions');
-  assert.match(PANEL.slice(at, at + 1600), /pol\.size &&/);
+  assert.match(PANEL.slice(at, PANEL.indexOf('\n}\n', at)), /pol\.size &&/);
 });
 
 test('the fallback lands on a picture that is on the list', () => {
   // Falling through to the satellite's default would put an HH pass back on
   // a VV picture, which is the failure this whole change is about.
   const at = PANEL.indexOf('function buildVisualisationOptions');
-  const block = PANEL.slice(at, at + 2200);
+  // To the end of the function rather than a fixed number of
+  // characters from its start: a line added inside it used to push the
+  // line being looked for out of the window, and the test then failed
+  // for a reason that had nothing to do with what it checks.
+  const block = PANEL.slice(at, PANEL.indexOf('\n}\n', at));
   assert.match(block, /compGroup\.firstElementChild\?\.value/);
 });
 
@@ -199,6 +203,96 @@ test('the picture list is rebuilt from one place, not per call site', () => {
   assert.ok(at > 0, 'sync() should exist');
   assert.match(PANEL.slice(at, PANEL.indexOf('\n}\n', at)),
                /buildVisualisationOptions\(\);/);
+});
+
+// ── Comparing two passes ───────────────────────────────────────
+
+test('a change is offered for radar, and only where two dates can be ticked', () => {
+  const at = PANEL.indexOf('function buildVisualisationOptions');
+  const block = PANEL.slice(at, PANEL.indexOf('\n}\n', at));
+  assert.match(block, /sat\.kind === 'radar' && mode === 'merge'/);
+  assert.match(block, /value: 'change:pair'/);
+});
+
+test('the button says it is comparing, not averaging', () => {
+  // A change render subtracts one pass from the other. A button reading
+  // "Average 2 radar passes" over it is describing a different picture.
+  const at = PANEL.indexOf('function sync() {');
+  const block = PANEL.slice(at, PANEL.indexOf('\n}\n', at));
+  assert.match(block, /'Compare these two passes'/);
+  assert.match(block, /Tick exactly two passes/);
+});
+
+test('and it is pressable only on exactly two', () => {
+  // Not "at least two": three passes have no single before and after.
+  const at = PANEL.indexOf('function sync() {');
+  assert.match(PANEL.slice(at, PANEL.indexOf('\n}\n', at)),
+               /comparing\s*\?\s*dates\.length === 2/);
+});
+
+test('the line above the button says how far apart the two passes are', () => {
+  const said = changePlan([{ date: '2026-09-23' }, { date: '2026-09-11' }],
+                          '1024 px');
+  assert.match(said, /12 days apart/);
+  assert.match(said, /decibels/);
+  // Nothing is averaged in a change, so none of the merge wording is true
+  // of it.
+  assert.doesNotMatch(said, /speckle|merge|average/i);
+  // Whichever way round the list is scrolled. Ticking upwards used to read
+  // "-12 days apart", which is not a distance.
+  assert.equal(changePlan([{ date: '2026-09-11' }, { date: '2026-09-23' }],
+                          '1024 px'), said);
+});
+
+test('and counts what is ticked while it is the wrong number', () => {
+  assert.match(changePlan([{ date: '2026-09-23' }], '1024 px'),
+               /Tick exactly two passes — <b>1 ticked<\/b>/);
+  assert.match(changePlan([], '1024 px'), /<b>0 ticked<\/b>/);
+  assert.match(changePlan([{ date: 'a' }, { date: 'b' }, { date: 'c' }],
+                          '1024 px'), /<b>3 ticked<\/b>/);
+});
+
+test('a date it cannot read costs the gap, not the line', () => {
+  const said = changePlan([{ date: '2026-09-23' }, {}], '1024 px');
+  assert.doesNotMatch(said, /NaN|undefined|null/);
+  assert.match(said, /decibels/);
+});
+
+test('what came back is reported as a comparison', () => {
+  // The headline of a change picture is how much of it moved: a pale wash
+  // is a quiet fortnight or a broken render, and they look identical.
+  const said = changeSaid({ change: { older: '2026-09-11', newer: '2026-09-23',
+                                      days: 12, band: 'vv', moved_pct: 15.86,
+                                      moved_above_db: 3.0 } });
+  assert.match(said, /^VV change/);
+  assert.match(said, /over 12 days/);
+  assert.match(said, /2026-09-11 → 2026-09-23/);
+  // With the threshold said, so the percentage can be read rather than
+  // guessed at.
+  assert.match(said, /15\.86% of it moved by over 3 dB/);
+});
+
+test('and the dates are shown the way the rest of the app shows them', () => {
+  const said = changeSaid({ change: { older: '2026-09-11', newer: '2026-09-23',
+                                      days: 12, band: 'vv' } },
+                          (d) => `[${d}]`);
+  assert.match(said, /\[2026-09-11\] → \[2026-09-23\]/);
+});
+
+test('an ordinary render is not described as a change', () => {
+  assert.equal(changeSaid({ scenes: [1, 2], source: { kind: 'radar' } }), '');
+  assert.equal(changeSaid({}), '');
+  assert.equal(changeSaid(null), '');
+});
+
+test('a change is not reported as an average of its two passes', () => {
+  // describeResult has an earlier branch for several radar passes, and a
+  // change arrives with exactly that shape.
+  const at = PANEL.indexOf('function describeResult(');
+  const block = PANEL.slice(at, PANEL.indexOf('\n}\n', at));
+  assert.ok(block.indexOf('meta.change') > 0
+            && block.indexOf('meta.change') < block.indexOf('radar passes averaged'),
+            'a change must be answered before the averaging line');
 });
 
 test('and every path that changes the chosen pass goes through it', () => {

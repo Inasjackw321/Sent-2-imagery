@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import threading
@@ -57,7 +58,29 @@ def _named(keys: list[str]) -> str:
     return " or ".join([", ".join(names[:-1]), names[-1]])
 
 
-def _needed_bands(mode: str, preset: str, index: str, sat: dict) -> list[str]:
+def change_band(scenes: list[dict]) -> str:
+    """Which channel two passes are compared in.
+
+    The co-polarised one -- VV over land, HH over ice and ocean -- because it
+    carries most of the return and sits furthest above the instrument's noise
+    floor. A difference taken in the crossed channel over water would be a
+    difference of two noise floors.
+    """
+    carried = [set(sar.polarisations(s)) for s in scenes]
+    for band in config.CHANGE["bands"]:
+        want = config.BAND_POLARISATION[band]
+        if all(not pol or want in pol for pol in carried):
+            return band
+    pairs = " and ".join(sorted(sar.pair_of(p) or "unknown" for p in carried))
+    raise RenderError(
+        f"These two passes have no channel in common ({pairs}), so there is "
+        "nothing to compare between them.")
+
+
+def _needed_bands(mode: str, preset: str, index: str, sat: dict,
+                  scenes: list[dict] | None = None) -> list[str]:
+    if mode == "change":
+        return [change_band(scenes or [])]
     if mode == "index":
         spec = config.INDICES.get(index)
         if not spec:
@@ -234,6 +257,50 @@ def _gather(scenes: list[dict], geometry, grid, names, req, sat=None):
     return merged, cloud_fraction, report, None, grid
 
 
+def change_pair(scenes: list[dict], geometry, grid, req: dict):
+    """Two passes, and what is different between them. Returns (dB, band, pair).
+
+    The difference in decibels, newer less older, one number per pixel. In
+    decibels because backscatter spans six orders of magnitude and the
+    question is "how many times brighter", which on a logarithmic scale is a
+    subtraction; done in linear power, the bright half of the scene would
+    swamp every change in the dark half.
+
+    REFUSED rather than drawn where the two passes are not comparable, which
+    is the one place in this app where a render says no. Everywhere else a
+    mismatch is said out loud and the picture is drawn anyway, because
+    somebody may want the average and being told is enough. Not here: the
+    difference between an ascending and a descending pass, or between two
+    tracks, is a picture of the terrain and the geometry rather than of
+    anything that happened. Every hillside is a change and nothing that
+    changed stands out of them. There is no reading of that image that is
+    worth having, so it is not offered.
+    """
+    if len(scenes) != 2:
+        raise RenderError(
+            f"A change needs exactly two passes; {len(scenes)} "
+            f"{'was' if len(scenes) == 1 else 'were'} chosen.")
+    older, newer = sorted(scenes, key=lambda s: s.get("datetime") or s.get("date") or "")
+    if not sar.comparable(older, newer):
+        raise RenderError(
+            "These two passes cannot be subtracted: "
+            f"{sar.label(older)} against {sar.label(newer)}. Radar brightness "
+            "depends on the angle the pulse arrives at, so a difference "
+            "between two geometries is a picture of the hills rather than of "
+            "what changed. Pick two dates on the same track and direction.")
+
+    band = change_band([older, newer])
+    first, _ = load_bands(older, geometry, grid, [band], req)
+    second, _ = load_bands(newer, geometry, grid, [band], req)
+    # Masked in either pass is masked in the difference: a pixel one of them
+    # did not see has no difference to state, and filling it would draw the
+    # edge of a swath as a change.
+    out = second[band] - first[band]
+    return (np.ma.masked_array(np.ma.filled(out, 0.0),
+                               mask=np.ma.getmaskarray(out)),
+            band, (older, newer))
+
+
 def _enhance_bands(bands: dict, req: dict, applied: list[str],
                    optical: bool = True) -> dict:
     """Corrections that belong in reflectance, before any stretch."""
@@ -318,7 +385,7 @@ def render(req: dict) -> dict:
         sar.default_composite(scenes[0]) if sat["kind"] == "radar"
         else sat["default_composite"])
     index_name = req.get("index") or ("radar_ratio" if sat["kind"] == "radar" else "ndvi")
-    names = _needed_bands(mode, preset, index_name, sat)
+    names = _needed_bands(mode, preset, index_name, sat, scenes)
     # Checked here, against the scene, rather than discovered as a missing
     # asset four layers down. "This pass is HH+HV; radar colour needs VV" is
     # something a reader can act on; "Scene S1A_... has no vv asset" is not.
@@ -343,9 +410,30 @@ def render(req: dict) -> dict:
                 f" could not be drawn — shown as"
                 f" {config.COMPOSITES.get(instead, {}).get('label', instead)}.")
             preset = instead
-            names = _needed_bands(mode, preset, index_name, sat)
+            names = _needed_bands(mode, preset, index_name, sat, scenes)
 
     applied: list[str] = []
+
+    # Two passes and the difference between them, which is neither a picture
+    # of one date nor an average of several. It does not go through _gather
+    # at all: that exists to fold several dates into one, and folding is the
+    # opposite of what this asks for -- the two have to stay apart to be
+    # subtracted.
+    if mode == "change":
+        change, change_band_name, pair = change_pair(scenes, geometry, grid, req)
+        rgb, valid, legend = composite.render_ramp(
+            change, f"{config.CHANGE['label']} · {change_band_name.upper()}",
+            config.CHANGE["range"], config.CHANGE["colormap"], req)
+        if not valid.any():
+            raise RenderError(
+                "Neither pass covers this area — a radar swath is a slanted "
+                "strip, so a catalogue can offer a date whose bounding box "
+                "includes your shape while the strip itself misses it.")
+        applied.append(f"{pair[1].get('date')} less {pair[0].get('date')}, "
+                       f"in {change_band_name.upper()}")
+        return _change_result(change, rgb, valid, legend, pair, change_band_name,
+                              grid, geometry, sat, req, applied)
+
     bands, cloud_fraction, composite_report, sr_report, grid = _gather(
         scenes, geometry, grid, names, req, sat)
     if sr_report:
@@ -436,6 +524,96 @@ def render(req: dict) -> dict:
         "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
         "scene_area_km2": round(grid.width * grid.height * pixel_area / 1e6, 4),
         "demo": bool(scenes[0].get("demo")),
+    }
+    return {"bytes": payload, "media_type": media, "meta": meta}
+
+
+def _change_result(change, rgb, valid, legend, pair, band, grid, geometry,
+                   sat, req, applied) -> dict:
+    """The answer for a change render, in the shape every other render has.
+
+    Its own function because a change has its own things to say -- which two
+    dates, in which channel, how much of the frame moved -- and threading
+    those through the shared metadata as a pile of Nones would make the
+    ordinary path harder to read for the sake of this one.
+    """
+    older, newer = pair
+    rgba = composite.to_rgba(rgb, valid)
+    fmt = req.get("format", "png")
+    if fmt == "geotiff":
+        payload, media = composite.encode_geotiff(rgba, grid), "image/tiff"
+    elif fmt == "float_geotiff":
+        # The decibels themselves, for anybody who wants to measure rather
+        # than look. The picture is a ramp over them and throws the number
+        # away.
+        payload, media = composite.encode_float_geotiff(change, grid), "image/tiff"
+    elif fmt == "jpeg":
+        payload, media = composite.encode_jpeg(rgba), "image/jpeg"
+    else:
+        payload, media = composite.encode_png(rgba), "image/png"
+
+    span = config.CHANGE["range"][1]
+    moved = float((np.abs(np.ma.filled(change, 0.0)) > span / 2)[valid].mean()) \
+        if valid.any() else 0.0
+    days = None
+    try:
+        days = abs((dt.date.fromisoformat(str(newer.get("date"))[:10])
+                    - dt.date.fromisoformat(str(older.get("date"))[:10])).days)
+    except (TypeError, ValueError):
+        pass
+
+    meta = {
+        "scene": {k: v for k, v in newer.items() if k != "assets"},
+        "scenes": [{"id": s["id"], "date": s.get("date"), "cloud": s.get("cloud")}
+                   for s in (older, newer)],
+        "satellite": sat["key"],
+        "source": satellite_meta(sat["key"], newer.get("source")),
+        "grid": grid.as_dict(),
+        "mode": "change",
+        "preset": None,
+        "index": None,
+        "label": f"{config.CHANGE['label']} · {band.upper()}",
+        "bands": [band],
+        "band_labels": [config.BANDS[band]["label"]],
+        "sar": sar.describe(newer),
+        # Nothing to warn about: a change between passes that are not
+        # comparable is refused outright in change_pair, so by here they are.
+        "sar_merge": "",
+        "sar_swapped": "",
+        "stretch": None,
+        "legend": legend,
+        "stats": composite.array_stats(change),
+        "histogram": composite.histogram(change, span=config.CHANGE["range"]),
+        "enhancements": applied,
+        "composite_report": None,
+        "superres": None,
+        # What the two dates were and how far apart, because "brighter than
+        # before" means nothing without "before when".
+        "change": {
+            "older": older.get("date"),
+            "newer": newer.get("date"),
+            "days": days,
+            "band": band,
+            "hint": config.CHANGE["hint"],
+            # How much of the frame moved by more than half the ramp. Speckle
+            # alone will not do that, so it is a fair headline number -- and
+            # it is what somebody watching one town wants to know before
+            # looking at anything else.
+            "moved_pct": round(moved * 100, 2),
+            # And what "moved" meant, so the figure can be read rather than
+            # trusted. It is off the fixed ramp, not off the slider: a person
+            # widening the scale is changing what they can see, not what
+            # counts as a change.
+            "moved_above_db": span / 2,
+        },
+        "native_res_m": sat["resolution"],
+        "effective_res_m": sat["resolution"],
+        "cloud_masked_pct": 0.0,
+        "valid_pct": round(float(valid.mean()) * 100, 2),
+        "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
+        "scene_area_km2": round(
+            grid.width * grid.height * grid.ground_res_m ** 2 / 1e6, 4),
+        "demo": bool(newer.get("demo")),
     }
     return {"bytes": payload, "media_type": media, "meta": meta}
 

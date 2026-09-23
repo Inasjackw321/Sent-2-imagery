@@ -509,6 +509,35 @@ COMPOSITES = {
         "from_db": True,
         "db_windows": [("x", 6.0)] * 3,
     },
+    # Only the very brightest things in the scene, over black.
+    #
+    # A ship on open water is the easiest target radar has: metal meeting
+    # water makes a corner reflector, which sends the pulse straight back, and
+    # it lands tens of decibels above the sea around it. The ordinary views
+    # stretch from the scene's own median, so a vessel is a white dot in a
+    # picture full of other white things -- towns, pylons, bare rock.
+    #
+    # This one puts the median at a fiftieth of full scale. Everything
+    # ordinary goes black; what is left standing is metal, or a corner, or
+    # rock face angled at the satellite. It is the view to use with the ships
+    # layer on: AIS says who is transmitting, and this says what is there.
+    "radar_ships": {
+        "label": "Radar hard targets & ships",
+        "sat": "sentinel-1",
+        "bands": ["vv", "vv", "vh"],
+        "hint": "Only the brightest returns: ships, metal, corners. Everything "
+                "ordinary is black. Compare it with the ships layer — what is "
+                "bright here and dark there is not transmitting AIS.",
+        "default_stretch": {"mode": "radar", "ref": 50, "gamma": 1.0},
+        "from_db": True,
+        # Fifty times the median in power is about seventeen decibels above
+        # ordinary ground, which is where vessels and hard corners sit and
+        # almost nothing else does. VH in blue, a stop brighter, because a
+        # corner reflector returns in both polarisations while a rough field
+        # returns in neither -- so a real hard target comes out white and a
+        # bright field stays orange.
+        "db_windows": [("x", 50.0), ("x", 50.0), ("x", 25.0)],
+    },
     "radar_water": {
         "label": "Radar water & flood",
         "sat": "sentinel-1",
@@ -599,6 +628,61 @@ INDICES = {
         "colormap": "ndvi",
         "hint": "Vegetation over sparse or bright soils.",
     },
+    # How much of the return comes back cross-polarised, which is how much of
+    # it came out of a volume rather than off a surface.
+    #
+    # The standard dual-pol vegetation index. A surface -- water, a road, bare
+    # soil -- sends almost nothing back in the crossed channel, so this sits
+    # near zero. A canopy scatters the pulse about inside itself until it has
+    # lost track of which way it was polarised, and this climbs towards one.
+    #
+    # Computed in power rather than in decibels, because it is a fraction of
+    # returned energy and decibels are its logarithm. And an uncalibrated
+    # product is not an obstacle here in the way it is for a backscatter
+    # figure: the gain this app cannot correct for is the same multiplier on
+    # both channels, and a ratio of two channels divides it out. What it
+    # cannot divide out is the difference in gain BETWEEN the two, which is
+    # why this is a pattern to read across a scene rather than a number to
+    # carry to a paper.
+    #
+    # AND IT IS MEANINGLESS OVER WATER, which is not a caveat that can be
+    # left in a footnote. Calm water returns so little in the crossed channel
+    # that what comes back is the instrument's own noise floor rather than
+    # the surface, and noise divided by a small number is a large ratio -- so
+    # a lake reads as high as a forest here, for the opposite reason. On land
+    # it does what it is for: bare soil and roads low, canopy high.
+    "rvi": {
+        "label": "RVI - radar vegetation",
+        "sat": "sentinel-1",
+        "bands": ["vh", "vv"],
+        "formula": "4 * VH / (VV + VH), in power",
+        "range": [0.0, 1.0],
+        "colormap": "ndvi",
+        "hint": "High under a canopy, low over bare soil, roads and runways. "
+                "Not to be read over water: the crossed channel there is the "
+                "instrument's noise floor, which sends this high.",
+    },
+    # How much the brightness varies within a few pixels.
+    #
+    # The one thing a radar picture says loudest and no index here reads: a
+    # town is not brighter than a field so much as it is *restless*. Roofs,
+    # walls and poles sit at every angle, so neighbouring pixels differ by
+    # tens of decibels; a field, a lake or a runway is smooth at the scale of
+    # the wavelength and its neighbours all read the same.
+    #
+    # So this measures the spread rather than the level, and it separates
+    # built-up ground from open ground without either being the brighter.
+    "radar_texture": {
+        "label": "Texture - rough or built-up",
+        "sat": "sentinel-1",
+        "bands": ["vv"],
+        "formula": "the standard deviation of VV in decibels, over a small "
+                   "neighbourhood",
+        "range": [0.0, 6.0],
+        "colormap": "inferno",
+        "hint": "High where neighbouring pixels disagree: towns, woodland "
+                "edges, broken ground. Low on water, fields and runways.",
+    },
     "radar_ratio": {
         "label": "VV/VH - radar ratio",
         "sat": "sentinel-1",
@@ -608,6 +692,37 @@ INDICES = {
         "colormap": "magma",
         "hint": "Low where the ground scatters in a volume: forest, dense crops.",
     },
+}
+
+# What changed between two passes.
+#
+# Not a picture of one date and not an average of several: the difference
+# between two, which is the question radar is actually best at. Cloud never
+# stops it, the geometry repeats to the metre every twelve days, and
+# backscatter is a property of the surface rather than of the light -- so a
+# pixel that reads four decibels brighter than it did last week is a pixel
+# where something about the ground has changed. A building gone to rubble
+# scatters more; a field gone under water scatters almost nothing.
+#
+# The window is in decibels and it is deliberately narrow. Speckle alone
+# moves a single pixel by a decibel or two between passes even when nothing
+# on the ground has moved, so a range of plus or minus ten would paint the
+# whole scene faintly and hide the real changes inside it. Six is about
+# three times the speckle and a tenth of what a collapsed building does.
+CHANGE = {
+    "label": "Change between two passes",
+    "range": [-6.0, 6.0],
+    # Diverging, centred on no change: brighter than before to one side,
+    # dimmer to the other, and a scene where nothing happened comes out an
+    # even middle grey rather than a colour.
+    "colormap": "rdbu",
+    "hint": "Newer pass minus older, in decibels. Blue is brighter than it "
+            "was — new structures, rubble, ploughed ground. Red is dimmer — "
+            "flooding, snow, a building gone. Grey is unchanged.",
+    # Which channel is compared, in order of preference. The co-polarised one:
+    # it carries more of the return, its noise floor is further below the
+    # signal, and it is the one every pass has.
+    "bands": ("vv", "hh"),
 }
 
 # Radio-frequency interference in the radar.

@@ -10,7 +10,8 @@
 // A merge is what the ground looks like, put together from several passes.
 
 import { api } from './api.js';
-import { canMake, sarLabel, sarPolarisations } from './sarview.js';
+import { canMake, changePlan, changeSaid, sarLabel, sarPolarisations }
+  from './sarview.js';
 import { openMarkup } from './markup.js';
 import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
@@ -413,6 +414,18 @@ function buildVisualisationOptions() {
   }
   idxGroup.hidden = !idxGroup.children.length;
 
+  // What changed between two passes. Offered for radar only, and only in the
+  // mode where two dates can be ticked: it is the one picture here that is
+  // about a pair rather than about a date, and a single-date picker offering
+  // it would be offering something it cannot ask for.
+  const changeGroup = $('#optChange');
+  changeGroup.innerHTML = '';
+  if (sat.kind === 'radar' && mode === 'merge') {
+    changeGroup.append(el('option', { value: 'change:pair' },
+      store.config.change?.label ?? 'Change between two passes'));
+  }
+  changeGroup.hidden = !changeGroup.children.length;
+
   // Keep the choice across a satellite change where it still exists; fall back
   // to the satellite's own default rather than to whatever sorts first.
   const select = $('#renderMode');
@@ -443,16 +456,40 @@ function currentMode() {
 
 function updateHint() {
   const { kind, key } = currentMode();
-  const spec = kind === 'index' ? store.config.indices[key] : store.config.composites[key];
+  const spec = kind === 'change'
+    ? store.config.change
+    : kind === 'index' ? store.config.indices[key] : store.config.composites[key];
   if (!spec) { $('#renderHint').textContent = ''; return; }
-  const detail = kind === 'index' ? spec.formula : `Bands: ${spec.band_labels.join(' · ')}`;
+  const detail = kind === 'change'
+    // A change has no band list to print: which channel it compares is
+    // decided by what both passes carry, and is said on the picture
+    // afterwards rather than guessed at here.
+    ? `Tick exactly two passes on the same track. Scale ±${spec.range[1]} dB.`
+    : kind === 'index' ? spec.formula : `Bands: ${spec.band_labels.join(' · ')}`;
   $('#renderHint').innerHTML = `${spec.hint}<br><span style="opacity:.7">${detail}</span>`;
 }
 
 function buildRenderSliders() {
   const { kind, key } = currentMode();
   const host = $('#renderSliders');
-  if (kind === 'index') {
+  if (kind === 'change') {
+    // The same two sliders an index gets, over decibels rather than over a
+    // ratio -- the window is what decides whether ordinary speckle shows as
+    // change, so it is worth being able to move.
+    const [lo, hi] = store.config.change.range;
+    renderControls = sliderBank(host, [
+      { key: 'index_min', label: 'Dimmer than', min: -20, max: 0, step: 0.5,
+        value: lo, unit: ' dB' },
+      { key: 'index_max', label: 'Brighter than', min: 0, max: 20, step: 0.5,
+        value: hi, unit: ' dB' },
+    ]);
+    const sel = el('select', {},
+      ...Object.keys(store.config.colormaps).map((name) =>
+        el('option', { value: name, selected: name === store.config.change.colormap },
+           name)));
+    host.append(el('label', { class: 'field' }, 'Colour scheme', sel));
+    renderControls.colormap = { get: () => sel.value };
+  } else if (kind === 'index') {
     const [lo, hi] = store.config.indices[key].range;
     renderControls = sliderBank(host, [
       { key: 'index_min', label: 'Scale minimum', min: -1, max: 1, step: 0.05, value: lo,
@@ -744,22 +781,33 @@ function sync() {
   $('#adjustReset').disabled = adjust.isNeutral(adjustmentValues());
 
   const plan = mergePlan(dates.length);
-  const ready = mode === 'merge' ? dates.length > 1 : dates.length === 1;
+  // A change is the one picture here that wants exactly two dates rather
+  // than as many as possible, so the button counts differently and says a
+  // different thing. Left on the merge wording it read "Average 2 radar
+  // passes" for a render that subtracts them, which is the opposite.
+  const comparing = currentMode().kind === 'change';
+  const ready = comparing
+    ? dates.length === 2
+    : mode === 'merge' ? dates.length > 1 : dates.length === 1;
   const current = ready && lastRequest
     && JSON.stringify(buildRequest(dates)) === JSON.stringify(lastRequest);
 
   $('#showBtn').disabled = !ready || current;
   $('#showBtn').textContent = current
     ? 'Showing this now'
-    : mode === 'merge'
+    : comparing
       ? (ready
-        ? (plan.sharpening
-          ? `Merge ${dates.length} dates → ${plan.resolves.toFixed(1)}× finer`
-          : plan.despeckling
-            ? `Average ${dates.length} radar passes`
-            : `Merge ${dates.length} dates`)
-        : 'Tick at least two dates')
-      : (ready ? (store.image ? 'Show this date' : 'Show imagery') : 'Pick a date');
+        ? 'Compare these two passes'
+        : `Tick exactly two passes — ${dates.length} ticked`)
+      : mode === 'merge'
+        ? (ready
+          ? (plan.sharpening
+            ? `Merge ${dates.length} dates → ${plan.resolves.toFixed(1)}× finer`
+            : plan.despeckling
+              ? `Average ${dates.length} radar passes`
+              : `Merge ${dates.length} dates`)
+          : 'Tick at least two dates')
+        : (ready ? (store.image ? 'Show this date' : 'Show imagery') : 'Pick a date');
   $('#planSummary').innerHTML = planSummary(dates, plan);
   $('#downloadPng').disabled = $('#downloadTif').disabled = !lastRequest;
   // Annotating needs a picture on screen; animating needs two dates and not
@@ -783,6 +831,9 @@ function planSummary(dates, plan) {
     return `<b>${fmt.date(dates[0].date)}</b> · ${sat.short} · ${px} · `
       + `one pass, ${native} m detail`;
   }
+  // A change is not a merge: nothing is averaged and no speckle goes away,
+  // so none of the lines below describe what the button would do.
+  if (currentMode().kind === 'change') return changePlan(dates, px);
   if (dates.length < 2) return 'A merge needs at least two dates.';
 
   // Radar cannot be sharpened by merging, but averaging its speckle away is
@@ -825,7 +876,13 @@ function buildRequest(dates) {
     ...enhancementValues(),
   };
   if (dates.length > 1) body.scenes = dates;
-  if (kind === 'index') {
+  if (kind === 'change') {
+    // Two passes, kept apart rather than merged: the difference between them
+    // is the whole point, and _gather exists to fold dates together.
+    body.scenes = dates;
+    body.colormap = renderControls.colormap?.get();
+    delete body.preset;
+  } else if (kind === 'index') {
     body.index = key;
     body.colormap = renderControls.colormap?.get();
   } else {
@@ -868,6 +925,9 @@ async function showImagery() {
 function describeResult(meta) {
   const size = `${meta.grid.width}×${meta.grid.height} px · ~${meta.effective_res_m} m detail`;
   const sr = meta.superres;
+  // How much of it moved is the whole reading. Without it a change picture is
+  // a wash of pale colour that could be a quiet fortnight or a broken render.
+  if (meta.change) return `${changeSaid(meta, fmt.date)} — ${size}`;
   if (!sr && meta.scenes?.length > 1 && meta.source?.kind === 'radar') {
     return `${meta.scenes.length} radar passes averaged — ${size}`;
   }

@@ -228,6 +228,14 @@ def get_config() -> dict[str, Any]:
                 "sat": v["sat"]}
             for k, v in config.INDICES.items()
         },
+        # The one picture that is about a pair of dates rather than one.
+        "change": {
+            "label": config.CHANGE["label"],
+            "hint": config.CHANGE["hint"],
+            "range": config.CHANGE["range"],
+            "colormap": config.CHANGE["colormap"],
+            "sat": ["sentinel-1"],
+        },
         "colormaps": {
             name: [composite._hex(composite.colormap_lut(name)[int(p * 255)])
                    for p in (0, .125, .25, .375, .5, .625, .75, .875, 1)]
