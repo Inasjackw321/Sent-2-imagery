@@ -795,6 +795,10 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 }
 .seis-list-row > .seis-link { flex: 1 1 auto; min-width: 0; }
 .seis-list-meta { flex: 0 0 auto; white-space: nowrap; display: flex; gap: 5px; }
+/* A Boom in the list. It is the same network and the same panel as the
+   Shakes, and it is a microphone rather than a seismograph -- which has to be
+   visible in a row of them, not only in the tooltip. */
+.seis-mic { color: #c08bff; letter-spacing: 0.04em; }
 .seis-link {
   background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
   color: #ffb3c9; text-decoration: none; text-align: left;

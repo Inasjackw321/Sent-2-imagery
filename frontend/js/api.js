@@ -61,9 +61,13 @@ export const api = {
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4),
     })}`, { method: 'GET' }),
-  // No rectangle: the Raspberry Shakes are four named instruments rather than
-  // an index, so there is nothing to query by area.
-  shakes: () => request('/api/shake', { method: 'GET' }),
+  // The rectangle is optional. Without it this is the named stations alone,
+  // which is what the panel shows before the map has settled; with it, the
+  // named ones plus whatever else of network AM is inside the view.
+  shakes: (box) => request(`/api/shake${box ? `?${new URLSearchParams({
+    west: box.west.toFixed(4), south: box.south.toFixed(4),
+    east: box.east.toFixed(4), north: box.north.toFixed(4),
+  })}` : ''}`, { method: 'GET' }),
   // A URL rather than a request: it goes straight into an <img src>.
   traceUrl: ({ network, station, channel, loc = '', minutes }) =>
     `/api/seismographs/trace.png?${new URLSearchParams({

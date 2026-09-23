@@ -682,17 +682,30 @@ def seismographs(
 
 
 @app.get("/api/shake")
-def raspberry_shakes(refresh: bool = Query(False)) -> dict:
+def raspberry_shakes(
+    refresh: bool = Query(False),
+    west: float | None = Query(None, ge=-180, le=180),
+    south: float | None = Query(None, ge=-90, le=90),
+    east: float | None = Query(None, ge=-180, le=180),
+    north: float | None = Query(None, ge=-90, le=90),
+) -> dict:
     """The Raspberry Shake seismographs, kept apart from the professional ones.
 
-    Not a rectangle query like the one above, because these are four named
-    instruments rather than an index: they were asked for by station code, and
-    which four they are is a decision in the source rather than whatever
-    happens to be inside the current view.
+    Two halves, deliberately. The named stations are a decision in the source:
+    somebody is watching those places and they are in the answer wherever the
+    map is pointed. The rectangle is a question: what else of this network is
+    inside the view -- which is the only way to find out that a coast has four
+    amateur instruments on it when no research station is within six hundred
+    kilometres.
+
+    The rectangle is optional. Without it this answers exactly as it did
+    before, which is what the panel asks for before the map has settled.
     """
+    corners = (west, south, east, north)
+    box = tuple(corners) if all(c is not None for c in corners) else None
     if config.DEMO_MODE:
-        return shake.demo_stations()
-    return shake.stations(refresh=refresh)
+        return shake.demo_stations(box)
+    return shake.stations(refresh=refresh, box=box)
 
 
 @app.get("/api/seismographs/trace.png")
