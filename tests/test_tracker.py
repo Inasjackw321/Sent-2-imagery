@@ -5521,3 +5521,105 @@ class TestFoldedAlertsOnTheMap:
         marks = [e for e in tracker.current()["events"] if e["kind"] == "alert"]
         assert len(marks) == 1
         assert marks[0]["shape"] is not None
+
+
+class TestARegionalWarningReachesTheMap:
+    """End to end, from the post to the thing that gets drawn.
+
+    The regional Russian channels declare a warning for a whole federal
+    subject and write it in the ordinary way: "объявлен жёлтый уровень
+    ОПАСНОСТИ по БПЛА в Республике Башкортостан". The words for a warning
+    were matched in the nominative only, so those posts fell past the
+    warning pattern into the weapon words below it -- and a warning declared
+    over a republic was drawn as one drone in flight in the middle of it, or,
+    where the name could not be placed, as nothing at all.
+
+    Read at this level rather than at the pattern's, because between the
+    pattern and the map are the fold, the placing and the region test, and it
+    is the shaded province at the end of all that which was missing.
+    """
+
+    def posted(self, monkeypatch, texts):
+        tracker.reset()
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda name: (
+            [{"id": f"{name}/{n}", "channel": name, "text": text, "when": now}
+             for n, text in enumerate(texts)]
+            if name == "radarrussiia" else []))
+        # No network: the built-in table holds every name used here.
+        monkeypatch.setattr(tracker.gazetteer, "find",
+                            lambda name, countries="": None)
+        return tracker.poll()["events"]
+
+    def warnings(self, events):
+        return [e for e in events if e["kind"] == "alert"]
+
+    def test_a_declared_level_of_danger_becomes_a_warning_over_the_region(
+            self, monkeypatch):
+        events = self.posted(monkeypatch, [
+            "Объявлен жёлтый уровень опасности по БПЛА в Республике Башкортостан",
+        ])
+        warned = self.warnings(events)
+        assert len(warned) == 1, events
+        one = warned[0]
+        assert one["cause"] == "drone"
+        # Over the whole subject, which is what the post declared -- not a
+        # point in the middle of it.
+        assert one["region_scope"] == "covers"
+        assert one["placed"]
+
+    def test_four_regions_four_warnings(self, monkeypatch):
+        events = self.posted(monkeypatch, [
+            "Объявлен жёлтый уровень опасности по БПЛА в Республике Башкортостан",
+            "Чувашская Республика остаётся под угрозой атаки БПЛА",
+            "Опасность БПЛА в Оренбургской области",
+            "Объявлена воздушная тревога в Курской области",
+        ])
+        warned = self.warnings(events)
+        assert len(warned) == 4, [e.get("place") for e in events]
+        assert all(e["placed"] for e in warned)
+        assert all(e["region_scope"] == "covers" for e in warned)
+        assert {e["place"] for e in warned} == {
+            "Республика Башкортостан", "Чувашская республика",
+            "Оренбургская область", "Курская область"}
+
+    def test_nothing_is_drawn_as_a_sighting_nobody_reported(self, monkeypatch):
+        """What the failure looked like: a warning declared over a republic
+        came out as a drone, at a point, in the middle of a place nobody had
+        reported anything over -- and nothing said it had been inferred.
+
+        A drone mark beside one of these is fine and deliberate: a drone
+        warning raises one inside the region it covers. What matters is that
+        it is marked as raised from the warning rather than passing for a
+        report of something seen.
+        """
+        events = self.posted(monkeypatch, [
+            "Объявлен жёлтый уровень опасности по БПЛА в Республике Башкортостан",
+            "Продлён режим опасности БПЛА в Воронежской области",
+            "Загроза застосування балістики для Дніпропетровщини",
+        ])
+        assert len(self.warnings(events)) == 3, events
+        for one in events:
+            if one["kind"] != "alert":
+                assert one.get("from_warning"), one
+
+    def test_a_missile_warning_raises_no_drone_beside_it(self, monkeypatch):
+        events = self.posted(monkeypatch, [
+            "Загроза застосування балістики для Дніпропетровщини",
+        ])
+        assert [e["kind"] for e in events] == ["alert"]
+        assert events[0]["cause"] == "missile"
+
+    def test_the_all_clear_still_takes_the_warning_away(self, monkeypatch):
+        events = self.posted(monkeypatch, [
+            "Опасность БПЛА в Оренбургской области",
+            "Отбой опасности БПЛА в Оренбургской области",
+        ])
+        # The lift is not drawn; what matters is that the warning is gone.
+        assert not [e for e in events if e["kind"] == "alert"], events
+
+    def test_something_actually_flying_is_still_drawn_flying(self, monkeypatch):
+        events = self.posted(monkeypatch, [
+            "БпЛА курсом на Житомирщину",
+        ])
+        assert [e["kind"] for e in events] == ["drone"]

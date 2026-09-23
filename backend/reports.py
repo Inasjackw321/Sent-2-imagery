@@ -151,8 +151,30 @@ KIND_WORDS: tuple[tuple[str, str], ...] = (
      # strength of it would be a stronger act than the sentence supports.
      r"|\bno\s+(?:current\s+)?(?:threats?|alerts?|alarms?)\b"),
     ("alert",
-     r"повітряна тривога|тривога|воздушная тревога"
-     r"|угроза|опасность|ракетная опасность|внимание|небезпек\w*"
+     # Every one of these in whatever ending the sentence put it in, which is
+     # what this pattern did not do and is why "not all the alerts work".
+     #
+     # They were written in the nominative and nothing else: "тривога",
+     # "угроза", "опасность". Almost no post says them that way. What the
+     # Russian regional channels write is "объявлен жёлтый уровень
+     # ОПАСНОСТИ по БПЛА" and "под УГРОЗОЙ атаки БПЛА"; what the Ukrainian
+     # ones write is "оголошено повітряну ТРИВОГУ". None of those matched,
+     # so the post fell past this pattern into the weapon words below it and
+     # a declared warning over a whole republic was drawn as a single drone
+     # in flight -- or, where the name could not be placed, as nothing at
+     # all. Measured on eight real phrasings: three read as a drone, one as
+     # a ballistic missile, one as nothing.
+     #
+     # "загроз" is here for the first time. It is the ordinary Ukrainian
+     # word for a threat -- "загроза застосування балістики" -- and it was
+     # in no pattern at all, so that sentence was read as a ballistic
+     # missile on its way rather than a warning about one.
+     r"тривог\w*|тревог\w*|загроз\w*|угроз\w*|опасност\w*|небезпек\w*"
+     # "Внимание" only where it is not the sign-off. "Спасибо за внимание"
+     # ends a great many of these posts, and with a place named anywhere in
+     # the text it raised an air alert over that province -- a warning
+     # nobody declared, from a pleasantry.
+     r"|(?<!за )внимание"
      # A bare "Alert", because "Lipetsk Oblast Drone Alert" is a WARNING for
      # Lipetsk and not a drone over it. This pattern is tried before the
      # weapon words on purpose: in these posts the weapon says what the
@@ -931,6 +953,15 @@ def find_place(text: str, region: str | None) -> str | None:
         if not found:
             continue
         if any(stem in found.lower() for stem in OBLASTS):
+            continue
+        # "в Курской области" is the region, which find_region has already
+        # read properly as "Курская область". Taking the adjective on its own
+        # gives "Курской", which no gazetteer holds, so the warning went
+        # unplaced. The prefix test below could not see it: it compares six
+        # characters, and "курско" against "курская" differs at the fifth.
+        # What tells a region from a town is the type word after it, so that
+        # is what is looked at.
+        if OBLAST_FULL.match(text[match.start("what"):]):
             continue
         if region and found.lower()[:6] in region.lower():
             continue

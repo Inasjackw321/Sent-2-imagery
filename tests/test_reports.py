@@ -15,6 +15,8 @@ here are the grammar: the shapes that actually appear in these channels, and
 
 from __future__ import annotations
 
+import pytest
+
 from backend import neptun, places, reports
 
 
@@ -1693,4 +1695,150 @@ class TestTheRepublicsAreNamed:
         for said in ("Воздушная тревога в Республике Татарстан",
                      "Опасность БПЛА в Республике Башкортостан",
                      "Опасность БПЛА в Республике Мордовия"):
+            assert places.lookup(self.where(said)), said
+
+
+class TestAWarningInWhateverCaseTheSentenceUsed:
+    """The words for a warning, in the endings posts actually write.
+
+    This pattern held the nominative and nothing else -- "тривога",
+    "угроза", "опасность" -- and almost no post says them that way. What the
+    Russian regional channels write is "объявлен жёлтый уровень ОПАСНОСТИ по
+    БПЛА"; what the Ukrainian ones write is "оголошено повітряну ТРИВОГУ".
+    Neither matched.
+
+    A post that falls past the warning pattern does not fall on the floor. It
+    carries on down the list to the weapon words, so a warning declared over
+    a whole republic was drawn as one drone in flight in the middle of it --
+    or, where the adjective could not be placed, as nothing at all. That is
+    "not all the alerts work", and this is where it came from.
+    """
+
+    def kind(self, text):
+        return reports.find_kind(text)
+
+    def read(self, text):
+        return reports.read(text) or {}
+
+    # ── Russian, as the regional channels write it ──────────────
+
+    def test_a_declared_level_of_danger_is_a_warning(self):
+        said = "Объявлен жёлтый уровень опасности по БПЛА в Республике Башкортостан"
+        assert self.kind(said) == "alert"
+        assert self.read(said)["cause"] == "drone"
+
+    def test_being_under_threat_is_a_warning(self):
+        said = "Чувашская Республика остаётся под угрозой атаки БПЛА"
+        assert self.kind(said) == "alert"
+
+    def test_an_extended_danger_regime_is_a_warning(self):
+        assert self.kind("Продлён режим опасности БПЛА в Воронежской области") == "alert"
+
+    def test_an_announced_air_alarm_is_a_warning(self):
+        assert self.kind("Объявлена воздушная тревога в Курской области") == "alert"
+
+    @pytest.mark.parametrize("ending", [
+        "опасность", "опасности", "опасностью", "опасностей",
+        "угроза", "угрозы", "угрозой", "угрозу",
+        "тревога", "тревоги", "тревогу", "тревогой",
+    ])
+    def test_every_ending_of_every_word(self, ending):
+        assert self.kind(f"В Белгородской области объявлена {ending} БПЛА") == "alert"
+
+    # ── Ukrainian ───────────────────────────────────────────────
+
+    def test_an_accusative_air_alarm_is_a_warning(self):
+        assert self.kind("Оголошено повітряну тривогу на Київщині") == "alert"
+
+    def test_a_threat_is_a_warning_at_all(self):
+        """"Загроза" is the ordinary Ukrainian word for a threat and was in
+        no pattern -- so "загроза застосування балістики" was read as a
+        ballistic missile on its way rather than a warning about one."""
+        said = "Загроза застосування балістики для Дніпропетровщини"
+        assert self.kind(said) == "alert"
+        assert self.read(said)["cause"] == "missile"
+
+    @pytest.mark.parametrize("ending", ["тривога", "тривоги", "тривогу",
+                                        "загроза", "загрози", "загрозу"])
+    def test_every_ukrainian_ending(self, ending):
+        assert self.kind(f"На Полтавщині оголошено {ending}") == "alert"
+
+    # ── And what must not change ────────────────────────────────
+
+    def test_the_all_clear_still_wins(self):
+        """It is tried first for exactly this reason: "отбой опасности"
+        contains "опасности", and read as a warning it would raise one at
+        the moment one was lifted."""
+        said = "Отбой опасности БПЛА в Брянской области"
+        assert self.kind(said) == "all_clear"
+        assert self.read(said)["place"] == "Брянская область"
+
+    def test_a_cancelled_threat_is_still_a_cancellation(self):
+        assert self.kind("Отменена угроза атаки БПЛА в Ростовской области") == "all_clear"
+
+    def test_something_actually_in_the_air_is_still_a_drone(self):
+        assert self.kind("БпЛА курсом на Житомирщину") == "drone"
+
+    def test_a_missile_on_its_way_is_still_a_missile(self):
+        assert self.kind("Ракети на Львівщину") == "cruise"
+
+    def test_a_sign_off_does_not_declare_an_alert(self):
+        """"Спасибо за внимание" ends a great many of these posts. With a
+        place named anywhere in the text it raised an air alert over that
+        province -- a warning nobody declared, out of a pleasantry."""
+        said = "Спасибо за внимание. Обстановка в Ростовской области спокойная."
+        assert self.kind(said) == "unknown"
+        assert reports.read(said) is None
+
+    def test_but_attention_at_the_front_of_a_warning_still_counts(self):
+        assert self.kind("ВНИМАНИЕ! Опасность БПЛА") == "alert"
+        assert self.kind("Внимание, жители Белгорода!") == "alert"
+
+
+class TestTheRegionUnderItsOwnAdjective:
+    """"в Курской области" is a region, and it was read as "Курской".
+
+    find_region reads it properly -- "Курская область" -- and then find_place
+    went looking for a town, found the adjective sitting after a preposition,
+    and returned that. No gazetteer holds "Курской", so the warning went
+    unplaced and nothing was drawn.
+
+    The guard that should have caught it compares six characters of the two
+    names. "курско" against "курская" differs at the fifth, so it let it
+    through; Orenburg, whose stem is longer, it caught. What actually tells a
+    region from a town is the type word after it.
+    """
+
+    def where(self, text):
+        return (reports.read(text) or {}).get("place")
+
+    @pytest.mark.parametrize("said,want", [
+        ("Объявлена воздушная тревога в Курской области", "Курская область"),
+        ("Опасность БПЛА в Тульской области", "Тульская область"),
+        ("Угроза БПЛА в Орловской области", "Орловская область"),
+        ("Тревога в Брянской области", "Брянская область"),
+        ("Опасность БПЛА в Оренбургской области", "Оренбургская область"),
+    ])
+    def test_the_region_is_named_in_full(self, said, want):
+        assert self.where(said) == want
+
+    def test_a_town_after_a_preposition_is_still_the_town(self):
+        """The whole point of looking past the region: a named town beats
+        the province it is in.
+
+        Kept in the ending the sentence used, which is this module's
+        convention -- the gazetteer is asked for the inflected spelling and
+        resolves it, and the summary a person reads says the name properly.
+        """
+        assert self.where("Вибухи в Одесі") == "Одесі"
+        assert self.where("БпЛА над Одесою") != "Одеська область"
+
+    def test_a_town_inside_a_named_region_is_still_the_town(self):
+        got = self.where("БпЛА в Кагарлику, Київська область")
+        assert got and "Кагарлик" in got
+
+    def test_the_name_is_one_the_table_holds(self):
+        from backend import places
+        for said in ("Объявлена воздушная тревога в Курской области",
+                     "Опасность БПЛА в Тульской области"):
             assert places.lookup(self.where(said)), said
