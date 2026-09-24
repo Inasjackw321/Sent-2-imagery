@@ -421,9 +421,11 @@ export const CAMS = [
     // The playlist address carries a signed token. Tokens expire, and when
     // this one does the stream will stop with an error from the host rather
     // than quietly showing an old frame -- which is the failure worth having,
-    // but it does mean this entry has a shelf life the others do not.
+    // but it does mean this entry has a shelf life the others do not. It has
+    // already been reissued once: a new CDN host, a /live/ path, and gtoken
+    // in place of token, so the whole address is replaced rather than patched.
     kind: 'hls',
-    src: 'https://cdn-101.galata.ai/062eaa89497546399031dbae6b71d6f5/index.m3u8?token=dE1DMXppdkJKYVhsdUtRMDhGR0duaHovNDhyUGpqSENrVWlwNG5lY2dHOHVESE9vQUMvM04xQVlrc3ltbXlmM1p6ajBxT3VJNmFQQ0FEN2JRNzVLcmc9PQ==',
+    src: 'https://cdn-104.galata.ai/live/062eaa89497546399031dbae6b71d6f5/hls.m3u8?gtoken=dE1DMXppdkJKYVhsdUtRMDhGR0dua3lnSi84c0xua0p0SkRYZmE4ZXl5eEJGU0JWMk02OUlqeHRaMmpOVk5HSlI5MVhxYlNIMGFxZnRqSjEvSHhhbXc9PQ==',
     host: 'galata.ai',
   },
   {
