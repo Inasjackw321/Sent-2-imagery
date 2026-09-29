@@ -1258,6 +1258,14 @@ a.leaflet-popup-close-button:hover { color: var(--ink); }
 .sun-now:hover { color: var(--ink); }
 .sun-sub { font-size: 10px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .sun-note { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
+/* The way across to the night lights. A link rather than a button in
+   appearance: it does not change this layer, it opens another one. */
+.sun-lights {
+  margin-top: 6px; background: none; border: 0; padding: 0;
+  font: inherit; font-size: 10px; cursor: pointer;
+  color: #ffd66b; text-align: left;
+}
+.sun-lights:hover { text-decoration: underline; }
 
 /* The subsolar marker is a label on the map, not something to click. */
 .sun-pin { pointer-events: none; }

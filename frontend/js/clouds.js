@@ -83,16 +83,57 @@ const SOURCES = {
   // True colour is what the eye would see, which means it stops working at
   // sunset and cannot tell cloud from snow. These two are the same instruments
   // read differently, and each answers a question true colour cannot.
+  // ── The day-night band ────────────────────────────────────────
+  //
+  // VIIRS carries one channel that is not like the others: a panchromatic
+  // band sensitive enough to make a picture by moonlight. City lights, gas
+  // flares, fishing fleets, ships, the burning edge of a wildfire, and a
+  // blackout where a city was the night before -- on the half of the planet
+  // where every other layer here has nothing at all.
+  //
+  // Two renderings of it, and they are not interchangeable.
+  //
+  // ENCC is near-constant contrast: the picture is stretched against how much
+  // light there was to work with, so a city looks about the same under a full
+  // moon as under a new one. It is the one to look at.
+  //
+  // At-sensor radiance is the measurement, drawn straight. It is dimmer and
+  // moodier and it does something ENCC deliberately undoes -- the brightness
+  // means something, so a flare stack really is brighter than a suburb, and
+  // moonlit cloud really does drown a town. Worth having when the question is
+  // how bright rather than what is lit.
+  //
+  // Two satellites, fifty minutes apart on the same track, because one of
+  // them having a bad night is an ordinary thing.
   'viirs-night': {
-    // Moonlight and firelight. City lights, gas flares, fishing fleets, and
-    // the burning edge of a wildfire -- on the half of the planet where every
-    // other layer here has nothing at all.
-    layer: 'VIIRS_SNPP_DayNightBand_At_Sensor_Radiance',
-    label: 'VIIRS · night lights', when: 'about 01:30 local', metres: 500,
-    fmt: 'png',
+    layer: 'VIIRS_SNPP_DayNightBand_ENCC',
+    label: 'VIIRS · night lights · Suomi-NPP',
+    when: 'about 01:30 local', metres: 500,
+    fmt: 'png', night: true,
+    // 500 m imagery, so the tile grid stops a level short of the 250 m
+    // mosaics above. Asking a layer for a grid it does not publish gets
+    // nothing back at every zoom, which looks exactly like a satellite that
+    // did not fly.
+    matrix: 'GoogleMapsCompatible_Level8', native: 8,
     // It is a picture of light in the dark, so the cloud mask -- which keeps
     // what is bright and colourless -- would keep the cities and throw away
     // the cloud. Shown as it comes.
+    raw: true,
+  },
+  'viirs-night-noaa20': {
+    layer: 'VIIRS_NOAA20_DayNightBand_ENCC',
+    label: 'VIIRS · night lights · NOAA-20',
+    when: 'about 00:40 local', metres: 500,
+    fmt: 'png', night: true,
+    matrix: 'GoogleMapsCompatible_Level8', native: 8,
+    raw: true,
+  },
+  'viirs-night-radiance': {
+    layer: 'VIIRS_SNPP_DayNightBand_At_Sensor_Radiance',
+    label: 'VIIRS · night lights · as measured',
+    when: 'about 01:30 local', metres: 500,
+    fmt: 'png', night: true, measured: true,
+    matrix: 'GoogleMapsCompatible_Level8', native: 8,
     raw: true,
   },
   'modis-bands721': {
@@ -112,6 +153,45 @@ const isLive = (key) => SOURCES[key]?.kind === 'live';
 // layer stays on screen when you zoom into an area instead of vanishing.
 const MATRIX = 'GoogleMapsCompatible_Level9';
 const NATIVE_ZOOM = 9;
+
+// The grids, deepest first. A source names the one it publishes; this list is
+// what a source falls back through when the named one turns out to be wrong.
+//
+// It is here because getting it wrong is invisible: a layer asked for a grid
+// it does not have answers nothing at every zoom, at every date, which reads
+// as a satellite that has not flown rather than as a wrong URL. One shallower
+// grid is tried before any of the days are, so a mistake in the table above
+// costs a second rather than a layer.
+const MATRICES = [
+  'GoogleMapsCompatible_Level9',
+  'GoogleMapsCompatible_Level8',
+  'GoogleMapsCompatible_Level7',
+];
+
+// How far down MATRICES the current source has had to fall, from where it
+// said it was. Reset whenever the source changes.
+let matrixStep = 0;
+
+// Which source-and-grid pairs have actually served a tile this session.
+const served = new Set();
+
+/** The grid to ask this source for, after any falling back. */
+export function matrixFor(spec, step = matrixStep) {
+  if (spec.kind === 'live') return spec.matrix;
+  const at = MATRICES.indexOf(spec.matrix ?? MATRIX);
+  return MATRICES[Math.min(at < 0 ? 0 : at + step, MATRICES.length - 1)];
+}
+
+/** The deepest zoom that grid actually holds tiles for. */
+export function nativeFor(spec, step = matrixStep) {
+  if (spec.kind === 'live') return spec.native;
+  // The grid's name carries its own depth, so the two cannot drift apart:
+  // Level9 holds zooms 0 to 8... except that GIBS counts the name as the
+  // deepest zoom rather than the count, which is why the 250 m mosaics are
+  // Level9 and drawn to zoom 9 here, as they have been all along.
+  const named = Number(matrixFor(spec, step).match(/Level(\d+)$/)?.[1]);
+  return Number.isFinite(named) ? named : NATIVE_ZOOM;
+}
 
 // How long after an observation the tiles actually appear. Asking for the
 // slot that has just begun gets nothing back, which looks like a dead layer
@@ -293,12 +373,12 @@ function buildDock() {
         onchange: (e) => {
           source = e.target.value;
           stepsBack = 0;
+          matrixStep = 0;
           problem = '';
           paint();
           rebuild();
         },
-      }, ...Object.entries(SOURCES).map(([key, spec]) =>
-        el('option', { value: key, selected: key === source }, spec.label))),
+      }, ...groups()),
       el('label', { class: 'cloud-fade' }, 'Fade',
         el('input', {
           type: 'range', min: 10, max: 100, value: Math.round(opacity * 100),
@@ -324,6 +404,29 @@ function buildDock() {
   rebuild();
 }
 
+/**
+ * The source list, in three groups.
+ *
+ * Flat, it was fourteen lines of near-identical satellite names, and the two
+ * that are not pictures of cloud at all sat at the bottom of it looking like
+ * more of the same. Somebody after the night lights had to already know they
+ * were in a menu called clouds.
+ */
+function groups() {
+  const named = {
+    live: 'Live, every ten minutes',
+    daily: 'One pass a day, everywhere',
+    night: 'At night, and other bands',
+  };
+  const which = (spec) => (spec.kind === 'live' ? 'live'
+    : spec.night || spec.raw ? 'night' : 'daily');
+  return Object.entries(named).map(([key, label]) => el('optgroup', { label },
+    ...Object.entries(SOURCES)
+      .filter(([, spec]) => which(spec) === key)
+      .map(([id, spec]) =>
+        el('option', { value: id, selected: id === source }, spec.label))));
+}
+
 /** Keep the panel saying what is actually on the map. */
 function rebuild() {
   const spec = SOURCES[source];
@@ -346,7 +449,7 @@ function rebuild() {
   } else {
     when.textContent = day === today() ? `${day} · today` : day;
     lines.push(`Crosses ${spec.when}, published within about three hours.`);
-    lines.push(spec.raw && source === 'viirs-night'
+    lines.push(spec.night
       ? 'One pass a night — this is the half of the planet the others cannot see.'
       : 'One pass a day, and none of the night side.');
   }
@@ -355,10 +458,20 @@ function rebuild() {
   // panel is the only place that can tell you which you are looking at.
   if (!spec.raw) {
     lines.push('<b>Cloud only</b> — the ground is cut out. Snow reads as cloud.');
-  } else if (source === 'viirs-night') {
+  } else if (spec.night) {
     lines.push('<b>Drawn whole</b> — light at night: cities, gas flares, '
       + 'fishing fleets, and the burning edge of a wildfire. Moonlit cloud '
       + 'shows as haze.');
+    // Which of the two renderings this is, because the difference decides
+    // what the picture can be read for. Evened out, a bright pixel means
+    // "lit"; as measured, it means "this much light", and the two answer
+    // different questions about the same night.
+    lines.push(spec.measured
+      ? 'Radiance as the instrument recorded it: brightness is a measurement, '
+        + 'so a flare stack outshines a town and a full moon drowns both.'
+      : 'Contrast evened out against the available light, so a city reads the '
+        + 'same under a full moon as under a new one. Not a measurement of '
+        + 'how bright anything is.');
   } else {
     lines.push('<b>Drawn whole</b> — short-wave infrared: burn scars red, '
       + 'active fire glowing, cloud white, snow and ice blue. The one view '
@@ -395,6 +508,29 @@ function toggle() {
     liveTimer = null;
   }
   paint();
+}
+
+/**
+ * Put the night lights on the map, from somewhere else in the app.
+ *
+ * The day-and-night layer shades the half of the planet no optical satellite
+ * can photograph, which is exactly the half this band is for -- so the panel
+ * that draws the shading offers it, rather than leaving somebody to find it
+ * inside a menu called clouds.
+ */
+export function showNightLights(which = 'viirs-night') {
+  source = SOURCES[which]?.night ? which : 'viirs-night';
+  stepsBack = 0;
+  matrixStep = 0;
+  problem = '';
+  const picker = $('#cloudSource');
+  if (picker) picker.value = source;
+  if (!enabled) {
+    toggle();
+    return;
+  }
+  paint();
+  rebuild();
 }
 
 function setDay(next) {
@@ -487,7 +623,11 @@ function paint() {
   const Tiles = spec.raw ? L.TileLayer : CloudTiles;
   layer = new Tiles(TILES, {
     layer: spec.layer,
-    matrix: live ? spec.matrix : MATRIX,
+    // Each layer publishes one tile grid, sized to how fine it is: 250 m
+    // mosaics go one level deeper than the 500 m day-night band. A source
+    // that does not say takes the 250 m grid, which is what all of them were
+    // before there was anything coarser here.
+    matrix: matrixFor(spec),
     // A geostationary source is asked for an instant; a polar mosaic for a
     // day. Same URL shape, and GIBS accepts either in the same slot.
     date: live ? liveStamp(spec, stepsBack) : day,
@@ -495,7 +635,7 @@ function paint() {
     fmt: spec.fmt ?? 'jpg',
     sensitivity,
     opacity,
-    maxNativeZoom: live ? spec.native : NATIVE_ZOOM,
+    maxNativeZoom: nativeFor(spec),
     maxZoom: 19,
     // Cloud sits above the ground, and now that only the cloud is drawn it can
     // sit above the imagery too without hiding any of it.
@@ -504,8 +644,13 @@ function paint() {
     attribution: 'NASA EOSDIS GIBS',
   });
   layer.on('tileerror', missing);
-  // A frame that arrived means the walk back is over, whatever it cost.
-  layer.on('tileload', () => { walking = false; });
+  // A frame that arrived means the walk back is over, whatever it cost -- and
+  // that this source really is served on this grid, which is what stops a
+  // later missing day from being mistaken for a wrong one.
+  layer.on('tileload', () => {
+    walking = false;
+    served.add(`${source}|${matrixStep}`);
+  });
   layer.addTo(map);
   rebuild();
 
@@ -548,6 +693,27 @@ let walking = false;
 const missing = debounce(() => {
   if (!enabled || walking) return;
   const live = isLive(source);
+  const spec = SOURCES[source];
+
+  // Before any of the dates: the grid. A layer asked for a tile grid it does
+  // not publish answers nothing on every date there has ever been, so walking
+  // a week back through the calendar would find six more nothings and then
+  // blame the satellite. One step to a shallower grid is cheap and rules it
+  // out, and it is silent because a reader does not care which of GIBS's
+  // grids a layer is served on.
+  //
+  // Only while this source has never had a tile out of this grid. Once one
+  // has arrived the grid is settled, and a later gap is a date with nothing
+  // in it -- stepping to a coarser grid then would quietly leave the layer
+  // blurrier than the service can draw it, for good, over a missing day.
+  if (!live && !served.has(`${source}|${matrixStep}`)
+      && matrixStep < MATRICES.length - 1
+      && matrixFor(spec, matrixStep + 1) !== matrixFor(spec, matrixStep)) {
+    walking = true;
+    matrixStep += 1;
+    paint();
+    return;
+  }
 
   if (!live && day !== today()) {
     // A day deliberately chosen rather than today's, and it has nothing. That

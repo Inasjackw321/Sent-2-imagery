@@ -16,6 +16,7 @@
 import { $, el } from './ui.js';
 import { subsolar, nightRings, terminator, tile, withinMap, sunTimes, elevation,
   TWILIGHT } from './sun.js';
+import { showNightLights } from './clouds.js';
 
 // The bands, lightest first. Each is drawn over the one before, so the alpha
 // accumulates and the night deepens towards the antisolar point without any
@@ -210,7 +211,13 @@ function buildDock() {
           el('i', { style: 'background:rgba(5,10,22,.46)' }), 'night')),
       el('div', { class: 'sun-note' },
         'The dark half is the part no optical satellite can photograph. '
-        + 'Right-click anywhere for its sunrise, sunset and day length.')));
+        + 'Right-click anywhere for its sunrise, sunset and day length.'),
+      // Except by its own light. VIIRS's day-night band makes a picture of
+      // the dark side out of city lights, gas flares and moonlight, and this
+      // is the panel where somebody is already looking at that half.
+      el('button', { class: 'sun-lights', id: 'sunLights', type: 'button',
+        onclick: () => showNightLights() },
+        'Show what is lit over there ↗')));
 }
 
 function toggle() {

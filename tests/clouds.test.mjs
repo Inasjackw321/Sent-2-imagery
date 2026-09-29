@@ -19,6 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 // clouds.js reaches for Leaflet when it loads, to subclass its tile layer.
 // None of that is under test here, and a stub is enough to let the module
@@ -28,7 +29,11 @@ globalThis.L = {
   DomUtil: { create: () => ({ getContext: () => null, classList: { add() {} } }) },
   tileLayer: { wms: () => ({}) },
 };
-const { maskToCloud, cloudiness } = await import('../frontend/js/clouds.js');
+const { maskToCloud, cloudiness, matrixFor, nativeFor } =
+  await import('../frontend/js/clouds.js');
+
+const SOURCE = readFileSync(
+  new URL('../frontend/js/clouds.js', import.meta.url), 'utf8');
 
 /** What the mask used to do, written out plainly: no table, one pixel at a time. */
 function byArithmetic(data, sensitivity) {
@@ -132,4 +137,113 @@ test('turning the sensitivity up can only find more cloud, never less', () => {
       last = now;
     }
   }
+});
+
+// ── The day-night band ─────────────────────────────────────────
+//
+// VIIRS's panchromatic low-light channel: a picture of the dark half of the
+// planet made from city lights, gas flares, fishing fleets and moonlight. It
+// is served on a coarser tile grid than the 250 m true-colour mosaics beside
+// it, and a layer asked for a grid it does not publish answers nothing at
+// every zoom on every date -- which reads as a satellite that did not fly
+// rather than as a wrong address. So the grid is per source, and a wrong one
+// is walked back from rather than believed.
+
+test('the night band is asked for on its own tile grid', () => {
+  const night = { matrix: 'GoogleMapsCompatible_Level8' };
+  assert.equal(matrixFor(night, 0), 'GoogleMapsCompatible_Level8');
+  assert.equal(nativeFor(night, 0), 8);
+});
+
+test('and a source that names no grid gets the 250 m one, as before', () => {
+  assert.equal(matrixFor({}, 0), 'GoogleMapsCompatible_Level9');
+  assert.equal(nativeFor({}, 0), 9);
+});
+
+test('a live source keeps the grid it was given', () => {
+  // Its own, at its own depth: a geostationary disc is not a mosaic and does
+  // not go as deep.
+  const live = { kind: 'live', matrix: 'GoogleMapsCompatible_Level7', native: 7 };
+  assert.equal(matrixFor(live, 2), 'GoogleMapsCompatible_Level7');
+  assert.equal(nativeFor(live, 2), 7);
+});
+
+test('falling back goes shallower, never deeper', () => {
+  const night = { matrix: 'GoogleMapsCompatible_Level8' };
+  assert.equal(matrixFor(night, 1), 'GoogleMapsCompatible_Level7');
+  assert.equal(nativeFor(night, 1), 7);
+});
+
+test('and stops at the shallowest rather than running off the end', () => {
+  const night = { matrix: 'GoogleMapsCompatible_Level8' };
+  assert.equal(matrixFor(night, 9), 'GoogleMapsCompatible_Level7');
+  assert.ok(Number.isFinite(nativeFor(night, 9)));
+});
+
+test('the depth is read off the grid, so the two cannot drift apart', () => {
+  // Writing the number twice is how a layer ends up asking a nine-level grid
+  // for a tenth level and drawing nothing at the zoom somebody is at.
+  for (const level of [7, 8, 9]) {
+    const spec = { matrix: `GoogleMapsCompatible_Level${level}` };
+    assert.equal(nativeFor(spec, 0), level);
+  }
+});
+
+test('the grid is only walked back from before a tile has ever arrived', () => {
+  // Afterwards a gap is a date with nothing in it, and stepping to a coarser
+  // grid over a missing day would leave the layer blurrier than the service
+  // can draw it, for the rest of the session.
+  assert.match(SOURCE, /!served\.has\(`\$\{source\}\|\$\{matrixStep\}`\)/);
+  assert.match(SOURCE, /served\.add\(`\$\{source\}\|\$\{matrixStep\}`\)/);
+});
+
+test('and before the calendar is, not after it', () => {
+  const at = SOURCE.indexOf('const missing = debounce(');
+  const block = SOURCE.slice(at);
+  assert.ok(block.indexOf('matrixStep += 1') < block.indexOf('stepsBack += 1'),
+            'a wrong grid would be blamed on six days of missing passes');
+});
+
+test('both renderings of the band are offered, and told apart', () => {
+  // ENCC evens the contrast out against the available light; the radiance
+  // layer is the measurement. A reader told they are the same picture would
+  // read a flare stack and a suburb as equally bright in one of them.
+  assert.match(SOURCE, /VIIRS_SNPP_DayNightBand_ENCC/);
+  assert.match(SOURCE, /VIIRS_NOAA20_DayNightBand_ENCC/);
+  assert.match(SOURCE, /VIIRS_SNPP_DayNightBand_At_Sensor_Radiance/);
+  assert.match(SOURCE, /measured: true/);
+  assert.match(SOURCE, /Contrast evened out against the available light/);
+  assert.match(SOURCE, /brightness is a measurement/);
+});
+
+test('the night sources are all drawn whole, never cloud-masked', () => {
+  // The mask keeps what is bright and colourless, which over a night picture
+  // keeps the cities and throws away everything else.
+  const at = SOURCE.indexOf('const SOURCES = {');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n};\n', at));
+  for (const entry of block.split(/\n  '(?=[a-z])/).filter((e) => /night: true/.test(e))) {
+    assert.match(entry, /raw: true/);
+  }
+});
+
+test('the picker groups them rather than listing fourteen satellites flat', () => {
+  assert.match(SOURCE, /function groups\(\)/);
+  assert.match(SOURCE, /el\('optgroup'/);
+  assert.match(SOURCE, /At night, and other bands/);
+});
+
+test('the day-and-night panel offers the lights on the dark half', () => {
+  const sun = readFileSync(
+    new URL('../frontend/js/daynight.js', import.meta.url), 'utf8');
+  assert.match(sun, /import \{ showNightLights \} from '\.\/clouds\.js'/);
+  assert.match(sun, /onclick: \(\) => showNightLights\(\)/);
+  assert.match(SOURCE, /export function showNightLights/);
+});
+
+test('and asking for something that is not a night source still gets one', () => {
+  // The call site names a source by string. A typo there would otherwise put
+  // the cloud mosaic on screen under a button that promised city lights.
+  const at = SOURCE.indexOf('export function showNightLights');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /SOURCES\[which\]\?\.night \? which : 'viirs-night'/);
 });
