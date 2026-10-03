@@ -425,7 +425,7 @@ export const CAMS = [
     // already been reissued once: a new CDN host, a /live/ path, and gtoken
     // in place of token, so the whole address is replaced rather than patched.
     kind: 'hls',
-    src: 'https://cdn-104.galata.ai/live/062eaa89497546399031dbae6b71d6f5/hls.m3u8?gtoken=dE1DMXppdkJKYVhsdUtRMDhGR0dua3lnSi84c0xua0p0SkRYZmE4ZXl5eEJGU0JWMk02OUlqeHRaMmpOVk5HSlI5MVhxYlNIMGFxZnRqSjEvSHhhbXc9PQ==',
+    src: 'https://cdn-104.galata.ai/live/062eaa89497546399031dbae6b71d6f5/hls.m3u8?gtoken=dE1DMXppdkJKYVhsdUtRMDhGR0dubkFseE5vWE53N0oyM2ZnelVva01FZVpjZ29ybTZsLy8vL090emJBUlh2S2JaRHVSayttd25YanlEb2x3U3ZwVmc9PQ==',
     host: 'galata.ai',
   },
   {
