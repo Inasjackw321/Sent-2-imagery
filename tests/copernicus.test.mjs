@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { clockLabel, dateLabel, frameIndex, framesPer, nextFrame,
-         productsShown, stepFrame, wmsTime }
+         productsShown, stepFrame, warmOrder, wmsOptions, wmsTime }
   from '../frontend/js/copernicus.js';
 
 // A week of whole days, as a satellite that flies over offers them.
@@ -295,8 +295,11 @@ test('the frames are walked one at a time, not all at once', () => {
   // together they compete with the frame on screen and hammer a free service.
   const at = SOURCE.indexOf('async function warm()');
   assert.ok(at > 0);
-  assert.match(SOURCE.slice(at, at + 900), /for \(const frame of frames\)/);
-  assert.match(SOURCE.slice(at, at + 900), /await oneFrame\(frame\)/);
+  // To the end of the function rather than a fixed number of characters: a
+  // comment added near the top of it once pushed the loop out of the window.
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /for \(const frame of warmOrder\(frames\)\)/);
+  assert.match(block, /await oneFrame\(frame\)/);
 });
 
 test('and the walk can be stopped', () => {
@@ -325,8 +328,9 @@ test('the walk reuses one hidden layer rather than one per frame', () => {
   // there -- twenty-four "_fadeAnimated of null" errors per walk.
   assert.match(SOURCE, /let oven = null;/);
   const at = SOURCE.indexOf('function oneFrame');
-  assert.match(SOURCE.slice(at, at + 900), /layer\.setParams\(\{ time: frame\.time \}\)/);
-  assert.doesNotMatch(SOURCE.slice(at, at + 900), /addTo\(map\)/);
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /layer\.setParams\(\{ time: frame\.time \}\)/);
+  assert.doesNotMatch(block, /addTo\(map\)/);
 });
 
 test('a frame is drawn into the video while its tiles are still on the page', () => {
@@ -364,4 +368,143 @@ test('every frame of the video is stamped with its own time', () => {
   // them was, which is the first question anybody asks of one.
   const at = SOURCE.indexOf('async function filmFrame');
   assert.match(SOURCE.slice(at, at + 1400), /stampFilm\(ctx, canvas, frame\)/);
+});
+
+// ── Loading faster, newest first ───────────────────────────────
+//
+// Asked for: make the live satellites load faster, and load the latest ones
+// first. Three things were in the way on this side.
+//
+// The walk fetched oldest first, so the eight-hour-old frame arrived before
+// the present one. It started at the same moment as the layer on screen and
+// queued its requests in front of it. And the two layers built their tile
+// addresses with the parameters in a different order, so the browser never
+// once found a fetched-ahead tile again -- every frame was downloaded twice.
+
+const MEANWHILE = Array.from({ length: 6 }, (_, n) => ({
+  label: `1${n}:00`, at: '2026-10-11', time: `2026-10-11T1${n}:00:00Z` }));
+
+test('the walk fetches the newest frame first', () => {
+  const order = warmOrder(MEANWHILE);
+  assert.equal(order[0].time, '2026-10-11T15:00:00Z');
+  assert.equal(order.at(-1).time, '2026-10-11T10:00:00Z');
+});
+
+test('and every frame, once', () => {
+  const order = warmOrder(MEANWHILE);
+  assert.equal(order.length, MEANWHILE.length);
+  assert.deepEqual(new Set(order.map((f) => f.time)),
+                   new Set(MEANWHILE.map((f) => f.time)));
+});
+
+test('without reordering the list the loop plays from', () => {
+  // The scrubber and the loop index into this list. Reversed in place, the
+  // newest frame would become index 0 and "live" would show the oldest.
+  const before = MEANWHILE.map((f) => f.time);
+  warmOrder(MEANWHILE);
+  assert.deepEqual(MEANWHILE.map((f) => f.time), before);
+});
+
+test('nothing to walk is nothing, not an error', () => {
+  assert.deepEqual(warmOrder([]), []);
+  assert.deepEqual(warmOrder(undefined), []);
+});
+
+test('the loop still plays oldest to newest', () => {
+  // Fetching order is not playing order. Time goes forwards.
+  const at = SOURCE.indexOf('function play()');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /frameAt = 0;/);
+  assert.match(block, /frameAt = nextFrame\(on, frameAt\);/);
+});
+
+// Leaflet's own TileLayer options. Anything else handed to L.tileLayer.wms
+// becomes a URL parameter, in the order it was handed over.
+const LEAFLET_OWN = new Set(['pane', 'opacity', 'attribution', 'tileSize',
+  'zIndex', 'bounds', 'minZoom', 'maxZoom', 'className', 'uppercase', 'crs']);
+const inUrl = (opts) => Object.keys(opts).filter((k) => !LEAFLET_OWN.has(k));
+
+test('the layer on screen and the one fetching ahead ask for the same address', () => {
+  // The order is what matters: the browser cache matches an address
+  // character for character, and "...&time=X&width=" is not
+  // "...&width=...&time=X".
+  const shown = wmsOptions('mtg_fd:rgb_truecolour', '2026-10-11T15:00:00Z',
+    { opacity: 0.8, attribution: 'EUMETSAT' });
+  const ahead = wmsOptions('mtg_fd:rgb_truecolour', '2026-10-11T15:00:00Z',
+    { opacity: 0 });
+  assert.deepEqual(inUrl(shown), inUrl(ahead));
+  for (const key of inUrl(shown)) assert.equal(shown[key], ahead[key], key);
+});
+
+test('the time is always in it, even when there is no time to give', () => {
+  // Left out when empty, it would be added later by a retime -- at the end
+  // of the address instead of in its place, and the two layers would
+  // disagree again.
+  assert.ok(inUrl(wmsOptions('x', null)).includes('time'));
+  assert.equal(wmsOptions('x', null).time, '');
+  assert.equal(wmsOptions('x', undefined).time, '');
+});
+
+test('and it comes before anything Leaflet adds itself', () => {
+  // Leaflet appends width, height and crs after the options it was given. A
+  // time given afterwards lands behind them; given here it lands in front.
+  const keys = inUrl(wmsOptions('x', 't'));
+  assert.ok(keys.indexOf('time') > keys.indexOf('version'));
+  assert.ok(!keys.includes('width') && !keys.includes('crs'));
+});
+
+test('both layers are built through it', () => {
+  const show = SOURCE.slice(SOURCE.indexOf('function show()'));
+  assert.match(show.slice(0, show.indexOf('\n}\n')),
+    /L\.tileLayer\.wms\(catalogue\.wms, wmsOptions\(chosen\.layer\.id, timeParam\(\)/);
+  const oven = SOURCE.slice(SOURCE.indexOf('function heatOven('));
+  assert.match(oven.slice(0, oven.indexOf('\n}\n')),
+    /L\.tileLayer\.wms\(catalogue\.wms, wmsOptions\(chosen\.layer\.id, time,/);
+});
+
+test('the fetch-ahead layer is born with a time, not given one afterwards', () => {
+  assert.match(SOURCE, /const layer = heatOven\(frame\.time\);/);
+});
+
+test('and a layer just built for a frame is not retimed to the same frame', () => {
+  // setParams redraws: every tile in flight is cancelled and asked for again.
+  const at = SOURCE.indexOf('function oneFrame(');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.ok(block.indexOf('if (fresh) return;') > 0);
+  assert.ok(block.indexOf('if (fresh) return;') < block.indexOf('layer.setParams('));
+});
+
+test('retiming keeps the time key, even empty', () => {
+  const at = SOURCE.indexOf('function retime()');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /drawn\.setParams\(\{ time: timeParam\(\) \?\? '' \}\)/);
+});
+
+test('the frame on screen arrives before the walk starts', () => {
+  const at = SOURCE.indexOf('async function warm()');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.ok(block.indexOf('await onScreenLoaded();') > 0);
+  assert.ok(block.indexOf('await onScreenLoaded();')
+            < block.indexOf('for (const frame of warmOrder(frames))'));
+});
+
+test('but a slow tile on screen does not hold the walk back for ever', () => {
+  const at = SOURCE.indexOf('function onScreenLoaded()');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /setTimeout\(finish, ON_SCREEN_FIRST_MS\)/);
+  // And a layer that has already finished does not wait at all.
+  assert.match(block, /!layer\.isLoading\?\.\(\)/);
+});
+
+test('a refresh with nothing new does not rebuild the layer', () => {
+  // Rebuilding blanks the map while the tiles come back. Every five minutes,
+  // that would be the panel flickering by itself.
+  const at = SOURCE.indexOf('async function load()');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /drawn\.wmsParams\?\.layers === chosen\?\.layer\?\.id/);
+  assert.match(block, /!== \(timeParam\(\) \?\? ''\)\) retime\(\);/);
+});
+
+test('the panel asks for the newest frame every five minutes', () => {
+  assert.match(SOURCE, /const REFRESH_MS = 5 \* 60 \* 1000;/);
 });

@@ -681,7 +681,7 @@ class TestFetchingATile:
             asked.append(params)
             return self.Answer()
 
-        monkeypatch.setattr(copernicus.requests, "get", once)
+        monkeypatch.setattr(copernicus._session, "get", once)
         first = copernicus.tile({"layers": "x", "bbox": "1,2,3,4"})
         second = copernicus.tile({"layers": "x", "bbox": "1,2,3,4"})
         assert first == (b"PNGDATA", "image/png", False)
@@ -690,7 +690,7 @@ class TestFetchingATile:
 
     def test_what_is_forwarded_is_what_was_asked_for(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda url, params=None, **kw: (
                                 seen.update(params or {}), self.Answer())[1])
         copernicus.tile({"LAYERS": "x", "TIME": "t", "nonsense": "no"})
@@ -699,14 +699,14 @@ class TestFetchingATile:
     def test_an_error_page_is_not_cached_as_a_tile(self, monkeypatch):
         # A WMS answers an error as XML with a 200. Held, that would be a
         # broken tile served for twelve hours.
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda *a, **kw: self.Answer(b"<error/>", "text/xml"))
         with pytest.raises(copernicus.CopernicusError, match="rather than an image"):
             copernicus.tile({"layers": "x"})
         assert copernicus.tiles_held()["tiles"] == 0
 
     def test_a_refusal_is_said_rather_than_drawn(self, monkeypatch):
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda *a, **kw: self.Answer(code=503))
         with pytest.raises(copernicus.CopernicusError, match="503"):
             copernicus.tile({"layers": "x"})
@@ -715,7 +715,7 @@ class TestFetchingATile:
         def refuse(*a, **kw):
             raise copernicus.requests.RequestException("no route")
 
-        monkeypatch.setattr(copernicus.requests, "get", refuse)
+        monkeypatch.setattr(copernicus._session, "get", refuse)
         with pytest.raises(copernicus.CopernicusError, match="could not be reached"):
             copernicus.tile({"layers": "x"})
 
@@ -755,7 +755,7 @@ class TestNotAskingFortyTimesOver:
 
     def test_a_host_that_is_not_answering_is_asked_once(self, monkeypatch):
         tries = []
-        monkeypatch.setattr(copernicus.requests, "get", self._unreachable(tries))
+        monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
         for n in range(8):
             with pytest.raises(copernicus.CopernicusError):
                 copernicus.tile({"layers": "x", "bbox": f"{n}"})
@@ -763,7 +763,7 @@ class TestNotAskingFortyTimesOver:
 
     def test_the_refusal_still_says_why(self, monkeypatch):
         tries = []
-        monkeypatch.setattr(copernicus.requests, "get", self._unreachable(tries))
+        monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
         with pytest.raises(copernicus.CopernicusError):
             copernicus.tile({"layers": "x"})
         with pytest.raises(copernicus.CopernicusError, match="Read timed out"):
@@ -777,7 +777,7 @@ class TestNotAskingFortyTimesOver:
                 "(Caused by ReadTimeoutError('Read timed out. (read "
                 "timeout=12)'))")
 
-        monkeypatch.setattr(copernicus.requests, "get", refuse)
+        monkeypatch.setattr(copernicus._session, "get", refuse)
         with pytest.raises(copernicus.CopernicusError) as caught:
             copernicus.tile({"layers": "x"})
         assert "HTTPSConnectionPool" not in str(caught.value)
@@ -787,17 +787,17 @@ class TestNotAskingFortyTimesOver:
             self, monkeypatch):
         """The cache is most of the point of the breaker not covering it: an
         hour of frames already fetched should keep playing."""
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda *a, **kw: self.Answer())
         copernicus.tile({"layers": "x", "bbox": "held"})
-        monkeypatch.setattr(copernicus.requests, "get", self._unreachable([]))
+        monkeypatch.setattr(copernicus._session, "get", self._unreachable([]))
         with pytest.raises(copernicus.CopernicusError):
             copernicus.tile({"layers": "x", "bbox": "new"})
         assert copernicus.tile({"layers": "x", "bbox": "held"})[2] is True
 
     def test_it_stops_sulking_after_a_few_seconds(self, monkeypatch):
         tries = []
-        monkeypatch.setattr(copernicus.requests, "get", self._unreachable(tries))
+        monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
         with pytest.raises(copernicus.CopernicusError):
             copernicus.tile({"layers": "x"})
         assert copernicus.sulking()
@@ -811,7 +811,7 @@ class TestNotAskingFortyTimesOver:
 
     def test_a_host_that_answers_clears_the_memory_of_one_that_did_not(
             self, monkeypatch):
-        monkeypatch.setattr(copernicus.requests, "get", self._unreachable([]))
+        monkeypatch.setattr(copernicus._session, "get", self._unreachable([]))
         with pytest.raises(copernicus.CopernicusError):
             copernicus.tile({"layers": "x"})
         assert copernicus.sulking(), "the failure was not remembered at all"
@@ -819,7 +819,7 @@ class TestNotAskingFortyTimesOver:
         # the outage has to go with it, or the next failure's twenty seconds
         # would start from an outage that is over.
         monkeypatch.setattr(copernicus, "TILE_SULK_SECONDS", 0)
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda *a, **kw: self.Answer())
         assert copernicus.tile({"layers": "x"})[0] == b"PNGDATA"
         monkeypatch.setattr(copernicus, "TILE_SULK_SECONDS", 20)
@@ -828,7 +828,7 @@ class TestNotAskingFortyTimesOver:
     def test_a_refusal_with_a_status_is_not_a_reason_to_stop_asking(
             self, monkeypatch):
         """503 for one layer says nothing about the next: the host is there."""
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda *a, **kw: self.Answer(code=503))
         for n in range(3):
             with pytest.raises(copernicus.CopernicusError, match="503"):
@@ -841,7 +841,7 @@ class TestNotAskingFortyTimesOver:
 
     def test_the_timeout_asked_for_is_the_one_declared(self, monkeypatch):
         seen = {}
-        monkeypatch.setattr(copernicus.requests, "get",
+        monkeypatch.setattr(copernicus._session, "get",
                             lambda *a, **kw: (seen.update(kw), self.Answer())[1])
         copernicus.tile({"layers": "x"})
         assert seen["timeout"] == copernicus.TILE_TIMEOUT

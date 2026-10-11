@@ -19,12 +19,17 @@
 import { api } from './api.js';
 import { $, el } from './ui.js';
 
-// How often to ask the backend what the newest frame is. Meteosat publishes
-// every ten minutes and the rest a few times a day, so this is about a tab
-// that has been open a while catching up rather than about keeping pace --
-// and a quarter of an hour of a ten-minute cadence is at most one frame
-// behind, which the bar says out loud as an age.
-const REFRESH_MS = 15 * 60 * 1000;
+// How often to ask the backend what the newest frame is.
+//
+// Meteosat publishes every ten minutes. This was a quarter of an hour, on the
+// reasoning that it could then be at most one frame behind -- which was never
+// true, because the backend was holding the catalogue that says which frame is
+// newest for three hours, and every one of these refreshes got the same old
+// answer back. The backend now renews it behind the scenes once it is ten
+// minutes old, so asking every five minutes is what actually keeps the panel
+// within a frame or so of the satellite. The answer is a small piece of JSON
+// served from memory; asking is cheap.
+const REFRESH_MS = 5 * 60 * 1000;
 
 let map = null;
 let drawn = null;
@@ -68,34 +73,59 @@ export function initCopernicus(leafletMap) {
 
 // ── The layer ──────────────────────────────────────────────────
 
+/**
+ * The tile parameters, in one order, for every layer that asks for tiles.
+ *
+ * The order is the point. Leaflet builds a WMS tile's address from these in
+ * the order they were first set, and the browser's cache matches addresses
+ * character for character. The layer on screen used to be built with the
+ * time in it, and the layer fetching ahead was built without one and given a
+ * time afterwards -- so the same tile had two addresses, "...&time=X&width="
+ * on one and "...&width=...&time=X" on the other, and not one tile fetched
+ * ahead was ever found again by the loop. Every frame of every pass was
+ * downloaded twice, which is most of what made it slow.
+ *
+ * Built here, by one function, with the time always present, the two
+ * addresses are the same address and a frame fetched ahead is on screen
+ * from memory when the loop reaches it.
+ */
+export function wmsOptions(layerId, time, extra = {}) {
+  return {
+    layers: layerId,
+    format: 'image/png',
+    transparent: true,
+    // 1.3.0 is what the capabilities are read at, and mixing versions is how
+    // you get axis order wrong and the picture mirrored.
+    version: '1.3.0',
+    // Always set, even when there is nothing to set it to, so that it is
+    // always in the same place in the address. An empty one is dropped by
+    // the backend's allow-list on the way through rather than here.
+    time: time ?? '',
+    pane: 'copernicus',
+    ...extra,
+  };
+}
+
 function show() {
   drawn?.remove();
   drawn = null;
   if (!enabled || !chosen || !catalogue) return;
 
   let missing = 0;
-  drawn = L.tileLayer.wms(catalogue.wms, {
-    layers: chosen.layer.id,
-    format: 'image/png',
-    transparent: true,
-    // 1.3.0 is what the capabilities are read at, and mixing versions is how
-    // you get axis order wrong and the picture mirrored.
-    version: '1.3.0',
-    // Whichever moment the bar is showing. What that IS depends on the orbit,
-    // and the backend has already decided: a whole day for a satellite that
-    // flies over, an instant for one that stares.
-    //
-    // One instant from a polar orbiter is one orbit strip -- a few hundred
-    // kilometres of the planet and nothing else, which on a world map reads
-    // as a broken layer rather than as a satellite that has not been over the
-    // rest of the world yet. A WMS given a TIME range draws everything inside
-    // it, so a day is every pass that day, and at three hundred metres that
-    // is the globe.
-    ...(timeParam() ? { time: timeParam() } : {}),
-    pane: 'copernicus',
+  // Whichever moment the bar is showing. What that IS depends on the orbit,
+  // and the backend has already decided: a whole day for a satellite that
+  // flies over, an instant for one that stares.
+  //
+  // One instant from a polar orbiter is one orbit strip -- a few hundred
+  // kilometres of the planet and nothing else, which on a world map reads
+  // as a broken layer rather than as a satellite that has not been over the
+  // rest of the world yet. A WMS given a TIME range draws everything inside
+  // it, so a day is every pass that day, and at three hundred metres that
+  // is the globe.
+  drawn = L.tileLayer.wms(catalogue.wms, wmsOptions(chosen.layer.id, timeParam(), {
     opacity,
     attribution: catalogue.attribution,
-  });
+  }));
   // A swath does not cover the globe, so missing tiles are ordinary: a polar
   // orbiter has simply not been over that ground today. A run of them
   // everywhere means the layer has moved, which is worth saying rather than
@@ -131,7 +161,15 @@ async function load() {
     chosen = null;
   }
   buildDock();
-  show();
+  // The same product as is already drawn: move it on to the new frame, or
+  // leave it alone if there is no new frame. Tearing it down and building it
+  // again blanks the map for as long as the tiles take, and with a refresh
+  // every five minutes that would be the panel flickering on its own.
+  if (drawn && drawn.wmsParams?.layers === chosen?.layer?.id) {
+    if ((drawn.wmsParams.time ?? '') !== (timeParam() ?? '')) retime();
+  } else {
+    show();
+  }
   // Ahead of being asked for, so the loop does not stutter through its first
   // pass. Only where there is something to animate: a week of orbit strips is
   // seven pictures nobody is going to play.
@@ -438,6 +476,40 @@ let warming = null;      // the run in progress, so a new one can cancel it
 let warmed = 0;          // how many frames of the current layer are in hand
 let warmOf = 0;
 
+/**
+ * The order to fetch the frames in: newest first.
+ *
+ * It used to be oldest first, which is the order the loop plays in and the
+ * wrong order to fetch in. The newest frame is the one on screen and the one
+ * anybody opening a live panel is looking at; the one from eight hours ago is
+ * the one least likely to be wanted, and it was being fetched first while the
+ * present waited at the back of the queue. Scrubbing back from now, too, goes
+ * through the newest frames first -- so newest-first has the frames in hand
+ * in the order somebody reaches them.
+ *
+ * The loop still PLAYS oldest to newest. That is the direction time goes, and
+ * nothing about fetching changes it.
+ */
+export function warmOrder(frames) {
+  return [...(frames ?? [])].reverse();
+}
+
+// How long the walk waits for the frame on screen before starting anyway.
+// Long enough for an ordinary view to arrive, short enough that a slow tile
+// somewhere does not hold the rest of the eight hours back.
+const ON_SCREEN_FIRST_MS = 6000;
+
+/** Resolve once the layer on screen has finished, or after a while regardless. */
+function onScreenLoaded() {
+  return new Promise((done) => {
+    const layer = drawn;
+    if (!layer || !layer.isLoading?.()) { done(); return; }
+    const finish = () => { clearTimeout(bell); layer.off('load', finish); done(); };
+    const bell = setTimeout(finish, ON_SCREEN_FIRST_MS);
+    layer.on('load', finish);
+  });
+}
+
 /** Walk the frames, fetching each one, until they are all in hand. */
 async function warm() {
   const layer = chosen?.layer;
@@ -452,7 +524,13 @@ async function warm() {
   warmOf = frames.length;
   refreshBar();
 
-  for (const frame of frames) {
+  // The picture somebody is looking at, before any of the ones they are not.
+  // Started together, the walk's requests queued in front of the visible
+  // layer's in the browser's six connections, and the frame on screen -- the
+  // only one that mattered at that moment -- arrived last.
+  await onScreenLoaded();
+
+  for (const frame of warmOrder(frames)) {
     if (run.stop || !enabled) break;
     // eslint-disable-next-line no-await-in-loop
     await oneFrame(frame);
@@ -475,16 +553,13 @@ async function warm() {
  */
 let oven = null;
 
-function heatOven() {
+function heatOven(time) {
   if (oven || !map || !catalogue || !chosen) return oven;
-  oven = L.tileLayer.wms(catalogue.wms, {
-    layers: chosen.layer.id,
-    format: 'image/png',
-    transparent: true,
-    version: '1.3.0',
-    pane: 'copernicus',
+  // Through wmsOptions, with a time from the start, so every tile this asks
+  // for has exactly the address the layer on screen will ask for later.
+  oven = L.tileLayer.wms(catalogue.wms, wmsOptions(chosen.layer.id, time, {
     opacity: 0,
-  });
+  }));
   oven.addTo(map);
   return oven;
 }
@@ -497,7 +572,8 @@ function coolOven() {
 /** Fetch one frame invisibly, and hand back its loaded tile images. */
 function oneFrame(frame) {
   return new Promise((done) => {
-    const layer = heatOven();
+    const fresh = !oven;
+    const layer = heatOven(frame.time);
     if (!layer) { done([]); return; }
     let settled = false;
     const bell = setTimeout(finish, WARM_WAIT_MS);
@@ -512,6 +588,10 @@ function oneFrame(frame) {
       done([...(layer._container?.querySelectorAll('img') ?? [])]);
     }
     layer.on('load', finish);
+    // A layer just built for this frame is already asking for it. Retiming it
+    // to the same time would redraw it -- cancelling every tile in flight and
+    // asking for the same ones again.
+    if (fresh) return;
     try {
       layer.setParams({ time: frame.time });
     } catch {
@@ -729,8 +809,8 @@ function listedEveryday(families) {
  */
 function retime() {
   if (!drawn) { show(); return; }
-  const when = timeParam();
-  drawn.setParams(when ? { time: when } : {});
+  // Always the time key, even empty, so it keeps its place in the address.
+  drawn.setParams({ time: timeParam() ?? '' });
 }
 
 /** Scrolling over the bar walks the frames: down is back in time. */

@@ -244,20 +244,51 @@ def parse_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
 
 _xml: str | None = None
 _xml_at = 0.0
+_xml_renewing = False
+
+# How old the catalogue may get before it is fetched again in the background.
+#
+# The catalogue is what says which frame is newest. Held for three hours, a
+# satellite that publishes every ten minutes was being offered a "newest"
+# frame up to three hours old, and the panel's own fifteen-minute refresh
+# could not move it on -- every refresh got the same stale document back. So
+# the newest frame here is now at most this far behind EUMETSAT, plus however
+# long EUMETSAT takes to publish.
+#
+# Nobody waits for it. Past this age the held copy is still answered at once
+# and a fresh one is fetched behind it; only a catalogue past CACHE_SECONDS,
+# or none at all, is waited for.
+CAPABILITIES_FRESH_SECONDS = 10 * 60
 
 
 def capabilities(refresh: bool = False) -> str:
-    """EUMETSAT's catalogue, as it came. Fetched at most every few hours.
+    """EUMETSAT's catalogue, as it came. Never more than ten minutes behind.
 
     Shared rather than fetched per feature. The same document lists the
     lightning products, the Sentinel-3 imagery and everything else EUMETSAT
     serves, and it is a large file -- downloading it once per layer that wants
     a look would be three copies of several megabytes for no reason.
+
+    Stale-while-revalidate: a copy older than CAPABILITIES_FRESH_SECONDS is
+    still answered immediately, and the fresh one is fetched on a thread of
+    its own. The panel opens on what is held rather than on a multi-megabyte
+    download, and the next ask gets the newer frames.
     """
-    global _xml, _xml_at
+    global _xml_renewing
+    now = time.time()
     with _lock:
-        if _xml is not None and not refresh and time.time() - _xml_at < CACHE_SECONDS:
-            return _xml
+        held, age = _xml, now - _xml_at
+        if held is not None and not refresh and age < CACHE_SECONDS:
+            if age >= CAPABILITIES_FRESH_SECONDS and not _xml_renewing:
+                _xml_renewing = True
+                threading.Thread(target=_renew_capabilities, daemon=True).start()
+            return held
+    return _fetch_capabilities()
+
+
+def _fetch_capabilities() -> str:
+    """Download the catalogue and hold it. Raises MTGError."""
+    global _xml, _xml_at
     try:
         resp = requests.get(CAPABILITIES, timeout=40,
                             headers={"User-Agent": config.USER_AGENT})
@@ -268,6 +299,21 @@ def capabilities(refresh: bool = False) -> str:
     with _lock:
         _xml, _xml_at = resp.text, time.time()
     return resp.text
+
+
+def _renew_capabilities() -> None:
+    """The background half. A failure keeps the copy already held."""
+    global _xml_renewing
+    try:
+        _fetch_capabilities()
+    except MTGError:
+        # The held copy goes on being answered, and the next ask past the
+        # fresh window tries again. A catalogue a few minutes staler than
+        # wanted is a better answer than an error.
+        pass
+    finally:
+        with _lock:
+            _xml_renewing = False
 
 
 def _fetch() -> dict[str, Any]:

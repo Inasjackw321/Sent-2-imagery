@@ -589,6 +589,39 @@ TILE_SULK_SECONDS = 20
 
 _tile_trouble: tuple[str, float] = ("", 0.0)
 
+# One connection pool to EUMETSAT, kept open between tiles.
+#
+# Every tile used to be a bare requests.get, which is a new TCP connection and
+# a new TLS handshake per tile -- two or three round trips to another country
+# before the first byte of a picture a few tens of kilobytes long. A frame is
+# thirty-odd tiles and the loop is forty-eight frames, so the handshakes were a
+# good share of the whole wait. Pooled, a tile after the first rides a
+# connection that is already open.
+#
+# Sized for the browser's side of it: six connections per origin, two layers
+# (the one on screen and the one fetching ahead), and some slack for a second
+# person watching.
+TILE_POOL = 16
+_session = requests.Session()
+_session.mount("https://", requests.adapters.HTTPAdapter(
+    pool_connections=2, pool_maxsize=TILE_POOL))
+_session.headers["User-Agent"] = config.USER_AGENT
+
+# Tiles being fetched right now, so a second ask for the same one waits for
+# the first rather than fetching it again.
+#
+# This is the case "newest first" creates on purpose: the walk ahead starts on
+# the newest frame, which is the frame already on screen, so for the first
+# second both layers want exactly the same thirty tiles. Without this they went
+# upstream twice.
+_inflight: dict[str, threading.Event] = {}
+_inflight_lock = threading.Lock()
+
+# How long a second asker waits for the first before giving up and asking
+# itself. Longer than one tile's own timeout, so it only lapses if the first
+# fetch has hung somewhere this cannot see.
+INFLIGHT_WAIT = TILE_TIMEOUT + 3
+
 _tiles: "collections.OrderedDict[str, tuple[bytes, str, float]]" = \
     collections.OrderedDict()
 _tiles_bytes = 0
@@ -612,6 +645,13 @@ def tile_params(asked: dict[str, str]) -> dict[str, str]:
         low = str(key).lower()
         if low in TILE_PARAMS and value is not None:
             out[low] = str(value)
+    # An empty time is "no time", not a time of nothing. The page always sends
+    # the parameter, so that the tile's address is the same however the layer
+    # asking for it was built -- but forwarded empty, a strict WMS answers
+    # TIME= with an exception rather than with the default frame. Only time:
+    # an empty STYLES is required by WMS 1.3.0 and has to go through as it is.
+    if out.get("time") == "":
+        del out["time"]
     return out
 
 
@@ -712,9 +752,36 @@ def tile(asked: dict[str, str]) -> tuple[bytes, str, bool]:
     known = sulking()
     if known:
         raise CopernicusError(known)
+
+    # Somebody already fetching this exact tile? Wait for theirs.
+    with _inflight_lock:
+        running = _inflight.get(key)
+        if running is None:
+            _inflight[key] = mine = threading.Event()
+    if running is not None:
+        running.wait(INFLIGHT_WAIT)
+        had = cached_tile(key)
+        if had is not None:
+            return had[0], had[1], True
+        # Theirs failed or hung. Asking again is the honest answer: the
+        # failure might have been theirs alone, and if the host is down the
+        # breaker above will say so without a second wait.
+        known = sulking()
+        if known:
+            raise CopernicusError(known)
+        return _fetch_tile(key, params)
     try:
-        resp = requests.get(mtg.WMS, params=params, timeout=TILE_TIMEOUT,
-                            headers={"User-Agent": config.USER_AGENT})
+        return _fetch_tile(key, params)
+    finally:
+        with _inflight_lock:
+            _inflight.pop(key, None)
+        mine.set()
+
+
+def _fetch_tile(key: str, params: dict[str, str]) -> tuple[bytes, str, bool]:
+    """Ask EUMETSAT for one tile, over the pooled connection, and hold it."""
+    try:
+        resp = _session.get(mtg.WMS, params=params, timeout=TILE_TIMEOUT)
     except requests.RequestException as exc:
         said = f"EUMETSAT View could not be reached: {reasons.why(exc)}"
         _tile_trouble_was(said)
