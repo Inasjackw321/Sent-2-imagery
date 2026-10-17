@@ -253,6 +253,7 @@ def get_config() -> dict[str, Any]:
         "connectivity": {
             "windows": {str(k): v for k, v in connectivity.WINDOWS.items()},
             "default_window": connectivity.DEFAULT_WINDOW,
+            "history": {str(k): v for k, v in connectivity.HISTORY.items()},
             "attribution": connectivity.ATTRIBUTION,
         },
         "fires": {
@@ -373,6 +374,33 @@ def internet_connectivity(
         return connectivity.probes(box, hours=hours)
     except connectivity.ConnectivityError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/connectivity/probe.png")
+def connectivity_probe_graph(
+    id: int = Query(..., ge=1, le=10_000_000),
+    hours: int = Query(connectivity.DEFAULT_HISTORY, ge=1, le=168),
+    # Only read by the demo build, so a synthetic probe's graph agrees with
+    # the colour of the dot that was clicked. The real one asks RIPE.
+    state: str = Query("up", max_length=8),
+    since: str = Query("", max_length=40),
+) -> Response:
+    """One probe's last day or week, drawn: online/offline, and round trip.
+
+    Drawn here, like the seismograph traces, so a probe RIPE will not answer
+    for says so in words rather than as a broken image.
+    """
+    if config.DEMO_MODE:
+        found = connectivity.demo_history(id, hours, state=state, since=since or None)
+    else:
+        try:
+            found = connectivity.history(id, hours)
+        except connectivity.ConnectivityError as exc:
+            raise _fail(exc)
+    return Response(content=connectivity.plot(found), media_type="image/png",
+                    # It moves on every few minutes, so a cached copy would
+                    # quietly stop being live.
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/fires")

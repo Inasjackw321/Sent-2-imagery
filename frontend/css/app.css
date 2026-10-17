@@ -529,6 +529,20 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .net-window:hover { color: var(--ink); }
 .net-window.is-active { border-color: #3ddc84; color: #3ddc84; }
+/* How far back a probe's graph looks: a quieter row than the window above,
+   because it changes what a click shows rather than what the map shows. */
+.net-graphs {
+  display: grid; grid-template-columns: auto 1fr 1fr; gap: 5px;
+  align-items: center; margin-top: 6px;
+}
+.net-graphs-label { font-size: 10px; color: var(--ink-faint); padding-right: 3px; }
+.net-span {
+  padding: 3px 2px; font: inherit; font-size: 10.5px; cursor: pointer;
+  background: none; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.net-span:hover { color: var(--ink); }
+.net-span.is-active { border-color: #7ed6ff; color: #7ed6ff; }
 .net-count { margin: 9px 0 8px; color: var(--ink); line-height: 1.4; }
 .net-count .dim { color: var(--ink-faint); }
 .net-bad { color: #ff6b6b; }

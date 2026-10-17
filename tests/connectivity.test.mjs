@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { countLine, STATES } from '../frontend/js/connectivity.js';
+import { countLine, isGraphWindow, STATES, whereSaid } from '../frontend/js/connectivity.js';
 
 const SOURCE = readFileSync(
   new URL('../frontend/js/connectivity.js', import.meta.url), 'utf8');
@@ -103,8 +103,11 @@ test('an owner\'s description is shown as text, not markup', () => {
 });
 
 test('the link to the probe is escaped and opens safely', () => {
-  assert.match(SOURCE, /encodeURIComponent\(probe\.id\)/);
-  assert.match(SOURCE, /rel: 'noopener noreferrer'/);
+  // On the graph window's own out-link now, which the window opens with
+  // noopener -- one place that does it right rather than one per panel.
+  assert.match(SOURCE, /link: `https:\/\/atlas\.ripe\.net\/probes\/\$\{encodeURIComponent\(probe\.id\)\}\/`/);
+  const windows = readFileSync(new URL('../frontend/js/windows.js', import.meta.url), 'utf8');
+  assert.match(windows, /class: 'win-out', href: link, target: '_blank', rel: 'noopener noreferrer'/);
 });
 
 // ── Asking ─────────────────────────────────────────────────────
@@ -156,4 +159,86 @@ test('a probe is clicked through a target wider than the dot', () => {
   // And the dot itself does not compete with its own target for the click.
   assert.match(SOURCE, /opacity: state === 'up' \? 0\.5 : 0\.95,\s*interactive: false,/);
   assert.ok(Object.values(STATES).every((s) => s.radius < 10));
+});
+
+// ── Each probe's graph, like a seismograph's trace ─────────────
+
+const block = (start) => {
+  const at = SOURCE.indexOf(start);
+  assert.ok(at >= 0, `${start} should exist`);
+  return SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+};
+
+test('clicking a probe opens its graph, the way clicking a station does', () => {
+  assert.match(SOURCE, /\.on\('click', \(\) => openGraph\(probe\)\)/);
+  assert.doesNotMatch(SOURCE, /bindPopup/);
+});
+
+test('and clicking it again closes it', () => {
+  assert.match(block('function openGraph('), /if \(isOpen\(id\) && !redraw\) \{\s*closeWindow\(id\);\s*return;/);
+});
+
+test('it redraws itself every minute while it is open', () => {
+  assert.match(SOURCE, /const GRAPH_REFRESH_MS = 60000;/);
+  const open = block('function openGraph(');
+  assert.match(open, /setInterval\(\(\) => \{[\s\S]*?fetchGraph\([\s\S]*?\{ quiet: true \}\)/);
+  // One timer per window, never two.
+  assert.ok(/stopTicking\(id\);\s*\n\s*ticking\.set\(id, setInterval/.test(open));
+});
+
+test('and stops when it is closed, or when the layer is switched off', () => {
+  assert.match(block('function openGraph('), /onClose: \(\) => \{\s*graphs\.delete\(id\);\s*stopTicking\(id\);/);
+  assert.match(block('function toggle()'), /closeAll\(isGraphWindow\);/);
+  assert.match(block('function openGraph('), /if \(!isOpen\(id\)\) \{ stopTicking\(id\); return; \}/);
+});
+
+test('its windows are told apart from every other kind', () => {
+  assert.equal(isGraphWindow('net:123'), true);
+  assert.equal(isGraphWindow('trace:AM.R1F39'), false);
+  assert.equal(isGraphWindow('cam:tulcea'), false);
+});
+
+test('a failed refresh keeps the graph that is there, and says so', () => {
+  const fetchBlock = block('async function fetchGraph(');
+  assert.match(fetchBlock, /if \(quiet && plot\.querySelector\('img'\)\)/);
+  assert.match(fetchBlock, /not updating — \$\{err\.message\}/);
+});
+
+test('a slow answer cannot overwrite a newer one', () => {
+  const fetchBlock = block('async function fetchGraph(');
+  assert.match(fetchBlock, /if \(tokens\.get\(id\) !== token\) \{ URL\.revokeObjectURL\(blobUrl\); return; \}/);
+});
+
+test('each refresh hands its old picture back', () => {
+  assert.match(block('async function fetchGraph('),
+    /if \(previous && previous !== blobUrl\) URL\.revokeObjectURL\(previous\);/);
+});
+
+test('changing the span redraws the graphs already open', () => {
+  assert.match(block('function setHistory('),
+    /for \(const probe of \[\.\.\.graphs\.values\(\)\]\) openGraph\(probe, \{ redraw: true \}\);/);
+});
+
+test('the title bar says what the probe is doing and since when', () => {
+  const said = whereSaid({ state: 'down', since: new Date(Date.now() - 2 * 3.6e6).toISOString(),
+                           country: 'UA', asn: 15895 });
+  assert.match(said, /^Went offline .* ago · UA · AS15895$/);
+  assert.equal(whereSaid({ state: 'up', country: null, asn: null }), 'Online');
+});
+
+test('the note under it says how to read the lines', () => {
+  const note = block('function graphNote(');
+  assert.match(note, /online \(green\) and offline \(red\)/);
+  assert.match(note, /round trip to k\.root-servers\.net/);
+  assert.match(note, /lost /);
+});
+
+test('it looks like the seismograph windows', () => {
+  // The same plot, waiting and live-stamp classes, so the two kinds of graph
+  // read as one kind of thing.
+  const open = block('function openGraph(');
+  assert.match(open, /el\('div', \{ class: 'trace-plot' \}\)/);
+  assert.match(open, /el\('div', \{ class: 'trace-wait' \}/);
+  assert.match(open, /el\('div', \{ class: 'trace-live', 'data-live': '' \}/);
+  assert.ok(CSS.includes('.net-span {'));
 });

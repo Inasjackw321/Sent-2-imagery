@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import io
 import math
 import threading
 import time
@@ -392,3 +393,361 @@ def demo(bbox: tuple[float, float, float, float], hours: int = DEFAULT_WINDOW,
     out = shape(raw, hours if hours in WINDOWS else DEFAULT_WINDOW, bbox, now=now)
     out["demo"] = True
     return out
+
+
+# ── One probe over time ────────────────────────────────────────
+#
+# The map says what each probe is doing now. Clicking one asks what it has
+# been doing: when it was online, and how good its connection was while it
+# was. Two of the measurements every probe runs on its own, with no account
+# needed to read them:
+#
+#   7000  every connect and disconnect, as it happens -- the online/offline
+#         band along the top of the graph;
+#   1001  a ping to k.root-servers.net every few minutes, over IPv4 -- the
+#         round-trip time and any lost packets underneath it.
+#
+# The ping is what makes a graph worth more than the dot. A connection that
+# is about to fail often degrades first: the round trip climbs, packets start
+# going missing. And a probe that stays connected while its pings die is a
+# network that is up but not reaching the rest of the internet.
+
+RESULTS_URL = "https://atlas.ripe.net/api/v2/measurements/{msm}/results/"
+PROBE_URL = "https://atlas.ripe.net/api/v2/probes/{id}/"
+CONNECTION_MSM = 7000
+PING_MSM = 1001
+PING_TARGET = "k.root-servers.net"
+
+# How far back a graph can look.
+HISTORY = {24: "24 h", 168: "7 days"}
+DEFAULT_HISTORY = 24
+
+# How long one probe's history is held. The graph window refreshes itself every
+# minute, like the seismograph traces, and a probe pings every four -- so this
+# is about two windows open on the same probe not asking twice.
+HISTORY_SECONDS = 60
+HISTORY_HELD = 64
+
+PLOT_SIZE = (760, 260)
+
+_history_held: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
+
+
+def _results(msm: int, probe_id: int, start: dt.datetime, stop: dt.datetime,
+             get: Any) -> list[dict[str, Any]]:
+    send = get or _session.get
+    try:
+        resp = send(RESULTS_URL.format(msm=msm), params={
+            "probe_ids": probe_id,
+            "start": int(start.timestamp()),
+            "stop": int(stop.timestamp()),
+            "format": "json",
+        }, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise ConnectivityError(f"RIPE Atlas could not be reached: {exc}") from exc
+    if not getattr(resp, "ok", False):
+        raise ConnectivityError(
+            f"RIPE Atlas answered {getattr(resp, 'status_code', '?')} "
+            f"for measurement {msm}")
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise ConnectivityError("RIPE Atlas sent something that is not JSON") from exc
+    return body if isinstance(body, list) else []
+
+
+def read_events(results: list[dict[str, Any]]) -> list[tuple[float, str]]:
+    """(unix time, "up" | "down") for every connect and disconnect, in order."""
+    out = []
+    for row in results:
+        said = str(row.get("event") or "").lower()
+        when = row.get("timestamp")
+        if not isinstance(when, (int, float)):
+            continue
+        if said.startswith("disconnect"):
+            out.append((float(when), "down"))
+        elif said.startswith("connect"):
+            out.append((float(when), "up"))
+    out.sort()
+    return out
+
+
+def read_pings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One point per ping round: when, the round trip, and how much was lost.
+
+    The round trip is the median of the replies that came back rather than
+    RIPE's average, so one slow reply out of three does not drag the line up.
+    A round with nothing back has no round trip at all -- not zero, which
+    would draw the worst moment as the best.
+    """
+    out = []
+    for row in results:
+        when = row.get("timestamp")
+        if not isinstance(when, (int, float)):
+            continue
+        replies = sorted(r["rtt"] for r in (row.get("result") or [])
+                         if isinstance(r, dict) and isinstance(r.get("rtt"), (int, float)))
+        sent = int(row.get("sent") or len(row.get("result") or []) or 0)
+        got = int(row.get("rcvd") if row.get("rcvd") is not None else len(replies))
+        rtt = None
+        if replies:
+            middle = len(replies) // 2
+            rtt = (replies[middle] if len(replies) % 2
+                   else (replies[middle - 1] + replies[middle]) / 2)
+        elif isinstance(row.get("avg"), (int, float)) and row["avg"] >= 0:
+            rtt = float(row["avg"])
+        out.append({"t": float(when), "rtt": rtt, "sent": sent, "rcvd": got,
+                    "lost": (sent - got) / sent if sent else 0.0})
+    out.sort(key=lambda p: p["t"])
+    return out
+
+
+def timeline(events: list[tuple[float, str]], now_state: str | None,
+             start: float, end: float) -> list[tuple[float, float, str]]:
+    """The window cut into stretches of online and offline.
+
+    What it was doing before the first event is the opposite of that event --
+    a probe that connected at noon was not connected at eleven. With no events
+    at all, it was doing all window what it is doing now.
+    """
+    inside = [(t, s) for t, s in events if start <= t <= end]
+    if inside:
+        state = "down" if inside[0][1] == "up" else "up"
+    else:
+        state = now_state or "unknown"
+    out = []
+    at = start
+    for when, became in inside:
+        if when > at:
+            out.append((at, when, state))
+        at, state = when, became
+    if end > at:
+        out.append((at, end, state))
+    return out
+
+
+def history(probe_id: int, hours: int = DEFAULT_HISTORY, get: Any = None,
+            now: dt.datetime | None = None) -> dict[str, Any]:
+    """What one probe has been doing over the last day or week."""
+    if hours not in HISTORY:
+        hours = DEFAULT_HISTORY
+    key = (int(probe_id), hours)
+    if get is None:
+        with _lock:
+            held = _history_held.get(key)
+        if held and time.time() - held[0] < HISTORY_SECONDS:
+            return held[1]
+    now = now or dt.datetime.now(dt.timezone.utc)
+    start = now - dt.timedelta(hours=hours)
+
+    send = get or _session.get
+    try:
+        resp = send(PROBE_URL.format(id=int(probe_id)), params={"format": "json"},
+                    timeout=TIMEOUT)
+        about = resp.json() if getattr(resp, "ok", False) else {}
+    except (requests.RequestException, ValueError):
+        # The probe's own record is for the label and for what it is doing
+        # now. Without it the graph is still the graph.
+        about = {}
+    status = status_of(about) if about else None
+    now_state = {CONNECTED: "up", DISCONNECTED: "down"}.get(status)
+
+    events = read_events(_results(CONNECTION_MSM, probe_id, start, now, get))
+    try:
+        pings = read_pings(_results(PING_MSM, probe_id, start, now, get))
+        ping_trouble = ""
+    except ConnectivityError as exc:
+        # The online band is the part asked for. Pings that would not come
+        # are said on the graph rather than costing the band too.
+        pings, ping_trouble = [], str(exc)
+
+    answer = {
+        "id": int(probe_id),
+        "hours": hours,
+        "start": start.timestamp(),
+        "end": now.timestamp(),
+        "events": events,
+        "segments": timeline(events, now_state, start.timestamp(), now.timestamp()),
+        "pings": pings,
+        "ping_trouble": ping_trouble,
+        "asn": about.get("asn_v4") or about.get("asn_v6"),
+        "country": str(about.get("country_code") or "").upper() or None,
+    }
+    if get is None:
+        with _lock:
+            if len(_history_held) >= HISTORY_HELD:
+                _history_held.pop(min(_history_held, key=lambda k: _history_held[k][0]), None)
+            _history_held[key] = (time.time(), answer)
+    return answer
+
+
+# ── Drawing it ─────────────────────────────────────────────────
+
+_UP = (61, 220, 132)
+_DOWN = (255, 77, 79)
+_UNKNOWN = (90, 100, 116)
+_LINE = (126, 214, 255)
+_PARTLY = (255, 209, 102)
+
+
+def plot(found: dict[str, Any]) -> bytes:
+    """The graph: online/offline along the top, the round trip beneath.
+
+    Offline stretches are shaded red right down through the round-trip
+    panel too, so a gap in the line is read as the outage it is rather than
+    as missing data.
+    """
+    from PIL import Image, ImageDraw
+
+    width, height = PLOT_SIZE
+    image = Image.new("RGB", (width, height), (12, 15, 20))
+    draw = ImageDraw.Draw(image)
+    left, right = 46, width - 12
+    # The band sits a little way down rather than at the very top: the window
+    # puts its "updated" stamp over the top-right corner, and the right-hand
+    # end of the band is exactly where a current outage is drawn.
+    band_top, band_bottom = 40, 52
+    top, bottom = 62, height - 34
+    start, end = found["start"], found["end"]
+    span = max(end - start, 1.0)
+
+    def x_of(t: float) -> float:
+        return left + (min(max(t, start), end) - start) / span * (right - left)
+
+    # Grid, and the times along the bottom.
+    hours = found["hours"]
+    ticks = 6 if hours <= 24 else 7
+    for i in range(ticks + 1):
+        t = start + span * i / ticks
+        x = x_of(t)
+        draw.line([(x, top), (x, bottom)], fill=(28, 34, 45))
+        when = dt.datetime.fromtimestamp(t, dt.timezone.utc)
+        label = when.strftime("%H:%M") if hours <= 24 else when.strftime("%d %b")
+        draw.text((x - 14, bottom + 4), label, fill=(120, 134, 152))
+
+    # The band: online, offline, and unknown where nothing said either.
+    for a, b, state in found["segments"]:
+        colour = {"up": _UP, "down": _DOWN}.get(state, _UNKNOWN)
+        draw.rectangle([x_of(a), band_top, max(x_of(b), x_of(a) + 1), band_bottom],
+                       fill=colour)
+        if state == "down":
+            # And faintly through the panel below, so the gap in the line
+            # lines up with the reason for it.
+            shade = Image.new("RGB", (max(int(x_of(b) - x_of(a)), 1), bottom - top),
+                              (70, 18, 22))
+            image.paste(shade, (int(x_of(a)), top))
+    draw = ImageDraw.Draw(image)
+
+    pings = found["pings"]
+    rtts = sorted(p["rtt"] for p in pings if p["rtt"] is not None)
+    if rtts:
+        # Scaled to the 98th percentile, so one huge spike does not flatten
+        # everything else into the floor -- and never tighter than 20 ms, so
+        # a steady 4 ms line is drawn as steady rather than as wild.
+        ceiling = max(rtts[min(len(rtts) - 1, int(len(rtts) * 0.98))] * 1.25, 20.0)
+        for value in (0, ceiling / 2, ceiling):
+            y = bottom - value / ceiling * (bottom - top)
+            draw.text((4, y - 6), f"{value:.0f}", fill=(120, 134, 152))
+        # Points are joined only when they are near each other in time. A line
+        # across an hour with no results would draw a round trip nobody
+        # measured.
+        step = _usual_step(pings)
+        last = None
+        for p in pings:
+            if p["rtt"] is None:
+                last = None
+                continue
+            y = bottom - min(p["rtt"], ceiling) / ceiling * (bottom - top)
+            here = (x_of(p["t"]), y)
+            if last and p["t"] - last[0] <= step * 3:
+                draw.line([last[1], here], fill=_LINE)
+            else:
+                draw.point(here, fill=_LINE)
+            last = (p["t"], here)
+    else:
+        message = (found.get("ping_trouble")
+                   or f"No IPv4 pings to {PING_TARGET} from this probe in the window")
+        draw.text((left + 10, (top + bottom) // 2 - 6), message[:110], fill=(150, 165, 185))
+
+    # Loss, as ticks along the floor: red where nothing came back, amber where
+    # some did. On the floor rather than as points on the line, because a
+    # round with nothing back has no round trip to put a point at.
+    for p in pings:
+        if p["sent"] and p["rcvd"] < p["sent"]:
+            x = x_of(p["t"])
+            colour = _DOWN if p["rcvd"] == 0 else _PARTLY
+            draw.line([(x, bottom - 7), (x, bottom)], fill=colour)
+
+    who = " · ".join(str(v) for v in (
+        f"Probe {found['id']}", found.get("country"),
+        f"AS{found['asn']}" if found.get("asn") else None) if v)
+    draw.text((left, 9), f"{who}   online / offline", fill=(150, 165, 185))
+    draw.text((left, height - 16),
+              f"round trip to {PING_TARGET}, ms   -   RIPE Atlas measurements "
+              f"{CONNECTION_MSM} and {PING_MSM}", fill=(120, 134, 152))
+    # The ticks, said in their own colours.
+    draw.text((right - 190, height - 16), "ticks: lost", fill=(120, 134, 152))
+    draw.text((right - 120, height - 16), "all", fill=_DOWN)
+    draw.text((right - 96, height - 16), "some", fill=_PARTLY)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _usual_step(pings: list[dict[str, Any]]) -> float:
+    """How far apart this probe's pings usually are, in seconds."""
+    gaps = sorted(b["t"] - a["t"] for a, b in zip(pings, pings[1:]) if b["t"] > a["t"])
+    return gaps[len(gaps) // 2] if gaps else 240.0
+
+
+def demo_history(probe_id: int, hours: int = DEFAULT_HISTORY, state: str = "up",
+                 since: str | None = None, now: dt.datetime | None = None) -> dict[str, Any]:
+    """A believable history for a demo probe, agreeing with its dot.
+
+    Told the state and time the map is showing, because a demo probe drawn red
+    whose graph said it had been online all day would look exactly like a bug.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if hours not in HISTORY:
+        hours = DEFAULT_HISTORY
+    start = now - dt.timedelta(hours=hours)
+    try:
+        changed = dt.datetime.fromisoformat(str(since).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        changed = None
+    events: list[tuple[float, str]] = []
+    if changed and changed > start.timestamp():
+        became = "down" if state in ("down", "gone") else "up"
+        events.append((changed, became))
+        if became == "up":
+            # Came back, so it went away first.
+            events.insert(0, (changed - 50 * 60, "down"))
+    events = [(t, s) for t, s in events if t >= start.timestamp()]
+    seed = int(probe_id) % 97
+    pings = []
+    t = start.timestamp()
+    # Up to now, not including it: the timeline's stretches end at now, so a
+    # ping stamped exactly now would fall outside the last one and be drawn
+    # in the middle of an outage.
+    while t < now.timestamp():
+        offline = any(a <= t < b and s == "down" for a, b, s in
+                      timeline(events, "down" if state in ("down", "gone") else "up",
+                               start.timestamp(), now.timestamp()))
+        if not offline:
+            hour = dt.datetime.fromtimestamp(t, dt.timezone.utc).hour
+            busy = 1 + 0.35 * math.sin((hour - 14) / 24 * 2 * math.pi)
+            rtt = (12 + seed % 30) * busy + 3 * math.sin(t / 900 + seed)
+            lost = 1 if (int(t) // 240 + seed) % 61 == 0 else 0
+            pings.append({"t": t, "rtt": round(rtt, 2), "sent": 3, "rcvd": 3 - lost,
+                          "lost": lost / 3})
+        t += 240
+    return {
+        "id": int(probe_id), "hours": hours,
+        "start": start.timestamp(), "end": now.timestamp(),
+        "events": events,
+        "segments": timeline(events, "down" if state in ("down", "gone") else "up",
+                             start.timestamp(), now.timestamp()),
+        "pings": pings, "ping_trouble": "", "asn": 15895, "country": "UA",
+        "demo": True,
+    }

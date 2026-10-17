@@ -386,3 +386,255 @@ class TestTheRoute:
 
         from backend import app
         assert '"RIPE Atlas"' in inspect.getsource(app.selftest)
+
+
+# ── One probe over time: the graph ─────────────────────────────
+
+T0 = NOW.timestamp()
+
+
+class TestReadingRipeResults:
+    def test_connects_and_disconnects_in_time_order(self):
+        got = net.read_events([
+            {"timestamp": T0 - 60, "event": "connect"},
+            {"timestamp": T0 - 600, "event": "disconnect"},
+            {"timestamp": T0 - 30, "event": "something else"},
+            {"event": "connect"},  # no time: cannot be placed
+        ])
+        assert got == [(T0 - 600, "down"), (T0 - 60, "up")]
+
+    def test_a_ping_round_is_its_median_not_its_mean(self):
+        """One slow reply out of three would drag a mean up; the median is
+        what the connection was doing."""
+        got = net.read_pings([{"timestamp": T0, "sent": 3, "rcvd": 3,
+                               "result": [{"rtt": 10}, {"rtt": 11}, {"rtt": 300}]}])
+        assert got[0]["rtt"] == 11
+
+    def test_a_round_with_nothing_back_has_no_round_trip_not_zero(self):
+        """Zero would draw the worst moment as the best."""
+        got = net.read_pings([{"timestamp": T0, "sent": 3, "rcvd": 0, "avg": -1,
+                               "result": [{"x": "*"}, {"x": "*"}, {"x": "*"}]}])
+        assert got[0]["rtt"] is None
+        assert got[0]["lost"] == 1.0
+
+    def test_partial_loss_is_counted(self):
+        got = net.read_pings([{"timestamp": T0, "sent": 3, "rcvd": 2,
+                               "result": [{"rtt": 9}, {"x": "*"}, {"rtt": 11}]}])
+        assert got[0]["rtt"] == 10
+        assert got[0]["lost"] == pytest.approx(1 / 3)
+
+    def test_an_average_is_used_only_when_there_are_no_replies_listed(self):
+        got = net.read_pings([{"timestamp": T0, "sent": 3, "rcvd": 3, "avg": 14.5}])
+        assert got[0]["rtt"] == 14.5
+
+
+class TestTimeline:
+    def test_before_the_first_event_it_was_the_opposite(self):
+        """A probe that connected at noon was not connected at eleven."""
+        got = net.timeline([(T0 - 100, "up")], "up", T0 - 1000, T0)
+        assert got == [(T0 - 1000, T0 - 100, "down"), (T0 - 100, T0, "up")]
+
+    def test_no_events_is_all_window_whatever_it_is_now(self):
+        assert net.timeline([], "up", T0 - 1000, T0) == [(T0 - 1000, T0, "up")]
+        assert net.timeline([], None, T0 - 1000, T0) == [(T0 - 1000, T0, "unknown")]
+
+    def test_an_outage_and_a_recovery(self):
+        got = net.timeline([(T0 - 600, "down"), (T0 - 300, "up")], "up", T0 - 1000, T0)
+        assert [s for _a, _b, s in got] == ["up", "down", "up"]
+        assert got[1] == (T0 - 600, T0 - 300, "down")
+
+    def test_events_outside_the_window_are_ignored(self):
+        got = net.timeline([(T0 - 5000, "down")], "up", T0 - 1000, T0)
+        assert got == [(T0 - 1000, T0, "up")]
+
+    def test_the_stretches_cover_the_window_exactly(self):
+        got = net.timeline([(T0 - 900, "down"), (T0 - 500, "up"), (T0 - 200, "down")],
+                           "down", T0 - 1000, T0)
+        assert got[0][0] == T0 - 1000 and got[-1][1] == T0
+        for (a, b, _s), (c, _d, _t) in zip(got, got[1:]):
+            assert b == c
+
+
+def ripe(probe_record=None, connections=(), pings=(), ping_status=200):
+    """A stand-in for the three things a graph asks RIPE for."""
+    asked = []
+
+    def get(url, params=None, timeout=None):
+        asked.append((url, dict(params or {})))
+        if "/probes/" in url:
+            return Reply(probe_record or {"status": {"id": 1}, "asn_v4": 1, "country_code": "ua"})
+        if "/7000/" in url:
+            return Reply(list(connections))
+        if "/1001/" in url:
+            return Reply(list(pings), status=ping_status)
+        raise AssertionError(url)
+    return get, asked
+
+
+class TestHistory:
+    def test_asks_for_this_probe_and_this_window_only(self):
+        get, asked = ripe()
+        net.history(4242, 24, get=get, now=NOW)
+        results = [p for u, p in asked if "/results/" in u]
+        assert {p["probe_ids"] for p in results} == {4242}
+        assert all(p["stop"] - p["start"] == 24 * 3600 for p in results)
+        assert any("/7000/" in u for u, _ in asked) and any("/1001/" in u for u, _ in asked)
+
+    def test_an_unknown_span_falls_back_to_a_day(self):
+        get, _ = ripe()
+        assert net.history(1, 5, get=get, now=NOW)["hours"] == net.DEFAULT_HISTORY
+
+    def test_pings_that_will_not_come_cost_the_pings_not_the_graph(self):
+        get, _ = ripe(connections=[{"timestamp": T0 - 600, "event": "disconnect"}],
+                      ping_status=503)
+        got = net.history(1, 24, get=get, now=NOW)
+        assert got["pings"] == []
+        assert "503" in got["ping_trouble"]
+        assert got["segments"][-1][2] == "down"
+
+    def test_but_a_connection_log_that_will_not_come_is_an_error(self):
+        def get(url, params=None, timeout=None):
+            if "/7000/" in url:
+                return Reply(status=502)
+            return Reply({"status": {"id": 1}})
+
+        with pytest.raises(net.ConnectivityError, match="502"):
+            net.history(1, 24, get=get, now=NOW)
+
+    def test_a_probe_record_that_will_not_come_costs_only_the_label(self):
+        def get(url, params=None, timeout=None):
+            if "/probes/" in url:
+                raise requests.RequestException("no")
+            return Reply([])
+
+        got = net.history(1, 24, get=get, now=NOW)
+        assert got["asn"] is None
+        assert got["segments"] == [(T0 - 24 * 3600, T0, "unknown")]
+
+    def test_what_it_is_doing_now_fills_a_quiet_window(self):
+        get, _ = ripe(probe_record={"status": {"id": 2}})
+        got = net.history(1, 24, get=get, now=NOW)
+        assert got["segments"] == [(T0 - 24 * 3600, T0, "down")]
+
+    def test_the_same_probe_is_not_asked_twice_in_a_minute(self, monkeypatch):
+        calls = []
+
+        def get(url, params=None, timeout=None):
+            calls.append(url)
+            return Reply([] if "/results/" in url else {"status": {"id": 1}})
+
+        monkeypatch.setattr(net._session, "get", get)
+        net._history_held.clear()
+        net.history(7, 24)
+        net.history(7, 24)
+        assert len(calls) == 3
+        net._history_held.clear()
+
+
+class TestTheGraph:
+    def _history(self, **over):
+        h = net.demo_history(1000078, 24, "down", "2026-10-17T11:00:00Z", now=NOW)
+        h.update(over)
+        return h
+
+    def test_is_a_png_the_size_of_a_seismograph(self):
+        from PIL import Image
+        import io
+        png = net.plot(self._history())
+        image = Image.open(io.BytesIO(png))
+        assert image.format == "PNG"
+        assert image.size == net.PLOT_SIZE
+
+    def test_the_offline_stretch_is_red_in_the_band(self):
+        from PIL import Image
+        import io
+        image = Image.open(io.BytesIO(net.plot(self._history()))).convert("RGB")
+        width, _h = image.size
+        # The last few pixels of the band are the outage at the end.
+        assert image.getpixel((width - 15, 46)) == net._DOWN
+        assert image.getpixel((60, 46)) == net._UP
+
+    def test_and_shaded_through_the_round_trip_below(self):
+        """So a gap in the line lines up with the reason for it."""
+        from PIL import Image
+        import io
+        image = Image.open(io.BytesIO(net.plot(self._history()))).convert("RGB")
+        width, height = image.size
+        r, g, b = image.getpixel((width - 15, height // 2))
+        assert r > g and r > b
+
+    def test_no_pings_is_said_on_the_graph(self):
+        png = net.plot(self._history(pings=[], ping_trouble=""))
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_a_graph_with_one_ping_does_not_divide_by_zero(self):
+        net.plot(self._history(pings=[{"t": T0 - 60, "rtt": 0.0, "sent": 3,
+                                       "rcvd": 3, "lost": 0.0}]))
+
+    def test_demo_history_agrees_with_the_dot(self):
+        """A probe drawn red whose graph said it had been online all day
+        would look exactly like a bug."""
+        down = net.demo_history(5, 24, "down", "2026-10-17T11:00:00Z", now=NOW)
+        assert down["segments"][-1][2] == "down"
+        back = net.demo_history(5, 24, "back", "2026-10-17T11:00:00Z", now=NOW)
+        assert [s for _a, _b, s in back["segments"]][-2:] == ["down", "up"]
+        up = net.demo_history(5, 24, "up", None, now=NOW)
+        assert {s for _a, _b, s in up["segments"]} == {"up"}
+
+    def test_no_pings_while_offline_in_the_demo(self):
+        h = net.demo_history(5, 24, "down", "2026-10-17T11:00:00Z", now=NOW)
+        assert all(p["t"] < T0 - 3600 for p in h["pings"])
+
+
+class TestTheGraphRoute:
+    def test_draws_one_probe(self, client, monkeypatch):
+        seen = {}
+
+        def fake(pid, hours):
+            seen.update(id=pid, hours=hours)
+            return net.demo_history(pid, hours, now=NOW)
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "history", fake)
+        got = client.get("/api/connectivity/probe.png", params={"id": 4242, "hours": 168})
+        assert got.status_code == 200
+        assert got.headers["content-type"] == "image/png"
+        assert got.headers["cache-control"] == "no-store"
+        assert seen == {"id": 4242, "hours": 168}
+
+    def test_a_failure_is_said_in_words_not_as_a_broken_image(self, client, monkeypatch):
+        def broken(pid, hours):
+            raise net.ConnectivityError("RIPE Atlas answered 502 for measurement 7000")
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "history", broken)
+        got = client.get("/api/connectivity/probe.png", params={"id": 1})
+        assert got.status_code >= 500
+        assert "measurement 7000" in got.json()["detail"]
+
+    def test_a_probe_id_is_a_number(self, client):
+        assert client.get("/api/connectivity/probe.png",
+                          params={"id": "../etc"}).status_code == 422
+        assert client.get("/api/connectivity/probe.png",
+                          params={"id": 0}).status_code == 422
+
+    def test_the_demo_hints_are_only_read_by_the_demo(self, client, monkeypatch):
+        """state and since come from the browser. The real graph must be
+        what RIPE says, never what the page told it to draw."""
+        seen = {}
+        ready = net.demo_history(3, 24, now=NOW)
+
+        def fake(pid, hours):
+            seen["called"] = True
+            return ready
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "history", fake)
+        monkeypatch.setattr(net, "demo_history",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("demo used")))
+        got = client.get("/api/connectivity/probe.png",
+                         params={"id": 3, "state": "down", "since": "2026-10-17T11:00:00Z"})
+        assert got.status_code == 200 and seen["called"]
+
+    def test_the_panel_is_told_its_graph_spans(self, client):
+        assert set(client.get("/api/config").json()["connectivity"]["history"]) == {"24", "168"}

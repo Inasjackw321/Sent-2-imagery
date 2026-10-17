@@ -70,6 +70,12 @@ export const api = {
   // an index, so there is nothing to query by area.
   shakes: () => request('/api/shake', { method: 'GET' }),
   // A URL rather than a request: it goes straight into an <img src>.
+  // A URL, for the same reason as the trace below. state and since are only
+  // read by the demo build, so a synthetic probe's graph matches its dot.
+  probeGraphUrl: ({ id, hours, state = '', since = '' }) =>
+    `/api/connectivity/probe.png?${new URLSearchParams({
+      id, hours, state, since: since ?? '',
+    })}`,
   traceUrl: ({ network, station, channel, loc = '', minutes }) =>
     `/api/seismographs/trace.png?${new URLSearchParams({
       network, station, channel, loc, minutes,

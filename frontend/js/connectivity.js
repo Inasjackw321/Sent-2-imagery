@@ -14,7 +14,7 @@
 import { api } from './api.js';
 import { store } from './store.js';
 import { $, el, toast, fmt, debounce, askableBounds } from './ui.js';
-import { POPUP } from './fires.js';
+import { openWindow, closeWindow, closeAll, isOpen } from './windows.js';
 
 let map = null;
 let layer = null;
@@ -25,6 +25,8 @@ let inFlight = false;
 let covered = null;
 let timer = null;
 const MARGIN = 0.35;
+// How far back a probe's graph looks, in hours.
+let historyHours = 24;
 
 // A probe's status is reported every few minutes, and the backend holds an
 // answer for two. Asking every three keeps the panel within a few minutes of
@@ -78,6 +80,17 @@ function buildDock() {
             dataset: { hours: h },
             onclick: () => setWindow(Number(h)),
           }, label))),
+      // How far back a probe's graph looks. A day shows this evening's
+      // outage against this morning; a week shows whether it happens every
+      // evening.
+      el('div', { class: 'net-graphs' },
+        el('span', { class: 'net-graphs-label' }, 'Graphs'),
+        ...Object.entries(store.config?.connectivity?.history ?? { 24: '24 h', 168: '7 days' })
+          .map(([h, label]) => el('button', {
+            class: `net-span${Number(h) === historyHours ? ' is-active' : ''}`,
+            dataset: { hours: h },
+            onclick: () => setHistory(Number(h)),
+          }, label))),
       el('div', { class: 'net-count', id: 'netCount' }, 'Nothing loaded yet'),
       el('div', { class: 'net-countries', id: 'netCountries' }),
       el('div', { class: 'net-key' },
@@ -87,7 +100,8 @@ function buildDock() {
       el('div', { class: 'net-note' },
         'RIPE Atlas · each dot is one volunteer’s probe, wired into their '
         + 'network. One going dark is one site; many in one area at once is an '
-        + 'outage. Positions are blurred by RIPE by up to a few kilometres.')),
+        + 'outage. Positions are blurred by RIPE by up to a few kilometres. '
+        + 'Click one for its graph.')),
   );
 }
 
@@ -109,7 +123,20 @@ function toggle() {
     layer.remove();
     layer.clearLayers();
     covered = null;
+    // Their timers with them: a graph refreshing itself for a layer that
+    // has been switched off is a request a minute for nobody.
+    closeAll(isGraphWindow);
   }
+}
+
+function setHistory(next) {
+  historyHours = next;
+  for (const b of document.querySelectorAll('.net-span')) {
+    b.classList.toggle('is-active', Number(b.dataset.hours) === historyHours);
+  }
+  // Graphs already open are now showing the wrong span, so they are all
+  // redrawn rather than left disagreeing with the buttons.
+  for (const probe of [...graphs.values()]) openGraph(probe, { redraw: true });
 }
 
 function setWindow(next) {
@@ -166,7 +193,7 @@ function draw(data) {
       L.circleMarker([probe.lat, probe.lon], {
         renderer: canvas, radius: HIT_RADIUS,
         stroke: false, fill: true, fillOpacity: 0, interactive: true,
-      }).bindPopup(() => popup(probe), POPUP).addTo(layer);
+      }).on('click', () => openGraph(probe)).addTo(layer);
     }
   }
   $('#netCount').innerHTML = countLine(data);
@@ -215,25 +242,162 @@ function paintCountries(rows) {
   }
 }
 
-function popup(probe) {
-  const look = STATES[probe.state];
+// ── One probe's graph ──────────────────────────────────────────
+//
+// Like a seismograph's trace: click a probe and a window opens with its last
+// day or week drawn -- online and offline along the top, the round trip to a
+// root DNS server underneath -- and it redraws itself every minute while it
+// is open. Several can be open at once, because two probes in the same town
+// going dark at the same minute is the comparison worth making.
+
+const WIN = 'net:';
+const GRAPH_REFRESH_MS = 60000;
+const graphs = new Map();     // window id -> the probe it is drawing
+const ticking = new Map();    // window id -> its refresh timer
+const tokens = new Map();     // window id -> the newest request, so a slow one cannot win
+
+/** Whether a window is one of these graphs. */
+export function isGraphWindow(id) {
+  return String(id).startsWith(WIN);
+}
+
+const HEADLINES = {
+  down: 'Went offline', back: 'Back online', gone: 'Offline', up: 'Online',
+};
+
+function openGraph(probe, { redraw = false } = {}) {
+  const id = `${WIN}${probe.id}`;
+  if (isOpen(id) && !redraw) {
+    closeWindow(id);
+    return;
+  }
+  const span = (store.config?.connectivity?.history ?? {})[historyHours]
+    ?? `${historyHours} h`;
+  const plot = el('div', { class: 'trace-plot' });
+  const waiting = el('div', { class: 'trace-wait' },
+    el('span', {}, `Drawing probe ${probe.id}…`),
+    el('small', {}, 'RIPE Atlas is asked for its connection log and its pings.'));
+  const stamp = el('div', { class: 'trace-live', 'data-live': '' }, 'fetching…');
+  plot.append(waiting, stamp);
+
+  if (redraw && isOpen(id)) {
+    const existing = document.querySelector(`[data-win="${CSS.escape(id)}"]`);
+    existing?.querySelector('.win-body')?.replaceChildren(plot);
+    existing?.querySelector('.win-foot')?.replaceWith(
+      el('div', { class: 'win-foot' }, graphNote(probe, span)));
+  } else {
+    graphs.set(id, probe);
+    openWindow({
+      id,
+      title: `Probe ${probe.id}`,
+      where: whereSaid(probe),
+      link: `https://atlas.ripe.net/probes/${encodeURIComponent(probe.id)}/`,
+      body: plot,
+      sizes: [420, 'min(820px, calc(100vw - 40px))'],
+      foot: graphNote(probe, span),
+      onClose: () => {
+        graphs.delete(id);
+        stopTicking(id);
+      },
+    });
+  }
+
+  fetchGraph(id, probe, plot, waiting);
+  stopTicking(id);
+  ticking.set(id, setInterval(() => {
+    if (!isOpen(id)) { stopTicking(id); return; }
+    fetchGraph(id, graphs.get(id) ?? probe, plot, waiting, { quiet: true });
+  }, GRAPH_REFRESH_MS));
+}
+
+function stopTicking(id) {
+  clearInterval(ticking.get(id));
+  ticking.delete(id);
+}
+
+/** The line in the window's title bar: what it is doing, and since when. */
+export function whereSaid(probe) {
   const ago = probe.since ? (Date.now() - new Date(probe.since).getTime()) / 3.6e6 : null;
-  const headline = {
-    down: 'Went offline', back: 'Back online', gone: 'Offline', up: 'Online',
-  }[probe.state];
-  return el('div', { class: 'net-popup' },
-    el('div', { class: 'net-popup-head', style: `color:${look.colour}` },
-      `${headline}${ago != null ? ` ${fmt.duration(ago)} ago` : ''}`),
-    probe.since ? el('div', { class: 'dim' }, fmt.when(probe.since)) : null,
+  return [`${HEADLINES[probe.state] ?? ''}${ago != null ? ` ${fmt.duration(ago)} ago` : ''}`,
+          probe.country, probe.asn ? `AS${probe.asn}` : null]
+    .filter(Boolean).join(' · ');
+}
+
+/** Under the graph: whose probe, what the lines are, and what not to read in. */
+function graphNote(probe, span) {
+  return el('div', {},
     // The owner's own words about it, as text. Free text from a stranger.
     probe.description ? el('div', {}, probe.description) : null,
-    el('div', { class: 'dim' },
-      [probe.country, probe.asn ? `AS${probe.asn}` : null,
-       probe.anchor ? 'anchor' : null].filter(Boolean).join(' · ')),
-    el('div', { class: 'dim' }, `${fmt.coord(probe.lon, probe.lat)} · blurred by RIPE`),
     el('div', {},
-      el('a', { href: `https://atlas.ripe.net/probes/${encodeURIComponent(probe.id)}/`,
-                target: '_blank', rel: 'noopener noreferrer' },
-        `Probe ${probe.id} on RIPE Atlas ↗`)),
-  ).outerHTML;
+      `Last ${span}. Top: online (green) and offline (red), from RIPE's `
+      + 'connection log. Below: round trip to k.root-servers.net in '
+      + 'milliseconds, every few minutes; ticks along the floor are lost '
+      + 'packets. A climbing line or a run of ticks before a red stretch is '
+      + 'a connection failing rather than a plug being pulled.'),
+    el('div', { class: 'dim' }, `${fmt.coord(probe.lon, probe.lat)} · blurred by RIPE`));
+}
+
+function clockNow() {
+  return new Date().toLocaleTimeString(undefined,
+    { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+/**
+ * Fetch the drawn graph, and say what went wrong when it does not arrive.
+ *
+ * Fetched rather than set as an <img src>, for the seismograph's reason: the
+ * backend explains a failure in words, and an <img> throws them away.
+ */
+async function fetchGraph(id, probe, plot, waiting, { quiet = false } = {}) {
+  const token = (tokens.get(id) ?? 0) + 1;
+  tokens.set(id, token);
+  const stamp = plot.querySelector('[data-live]');
+  const url = api.probeGraphUrl({ id: probe.id, hours: historyHours,
+                                  state: probe.state, since: probe.since });
+  let blobUrl = null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body.detail) detail = body.detail;
+      } catch { /* not JSON */ }
+      throw new Error(detail);
+    }
+    blobUrl = URL.createObjectURL(await res.blob());
+  } catch (err) {
+    if (tokens.get(id) !== token) return;
+    // A refresh that fails keeps the graph that is there, and says so.
+    if (quiet && plot.querySelector('img')) {
+      if (stamp) {
+        stamp.textContent = `not updating — ${err.message}`;
+        stamp.classList.add('is-stale');
+      }
+      return;
+    }
+    waiting.replaceChildren(
+      el('span', {}, `Probe ${probe.id} could not be drawn`),
+      el('small', {}, err.message));
+    stamp?.remove();
+    return;
+  }
+  if (tokens.get(id) !== token) { URL.revokeObjectURL(blobUrl); return; }
+  let image = plot.querySelector('img');
+  const previous = image?.src;
+  if (!image) {
+    image = el('img', { alt: `Connectivity of RIPE Atlas probe ${probe.id}` });
+    waiting.remove();
+    plot.prepend(image);
+  }
+  // Each refresh's picture is handed back once its replacement has decoded,
+  // or every minute leaks one for the life of the page.
+  image.addEventListener('load', () => {
+    if (previous && previous !== blobUrl) URL.revokeObjectURL(previous);
+  }, { once: true });
+  image.src = blobUrl;
+  if (stamp) {
+    stamp.textContent = `updated ${clockNow()}`;
+    stamp.classList.remove('is-stale');
+  }
 }
