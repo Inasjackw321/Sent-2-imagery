@@ -76,6 +76,11 @@ export const api = {
     `/api/connectivity/probe.png?${new URLSearchParams({
       id, hours, state, since: since ?? '',
     })}`,
+  areaGraphUrl: ({ west, south, east, north, hours }) =>
+    `/api/connectivity/area.png?${new URLSearchParams({
+      west: west.toFixed(4), south: south.toFixed(4),
+      east: east.toFixed(4), north: north.toFixed(4), hours,
+    })}`,
   traceUrl: ({ network, station, channel, loc = '', minutes }) =>
     `/api/seismographs/trace.png?${new URLSearchParams({
       network, station, channel, loc, minutes,

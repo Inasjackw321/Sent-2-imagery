@@ -13,7 +13,7 @@
 
 import { api } from './api.js';
 import { store } from './store.js';
-import { $, el, toast, fmt, debounce, askableBounds } from './ui.js';
+import { $, el, toast, fmt, debounce, askableBounds, savePicture } from './ui.js';
 import { openWindow, closeWindow, closeAll, isOpen } from './windows.js';
 
 let map = null;
@@ -25,8 +25,10 @@ let inFlight = false;
 let covered = null;
 let timer = null;
 const MARGIN = 0.35;
-// How far back a probe's graph looks, in hours.
-let historyHours = 24;
+// How far back the graphs look, in hours: one probe's, and an area's.
+let historyHours = 48;
+// The box tool, handed over by the map at start-up.
+let pickArea = null;
 
 // A probe's status is reported every few minutes, and the backend holds an
 // answer for two. Asking every three keeps the panel within a few minutes of
@@ -55,8 +57,9 @@ const LAYERING = ['up', 'gone', 'back', 'down'];
 // How close the pointer has to get for a click to count, in pixels.
 const HIT_RADIUS = 10;
 
-export function initConnectivity(leafletMap) {
+export function initConnectivity(leafletMap, tools = {}) {
   map = leafletMap;
+  pickArea = tools.pickArea ?? null;
   // A canvas: a continental view is a few thousand dots, which as SVG
   // elements is a few thousand nodes for the browser to move on every pan.
   canvas = L.canvas({ padding: 0.4 });
@@ -85,12 +88,21 @@ function buildDock() {
       // evening.
       el('div', { class: 'net-graphs' },
         el('span', { class: 'net-graphs-label' }, 'Graphs'),
-        ...Object.entries(store.config?.connectivity?.history ?? { 24: '24 h', 168: '7 days' })
+        ...Object.entries(store.config?.connectivity?.history
+                          ?? { 24: '24 h', 48: '48 h', 168: '7 days' })
           .map(([h, label]) => el('button', {
             class: `net-span${Number(h) === historyHours ? ' is-active' : ''}`,
             dataset: { hours: h },
             onclick: () => setHistory(Number(h)),
           }, label))),
+      // Drag a box, get one graph of every probe inside it. data-draw puts
+      // the button in the map's own tool family: it lights while armed, and
+      // Escape or a click elsewhere puts it away like any other tool.
+      el('button', {
+        class: 'net-area', id: 'netArea', type: 'button', dataset: { draw: 'pick' },
+        title: 'Drag a box on the map: every probe inside it becomes one graph',
+        onclick: armArea,
+      }, '▭ Graph an area'),
       el('div', { class: 'net-count', id: 'netCount' }, 'Nothing loaded yet'),
       el('div', { class: 'net-countries', id: 'netCountries' }),
       el('div', { class: 'net-key' },
@@ -136,7 +148,10 @@ function setHistory(next) {
   }
   // Graphs already open are now showing the wrong span, so they are all
   // redrawn rather than left disagreeing with the buttons.
-  for (const probe of [...graphs.values()]) openGraph(probe, { redraw: true });
+  for (const [id, what] of [...graphs.entries()]) {
+    if (what.area) openArea(what.area, { redraw: true, id });
+    else openGraph(what, { redraw: true });
+  }
 }
 
 function setWindow(next) {
@@ -306,7 +321,7 @@ function openGraph(probe, { redraw = false } = {}) {
   stopTicking(id);
   ticking.set(id, setInterval(() => {
     if (!isOpen(id)) { stopTicking(id); return; }
-    fetchGraph(id, graphs.get(id) ?? probe, plot, waiting, { quiet: true });
+    fetchGraph(id, probe, plot, waiting, { quiet: true });
   }, GRAPH_REFRESH_MS));
 }
 
@@ -400,4 +415,177 @@ async function fetchGraph(id, probe, plot, waiting, { quiet = false } = {}) {
     stamp.textContent = `updated ${clockNow()}`;
     stamp.classList.remove('is-stale');
   }
+}
+
+// ── A whole area's graph ───────────────────────────────────────
+//
+// Drag a box and every probe inside it becomes one line: how much of the
+// area's internet was up, through the last day, two days or week. Drawn by
+// the backend, in a look of its own, with the mark on it -- it is the picture
+// somebody will want to save and post, so it has a Save button.
+
+// An area graph is asked for less often than a probe's: it is a few hundred
+// probes' worth of history, and a regional line moves on the scale of tens
+// of minutes, not seconds.
+const AREA_REFRESH_MS = 5 * 60 * 1000;
+const AREA_STYLE = { color: '#ff9f43', weight: 2, dashArray: '6,4', fill: true,
+  fillColor: '#ff9f43', fillOpacity: 0.06, interactive: false };
+let areas = 0;
+const outlines = new Map();   // window id -> the box drawn on the map
+// The bytes of the picture each area window is showing, kept for Save. Not
+// fetched back from the image's blob: address -- the page's security policy
+// does not let fetch read blob: URLs, and it should not be widened for this.
+const pictures = new WeakMap();  // plot element -> Blob
+
+function armArea() {
+  if (!pickArea) return;
+  if (!enabled) toggle();
+  pickArea((bounds) => openArea(bounds));
+}
+
+/** The four edges, rounded to what the backend is asked for. */
+export function edges(bounds) {
+  return {
+    west: Math.max(-180, bounds.getWest()), south: Math.max(-90, bounds.getSouth()),
+    east: Math.min(180, bounds.getEast()), north: Math.min(90, bounds.getNorth()),
+  };
+}
+
+function openArea(bounds, { redraw = false, id = null } = {}) {
+  const winId = id ?? `${WIN}area:${(areas += 1)}`;
+  const span = (store.config?.connectivity?.history ?? {})[historyHours] ?? `${historyHours} h`;
+  const plot = el('div', { class: 'trace-plot net-area-plot' });
+  const waiting = el('div', { class: 'trace-wait' },
+    el('span', {}, 'Gathering every probe in the box…'),
+    el('small', {}, 'Each one’s connection log is asked for, then added into one line.'));
+  const stamp = el('div', { class: 'trace-live', 'data-live': '' }, 'fetching…');
+  plot.append(waiting, stamp);
+  const save = el('button', {
+    class: 'net-save', type: 'button', disabled: true,
+    onclick: () => saveArea(plot, winId),
+  }, 'Save PNG');
+
+  if (redraw && isOpen(winId)) {
+    const existing = document.querySelector(`[data-win="${CSS.escape(winId)}"]`);
+    existing?.querySelector('.win-body')?.replaceChildren(plot);
+    existing?.querySelector('.win-foot')?.replaceWith(
+      el('div', { class: 'win-foot' }, areaNote(span, save)));
+  } else {
+    graphs.set(winId, { area: bounds });
+    outlines.set(winId, L.rectangle(bounds, AREA_STYLE).addTo(map));
+    openWindow({
+      id: winId,
+      title: 'Area',
+      where: 'every probe inside the box',
+      body: plot,
+      sizes: [560, 'min(1100px, calc(100vw - 40px))'],
+      foot: areaNote(span, save),
+      onClose: () => {
+        graphs.delete(winId);
+        stopTicking(winId);
+        outlines.get(winId)?.remove();
+        outlines.delete(winId);
+      },
+    });
+  }
+
+  fetchArea(winId, bounds, plot, waiting, save);
+  stopTicking(winId);
+  ticking.set(winId, setInterval(() => {
+    if (!isOpen(winId)) { stopTicking(winId); return; }
+    fetchArea(winId, bounds, plot, waiting, save, { quiet: true });
+  }, AREA_REFRESH_MS));
+}
+
+function areaNote(span, save) {
+  return el('div', {},
+    el('div', {},
+      `Last ${span}. The share of the probes in the box that were online, `
+      + 'against the most that were up at once. Teal is nearly all of them; '
+      + 'amber is the ordinary wobble of home connections; red is enough gone '
+      + 'at once to be a regional outage rather than a few houses.'),
+    el('div', { class: 'dim' },
+      'Probes already offline before the window began are left out, so a '
+      + 'long-dead probe does not drag the line down.'),
+    el('div', { class: 'net-save-row' }, save));
+}
+
+/** Title-bar line for an area: its name, and the numbers that matter. */
+export function areaSaid(headers) {
+  const name = decodeURIComponent(headers.get('X-Name') ?? '');
+  const now = headers.get('X-Now');
+  const low = headers.get('X-Low');
+  const probes = headers.get('X-Probes');
+  return [name || null,
+          now != null && now !== '' ? `now ${now}%` : null,
+          low != null && low !== '' ? `lowest ${low}%` : null,
+          probes ? `${probes} probes` : null].filter(Boolean).join(' · ');
+}
+
+async function fetchArea(id, bounds, plot, waiting, save, { quiet = false } = {}) {
+  const token = (tokens.get(id) ?? 0) + 1;
+  tokens.set(id, token);
+  const stamp = plot.querySelector('[data-live]');
+  const url = api.areaGraphUrl({ ...edges(bounds), hours: historyHours });
+  let blobUrl = null;
+  let said = '';
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body.detail) detail = body.detail;
+      } catch { /* not JSON */ }
+      throw new Error(detail);
+    }
+    said = areaSaid(res.headers);
+    const blob = await res.blob();
+    if (tokens.get(id) === token) pictures.set(plot, blob);
+    blobUrl = URL.createObjectURL(blob);
+  } catch (err) {
+    if (tokens.get(id) !== token) return;
+    if (quiet && plot.querySelector('img')) {
+      if (stamp) {
+        stamp.textContent = `not updating — ${err.message}`;
+        stamp.classList.add('is-stale');
+      }
+      return;
+    }
+    waiting.replaceChildren(
+      el('span', {}, 'That area could not be graphed'),
+      el('small', {}, err.message));
+    stamp?.remove();
+    return;
+  }
+  if (tokens.get(id) !== token) { URL.revokeObjectURL(blobUrl); return; }
+  let image = plot.querySelector('img');
+  const previous = image?.src;
+  if (!image) {
+    image = el('img', { alt: 'Internet connectivity of the area drawn on the map' });
+    waiting.remove();
+    plot.prepend(image);
+  }
+  image.addEventListener('load', () => {
+    if (previous && previous !== blobUrl) URL.revokeObjectURL(previous);
+  }, { once: true });
+  image.src = blobUrl;
+  save.disabled = false;
+  const where = document.querySelector(`[data-win="${CSS.escape(id)}"] .win-where`);
+  if (where && said) where.textContent = said;
+  if (stamp) {
+    stamp.textContent = `updated ${clockNow()}`;
+    stamp.classList.remove('is-stale');
+  }
+}
+
+/** Save the picture exactly as drawn: the same pixels, mark and all. */
+async function saveArea(plot, id) {
+  const blob = pictures.get(plot);
+  if (!blob) return;
+  const name = (document.querySelector(`[data-win="${CSS.escape(id)}"] .win-where`)
+    ?.textContent ?? 'area').split(' · ')[0];
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'area';
+  await savePicture(blob, `connectivity_${slug}_${historyHours}h_kaldockhi.png`,
+                    { title: `Internet connectivity · ${name}`, what: 'The area graph' });
 }

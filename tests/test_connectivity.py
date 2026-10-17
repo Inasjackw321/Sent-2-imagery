@@ -637,4 +637,260 @@ class TestTheGraphRoute:
         assert got.status_code == 200 and seen["called"]
 
     def test_the_panel_is_told_its_graph_spans(self, client):
-        assert set(client.get("/api/config").json()["connectivity"]["history"]) == {"24", "168"}
+        said = client.get("/api/config").json()["connectivity"]
+        # One chooser serves both kinds of graph, so they offer the same spans.
+        assert set(said["history"]) == {"24", "48", "168"}
+        assert set(said["area_history"]) == set(said["history"])
+
+
+# ── A whole area over time ─────────────────────────────────────
+
+AREA = (28.0, 50.0, 29.5, 51.0)
+START = NOW - dt.timedelta(hours=48)
+
+
+class TestWhichProbesCount:
+    def test_online_now_counts(self):
+        got = net.area_members([probe(pid=1, status=1)], START, AREA)
+        assert [m["id"] for m in got] == [1]
+
+    def test_gone_offline_inside_the_window_counts(self):
+        """It was online when the window began, and its going is the story."""
+        got = net.area_members([probe(pid=2, status=2, ago=dt.timedelta(hours=3))],
+                               START, AREA)
+        assert [m["state"] for m in got] == ["down"]
+
+    def test_already_offline_before_the_window_does_not(self):
+        """It would sit at zero all the way across and drag the line down for
+        something that did not happen in the window."""
+        got = net.area_members([probe(pid=3, status=2, ago=dt.timedelta(days=3))],
+                               START, AREA)
+        assert got == []
+
+    def test_offline_with_no_time_does_not(self):
+        raw = probe(pid=4, status=2)
+        raw["status"] = {"id": 2}
+        assert net.area_members([raw], START, AREA) == []
+
+    def test_abandoned_and_never_connected_do_not(self):
+        assert net.area_members([probe(status=3), probe(status=0)], START, AREA) == []
+
+    def test_nearest_the_middle_first(self):
+        raw = [probe(pid=1, lon=28.0, lat=50.0), probe(pid=2, lon=28.75, lat=50.5)]
+        assert [m["id"] for m in net.area_members(raw, START, AREA)] == [2, 1]
+
+
+class TestTheLine:
+    def test_counts_how_many_were_up_at_each_step(self):
+        s, e = 0.0, 600.0
+        timelines = [[(0.0, 600.0, "up")],
+                     [(0.0, 300.0, "up"), (300.0, 600.0, "down")]]
+        got = net.online_series(timelines, s, e, 100.0)
+        assert [n for _t, n in got] == [2, 2, 2, 1, 1, 1]
+
+    def test_read_at_the_middle_of_each_step(self):
+        """An outage starting a minute into a step belongs to that step."""
+        timelines = [[(0.0, 110.0, "up"), (110.0, 400.0, "down")]]
+        got = net.online_series(timelines, 0.0, 400.0, 100.0)
+        assert [n for _t, n in got] == [0 if t >= 100 else 1 for t, _n in got]
+        assert got[1][1] == 0
+
+    def test_the_last_step_reaches_the_end(self):
+        got = net.online_series([[(0.0, 250.0, "up")]], 0.0, 250.0, 100.0)
+        assert [t for t, _n in got] == [0.0, 100.0, 200.0]
+        assert got[-1][1] == 1
+
+    def test_normalised_to_the_most_that_were_up_at_once(self):
+        """Not to the number of probes, or a region whose probes were never
+        all up together reads as permanently degraded."""
+        got = net.summarise_area([(0, 40), (1, 40), (2, 26), (3, 30)], members=47)
+        assert got["peak"] == 40
+        assert got["now"] == pytest.approx(0.75)
+        assert got["low"] == pytest.approx(0.65)
+        assert got["low_at"] == 2
+        assert got["online_now"] == 30 and got["members"] == 47
+
+    def test_nothing_online_ever_is_zero_not_a_division_by_zero(self):
+        got = net.summarise_area([(0, 0), (1, 0)], members=3)
+        assert got["now"] == 0.0 and got["low"] == 0.0
+
+    def test_no_steps_at_all(self):
+        got = net.summarise_area([], members=0)
+        assert got["now"] is None and got["low"] is None
+
+
+def area_ripe(raw, events_by_probe, asked=None):
+    """The probe list, and connection logs for any comma-separated ids."""
+    def get(url, params=None, timeout=None):
+        if asked is not None:
+            asked.append((url, dict(params or {})))
+        if "/7000/" in url:
+            ids = [int(i) for i in str(params["probe_ids"]).split(",")]
+            return Reply([row for i in ids for row in events_by_probe.get(i, [])])
+        return Reply({"results": raw, "next": None})
+    return get
+
+
+class TestAreaHistory:
+    def test_an_outage_in_part_of_the_area_is_a_dip_in_the_line(self):
+        raw = [probe(pid=i, status=1, lon=28.5 + i * 0.01, lat=50.5) for i in range(10)]
+        cut = (NOW - dt.timedelta(hours=5)).timestamp()
+        back = (NOW - dt.timedelta(hours=3)).timestamp()
+        events = {i: [{"prb_id": i, "timestamp": cut, "event": "disconnect"},
+                      {"prb_id": i, "timestamp": back, "event": "connect"}]
+                  for i in range(4)}
+        got = net.area_history(AREA, 24, get=area_ripe(raw, events), now=NOW)
+        assert got["members"] == 10
+        assert got["low"] == pytest.approx(0.6)
+        assert got["now"] == pytest.approx(1.0)
+        assert NOW.timestamp() - 5 * 3600 <= got["low_at"] <= NOW.timestamp() - 3 * 3600
+
+    def test_logs_are_asked_for_in_batches(self, monkeypatch):
+        monkeypatch.setattr(net, "IDS_PER_ASK", 4)
+        raw = [probe(pid=i, lon=28.5, lat=50.5) for i in range(10)]
+        asked = []
+        net.area_history(AREA, 24, get=area_ripe(raw, {}, asked), now=NOW)
+        batches = [p["probe_ids"] for u, p in asked if "/7000/" in u]
+        assert len(batches) == 3
+        assert sorted(int(i) for b in batches for i in b.split(",")) == list(range(10))
+
+    def test_a_crowded_box_is_sampled_and_says_so(self, monkeypatch):
+        monkeypatch.setattr(net, "MOST_AREA_PROBES", 5)
+        raw = [probe(pid=i, lon=28.5, lat=50.5) for i in range(12)]
+        got = net.area_history(AREA, 24, get=area_ripe(raw, {}), now=NOW)
+        assert got["members"] == 5 and got["in_box"] == 12 and got["sampled"] is True
+
+    def test_an_unknown_span_falls_back(self):
+        got = net.area_history(AREA, 5, get=area_ripe([probe()], {}), now=NOW)
+        assert got["hours"] == net.DEFAULT_AREA_HISTORY
+
+    def test_the_steps_fit_the_span(self):
+        for hours in (24, 48, 168):
+            got = net.area_history(AREA, hours, get=area_ripe([probe()], {}), now=NOW)
+            assert len(got["series"]) == hours * 60 // net.AREA_STEP_MINUTES[hours]
+
+    def test_a_small_box_is_named_after_its_region(self):
+        got = net.area_history(AREA, 24, get=area_ripe([probe()], {}), now=NOW,
+                               namer=lambda lat, lon: "Zhytomyr Oblast")
+        assert got["name"] == "Zhytomyr Oblast"
+
+    def test_a_gazetteer_that_fails_costs_only_the_name(self):
+        def broken(lat, lon):
+            raise RuntimeError("rate limited")
+
+        got = net.area_history(AREA, 24, get=area_ripe([probe(country="ua")], {}),
+                               now=NOW, namer=broken)
+        assert got["name"] == "UA"
+
+    def test_a_big_box_is_named_after_its_countries_not_one_region(self):
+        """The middle of a box over three countries is in one region, and
+        naming the box after it would be naming it wrong."""
+        big = (14.0, 44.0, 40.0, 56.0)
+        raw = [probe(pid=1, country="pl", lon=20, lat=52), probe(pid=2, country="ua"),
+               probe(pid=3, country="ua", lon=31, lat=49)]
+        got = net.area_history(big, 24, get=area_ripe(raw, {}), now=NOW,
+                               namer=lambda lat, lon: "Somewhere Oblast")
+        assert got["name"] == "UA · PL"
+
+
+def has_colour(image, colour) -> bool:
+    """Whether any pixel is exactly this colour. Through numpy rather than
+    getdata, which Pillow is retiring."""
+    import numpy as np
+    return bool((np.asarray(image.convert("RGB")) == np.array(colour)).all(axis=-1).any())
+
+
+class TestTheAreaPicture:
+    def _found(self, **over):
+        found = net.demo_area(AREA, 48, now=NOW)
+        found.update(over)
+        return found
+
+    def test_is_a_big_png(self):
+        from PIL import Image
+        import io
+        image = Image.open(io.BytesIO(net.plot_area(self._found())))
+        assert image.size == net.AREA_PLOT_SIZE
+
+    def test_carries_the_mark(self):
+        """The mark is drawn, so it cannot be read back as text -- but the
+        corner one is solid ink on the background, and is there to be found."""
+        from PIL import Image
+        import io
+        image = Image.open(io.BytesIO(net.plot_area(self._found()))).convert("RGB")
+        corner = image.crop((net.AREA_PLOT_SIZE[0] - 260, 55, net.AREA_PLOT_SIZE[0] - 60, 100))
+        assert has_colour(corner, net._AREA_INK)
+        assert net.WATERMARK == "@Kaldockhi"
+
+    def test_trouble_is_red_and_calm_is_teal(self):
+        assert net.area_colour(1.0) == net._AREA_GOOD
+        assert net.area_colour(0.9) == net._AREA_WOBBLE
+        assert net.area_colour(0.6) == net._AREA_BAD
+        assert net.area_colour(net.AREA_GOOD) == net._AREA_GOOD
+        assert net.area_colour(net.AREA_TROUBLE) == net._AREA_WOBBLE
+
+    def test_the_outage_is_drawn_red(self):
+        from PIL import Image
+        import io
+        image = Image.open(io.BytesIO(net.plot_area(self._found()))).convert("RGB")
+        # The demo's outage is in the last few hours: the right-hand end of
+        # the chart has the trouble colour in it, the left-hand end does not.
+        assert has_colour(image.crop((1300, 250, 1470, 780)), net._AREA_BAD)
+        assert not has_colour(image.crop((80, 250, 400, 780)), net._AREA_BAD)
+
+    def test_survives_an_area_with_no_steps(self):
+        net.plot_area(self._found(shares=[], series=[], now=None, low=None, low_at=None))
+
+    def test_survives_a_name_in_cyrillic(self):
+        net.plot_area(self._found(name="Житомирська область"))
+
+
+class TestTheAreaRoute:
+    PARAMS = {"west": 28, "south": 50, "east": 29.5, "north": 51, "hours": 48}
+
+    def test_draws_the_box_and_sends_the_figures_with_it(self, client, monkeypatch):
+        seen = {}
+
+        def fake(box, hours, namer=None):
+            seen.update(box=box, hours=hours, namer=namer)
+            found = net.demo_area(box, hours, now=NOW)
+            found["name"] = "Житомирська область"
+            return found
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "area_history", fake)
+        got = client.get("/api/connectivity/area.png", params=self.PARAMS)
+        assert got.status_code == 200 and got.headers["content-type"] == "image/png"
+        assert seen["box"] == (28.0, 50.0, 29.5, 51.0) and seen["hours"] == 48
+        assert seen["namer"] is not None
+        assert got.headers["x-probes"] == "60"
+        assert got.headers["x-now"].isdigit()
+        # Header values are Latin-1: a Cyrillic name has to be encoded.
+        from urllib.parse import unquote
+        assert unquote(got.headers["x-name"]) == "Житомирська область"
+
+    def test_an_empty_box_is_said_in_words(self, client, monkeypatch):
+        def empty(box, hours, namer=None):
+            found = net.demo_area(box, hours, now=NOW)
+            found.update(members=0)
+            return found
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "area_history", empty)
+        got = client.get("/api/connectivity/area.png", params=self.PARAMS)
+        assert got.status_code == 404
+        assert "larger area" in got.json()["detail"]
+
+    def test_a_box_drawn_inside_out_is_refused(self, client):
+        got = client.get("/api/connectivity/area.png",
+                         params={**self.PARAMS, "west": 30, "east": 29})
+        assert got.status_code == 400
+
+    def test_ripe_failing_is_an_error_status(self, client, monkeypatch):
+        def broken(box, hours, namer=None):
+            raise net.ConnectivityError("RIPE Atlas answered 503 for measurement 7000")
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "area_history", broken)
+        got = client.get("/api/connectivity/area.png", params=self.PARAMS)
+        assert got.status_code >= 500 and "503" in got.json()["detail"]

@@ -52,7 +52,13 @@ const HINTS = {
   rect: 'Drag a box around your area — Esc to cancel',
   polygon: 'Click each corner, double-click to finish — Esc to cancel',
   capture: `Drag over the part you want — it is copied marked ${WATERMARK} — Esc to cancel`,
+  pick: 'Drag a box over the area to graph — Esc to cancel',
 };
+
+// The box being dragged out for another panel to use. Its own colour, so it is
+// not mistaken for the area the imagery is drawn for.
+const PICK_STYLE = { color: '#ff9f43', weight: 2, dashArray: '6,4', fill: true,
+  fillColor: '#ff9f43', fillOpacity: 0.08, interactive: false };
 
 
 // How many tiles have to fail before a basemap is judged unusable. One is
@@ -149,7 +155,9 @@ export function initMap() {
   bindPassLookup();
   initDayNight(map);
   initFires(map);
-  initConnectivity(map);
+  // Handed the box tool rather than importing it: the panel's module is
+  // loaded by map.js, and importing back would make the two a cycle.
+  initConnectivity(map, { pickArea });
   initClouds(map);
   initRadar(map);
   initMTG(map);
@@ -282,7 +290,9 @@ function onDown(e) {
     ? L.circle(e.latlng, { radius: 1, ...SKETCH_STYLE })
     : mode === 'capture'
       ? L.polygon([e.latlng], CAPTURE_STYLE)
-      : L.polyline([e.latlng], SKETCH_STYLE)).addTo(map);
+      : mode === 'pick'
+        ? L.polygon([e.latlng], PICK_STYLE)
+        : L.polyline([e.latlng], SKETCH_STYLE)).addTo(map);
 }
 
 function onMove(e) {
@@ -290,7 +300,8 @@ function onMove(e) {
   drawing.at = e.latlng;
   if (drawing.mode === 'circle') {
     sketchLayer.setRadius(Math.max(map.distance(drawing.start, e.latlng), 1));
-  } else if (drawing.mode === 'rect' || drawing.mode === 'capture') {
+  } else if (drawing.mode === 'rect' || drawing.mode === 'capture'
+             || drawing.mode === 'pick') {
     sketchLayer.setLatLngs(boxRing(drawing.start, e.latlng));
   } else if (drawing.mode === 'lasso') {
     // Decimate on screen so a fast drag does not produce thousands of vertices.
@@ -323,7 +334,13 @@ function finish(at) {
   // so the next drag pans instead of drawing over the area just chosen.
   setMode('none');
 
-  if (sketch.mode === 'capture') {
+  if (sketch.mode === 'pick') {
+    // Handed over and forgotten here, so a second drag needs a second ask.
+    const done = picking;
+    picking = null;
+    if (map.distance(sketch.start, at) < 20) return;
+    done?.(L.latLngBounds(sketch.start, at));
+  } else if (sketch.mode === 'capture') {
     if (map.distance(sketch.start, at) < 20) return;
     takeRegion(sketch.start, at);
   } else if (sketch.mode === 'circle') {
@@ -642,6 +659,28 @@ async function takeRegion(start, end) {
 }
 
 let captureWants = 'copy';
+
+// Who asked for the box being dragged, and what to hand it to.
+let picking = null;
+
+/**
+ * Let somebody drag a box on the map, and hand its bounds to `done`.
+ *
+ * For a panel that needs an area of its own -- the connectivity graph -- and
+ * deliberately not the imagery's area tools, which would replace the area the
+ * imagery is drawn for. Asking again while armed puts the tool away, like
+ * every other tool here.
+ */
+export function pickArea(done) {
+  if (mode === 'pick') {
+    picking = null;
+    setMode('none');
+    return false;
+  }
+  picking = done;
+  setMode('pick');
+  return true;
+}
 
 /** Arm the highlight-and-take tool: 'copy' to the clipboard, or 'save' a file. */
 export function armCapture(what = 'copy') {

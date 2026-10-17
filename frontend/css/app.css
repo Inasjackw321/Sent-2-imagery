@@ -543,6 +543,22 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 }
 .net-span:hover { color: var(--ink); }
 .net-span.is-active { border-color: #7ed6ff; color: #7ed6ff; }
+/* Drag a box, get one graph. In the orange the box itself is drawn in, so the
+   button and what it makes on the map read as the same thing. */
+.net-area {
+  width: 100%; margin-top: 7px; padding: 6px 4px; font: inherit; font-size: 11px;
+  cursor: pointer; background: var(--bg-3); color: var(--ink-dim);
+  border: 1px dashed rgba(255,159,67,.55); border-radius: 6px;
+}
+.net-area:hover { color: #ffc58f; }
+.net-area.is-active { color: #ff9f43; border-style: solid; border-color: #ff9f43;
+  background: rgba(255,159,67,.08); }
+.net-save-row { margin-top: 6px; display: flex; justify-content: flex-end; }
+.net-save {
+  padding: 4px 12px; font: inherit; font-size: 11px; cursor: pointer;
+  background: var(--bg-3); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+}
+.net-save:disabled { opacity: .45; cursor: default; }
 .net-count { margin: 9px 0 8px; color: var(--ink); line-height: 1.4; }
 .net-count .dim { color: var(--ink-faint); }
 .net-bad { color: #ff6b6b; }

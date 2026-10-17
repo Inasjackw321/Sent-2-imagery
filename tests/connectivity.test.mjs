@@ -11,7 +11,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { countLine, isGraphWindow, STATES, whereSaid } from '../frontend/js/connectivity.js';
+import { areaSaid, countLine, edges, isGraphWindow, STATES, whereSaid }
+  from '../frontend/js/connectivity.js';
 
 const SOURCE = readFileSync(
   new URL('../frontend/js/connectivity.js', import.meta.url), 'utf8');
@@ -141,7 +142,7 @@ test('it is called what it was asked to be called', () => {
 test('it has a place in the dock, and is started with the map', () => {
   assert.match(HTML, /<div class="net-dock" id="connectivityDock"><\/div>/);
   assert.match(MAP, /import \{ initConnectivity \} from '\.\/connectivity\.js';/);
-  assert.match(MAP, /initConnectivity\(map\);/);
+  assert.match(MAP, /initConnectivity\(map, \{ pickArea \}\);/);
 });
 
 test('and is styled, not left as bare buttons', () => {
@@ -214,9 +215,11 @@ test('each refresh hands its old picture back', () => {
     /if \(previous && previous !== blobUrl\) URL\.revokeObjectURL\(previous\);/);
 });
 
-test('changing the span redraws the graphs already open', () => {
-  assert.match(block('function setHistory('),
-    /for \(const probe of \[\.\.\.graphs\.values\(\)\]\) openGraph\(probe, \{ redraw: true \}\);/);
+test('changing the span redraws the graphs already open, of both kinds', () => {
+  const span = block('function setHistory(');
+  assert.match(span, /for \(const \[id, what\] of \[\.\.\.graphs\.entries\(\)\]\)/);
+  assert.match(span, /if \(what\.area\) openArea\(what\.area, \{ redraw: true, id \}\);/);
+  assert.match(span, /else openGraph\(what, \{ redraw: true \}\);/);
 });
 
 test('the title bar says what the probe is doing and since when', () => {
@@ -241,4 +244,75 @@ test('it looks like the seismograph windows', () => {
   assert.match(open, /el\('div', \{ class: 'trace-wait' \}/);
   assert.match(open, /el\('div', \{ class: 'trace-live', 'data-live': '' \}/);
   assert.ok(CSS.includes('.net-span {'));
+});
+
+// ── A whole area's graph ───────────────────────────────────────
+
+test('there is a button to graph an area, in the map\'s own tool family', () => {
+  // data-draw makes it light while armed, and Escape or a click elsewhere puts
+  // it away like any other tool -- rather than a second, private box tool.
+  assert.match(SOURCE, /class: 'net-area', id: 'netArea', type: 'button', dataset: \{ draw: 'pick' \}/);
+  assert.match(SOURCE, /'▭ Graph an area'/);
+});
+
+test('it uses the box tool the map hands it, rather than importing the map', () => {
+  // connectivity.js is loaded by map.js; importing back would be a cycle, and
+  // would drag Leaflet into the panel's Node tests.
+  assert.doesNotMatch(SOURCE, /from '\.\/map\.js'/);
+  assert.match(SOURCE, /pickArea = tools\.pickArea \?\? null;/);
+  assert.match(block('function armArea('), /pickArea\(\(bounds\) => openArea\(bounds\)\)/);
+});
+
+test('graphing an area switches the layer on if it was off', () => {
+  assert.match(block('function armArea('), /if \(!enabled\) toggle\(\);/);
+});
+
+test('the box stays on the map while its graph is open, and goes with it', () => {
+  const open = block('function openArea(');
+  assert.match(open, /outlines\.set\(winId, L\.rectangle\(bounds, AREA_STYLE\)\.addTo\(map\)\)/);
+  assert.match(open, /outlines\.get\(winId\)\?\.remove\(\);/);
+});
+
+test('area windows are graph windows, so switching the layer off closes them', () => {
+  assert.equal(isGraphWindow('net:area:3'), true);
+});
+
+test('an area graph refreshes, but less often than one probe', () => {
+  assert.match(SOURCE, /const AREA_REFRESH_MS = 5 \* 60 \* 1000;/);
+  assert.match(block('function openArea('), /\}, AREA_REFRESH_MS\)\);/);
+});
+
+test('the edges sent are clamped to the globe', () => {
+  const box = { getWest: () => -200, getSouth: () => -95, getEast: () => 190, getNorth: () => 91 };
+  assert.deepEqual(edges(box), { west: -180, south: -90, east: 180, north: 90 });
+});
+
+test('the title bar reads the figures the backend sent with the picture', () => {
+  const headers = new Map([['X-Name', encodeURIComponent('Житомирська область')],
+                           ['X-Now', '68'], ['X-Low', '62'], ['X-Probes', '47']]);
+  assert.equal(areaSaid(headers),
+    'Житомирська область · now 68% · lowest 62% · 47 probes');
+});
+
+test('and leaves out what it was not told', () => {
+  assert.equal(areaSaid(new Map([['X-Probes', '3']])), '3 probes');
+  // Zero is a figure, not a missing one.
+  assert.match(areaSaid(new Map([['X-Now', '0']])), /now 0%/);
+});
+
+test('it can be saved, as the very pixels on screen, with the mark', () => {
+  const saveBlock = block('async function saveArea(');
+  // The bytes that arrived, kept -- not fetched back from the image's blob:
+  // address, which the page's security policy does not let fetch read. That
+  // was the first version, and it failed with "Failed to fetch".
+  assert.match(saveBlock, /const blob = pictures\.get\(plot\);/);
+  assert.doesNotMatch(saveBlock, /fetch\(/);
+  assert.match(block('async function fetchArea('), /pictures\.set\(plot, blob\)/);
+  assert.match(saveBlock, /_kaldockhi\.png`/);
+  assert.match(saveBlock, /savePicture\(/);
+});
+
+test('the save button waits until there is a picture to save', () => {
+  assert.match(block('function openArea('), /class: 'net-save', type: 'button', disabled: true,/);
+  assert.match(block('async function fetchArea('), /save\.disabled = false;/);
 });

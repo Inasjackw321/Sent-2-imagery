@@ -7,6 +7,7 @@ import datetime as dt
 import logging
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -254,6 +255,7 @@ def get_config() -> dict[str, Any]:
             "windows": {str(k): v for k, v in connectivity.WINDOWS.items()},
             "default_window": connectivity.DEFAULT_WINDOW,
             "history": {str(k): v for k, v in connectivity.HISTORY.items()},
+            "area_history": {str(k): v for k, v in connectivity.AREA_HISTORY.items()},
             "attribution": connectivity.ATTRIBUTION,
         },
         "fires": {
@@ -374,6 +376,46 @@ def internet_connectivity(
         return connectivity.probes(box, hours=hours)
     except connectivity.ConnectivityError as exc:
         raise _fail(exc)
+
+
+@app.get("/api/connectivity/area.png")
+def connectivity_area_graph(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    hours: int = Query(connectivity.DEFAULT_AREA_HISTORY, ge=1, le=168),
+) -> Response:
+    """Every probe in a drawn box, as one line of how much of it was online.
+
+    The figures the picture is about travel with it as headers too, so the
+    window around it can say them without reading pixels.
+    """
+    if west >= east or south >= north:
+        raise HTTPException(400, "Draw the box from one corner to the opposite one.")
+    box = (west, south, east, north)
+    if config.DEMO_MODE:
+        found = connectivity.demo_area(box, hours)
+    else:
+        try:
+            found = connectivity.area_history(box, hours, namer=gazetteer.region_at)
+        except connectivity.ConnectivityError as exc:
+            raise _fail(exc)
+    if not found["members"]:
+        raise HTTPException(404, "No RIPE Atlas probes were online in that box during the "
+                                 "window. Try a larger area.")
+    pct = lambda v: "" if v is None else str(round(100 * v))  # noqa: E731
+    return Response(content=connectivity.plot_area(found), media_type="image/png", headers={
+        "Cache-Control": "no-store",
+        "X-Probes": str(found["members"]),
+        "X-In-Box": str(found["in_box"]),
+        "X-Now": pct(found["now"]),
+        "X-Low": pct(found["low"]),
+        # Header values are Latin-1. A region name in Cyrillic would not
+        # survive the trip, so it is percent-encoded and decoded on the page.
+        "X-Name": urllib.parse.quote(found["name"]),
+        "Access-Control-Expose-Headers": "X-Probes, X-In-Box, X-Now, X-Low, X-Name",
+    })
 
 
 @app.get("/api/connectivity/probe.png")
