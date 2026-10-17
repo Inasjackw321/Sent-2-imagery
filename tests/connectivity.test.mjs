@@ -1,0 +1,159 @@
+// Tests for the internet connectivity panel.
+//
+// Run with:  node --test tests/connectivity.test.mjs
+//
+// The backend decides what each probe is saying. This half decides whether
+// the reader can see it: whether the probes that just went dark stand out
+// from the thousands that did not, and whether the headline number is the
+// right fraction of the right thing.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+import { countLine, STATES } from '../frontend/js/connectivity.js';
+
+const SOURCE = readFileSync(
+  new URL('../frontend/js/connectivity.js', import.meta.url), 'utf8');
+const CSS = readFileSync(new URL('../frontend/css/app.css', import.meta.url), 'utf8');
+const HTML = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+const MAP = readFileSync(new URL('../frontend/js/map.js', import.meta.url), 'utf8');
+
+// ── The headline ───────────────────────────────────────────────
+
+const answer = (summary, extra = {}) => ({
+  count: 1, hours: 6, summary: { up: 0, down: 0, back: 0, gone: 0, share_down: 0, ...summary },
+  ...extra,
+});
+
+test('the headline says how many went offline, and out of how many', () => {
+  const said = countLine(answer({ up: 90, down: 6, back: 4, share_down: 0.06 }));
+  assert.match(said, /<b>94<\/b> of 100 online/);
+  assert.match(said, /<b class="net-bad">6<\/b> went offline in the last 6 h \(6\.0%\)/);
+  assert.match(said, /4 came back/);
+});
+
+test('ones already offline before the window are not in the denominator', () => {
+  // Five already gone since last week could not go offline today. Counting
+  // them would make "2 of 17" out of what is really "2 of 12".
+  const said = countLine(answer({ up: 10, down: 2, gone: 5, share_down: 2 / 12 }));
+  assert.match(said, /of 12 online/);
+  assert.doesNotMatch(said, /of 17/);
+});
+
+test('a quiet window is said to be quiet, not left blank', () => {
+  const said = countLine(answer({ up: 40 }));
+  assert.match(said, /none went offline in the last 6 h/);
+  assert.doesNotMatch(said, /net-bad/);
+});
+
+test('no probes at all is said in words', () => {
+  assert.equal(countLine({ count: 0, hours: 6, summary: {} }),
+               'No RIPE Atlas probes in view');
+});
+
+test('a capped answer says so, and what to do about it', () => {
+  assert.match(countLine(answer({ up: 1 }, { capped: true })), /zoom in for the rest/);
+  assert.doesNotMatch(countLine(answer({ up: 1 })), /zoom in/);
+});
+
+// ── What stands out ────────────────────────────────────────────
+
+test('going offline is the biggest, brightest thing on the map', () => {
+  // A continental view is thousands of steady probes. The three that just
+  // went dark have to be the first thing seen, not the last.
+  assert.ok(STATES.down.radius > STATES.back.radius);
+  assert.ok(STATES.back.radius > STATES.gone.radius);
+  assert.ok(STATES.gone.radius > STATES.up.radius);
+  assert.ok(STATES.down.fill > STATES.up.fill);
+});
+
+test('and is drawn last, on top of everything else', () => {
+  assert.match(SOURCE, /const LAYERING = \['up', 'gone', 'back', 'down'\];/);
+});
+
+test('every state has a colour of its own', () => {
+  const colours = Object.values(STATES).map((s) => s.colour.toLowerCase());
+  assert.equal(new Set(colours).size, colours.length);
+});
+
+test('the key shows every state, in the order of how much it matters', () => {
+  assert.match(SOURCE, /\['down', 'back', 'gone', 'up'\]\.map\(\(key\) => el\('div', \{ class: 'net-key-row' \}/);
+});
+
+// ── Honest about what a probe is ───────────────────────────────
+
+test('the panel says one probe is one site and many is an outage', () => {
+  assert.match(SOURCE, /One going dark is one site; many in one area at once is an/);
+  assert.match(SOURCE, /outage/);
+});
+
+test('and that the positions are blurred', () => {
+  // RIPE blurs them on purpose, to protect the people hosting them. A dot
+  // read as an address is a dot read wrong.
+  assert.match(SOURCE, /Positions are blurred by RIPE/);
+  assert.match(SOURCE, /blurred by RIPE`\)/);
+});
+
+test('an owner\'s description is shown as text, not markup', () => {
+  // el() makes text nodes. A template literal into innerHTML would let a
+  // stranger's description write into the page.
+  assert.match(SOURCE, /probe\.description \? el\('div', \{\}, probe\.description\) : null/);
+  assert.doesNotMatch(SOURCE, /innerHTML[^;]*description/);
+});
+
+test('the link to the probe is escaped and opens safely', () => {
+  assert.match(SOURCE, /encodeURIComponent\(probe\.id\)/);
+  assert.match(SOURCE, /rel: 'noopener noreferrer'/);
+});
+
+// ── Asking ─────────────────────────────────────────────────────
+
+test('it asks again when the map moves somewhere new', () => {
+  assert.match(SOURCE, /map\.on\('moveend', debounce\(\(\) => \{ if \(enabled\) refresh\(\); \}/);
+  assert.match(SOURCE, /if \(!force && covered\?\.contains\(view\)\) return;/);
+});
+
+test('and every few minutes while it is on, and not while it is off', () => {
+  assert.match(SOURCE, /const REFRESH_MS = 3 \* 60 \* 1000;/);
+  const at = SOURCE.indexOf('function toggle()');
+  const block = SOURCE.slice(at, SOURCE.indexOf('\n}\n', at));
+  assert.match(block, /timer = setInterval\(/);
+  assert.match(block, /clearInterval\(timer\);/);
+  // Nor while the tab is hidden.
+  assert.match(block, /if \(!document\.hidden\) refresh\(\{ force: true \}\);/);
+});
+
+test('it is drawn on a canvas, so thousands of dots do not freeze a pan', () => {
+  assert.match(SOURCE, /canvas = L\.canvas\(/);
+  assert.match(SOURCE, /renderer: canvas,/);
+});
+
+// ── It is a tool like the others ───────────────────────────────
+
+test('it is called what it was asked to be called', () => {
+  assert.match(SOURCE, /'Internet connectivity'\)/);
+});
+
+test('it has a place in the dock, and is started with the map', () => {
+  assert.match(HTML, /<div class="net-dock" id="connectivityDock"><\/div>/);
+  assert.match(MAP, /import \{ initConnectivity \} from '\.\/connectivity\.js';/);
+  assert.match(MAP, /initConnectivity\(map\);/);
+});
+
+test('and is styled, not left as bare buttons', () => {
+  for (const rule of ['.net-toggle {', '.net-body {', '.net-window {',
+                      '.net-country {', '.net-key {', '.net-note {']) {
+    assert.ok(CSS.includes(rule), rule);
+  }
+});
+
+test('a probe is clicked through a target wider than the dot', () => {
+  // A steady probe is drawn three pixels across. Leaflet cancels a click if
+  // the map moved at all, so missing one by a pixel pans the map instead.
+  assert.match(SOURCE, /const HIT_RADIUS = 10;/);
+  assert.match(SOURCE, /radius: HIT_RADIUS,\s*stroke: false, fill: true, fillOpacity: 0, interactive: true,/);
+  // And the dot itself does not compete with its own target for the click.
+  assert.match(SOURCE, /opacity: state === 'up' \? 0\.5 : 0\.95,\s*interactive: false,/);
+  assert.ok(Object.values(STATES).every((s) => s.radius < 10));
+});

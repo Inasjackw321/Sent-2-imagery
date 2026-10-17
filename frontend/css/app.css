@@ -497,6 +497,62 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .fire-popup-head { font-weight: 650; color: var(--ink); font-size: 13px; margin-bottom: 3px; }
 .fire-popup .dim { color: var(--ink-faint); }
 
+/* ── Internet connectivity (RIPE Atlas) ─────────────────────── */
+/* The same panel as the fires, in green: it is a tool of the same kind and
+   should look like one, and green-for-online is the one colour nobody needs
+   to be told the meaning of. */
+
+.net-dock { display: grid; gap: 8px; justify-items: stretch; }
+.net-toggle {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12.5px;
+  border-radius: 9px; background: rgba(13,16,21,.88); color: var(--ink-dim);
+  border: 1px solid var(--line); backdrop-filter: blur(6px);
+}
+.net-toggle:hover { color: var(--ink); border-color: #3a4a66; }
+.net-toggle.is-on {
+  color: #b8f5d2; border-color: rgba(61,220,132,.6); background: rgba(6,48,26,.82);
+  font-weight: 600;
+}
+.net-mark { filter: grayscale(1); opacity: .6; font-size: 13px; }
+.net-toggle.is-on .net-mark { filter: none; opacity: 1; }
+.net-body {
+  padding: 10px 11px; border-radius: 10px; font-size: 11.5px;
+  background: rgba(13,16,21,.9); border: 1px solid var(--line);
+  color: var(--ink-dim); backdrop-filter: blur(6px);
+}
+.net-windows { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.net-window {
+  padding: 5px 2px; font: inherit; font-size: 11px; cursor: pointer;
+  background: var(--bg-3); color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.net-window:hover { color: var(--ink); }
+.net-window.is-active { border-color: #3ddc84; color: #3ddc84; }
+.net-count { margin: 9px 0 8px; color: var(--ink); line-height: 1.4; }
+.net-count .dim { color: var(--ink-faint); }
+.net-bad { color: #ff6b6b; }
+/* Countries where probes went down: a code, a bar of the share, the counts. */
+.net-countries { display: grid; gap: 3px; margin-bottom: 8px; }
+.net-countries:empty { display: none; }
+.net-country {
+  display: grid; grid-template-columns: 2.2em 1fr auto; gap: 7px;
+  align-items: center; font-size: 10.5px;
+}
+.net-cc { font-weight: 650; color: var(--ink); letter-spacing: .04em; }
+.net-bar { height: 5px; border-radius: 3px; background: var(--bg-3); overflow: hidden; }
+.net-bar i { display: block; height: 100%; background: #ff4d4f; }
+.net-frac { color: var(--ink-faint); white-space: nowrap; }
+.net-key { display: grid; gap: 3px; padding-top: 8px; border-top: 1px solid var(--line); }
+.net-key-row { display: flex; align-items: center; gap: 7px; color: var(--ink-faint); }
+.net-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.net-note {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
+  font-size: 10px; line-height: 1.4; color: var(--ink-faint);
+}
+.net-popup-head { font-weight: 650; font-size: 13px; margin-bottom: 3px; }
+.net-popup .dim { color: var(--ink-faint); }
+
 /* Popups. Both kinds the app opens wear the same dark skin -- Leaflet's own
    is white, and light text on it would be unreadable. */
 .leaflet-popup-content-wrapper {

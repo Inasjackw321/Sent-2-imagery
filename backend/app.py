@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, animate as animation, composite, config, copernicus,
+    aisstream, animate as animation, composite, config, connectivity, copernicus,
     fires, gazetteer, mtg,
     ollama, passes, seismic, service, shake, stac, tracker, version, vessels,
     weather,
@@ -250,6 +250,11 @@ def get_config() -> dict[str, Any]:
             "global_key_set": aisstream.has_key(),
             "min_interval": aisstream.MIN_INTERVAL_SECONDS,
         },
+        "connectivity": {
+            "windows": {str(k): v for k, v in connectivity.WINDOWS.items()},
+            "default_window": connectivity.DEFAULT_WINDOW,
+            "attribution": connectivity.ATTRIBUTION,
+        },
         "fires": {
             "windows": sorted(fires.WINDOWS),
             "sensors": {k: v["label"] for k, v in fires.SENSORS.items()},
@@ -344,6 +349,29 @@ def probe(body: dict = Body(...)) -> dict:
     except (KeyError, ValueError, service.RenderError) as exc:
         raise _fail(exc, 400)
     except (BandReadError, stac.SceneSearchError) as exc:
+        raise _fail(exc)
+
+
+@app.get("/api/connectivity")
+def internet_connectivity(
+    west: float = Query(..., ge=-180, le=180),
+    south: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    hours: int = Query(connectivity.DEFAULT_WINDOW, ge=1, le=24),
+) -> dict:
+    """RIPE Atlas probes in a rectangle: which are online, which just dropped.
+
+    Asked from here rather than by the browser so that a panned map does not
+    send RIPE a request per pan per viewer: one rectangle's answer is held for
+    a couple of minutes, which is about how often a probe's status moves.
+    """
+    box = (west, south, east, north)
+    if config.DEMO_MODE:
+        return connectivity.demo(box, hours=hours)
+    try:
+        return connectivity.probes(box, hours=hours)
+    except connectivity.ConnectivityError as exc:
         raise _fail(exc)
 
 
@@ -618,6 +646,7 @@ def selftest() -> dict:
         ("fires", "NASA FIRMS",
          f"{fires.FIRMS_ROOT}/api/area/csv/x/VIIRS_SNPP_NRT/-1,-1,1,1/1"),
         ("radar", "RainViewer", "https://api.rainviewer.com/public/weather-maps.json"),
+        ("connectivity", "RIPE Atlas", connectivity.PROBES_URL + "?page_size=1"),
         ("lightning", "EUMETSAT View", mtg.WMS + "?service=WMS&request=GetCapabilities"),
         ("places", "Nominatim", config.NOMINATIM_URL + "?q=Kyiv&format=jsonv2&limit=1"),
         ("imagery", "Copernicus STAC", config.STAC_URL),

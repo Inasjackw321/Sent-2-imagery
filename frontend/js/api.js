@@ -24,6 +24,11 @@ export const api = {
   geocode: (q) => request(`/api/geocode?q=${encodeURIComponent(q)}`, { method: 'GET' }),
   weather: (lon, lat) => request(`/api/weather?lon=${lon}&lat=${lat}`, { method: 'GET' }),
   passes: (lon, lat) => request(`/api/passes?lon=${lon}&lat=${lat}`, { method: 'GET' }),
+  connectivity: ({ west, south, east, north, hours }) => request(
+    `/api/connectivity?${new URLSearchParams({
+      west: west.toFixed(4), south: south.toFixed(4),
+      east: east.toFixed(4), north: north.toFixed(4), hours,
+    })}`, { method: 'GET' }),
   fires: ({ west, south, east, north, hours }) => request(
     `/api/fires?${new URLSearchParams({
       west: west.toFixed(4), south: south.toFixed(4),
