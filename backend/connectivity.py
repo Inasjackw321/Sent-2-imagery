@@ -521,6 +521,12 @@ HISTORY_HELD = 64
 
 PLOT_SIZE = (760, 260)
 
+# How far before the window the connection log is read, to know what each
+# probe was doing when the window opened. A probe that went offline a day
+# before the window and came back inside it really was offline at the start;
+# one with no disconnect in three days before a reconnect was not.
+LOOKBACK = dt.timedelta(days=3)
+
 _history_held: dict[tuple[int, int], tuple[float, dict[str, Any]]] = {}
 
 
@@ -596,15 +602,31 @@ def read_pings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def timeline(events: list[tuple[float, str]], now_state: str | None,
              start: float, end: float) -> list[tuple[float, float, str]]:
-    """The window cut into stretches of online and offline.
+    """The window cut into stretches of online, offline and unknown.
 
-    What it was doing before the first event is the opposite of that event --
-    a probe that connected at noon was not connected at eleven. With no events
-    at all, it was doing all window what it is doing now.
+    What it was doing when the window opened is the last thing it was seen
+    doing before then -- which is why the events are asked for from a few
+    days before the window, not from its start.
+
+    With nothing seen before the window, the first event inside it decides,
+    but only one way round. A disconnect means it was online until then. A
+    connect does NOT mean it was offline until then: probes reconnect to
+    RIPE's controllers while already online, and a new probe connects for the
+    first time. That used to be read as "offline since the window opened",
+    which counted every such probe as an outage from the start of the window
+    to its first connect -- and an area's line then climbed steadily all week
+    and put its "lowest" on the first day, for no reason but the arithmetic.
+    It is "unknown" now, and unknown is left out of the count rather than
+    counted against it.
+
+    With no events at all, it was doing all window what it is doing now.
     """
+    before = [(t, s) for t, s in events if t < start]
     inside = [(t, s) for t, s in events if start <= t <= end]
-    if inside:
-        state = "down" if inside[0][1] == "up" else "up"
+    if before:
+        state = before[-1][1]
+    elif inside:
+        state = "up" if inside[0][1] == "down" else "unknown"
     else:
         state = now_state or "unknown"
     out = []
@@ -644,7 +666,7 @@ def history(probe_id: int, hours: int = DEFAULT_HISTORY, get: Any = None,
     status = status_of(about) if about else None
     now_state = {CONNECTED: "up", DISCONNECTED: "down"}.get(status)
 
-    events = read_events(_results(CONNECTION_MSM, probe_id, start, now, get))
+    events = read_events(_results(CONNECTION_MSM, probe_id, start - LOOKBACK, now, get))
     try:
         pings = read_pings(_results(PING_MSM, probe_id, start, now, get))
         ping_trouble = ""
@@ -658,7 +680,7 @@ def history(probe_id: int, hours: int = DEFAULT_HISTORY, get: Any = None,
         "hours": hours,
         "start": start.timestamp(),
         "end": now.timestamp(),
-        "events": events,
+        "events": [(t, s) for t, s in events if t >= start.timestamp()],
         "segments": timeline(events, now_state, start.timestamp(), now.timestamp()),
         "pings": pings,
         "ping_trouble": ping_trouble,
@@ -922,8 +944,12 @@ def area_members(raw: list[dict[str, Any]], start: dt.datetime,
 
 
 def online_series(timelines: list[list[tuple[float, float, str]]],
-                  start: float, end: float, step: float) -> list[tuple[float, int]]:
-    """(time, how many were online) at each step through the window.
+                  start: float, end: float, step: float) -> list[tuple[float, int, int]]:
+    """(time, how many were online, how many were in service) at each step.
+
+    In service is online or offline -- a probe whose state is known. A probe
+    not yet switched on, or not seen until it reconnected, is neither, and
+    counting it as offline is what made the line climb all week.
 
     Read at the middle of each step rather than its edge, so an outage that
     starts a minute into a step is in that step and not the next one.
@@ -932,36 +958,47 @@ def online_series(timelines: list[list[tuple[float, float, str]]],
     t = start
     while t < end:
         middle = min(t + step / 2, end)
-        online = 0
+        online = counted = 0
         for stretches in timelines:
             for a, b, state in stretches:
                 if a <= middle < b or (b == end and middle == end):
                     online += state == "up"
+                    counted += state in ("up", "down")
                     break
-        out.append((t, online))
+        out.append((t, online, counted))
         t += step
     return out
 
 
-def summarise_area(series: list[tuple[float, int]], members: int) -> dict[str, Any]:
+def summarise_area(series: list[tuple[float, int, int]], members: int) -> dict[str, Any]:
     """The numbers the graph is about: now, the low point, and when.
 
-    Normalised to the most that were online at once in the window, which is
-    what "100 %" means on this graph. Not to the number of probes: some of
-    those are on connections that were never all up together, and a line
-    that never reached the top would read as a region permanently degraded.
+    Each step is the share of the probes in service at that moment that were
+    online -- not a share of every probe there is by the end of the window,
+    which counted probes that had not arrived yet as offline. Then normalised
+    to the best step in the window, which is what "100 %" means on this
+    graph: volunteers' home connections are never all up together, and a
+    line that never reached the top would read as a region permanently
+    degraded.
+
+    A step with no probe in service has no share at all, and is drawn as a
+    gap rather than as zero.
     """
-    counts = [n for _t, n in series]
-    peak = max(counts) if counts else 0
-    shares = [n / peak if peak else 0.0 for n in counts]
-    low_at = min(range(len(shares)), key=lambda i: shares[i]) if shares else None
+    raw = [n / c if c else None for _t, n, c in series]
+    known = [r for r in raw if r is not None]
+    best = max(known) if known else 0.0
+    shares = [None if r is None else (r / best if best else 0.0) for r in raw]
+    indexed = [i for i, v in enumerate(shares) if v is not None]
+    low_at = min(indexed, key=lambda i: shares[i]) if indexed else None
+    last = indexed[-1] if indexed else None
     return {
         "shares": shares,
-        "peak": peak,
-        "now": shares[-1] if shares else None,
+        "peak": max((n for _t, n, _c in series), default=0),
+        "now": shares[last] if last is not None else None,
         "low": shares[low_at] if low_at is not None else None,
         "low_at": series[low_at][0] if low_at is not None else None,
-        "online_now": counts[-1] if counts else 0,
+        "online_now": series[-1][1] if series else 0,
+        "in_service_now": series[-1][2] if series else 0,
         "members": members,
     }
 
@@ -1097,7 +1134,8 @@ def area_history(bbox: tuple[float, float, float, float],
     # than being left out: its probes would otherwise be drawn as if nothing
     # had happened to them, which is a line that is wrong without saying so.
     with ThreadPoolExecutor(max_workers=AREA_WORKERS) as pool:
-        for rows in pool.map(lambda c: _results(CONNECTION_MSM, c, start, now, get), chunks):
+        for rows in pool.map(
+                lambda c: _results(CONNECTION_MSM, c, start - LOOKBACK, now, get), chunks):
             for row in rows:
                 events.setdefault(row.get("prb_id"), []).append(row)
 
@@ -1289,7 +1327,8 @@ def plot_area(found: dict[str, Any]) -> bytes:
          area_colour(found["now"] or 0)),
         ("LOWEST", f"{round(100 * found['low'])}%" if found["low"] is not None else "—",
          area_colour(found["low"] or 0)),
-        ("ONLINE NOW", f"{found['online_now']} of {found['members']}", _AREA_INK),
+        ("ONLINE NOW", f"{found['online_now']} of "
+                       f"{found.get('in_service_now', found['members'])}", _AREA_INK),
     ]
     x = left
     for label, value, colour in figures:
@@ -1316,6 +1355,8 @@ def plot_area(found: dict[str, Any]) -> bytes:
     span = right - left
     gap = 1 if span / count > 4 else 0
     for i, share in enumerate(shares):
+        if share is None:
+            continue
         x0 = left + round(i * span / count)
         x1 = left + round((i + 1) * span / count) - 1 - gap
         y0 = round(bottom - share * (bottom - top))
@@ -1326,7 +1367,7 @@ def plot_area(found: dict[str, Any]) -> bytes:
 
     # The low point, marked, so the eye goes where the story is.
     if found.get("low_at") is not None and found["low"] is not None and found["low"] < AREA_GOOD:
-        i = next((k for k, (t, _n) in enumerate(found["series"]) if t == found["low_at"]), None)
+        i = next((k for k, row in enumerate(found["series"]) if row[0] == found["low_at"]), None)
         if i is not None:
             x = left + (i + 0.5) * span / count
             y = bottom - found["low"] * (bottom - top)
@@ -1345,7 +1386,8 @@ def plot_area(found: dict[str, Any]) -> bytes:
         draw.text((x - 34, bottom + 14), label, font=small, fill=_AREA_DIM)
 
     # The source, and the key to the colours.
-    footer = ("Share of probes online, against the most up at once · RIPE Atlas, RIPE NCC, "
+    footer = ("Share of probes in service that were online, against the best moment · "
+              "RIPE Atlas, RIPE NCC, "
               "connection log (measurement 7000) · positions blurred by RIPE"
               + (" · drawn area" if found.get("corners") else ""))
     face, footer = _fitted(draw, footer, width - 2 * left)

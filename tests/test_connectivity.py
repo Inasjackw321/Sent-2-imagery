@@ -443,9 +443,22 @@ class TestReadingRipeResults:
 
 
 class TestTimeline:
-    def test_before_the_first_event_it_was_the_opposite(self):
-        """A probe that connected at noon was not connected at eleven."""
+    def test_a_connect_alone_is_not_an_outage_before_it(self):
+        """Probes reconnect to RIPE's controllers while already online, and a
+        new probe connects for the first time. Read as "offline until then",
+        every such probe was an outage from the start of the window to its
+        first connect, and an area's line climbed all week."""
         got = net.timeline([(T0 - 100, "up")], "up", T0 - 1000, T0)
+        assert got == [(T0 - 1000, T0 - 100, "unknown"), (T0 - 100, T0, "up")]
+
+    def test_a_disconnect_alone_means_it_was_online_until_then(self):
+        got = net.timeline([(T0 - 100, "down")], "down", T0 - 1000, T0)
+        assert got == [(T0 - 1000, T0 - 100, "up"), (T0 - 100, T0, "down")]
+
+    def test_what_it_was_doing_before_the_window_decides_the_start(self):
+        """An outage that began before the window and ended inside it really
+        was an outage at the start -- the log from before the window says so."""
+        got = net.timeline([(T0 - 1500, "down"), (T0 - 100, "up")], "up", T0 - 1000, T0)
         assert got == [(T0 - 1000, T0 - 100, "down"), (T0 - 100, T0, "up")]
 
     def test_no_events_is_all_window_whatever_it_is_now(self):
@@ -457,8 +470,12 @@ class TestTimeline:
         assert [s for _a, _b, s in got] == ["up", "down", "up"]
         assert got[1] == (T0 - 600, T0 - 300, "down")
 
-    def test_events_outside_the_window_are_ignored(self):
-        got = net.timeline([(T0 - 5000, "down")], "up", T0 - 1000, T0)
+    def test_only_the_last_event_before_the_window_counts(self):
+        got = net.timeline([(T0 - 5000, "down"), (T0 - 3000, "up")], "down", T0 - 1000, T0)
+        assert got == [(T0 - 1000, T0, "up")]
+
+    def test_events_after_the_window_are_ignored(self):
+        got = net.timeline([(T0 + 50, "down")], "up", T0 - 1000, T0)
         assert got == [(T0 - 1000, T0, "up")]
 
     def test_the_stretches_cover_the_window_exactly(self):
@@ -491,7 +508,11 @@ class TestHistory:
         net.history(4242, 24, get=get, now=NOW)
         results = [p for u, p in asked if "/results/" in u]
         assert {p["probe_ids"] for p in results} == {4242}
-        assert all(p["stop"] - p["start"] == 24 * 3600 for p in results)
+        # From a few days before the window, so what it was doing when the
+        # window opened is known rather than guessed.
+        lookback = int(net.LOOKBACK.total_seconds())
+        conn = [p for u, p in asked if "/7000/" in u]
+        assert all(p["stop"] - p["start"] == 24 * 3600 + lookback for p in conn)
         assert any("/7000/" in u for u, _ in asked) and any("/1001/" in u for u, _ in asked)
 
     def test_an_unknown_span_falls_back_to_a_day(self):
@@ -700,32 +721,52 @@ class TestTheLine:
         timelines = [[(0.0, 600.0, "up")],
                      [(0.0, 300.0, "up"), (300.0, 600.0, "down")]]
         got = net.online_series(timelines, s, e, 100.0)
-        assert [n for _t, n in got] == [2, 2, 2, 1, 1, 1]
+        assert [n for _t, n, _c in got] == [2, 2, 2, 1, 1, 1]
+        # Both in service throughout: one online, one offline, both counted.
+        assert [c for _t, _n, c in got] == [2] * 6
+
+    def test_a_probe_not_yet_in_service_is_not_counted_either_way(self):
+        timelines = [[(0.0, 600.0, "up")],
+                     [(0.0, 300.0, "unknown"), (300.0, 600.0, "up")]]
+        got = net.online_series(timelines, 0.0, 600.0, 100.0)
+        assert [(n, c) for _t, n, c in got] == [(1, 1)] * 3 + [(2, 2)] * 3
 
     def test_read_at_the_middle_of_each_step(self):
         """An outage starting a minute into a step belongs to that step."""
         timelines = [[(0.0, 110.0, "up"), (110.0, 400.0, "down")]]
         got = net.online_series(timelines, 0.0, 400.0, 100.0)
-        assert [n for _t, n in got] == [0 if t >= 100 else 1 for t, _n in got]
-        assert got[1][1] == 0
+        assert got[0][1] == 1 and got[1][1] == 0
 
     def test_the_last_step_reaches_the_end(self):
         got = net.online_series([[(0.0, 250.0, "up")]], 0.0, 250.0, 100.0)
-        assert [t for t, _n in got] == [0.0, 100.0, 200.0]
+        assert [t for t, _n, _c in got] == [0.0, 100.0, 200.0]
         assert got[-1][1] == 1
 
-    def test_normalised_to_the_most_that_were_up_at_once(self):
-        """Not to the number of probes, or a region whose probes were never
-        all up together reads as permanently degraded."""
-        got = net.summarise_area([(0, 40), (1, 40), (2, 26), (3, 30)], members=47)
-        assert got["peak"] == 40
-        assert got["now"] == pytest.approx(0.75)
-        assert got["low"] == pytest.approx(0.65)
+    def test_each_step_is_a_share_of_those_in_service_then(self):
+        """Not of every probe by the end of the window. Probes arriving over
+        the week -- new ones, or ones seen only from a reconnect -- were the
+        offline ones at the start, and the line climbed all week."""
+        got = net.summarise_area([(0, 40, 40), (1, 45, 45), (2, 50, 50)], members=50)
+        assert got["shares"] == [1.0, 1.0, 1.0]
+        assert got["low"] == 1.0
+
+    def test_normalised_to_the_best_moment(self):
+        """Volunteers' connections are never all up together; a line that
+        never reached the top would read as a region permanently degraded."""
+        got = net.summarise_area([(0, 49, 50), (1, 49, 50), (2, 35, 50), (3, 42, 50)],
+                                 members=50)
+        assert got["now"] == pytest.approx(42 / 49)
+        assert got["low"] == pytest.approx(35 / 49)
         assert got["low_at"] == 2
-        assert got["online_now"] == 30 and got["members"] == 47
+        assert got["online_now"] == 42 and got["in_service_now"] == 50
+
+    def test_a_step_with_nobody_in_service_is_a_gap_not_a_zero(self):
+        got = net.summarise_area([(0, 0, 0), (1, 5, 5)], members=5)
+        assert got["shares"] == [None, 1.0]
+        assert got["low"] == 1.0
 
     def test_nothing_online_ever_is_zero_not_a_division_by_zero(self):
-        got = net.summarise_area([(0, 0), (1, 0)], members=3)
+        got = net.summarise_area([(0, 0, 3), (1, 0, 3)], members=3)
         assert got["now"] == 0.0 and got["low"] == 0.0
 
     def test_no_steps_at_all(self):
@@ -1133,3 +1174,55 @@ class TestTheShapeRoute:
             "west": 0, "south": 0, "east": 1, "north": 1, "poly": "1,1;2,2"})
         assert got.status_code == 400
         assert "corners" in got.json()["detail"]
+
+
+class TestNoClimbFromArithmetic:
+    """The Gelderland graph: a smooth climb from 92 % a week ago to 100 % now,
+    "lowest" on the first day, no dip anywhere. That shape was the arithmetic,
+    not the network. Probes that logged a routine reconnect partway through
+    the week were counted as offline from the start of the window until it."""
+
+    def _week(self, events):
+        raw = [probe(pid=i, status=1, lon=28.5, lat=50.5) for i in range(100)]
+        return net.area_history(AREA, 168, get=area_ripe(raw, events), now=NOW)
+
+    def test_routine_reconnects_through_the_week_are_a_flat_line(self):
+        # Half the probes log one connect, spread across the week, with no
+        # disconnect before it: a reconnect while already online.
+        events = {i: [{"prb_id": i, "event": "connect",
+                       "timestamp": (NOW - dt.timedelta(hours=160 - 3 * i)).timestamp()}]
+                  for i in range(50)}
+        got = self._week(events)
+        assert got["low"] == pytest.approx(1.0)
+        assert min(s for s in got["shares"] if s is not None) == pytest.approx(1.0)
+
+    def test_a_real_outage_that_began_before_the_window_still_shows(self):
+        """The log is read from before the window, so a probe that went
+        offline the day before and came back inside it is offline at the start."""
+        events = {i: [{"prb_id": i, "event": "disconnect",
+                       "timestamp": (NOW - dt.timedelta(hours=190)).timestamp()},
+                      {"prb_id": i, "event": "connect",
+                       "timestamp": (NOW - dt.timedelta(hours=150)).timestamp()}]
+                  for i in range(30)}
+        got = self._week(events)
+        assert got["shares"][0] == pytest.approx(0.7)
+        assert got["now"] == pytest.approx(1.0)
+
+    def test_a_probe_that_went_offline_keeps_its_time_online_before(self):
+        """Asked for directly: the ones that are offline now still count as
+        online for every hour they were online."""
+        raw = [probe(pid=i, status=1, lon=28.5, lat=50.5) for i in range(9)]
+        raw.append(probe(pid=99, status=2, ago=dt.timedelta(hours=10), lon=28.5, lat=50.5))
+        events = {99: [{"prb_id": 99, "event": "disconnect",
+                        "timestamp": (NOW - dt.timedelta(hours=10)).timestamp()}]}
+        got = net.area_history(AREA, 168, get=area_ripe(raw, events), now=NOW)
+        assert got["members"] == 10
+        assert got["shares"][0] == pytest.approx(1.0)       # all ten online then
+        assert got["now"] == pytest.approx(0.9)              # nine of ten now
+
+    def test_the_log_is_read_from_before_the_window(self):
+        asked = []
+        raw = [probe(pid=1, lon=28.5, lat=50.5)]
+        net.area_history(AREA, 24, get=area_ripe(raw, {}, asked), now=NOW)
+        conn = [p for u, p in asked if "/7000/" in u][0]
+        assert conn["start"] == int((NOW - dt.timedelta(hours=24) - net.LOOKBACK).timestamp())
