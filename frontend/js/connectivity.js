@@ -47,22 +47,43 @@ export const STATES = {
           label: 'offline for longer' },
   up: { colour: '#3ddc84', edge: '#3ddc84', radius: 2.6, fill: 0.5,
         label: 'online' },
+  // The rest of the census. Every probe RIPE lists is drawn, whatever its
+  // status: leaving these off made the map look like data was missing, and
+  // a probe offline for a month in a town that is otherwise all green is
+  // itself worth seeing. Small and dark, so they are there without competing.
+  dead: { colour: '#4b5563', edge: '#6b7280', radius: 2.4, fill: 0.7,
+          label: 'offline for over a week' },
+  inactive: { colour: '#0d1015', edge: '#6b7280', radius: 2.4, fill: 0,
+              label: 'abandoned or written off', hollow: true },
+  never: { colour: '#2b3240', edge: '#3b4454', radius: 1.8, fill: 0.8,
+           label: 'never connected' },
 };
 
-// Drawn in this order, so the changes are on top of the steady ones -- and,
-// because their click targets are drawn last too, a click between a steady
-// probe and one that just went down opens the one that went down.
-const LAYERING = ['up', 'gone', 'back', 'down'];
+// The key, in the order of how much each state matters.
+export const KEY_ORDER = ['down', 'back', 'gone', 'up', 'dead', 'inactive', 'never'];
 
-// How close the pointer has to get for a click to count, in pixels.
-const HIT_RADIUS = 10;
+// Drawn in this order, quietest first, so the changes are on top -- and so a
+// click between a steady probe and one that just went down opens the one
+// that went down, because the one drawn last is the one hit first.
+const LAYERING = ['never', 'inactive', 'dead', 'up', 'gone', 'back', 'down'];
+
+// How far beyond its own edge a dot answers a click, in pixels.
+//
+// On the renderer rather than as a second, invisible, wider circle per probe,
+// which is how it used to be done: that was two markers for every probe, and
+// now that every probe in the fleet can be on the map at once, forty
+// thousand markers is the difference between a map that pans and one that
+// does not. A dot's own hit area is its radius -- three pixels for a steady
+// probe -- and Leaflet cancels a click if the map moved at all while the
+// button was down, so without this, missing by a pixel pans the map.
+const TOLERANCE = 7;
 
 export function initConnectivity(leafletMap, tools = {}) {
   map = leafletMap;
   pickArea = tools.pickArea ?? null;
   // A canvas: a continental view is a few thousand dots, which as SVG
   // elements is a few thousand nodes for the browser to move on every pan.
-  canvas = L.canvas({ padding: 0.4 });
+  canvas = L.canvas({ padding: 0.4, tolerance: TOLERANCE });
   layer = L.layerGroup();
   buildDock();
   map.on('moveend', debounce(() => { if (enabled) refresh(); }, 600));
@@ -95,25 +116,42 @@ function buildDock() {
             dataset: { hours: h },
             onclick: () => setHistory(Number(h)),
           }, label))),
-      // Drag a box, get one graph of every probe inside it. data-draw puts
-      // the button in the map's own tool family: it lights while armed, and
-      // Escape or a click elsewhere puts it away like any other tool.
-      el('button', {
-        class: 'net-area', id: 'netArea', type: 'button', dataset: { draw: 'pick' },
-        title: 'Drag a box on the map: every probe inside it becomes one graph',
-        onclick: armArea,
-      }, '▭ Graph an area'),
+      // Mark out an area, get one graph of every probe inside it: a box to
+      // drag, or a shape to click out corner by corner -- a province, a
+      // coastline, a city and not its suburbs. data-draw puts both buttons in
+      // the map's own tool family: they light while armed, and Escape or a
+      // click elsewhere puts them away like any other tool.
+      el('div', { class: 'net-areas' },
+        el('span', { class: 'net-graphs-label' }, 'Graph an area'),
+        el('button', {
+          class: 'net-area', id: 'netArea', type: 'button', dataset: { draw: 'pick' },
+          title: 'Drag a box on the map: every probe inside it becomes one graph',
+          onclick: () => armArea('box'),
+        }, '▭ Box'),
+        el('button', {
+          class: 'net-area', id: 'netAreaPoints', type: 'button',
+          dataset: { draw: 'pickpoly' },
+          title: 'Click the corners of an area on the map, then double-click or '
+            + 'click the first corner to finish',
+          onclick: () => armArea('points'),
+        }, '⬠ Points')),
       el('div', { class: 'net-count', id: 'netCount' }, 'Nothing loaded yet'),
       el('div', { class: 'net-countries', id: 'netCountries' }),
       el('div', { class: 'net-key' },
-        ...['down', 'back', 'gone', 'up'].map((key) => el('div', { class: 'net-key-row' },
-          el('span', { class: 'net-dot', style: `background:${STATES[key].colour}` }),
-          STATES[key].label))),
+        ...KEY_ORDER.map((key) => el('div', { class: 'net-key-row' },
+          el('span', {
+            class: `net-dot${STATES[key].hollow ? ' is-hollow' : ''}`,
+            style: `background:${STATES[key].colour};border-color:${STATES[key].edge}`,
+          }),
+          el('span', {}, STATES[key].label),
+          // How many of each are in view, so the census adds up on screen.
+          el('span', { class: 'net-key-n', dataset: { state: key } }, '')))),
       el('div', { class: 'net-note' },
         'RIPE Atlas · each dot is one volunteer’s probe, wired into their '
         + 'network. One going dark is one site; many in one area at once is an '
-        + 'outage. Positions are blurred by RIPE by up to a few kilometres. '
-        + 'Click one for its graph.')),
+        + 'outage. Every probe RIPE lists is drawn, whatever its status. '
+        + 'Positions are blurred by RIPE by up to a few kilometres. '
+        + 'Click one for its graph, or graph a whole area.')),
   );
 }
 
@@ -189,7 +227,7 @@ function draw(data) {
     : data.probes.reduce((o, p) => ((o[p.state] ??= []).push(p), o), {});
   for (const state of LAYERING) {
     for (const probe of byState[state] ?? []) {
-      const look = STATES[state];
+      const look = STATES[state] ?? STATES.inactive;
       L.circleMarker([probe.lat, probe.lon], {
         renderer: canvas,
         radius: look.radius,
@@ -198,20 +236,15 @@ function draw(data) {
         fillColor: look.colour,
         fillOpacity: look.fill,
         opacity: state === 'up' ? 0.5 : 0.95,
-        interactive: false,
-      }).addTo(layer);
-      // The click goes to an invisible circle a fingertip wide, not to the
-      // dot. A canvas dot's own hit area is its radius -- three pixels for a
-      // steady probe -- and Leaflet cancels a click if the map moved at all
-      // while the button was down, so aiming at one and missing by a pixel
-      // pans the map instead. The seismic panel learned this first.
-      L.circleMarker([probe.lat, probe.lon], {
-        renderer: canvas, radius: HIT_RADIUS,
-        stroke: false, fill: true, fillOpacity: 0, interactive: true,
+        interactive: true,
       }).on('click', () => openGraph(probe)).addTo(layer);
     }
   }
   $('#netCount').innerHTML = countLine(data);
+  for (const node of document.querySelectorAll('.net-key-n')) {
+    const n = data.summary?.[node.dataset.state] ?? 0;
+    node.textContent = n ? n.toLocaleString() : '';
+  }
   paintCountries(data.countries ?? []);
 }
 
@@ -229,8 +262,15 @@ export function countLine(data) {
       : `none went offline in the last ${window}`,
   ];
   if (s.back) parts.push(`${s.back} came back`);
+  // The rest of the census, said, so the number of dots on the map and the
+  // number in the headline can be reconciled by anyone who counts.
+  const rest = [[s.gone, 'offline since before'], [s.dead, 'offline over a week'],
+                [s.inactive, 'inactive'], [s.never, 'never connected']]
+    .filter(([n]) => n).map(([n, said]) => `${n} ${said}`);
   return parts.join(' · ')
-    + (data.capped ? '<br><span class="dim">nearest shown — zoom in for the rest</span>' : '');
+    + (rest.length ? `<br><span class="dim">also on the map: ${rest.join(', ')}</span>` : '')
+    + (data.capped ? '<br><span class="dim">not every page came back — '
+      + 'some probes in view are missing; zoom in or wait for the next refresh</span>' : '');
 }
 
 /**
@@ -278,6 +318,7 @@ export function isGraphWindow(id) {
 
 const HEADLINES = {
   down: 'Went offline', back: 'Back online', gone: 'Offline', up: 'Online',
+  dead: 'Offline for over a week', inactive: 'Inactive', never: 'Never connected',
 };
 
 function openGraph(probe, { redraw = false } = {}) {
@@ -333,7 +374,10 @@ function stopTicking(id) {
 /** The line in the window's title bar: what it is doing, and since when. */
 export function whereSaid(probe) {
   const ago = probe.since ? (Date.now() - new Date(probe.since).getTime()) / 3.6e6 : null;
-  return [`${HEADLINES[probe.state] ?? ''}${ago != null ? ` ${fmt.duration(ago)} ago` : ''}`,
+  // RIPE's own word where this app lumps several together: "Written Off"
+  // says more than "Inactive".
+  const headline = (probe.state === 'inactive' && probe.status_name) || HEADLINES[probe.state] || '';
+  return [`${headline}${ago != null ? ` ${fmt.duration(ago)} ago` : ''}`,
           probe.country, probe.asn ? `AS${probe.asn}` : null]
     .filter(Boolean).join(' · ');
 }
@@ -437,10 +481,26 @@ const outlines = new Map();   // window id -> the box drawn on the map
 // does not let fetch read blob: URLs, and it should not be widened for this.
 const pictures = new WeakMap();  // plot element -> Blob
 
-function armArea() {
+function armArea(shape) {
   if (!pickArea) return;
   if (!enabled) toggle();
-  pickArea((bounds) => openArea(bounds));
+  pickArea((got) => openArea(toArea(got)), shape);
+}
+
+/**
+ * What the map handed back, as one kind of thing: the box around it, and the
+ * corners when it was clicked out as a shape.
+ */
+export function toArea(got) {
+  if (Array.isArray(got)) {
+    return { bounds: L.latLngBounds(got), corners: got.map((p) => L.latLng(p.lat, p.lng)) };
+  }
+  return { bounds: got, corners: null };
+}
+
+/** A shape's corners as the backend reads them: "lon,lat;lon,lat;...". */
+export function cornersParam(corners) {
+  return (corners ?? []).map((p) => `${p.lng.toFixed(5)},${p.lat.toFixed(5)}`).join(';');
 }
 
 /** The four edges, rounded to what the backend is asked for. */
@@ -451,12 +511,12 @@ export function edges(bounds) {
   };
 }
 
-function openArea(bounds, { redraw = false, id = null } = {}) {
+function openArea(area, { redraw = false, id = null } = {}) {
   const winId = id ?? `${WIN}area:${(areas += 1)}`;
   const span = (store.config?.connectivity?.history ?? {})[historyHours] ?? `${historyHours} h`;
   const plot = el('div', { class: 'trace-plot net-area-plot' });
   const waiting = el('div', { class: 'trace-wait' },
-    el('span', {}, 'Gathering every probe in the box…'),
+    el('span', {}, 'Gathering every probe in the area…'),
     el('small', {}, 'Each one’s connection log is asked for, then added into one line.'));
   const stamp = el('div', { class: 'trace-live', 'data-live': '' }, 'fetching…');
   plot.append(waiting, stamp);
@@ -471,12 +531,14 @@ function openArea(bounds, { redraw = false, id = null } = {}) {
     existing?.querySelector('.win-foot')?.replaceWith(
       el('div', { class: 'win-foot' }, areaNote(span, save)));
   } else {
-    graphs.set(winId, { area: bounds });
-    outlines.set(winId, L.rectangle(bounds, AREA_STYLE).addTo(map));
+    graphs.set(winId, { area });
+    outlines.set(winId, (area.corners
+      ? L.polygon(area.corners, AREA_STYLE)
+      : L.rectangle(area.bounds, AREA_STYLE)).addTo(map));
     openWindow({
       id: winId,
       title: 'Area',
-      where: 'every probe inside the box',
+      where: 'every probe inside the area',
       body: plot,
       sizes: [560, 'min(1100px, calc(100vw - 40px))'],
       foot: areaNote(span, save),
@@ -489,24 +551,25 @@ function openArea(bounds, { redraw = false, id = null } = {}) {
     });
   }
 
-  fetchArea(winId, bounds, plot, waiting, save);
+  fetchArea(winId, area, plot, waiting, save);
   stopTicking(winId);
   ticking.set(winId, setInterval(() => {
     if (!isOpen(winId)) { stopTicking(winId); return; }
-    fetchArea(winId, bounds, plot, waiting, save, { quiet: true });
+    fetchArea(winId, area, plot, waiting, save, { quiet: true });
   }, AREA_REFRESH_MS));
 }
 
 function areaNote(span, save) {
   return el('div', {},
     el('div', {},
-      `Last ${span}. The share of the probes in the box that were online, `
+      `Last ${span}. The share of the probes in the area that were online, `
       + 'against the most that were up at once. Teal is nearly all of them; '
       + 'amber is the ordinary wobble of home connections; red is enough gone '
       + 'at once to be a regional outage rather than a few houses.'),
     el('div', { class: 'dim' },
-      'Probes already offline before the window began are left out, so a '
-      + 'long-dead probe does not drag the line down.'),
+      'Probes already offline before the window began, inactive or never '
+      + 'connected are left out of the line -- so a long-dead probe does not '
+      + 'drag it down -- and counted on the picture, so nothing goes unsaid.'),
     el('div', { class: 'net-save-row' }, save));
 }
 
@@ -522,11 +585,12 @@ export function areaSaid(headers) {
           probes ? `${probes} probes` : null].filter(Boolean).join(' · ');
 }
 
-async function fetchArea(id, bounds, plot, waiting, save, { quiet = false } = {}) {
+async function fetchArea(id, area, plot, waiting, save, { quiet = false } = {}) {
   const token = (tokens.get(id) ?? 0) + 1;
   tokens.set(id, token);
   const stamp = plot.querySelector('[data-live]');
-  const url = api.areaGraphUrl({ ...edges(bounds), hours: historyHours });
+  const url = api.areaGraphUrl({ ...edges(area.bounds), hours: historyHours,
+                                 poly: cornersParam(area.corners) });
   let blobUrl = null;
   let said = '';
   try {

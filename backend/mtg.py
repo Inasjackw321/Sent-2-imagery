@@ -245,6 +245,9 @@ def parse_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
 _xml: str | None = None
 _xml_at = 0.0
 _xml_renewing = False
+# The renewal running now, if any. Held so a caller -- the tests -- can wait
+# for it to finish rather than guessing how long it takes.
+_renewal: threading.Thread | None = None
 
 # How old the catalogue may get before it is fetched again in the background.
 #
@@ -274,14 +277,15 @@ def capabilities(refresh: bool = False) -> str:
     its own. The panel opens on what is held rather than on a multi-megabyte
     download, and the next ask gets the newer frames.
     """
-    global _xml_renewing
+    global _xml_renewing, _renewal
     now = time.time()
     with _lock:
         held, age = _xml, now - _xml_at
         if held is not None and not refresh and age < CACHE_SECONDS:
             if age >= CAPABILITIES_FRESH_SECONDS and not _xml_renewing:
                 _xml_renewing = True
-                threading.Thread(target=_renew_capabilities, daemon=True).start()
+                _renewal = threading.Thread(target=_renew_capabilities, daemon=True)
+                _renewal.start()
             return held
     return _fetch_capabilities()
 
@@ -299,6 +303,13 @@ def _fetch_capabilities() -> str:
     with _lock:
         _xml, _xml_at = resp.text, time.time()
     return resp.text
+
+
+def wait_for_renewal(timeout: float = 10.0) -> None:
+    """Block until any background renewal has finished. For the tests."""
+    running = _renewal
+    if running is not None:
+        running.join(timeout)
 
 
 def _renew_capabilities() -> None:

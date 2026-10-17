@@ -245,16 +245,18 @@ def catalogue(monkeypatch):
         mtg._xml_renewing = False
 
     yield hold, fetched
+    # No renewal outlives its test, to land in the middle of the next one.
+    mtg.wait_for_renewal()
     mtg._xml = None
     mtg._xml_at = 0.0
     mtg._xml_renewing = False
 
 
 def _settle():
-    for _ in range(50):
-        if not mtg._xml_renewing:
-            return
-        time.sleep(0.02)
+    """Wait for the renewal thread itself, rather than polling a flag for a
+    second: under load a second was not always enough, and a thread from one
+    test finishing inside the next cleared that test's flag early."""
+    mtg.wait_for_renewal()
 
 
 class TestTheCatalogue:

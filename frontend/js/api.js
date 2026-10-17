@@ -76,10 +76,14 @@ export const api = {
     `/api/connectivity/probe.png?${new URLSearchParams({
       id, hours, state, since: since ?? '',
     })}`,
-  areaGraphUrl: ({ west, south, east, north, hours }) =>
+  areaGraphUrl: ({ west, south, east, north, hours, poly = '' }) =>
     `/api/connectivity/area.png?${new URLSearchParams({
       west: west.toFixed(4), south: south.toFixed(4),
       east: east.toFixed(4), north: north.toFixed(4), hours,
+      // A clicked-out shape's corners, when there are any. The four edges are
+      // still sent, and are what RIPE is asked about; the shape is what is
+      // counted.
+      ...(poly ? { poly } : {}),
     })}`,
   traceUrl: ({ network, station, channel, loc = '', minutes }) =>
     `/api/seismographs/trace.png?${new URLSearchParams({

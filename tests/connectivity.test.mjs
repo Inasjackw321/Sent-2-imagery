@@ -11,14 +11,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { areaSaid, countLine, edges, isGraphWindow, STATES, whereSaid }
-  from '../frontend/js/connectivity.js';
+import { areaSaid, cornersParam, countLine, edges, isGraphWindow, KEY_ORDER, STATES,
+         toArea, whereSaid } from '../frontend/js/connectivity.js';
 
 const SOURCE = readFileSync(
   new URL('../frontend/js/connectivity.js', import.meta.url), 'utf8');
 const CSS = readFileSync(new URL('../frontend/css/app.css', import.meta.url), 'utf8');
 const HTML = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
 const MAP = readFileSync(new URL('../frontend/js/map.js', import.meta.url), 'utf8');
+const api = readFileSync(new URL('../frontend/js/api.js', import.meta.url), 'utf8');
 
 // ── The headline ───────────────────────────────────────────────
 
@@ -54,8 +55,8 @@ test('no probes at all is said in words', () => {
 });
 
 test('a capped answer says so, and what to do about it', () => {
-  assert.match(countLine(answer({ up: 1 }, { capped: true })), /zoom in for the rest/);
-  assert.doesNotMatch(countLine(answer({ up: 1 })), /zoom in/);
+  assert.match(countLine(answer({ up: 1 }, { capped: true })), /not every page came back/);
+  assert.doesNotMatch(countLine(answer({ up: 1 })), /not every page/);
 });
 
 // ── What stands out ────────────────────────────────────────────
@@ -70,7 +71,8 @@ test('going offline is the biggest, brightest thing on the map', () => {
 });
 
 test('and is drawn last, on top of everything else', () => {
-  assert.match(SOURCE, /const LAYERING = \['up', 'gone', 'back', 'down'\];/);
+  assert.match(SOURCE,
+    /const LAYERING = \['never', 'inactive', 'dead', 'up', 'gone', 'back', 'down'\];/);
 });
 
 test('every state has a colour of its own', () => {
@@ -79,7 +81,9 @@ test('every state has a colour of its own', () => {
 });
 
 test('the key shows every state, in the order of how much it matters', () => {
-  assert.match(SOURCE, /\['down', 'back', 'gone', 'up'\]\.map\(\(key\) => el\('div', \{ class: 'net-key-row' \}/);
+  assert.match(SOURCE,
+    /export const KEY_ORDER = \['down', 'back', 'gone', 'up', 'dead', 'inactive', 'never'\];/);
+  assert.match(SOURCE, /\.\.\.KEY_ORDER\.map\(\(key\) => el\('div', \{ class: 'net-key-row' \}/);
 });
 
 // ── Honest about what a probe is ───────────────────────────────
@@ -155,11 +159,15 @@ test('and is styled, not left as bare buttons', () => {
 test('a probe is clicked through a target wider than the dot', () => {
   // A steady probe is drawn three pixels across. Leaflet cancels a click if
   // the map moved at all, so missing one by a pixel pans the map instead.
-  assert.match(SOURCE, /const HIT_RADIUS = 10;/);
-  assert.match(SOURCE, /radius: HIT_RADIUS,\s*stroke: false, fill: true, fillOpacity: 0, interactive: true,/);
-  // And the dot itself does not compete with its own target for the click.
-  assert.match(SOURCE, /opacity: state === 'up' \? 0\.5 : 0\.95,\s*interactive: false,/);
-  assert.ok(Object.values(STATES).every((s) => s.radius < 10));
+  // The renderer's tolerance widens every dot's target at once -- one marker
+  // per probe, where it used to be two, which matters now that every probe in
+  // the fleet can be on the map together.
+  assert.match(SOURCE, /const TOLERANCE = 7;/);
+  assert.match(SOURCE, /canvas = L\.canvas\(\{ padding: 0\.4, tolerance: TOLERANCE \}\);/);
+  assert.doesNotMatch(SOURCE, /HIT_RADIUS/);
+  const drawn = block('function draw(data)');
+  assert.equal((drawn.match(/L\.circleMarker\(/g) ?? []).length, 1);
+  assert.match(drawn, /interactive: true,\s*\}\)\.on\('click', \(\) => openGraph\(probe\)\)/);
 });
 
 // ── Each probe's graph, like a seismograph's trace ─────────────
@@ -248,11 +256,13 @@ test('it looks like the seismograph windows', () => {
 
 // ── A whole area's graph ───────────────────────────────────────
 
-test('there is a button to graph an area, in the map\'s own tool family', () => {
-  // data-draw makes it light while armed, and Escape or a click elsewhere puts
-  // it away like any other tool -- rather than a second, private box tool.
+test('an area can be graphed by box or by points, in the map\'s own tool family', () => {
+  // data-draw makes each light while armed, and Escape or a click elsewhere
+  // puts it away like any other tool -- rather than private tools of its own.
   assert.match(SOURCE, /class: 'net-area', id: 'netArea', type: 'button', dataset: \{ draw: 'pick' \}/);
-  assert.match(SOURCE, /'▭ Graph an area'/);
+  assert.match(SOURCE, /id: 'netAreaPoints', type: 'button',\s*dataset: \{ draw: 'pickpoly' \}/);
+  assert.match(SOURCE, /onclick: \(\) => armArea\('box'\)/);
+  assert.match(SOURCE, /onclick: \(\) => armArea\('points'\)/);
 });
 
 test('it uses the box tool the map hands it, rather than importing the map', () => {
@@ -260,7 +270,7 @@ test('it uses the box tool the map hands it, rather than importing the map', () 
   // would drag Leaflet into the panel's Node tests.
   assert.doesNotMatch(SOURCE, /from '\.\/map\.js'/);
   assert.match(SOURCE, /pickArea = tools\.pickArea \?\? null;/);
-  assert.match(block('function armArea('), /pickArea\(\(bounds\) => openArea\(bounds\)\)/);
+  assert.match(block('function armArea('), /pickArea\(\(got\) => openArea\(toArea\(got\)\), shape\)/);
 });
 
 test('graphing an area switches the layer on if it was off', () => {
@@ -269,7 +279,8 @@ test('graphing an area switches the layer on if it was off', () => {
 
 test('the box stays on the map while its graph is open, and goes with it', () => {
   const open = block('function openArea(');
-  assert.match(open, /outlines\.set\(winId, L\.rectangle\(bounds, AREA_STYLE\)\.addTo\(map\)\)/);
+  // The shape itself when it was clicked out, the box when it was dragged.
+  assert.match(open, /\? L\.polygon\(area\.corners, AREA_STYLE\)\s*: L\.rectangle\(area\.bounds, AREA_STYLE\)\)\.addTo\(map\)\);/);
   assert.match(open, /outlines\.get\(winId\)\?\.remove\(\);/);
 });
 
@@ -315,4 +326,119 @@ test('it can be saved, as the very pixels on screen, with the mark', () => {
 test('the save button waits until there is a picture to save', () => {
   assert.match(block('function openArea('), /class: 'net-save', type: 'button', disabled: true,/);
   assert.match(block('async function fetchArea('), /save\.disabled = false;/);
+});
+
+// ── Every probe, whatever its status ───────────────────────────
+
+const BACKEND = readFileSync(new URL('../backend/connectivity.py', import.meta.url), 'utf8');
+
+test('every state the backend can send has a look of its own', () => {
+  // A state with no style would be drawn with nobody's colour -- or not at
+  // all, which is the "data is missing" this change is about.
+  const sent = BACKEND.match(/ALL_STATES = \(([^)]*)\)/)[1].match(/"(\w+)"/g)
+    .map((q) => q.slice(1, -1));
+  assert.deepEqual(new Set(Object.keys(STATES)), new Set(sent));
+  assert.deepEqual(new Set(KEY_ORDER), new Set(sent));
+});
+
+test('the background states are quieter than the news', () => {
+  for (const quiet of ['dead', 'inactive', 'never']) {
+    assert.ok(STATES[quiet].radius < STATES.gone.radius, quiet);
+  }
+  // Abandoned probes are rings, so they are not read as a dot of anything.
+  assert.equal(STATES.inactive.fill, 0);
+  assert.equal(STATES.inactive.hollow, true);
+});
+
+test('the headline says what else is on the map', () => {
+  const said = countLine(answer({ up: 40, dead: 6, inactive: 12, never: 2 }));
+  assert.match(said, /also on the map: 6 offline over a week, 12 inactive, 2 never connected/);
+  assert.doesNotMatch(countLine(answer({ up: 40 })), /also on the map/);
+});
+
+test('each key row is given its count', () => {
+  assert.match(SOURCE, /el\('span', \{ class: 'net-key-n', dataset: \{ state: key \} \}, ''\)/);
+  assert.match(block('function draw(data)'),
+    /node\.textContent = n \? n\.toLocaleString\(\) : '';/);
+});
+
+test('an inactive probe is called what RIPE calls it', () => {
+  assert.match(whereSaid({ state: 'inactive', status_name: 'Written Off' }), /^Written Off/);
+  assert.match(whereSaid({ state: 'inactive' }), /^Inactive/);
+  assert.match(whereSaid({ state: 'never' }), /^Never connected/);
+});
+
+// ── An area clicked out corner by corner ───────────────────────
+
+test('corners go to the backend as lon,lat pairs', () => {
+  assert.equal(cornersParam([{ lat: 50.1, lng: 28.2 }, { lat: 50.5, lng: 29.0 },
+                             { lat: 51.0, lng: 28.4 }]),
+               '28.20000,50.10000;29.00000,50.50000;28.40000,51.00000');
+  assert.equal(cornersParam(null), '');
+});
+
+test('what the map hands back becomes one kind of area', () => {
+  // Stand-ins for the two Leaflet calls toArea makes.
+  globalThis.L = {
+    latLng: (lat, lng) => ({ lat, lng }),
+    latLngBounds: (points) => ({ points }),
+  };
+  const shape = toArea([{ lat: 1, lng: 2 }, { lat: 3, lng: 4 }, { lat: 5, lng: 0 }]);
+  assert.equal(shape.corners.length, 3);
+  assert.deepEqual(shape.corners[1], { lat: 3, lng: 4 });
+  const box = { getWest: () => 0 };
+  assert.deepEqual(toArea(box), { bounds: box, corners: null });
+});
+
+test('the shape is sent with the request', () => {
+  assert.match(block('async function fetchArea('), /poly: cornersParam\(area\.corners\)/);
+  assert.match(api, /\.\.\.\(poly \? \{ poly \} : \{\}\),/);
+});
+
+test('the map has a mode for clicking out corners', () => {
+  assert.match(MAP, /pickpoly: 'Click each corner of the area/);
+  assert.match(MAP, /if \(mode === 'pickpoly'\) \{ addCorner\(e\); return; \}/);
+  assert.match(MAP, /if \(mode === 'pickpoly' && drawing\) \{ finishCorners\(\); return; \}/);
+  // A double-click finishes the shape rather than zooming the map.
+  assert.match(MAP, /mode === 'polygon' \|\| mode === 'pickpoly' \? 'disable' : 'enable'/);
+});
+
+test('a click back on the first corner finishes the shape', () => {
+  const at = MAP.indexOf('function addCorner(');
+  const corner = MAP.slice(at, MAP.indexOf('\n}\n', at));
+  assert.match(corner, /points\.length >= 3/);
+  assert.match(corner, /distanceTo\(e\.containerPoint\) <= CLOSE_PX\) \{\s*finishCorners\(\);/);
+});
+
+test('the two clicks a double-click begins with are not two corners', () => {
+  const at = MAP.indexOf('function addCorner(');
+  assert.match(MAP.slice(at, MAP.indexOf('\n}\n', at)),
+    /distanceTo\(e\.containerPoint\) < 4\) return;/);
+});
+
+test('Backspace takes back the last corner', () => {
+  assert.match(MAP, /e\.key === 'Backspace' && mode === 'pickpoly'/);
+  assert.match(MAP, /drawing\.points\.pop\(\);/);
+});
+
+test('fewer than three corners is not an area', () => {
+  const at = MAP.indexOf('function finishCorners(');
+  assert.match(MAP.slice(at, MAP.indexOf('\n}\n', at)),
+    /if \(points\.length >= 3\) done\?\.\(points\.slice\(\)\);/);
+});
+
+test('one function arms either tool', () => {
+  assert.match(MAP, /export function pickArea\(done, shape = 'box'\)/);
+  assert.match(MAP, /const wanted = shape === 'points' \? 'pickpoly' : 'pick';/);
+});
+
+test('a button coming up does not end a shape made of clicks', () => {
+  // Every corner is a button coming up. Ending the shape there put the tool
+  // away on the second corner and threw the shape away -- which had also been
+  // quietly breaking the sidebar's own Polygon tool, the same way.
+  assert.match(MAP, /function builtByClicking\(mode\) \{\s*return mode === 'polygon' \|\| mode === 'pickpoly';/);
+  const at = MAP.indexOf('function finish(at)');
+  assert.match(MAP.slice(at, at + 120), /if \(!drawing \|\| builtByClicking\(drawing\.mode\)\) return;/);
+  const loose = MAP.indexOf('function looseEnd()');
+  assert.match(MAP.slice(loose, loose + 120), /builtByClicking\(drawing\.mode\)/);
 });

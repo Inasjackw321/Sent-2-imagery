@@ -532,7 +532,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 /* How far back a probe's graph looks: a quieter row than the window above,
    because it changes what a click shows rather than what the map shows. */
 .net-graphs {
-  display: grid; grid-template-columns: auto 1fr 1fr; gap: 5px;
+  display: grid; grid-template-columns: auto repeat(3, 1fr); gap: 5px;
   align-items: center; margin-top: 6px;
 }
 .net-graphs-label { font-size: 10px; color: var(--ink-faint); padding-right: 3px; }
@@ -545,8 +545,15 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .net-span.is-active { border-color: #7ed6ff; color: #7ed6ff; }
 /* Drag a box, get one graph. In the orange the box itself is drawn in, so the
    button and what it makes on the map read as the same thing. */
+/* "Graph an area", then the two ways of marking one out. */
+.net-areas {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 5px;
+  align-items: center; margin-top: 8px;
+}
+/* The label on a line of its own, so the two buttons get the width. */
+.net-areas .net-graphs-label { grid-column: 1 / -1; }
 .net-area {
-  width: 100%; margin-top: 7px; padding: 6px 4px; font: inherit; font-size: 11px;
+  width: 100%; padding: 6px 4px; font: inherit; font-size: 11px;
   cursor: pointer; background: var(--bg-3); color: var(--ink-dim);
   border: 1px dashed rgba(255,159,67,.55); border-radius: 6px;
 }
@@ -575,7 +582,15 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 .net-frac { color: var(--ink-faint); white-space: nowrap; }
 .net-key { display: grid; gap: 3px; padding-top: 8px; border-top: 1px solid var(--line); }
 .net-key-row { display: flex; align-items: center; gap: 7px; color: var(--ink-faint); }
-.net-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.net-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  border: 1px solid transparent; box-sizing: border-box;
+}
+/* Abandoned and written-off probes are drawn as rings on the map, so the key
+   draws a ring too. */
+.net-dot.is-hollow { background: transparent !important; }
+/* How many of each are in view, at the end of each key row. */
+.net-key-n { margin-left: auto; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
 .net-note {
   margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
   font-size: 10px; line-height: 1.4; color: var(--ink-faint);

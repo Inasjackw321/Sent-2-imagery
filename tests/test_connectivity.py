@@ -66,15 +66,22 @@ class TestClassify:
         assert net.classify(2, NOW - SIX_HOURS, SIX_HOURS, NOW) == "down"
         assert net.classify(1, NOW - SIX_HOURS, SIX_HOURS, NOW) == "back"
 
-    def test_offline_for_more_than_a_week_is_left_off(self):
-        """A probe nobody has plugged back in is not news."""
-        assert net.classify(2, NOW - dt.timedelta(days=8), SIX_HOURS, NOW) is None
+    def test_offline_for_more_than_a_week_is_dead_not_dropped(self):
+        """Not news, so not red -- but still a probe that is there, so still
+        on the map. Dropping it made the map look like data was missing."""
+        assert net.classify(2, NOW - dt.timedelta(days=8), SIX_HOURS, NOW) == "dead"
         assert net.classify(2, NOW - dt.timedelta(days=6), SIX_HOURS, NOW) == "gone"
 
-    def test_never_connected_and_abandoned_say_nothing(self):
-        assert net.classify(0, NOW, SIX_HOURS, NOW) is None
-        assert net.classify(3, NOW, SIX_HOURS, NOW) is None
-        assert net.classify(None, NOW, SIX_HOURS, NOW) is None
+    def test_never_connected_and_abandoned_are_drawn_too(self):
+        """Every probe, whatever its status. Abandoned, written off, and a
+        status this does not recognise are all "inactive" on the map."""
+        assert net.classify(0, NOW, SIX_HOURS, NOW) == "never"
+        assert net.classify(3, NOW, SIX_HOURS, NOW) == "inactive"
+        assert net.classify(4, NOW, SIX_HOURS, NOW) == "inactive"
+        assert net.classify(None, NOW, SIX_HOURS, NOW) == "inactive"
+
+    def test_every_state_is_counted(self):
+        assert set(net.summary([])) >= set(net.ALL_STATES)
 
     def test_a_status_with_no_time_is_not_promoted_to_news(self):
         """Without a time there is no telling whether it changed in the
@@ -215,7 +222,8 @@ class TestAsking:
         params = asked[0][1]
         assert params["latitude__gte"] == 44.0 and params["latitude__lte"] == 52.5
         assert params["longitude__gte"] == 22.0 and params["longitude__lte"] == 40.0
-        assert params["status__in"] == "1,2"
+        # No status filter: every probe is asked for, whatever its status.
+        assert not any(k.startswith("status") for k in params)
         assert params["page_size"] == 500
 
     def test_every_page_is_followed(self):
@@ -248,17 +256,23 @@ class TestAsking:
         assert got["count"] == 1
         assert got["capped"] is True
 
-    def test_a_refused_status_filter_is_asked_again_without_it(self):
-        """The status filter is the one parameter not taken from the published
-        examples. If this API version refuses it, the answer is the same
-        filtered here -- only longer."""
-        get, asked = answering({"results": [probe(status=3), probe(pid=2)], "next": None},
-                               first_status=400)
+    def test_a_probe_of_every_status_comes_back(self):
+        """The census: connected, offline, long gone, abandoned, never
+        connected -- all on the map, and only a probe with no position left
+        off, because there is nowhere to draw it."""
+        raw = [probe(pid=1, status=1), probe(pid=2, status=2, ago=dt.timedelta(minutes=5)),
+               probe(pid=3, status=2, ago=dt.timedelta(days=40)), probe(pid=4, status=3),
+               probe(pid=5, status=0), probe(pid=6, status=1, lon=0, lat=0)]
+        get, _ = answering({"results": raw, "next": None})
         got = net.probes(BOX, get=get, now=NOW)
-        assert "status__in" in asked[0][1]
-        assert "status__in" not in asked[1][1]
-        # And the abandoned one it no longer filtered out is filtered here.
-        assert got["count"] == 1
+        assert sorted(p["id"] for p in got["probes"]) == [1, 2, 3, 4, 5]
+        assert {p["state"] for p in got["probes"]} == {"up", "down", "dead", "inactive", "never"}
+
+    def test_ripes_own_word_for_a_status_is_kept(self):
+        raw = probe(pid=4, status=3)
+        raw["status"]["name"] = "Written Off"
+        got = net.read_probe(raw, SIX_HOURS, NOW)
+        assert got["state"] == "inactive" and got["status_name"] == "Written Off"
 
     def test_any_other_refusal_is_said(self):
         get, _ = answering(first_status=503)
@@ -851,7 +865,7 @@ class TestTheAreaRoute:
     def test_draws_the_box_and_sends_the_figures_with_it(self, client, monkeypatch):
         seen = {}
 
-        def fake(box, hours, namer=None):
+        def fake(box, hours, namer=None, **kw):
             seen.update(box=box, hours=hours, namer=namer)
             found = net.demo_area(box, hours, now=NOW)
             found["name"] = "Житомирська область"
@@ -870,7 +884,7 @@ class TestTheAreaRoute:
         assert unquote(got.headers["x-name"]) == "Житомирська область"
 
     def test_an_empty_box_is_said_in_words(self, client, monkeypatch):
-        def empty(box, hours, namer=None):
+        def empty(box, hours, namer=None, **kw):
             found = net.demo_area(box, hours, now=NOW)
             found.update(members=0)
             return found
@@ -887,10 +901,235 @@ class TestTheAreaRoute:
         assert got.status_code == 400
 
     def test_ripe_failing_is_an_error_status(self, client, monkeypatch):
-        def broken(box, hours, namer=None):
+        def broken(box, hours, namer=None, **kw):
             raise net.ConnectivityError("RIPE Atlas answered 503 for measurement 7000")
 
         monkeypatch.setattr(config, "DEMO_MODE", False)
         monkeypatch.setattr(net, "area_history", broken)
         got = client.get("/api/connectivity/area.png", params=self.PARAMS)
         assert got.status_code >= 500 and "503" in got.json()["detail"]
+
+
+# ── Collecting all of it ───────────────────────────────────────
+
+
+class TestEveryPage:
+    def test_the_rest_of_the_pages_are_worked_out_from_the_first(self):
+        got = net.page_urls(
+            "https://atlas.ripe.net/api/v2/probes/?latitude__gte=44&page=2&page_size=500",
+            count=1700, per_page=500)
+        assert len(got) == 3
+        assert [u.split("page=")[1].split("&")[0] for u in got] == ["2", "3", "4"]
+        # Every other filter carried over exactly.
+        assert all("latitude__gte=44" in u and "page_size=500" in u for u in got)
+
+    def test_not_when_the_answer_did_not_say_how_many(self):
+        assert net.page_urls("https://x/?page=2", count=None, per_page=500) is None
+
+    def test_not_when_the_pages_are_not_numbered(self):
+        """A cursor rather than a page number: walked instead."""
+        assert net.page_urls("https://x/?cursor=abc", count=900, per_page=500) is None
+
+    def test_numbered_pages_are_all_fetched_and_all_kept(self):
+        def get(url, params=None, timeout=None):
+            if params is not None:          # the first ask
+                return Reply({"count": 1250, "next": "https://ripe/?page=2&f=1",
+                              "results": [probe(pid=i) for i in range(500)]})
+            n = int(url.split("page=")[1].split("&")[0])
+            size = 500 if n == 2 else 250
+            return Reply({"results": [probe(pid=n * 1000 + i) for i in range(size)]})
+
+        got = net.probes(BOX, get=get, now=NOW)
+        assert got["count"] == 1250
+        assert got["capped"] is False
+
+    def test_they_are_asked_for_together(self, monkeypatch):
+        """Eighty pages in a queue is over a minute."""
+        import threading
+        import time as clock
+        running, most = [0], [0]
+        lock = threading.Lock()
+
+        def get(url, params=None, timeout=None):
+            if params is not None:
+                return Reply({"count": 3000, "next": "https://ripe/?page=2",
+                              "results": [probe(pid=1)] * 500})
+            with lock:
+                running[0] += 1
+                most[0] = max(most[0], running[0])
+            clock.sleep(0.05)
+            with lock:
+                running[0] -= 1
+            return Reply({"results": []})
+
+        net.probes(BOX, get=get, now=NOW)
+        assert most[0] > 1
+
+    def test_a_page_that_fails_is_admitted(self):
+        def get(url, params=None, timeout=None):
+            if params is not None:
+                return Reply({"count": 1500, "next": "https://ripe/?page=2",
+                              "results": [probe(pid=i) for i in range(500)]})
+            if "page=3" in url:
+                return Reply(status=502)
+            return Reply({"results": [probe(pid=9000 + i) for i in range(500)]})
+
+        got = net.probes(BOX, get=get, now=NOW)
+        assert got["count"] == 1000 and got["capped"] is True
+
+    def test_the_whole_fleet_fits(self):
+        """A little over forty thousand probes, in every status. Eight pages
+        used to be the limit."""
+        assert net.MOST_PAGES * net.PAGE_SIZE >= 45000
+        assert net.MOST_RETURNED >= 45000
+
+
+# ── A shape clicked out corner by corner ───────────────────────
+
+SQUARE = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+# An L: the notch at the top right is outside it.
+ELL = [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (4.0, 4.0), (4.0, 10.0), (0.0, 10.0)]
+
+
+class TestShapes:
+    def test_inside_and_outside(self):
+        assert net.inside(5, 5, SQUARE)
+        assert not net.inside(15, 5, SQUARE)
+        assert not net.inside(5, -1, SQUARE)
+
+    def test_a_concave_shape(self):
+        """The reason to click corners rather than drag a box: the notch of
+        an L is in the box around it, and not in the L."""
+        assert net.inside(2, 8, ELL)
+        assert net.inside(8, 2, ELL)
+        assert not net.inside(8, 8, ELL)
+
+    def test_corners_are_read_from_the_query(self):
+        got = net.read_corners("28.1,50.2;29.5,50.0;29.0,51.3")
+        assert got == [(28.1, 50.2), (29.5, 50.0), (29.0, 51.3)]
+
+    def test_a_closed_ring_is_not_a_repeated_corner(self):
+        assert len(net.read_corners("0,0;1,0;1,1;0,0")) == 3
+
+    def test_too_few_corners_is_not_an_area(self):
+        with pytest.raises(ValueError, match="3 to"):
+            net.read_corners("0,0;1,1")
+
+    def test_too_many_is_refused(self):
+        many = ";".join(f"{i * 0.01},{i * 0.01}" for i in range(net.MOST_CORNERS + 1))
+        with pytest.raises(ValueError):
+            net.read_corners(many)
+
+    def test_a_corner_off_the_globe_is_refused(self):
+        with pytest.raises(ValueError, match="not a place"):
+            net.read_corners("0,0;1,0;200,1")
+
+    def test_nonsense_is_refused(self):
+        for said in ("a,b;c,d;e,f", "1;2;3", "nan,nan;1,1;2,2"):
+            with pytest.raises(ValueError):
+                net.read_corners(said)
+
+    def test_the_box_around_a_shape(self):
+        assert net.corners_box(ELL) == (0.0, 0.0, 10.0, 10.0)
+
+
+class TestAreaByShape:
+    def test_only_the_probes_inside_the_shape_are_counted(self):
+        ell = [(28.0, 50.0), (29.5, 50.0), (29.5, 50.4), (28.6, 50.4), (28.6, 51.0), (28.0, 51.0)]
+        raw = [probe(pid=1, lon=28.2, lat=50.8),   # in the upright of the L
+               probe(pid=2, lon=29.2, lat=50.2),   # in the foot
+               probe(pid=3, lon=29.2, lat=50.8)]   # in the notch: in the box, not the L
+        got = net.area_history(AREA, 24, get=area_ripe(raw, {}), now=NOW, corners=ell)
+        assert got["members"] == 2
+        assert got["corners"] is not None
+
+    def test_the_box_asked_about_is_the_shapes_box(self):
+        asked = []
+        shape = [(28.0, 50.0), (29.0, 50.5), (28.5, 51.0)]
+        net.area_history((0, 0, 1, 1), 24, get=area_ripe([], {}, asked), now=NOW,
+                         corners=shape)
+        first = asked[0][1]
+        assert (first["longitude__gte"], first["longitude__lte"]) == (28.0, 29.0)
+        assert (first["latitude__gte"], first["latitude__lte"]) == (50.0, 51.0)
+
+    def test_what_was_left_out_is_counted_and_said(self):
+        """A graph of 47 probes over an area holding 80 reads as data that was
+        not collected -- unless it says what the other 33 were."""
+        raw = [probe(pid=1, status=1), probe(pid=2, status=2, ago=dt.timedelta(days=3)),
+               probe(pid=3, status=3), probe(pid=4, status=3), probe(pid=5, status=0)]
+        got = net.area_history(AREA, 24, get=area_ripe(raw, {}), now=NOW)
+        assert got["left_out"] == {"offline_before": 1, "inactive": 2, "never": 1}
+
+    def test_and_the_picture_says_it(self):
+        from PIL import Image
+        import io
+        found = net.demo_area(AREA, 48, now=NOW)
+        assert sum(found["left_out"].values()) > 0
+        Image.open(io.BytesIO(net.plot_area(found)))
+
+    def test_batches_are_asked_for_together(self, monkeypatch):
+        import threading
+        import time as clock
+        monkeypatch.setattr(net, "IDS_PER_ASK", 2)
+        running, most = [0], [0]
+        lock = threading.Lock()
+        raw = [probe(pid=i, lon=28.5, lat=50.5) for i in range(10)]
+
+        def get(url, params=None, timeout=None):
+            if "/7000/" in url:
+                with lock:
+                    running[0] += 1
+                    most[0] = max(most[0], running[0])
+                clock.sleep(0.05)
+                with lock:
+                    running[0] -= 1
+                return Reply([])
+            return Reply({"results": raw, "next": None})
+
+        net.area_history(AREA, 24, get=get, now=NOW)
+        assert most[0] > 1
+
+    def test_a_batch_that_fails_fails_the_graph(self):
+        """Rather than drawing its probes as if nothing happened to them."""
+        raw = [probe(pid=i, lon=28.5, lat=50.5) for i in range(3)]
+
+        def get(url, params=None, timeout=None):
+            if "/7000/" in url:
+                return Reply(status=502)
+            return Reply({"results": raw, "next": None})
+
+        with pytest.raises(net.ConnectivityError, match="502"):
+            net.area_history(AREA, 24, get=get, now=NOW)
+
+    def test_a_crowded_area_holds_far_more_than_it_did(self):
+        assert net.MOST_AREA_PROBES >= 2000
+
+    def test_the_demo_keeps_to_the_shape(self):
+        shape = [(28.0, 50.0), (29.5, 50.0), (28.0, 51.0)]
+        got = net.demo_area((0, 0, 0, 0), 24, now=NOW, corners=shape)
+        assert 0 < got["members"] < 90
+
+
+class TestTheShapeRoute:
+    def test_a_shape_reaches_the_module(self, client, monkeypatch):
+        seen = {}
+
+        def fake(box, hours, namer=None, corners=None):
+            seen.update(box=box, corners=corners)
+            return net.demo_area(box, hours, now=NOW, corners=corners)
+
+        monkeypatch.setattr(config, "DEMO_MODE", False)
+        monkeypatch.setattr(net, "area_history", fake)
+        got = client.get("/api/connectivity/area.png", params={
+            "west": 0, "south": 0, "east": 0, "north": 0, "hours": 24,
+            "poly": "28.0,50.0;29.5,50.0;29.0,51.0;28.2,51.2"})
+        assert got.status_code == 200
+        assert seen["corners"] == [(28.0, 50.0), (29.5, 50.0), (29.0, 51.0), (28.2, 51.2)]
+        # The box is the shape's, whatever edges came with it.
+        assert seen["box"] == (28.0, 50.0, 29.5, 51.2)
+
+    def test_a_shape_that_cannot_be_read_is_said(self, client):
+        got = client.get("/api/connectivity/area.png", params={
+            "west": 0, "south": 0, "east": 1, "north": 1, "poly": "1,1;2,2"})
+        assert got.status_code == 400
+        assert "corners" in got.json()["detail"]

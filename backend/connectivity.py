@@ -31,6 +31,8 @@ import io
 import math
 import threading
 import time
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
@@ -40,9 +42,13 @@ from . import config
 PROBES_URL = "https://atlas.ripe.net/api/v2/probes/"
 ATTRIBUTION = "RIPE Atlas, RIPE NCC"
 
-# The two statuses that mean anything here. Never Connected is a probe still in
-# its box; Abandoned is one RIPE has written off after a long silence. Neither
-# says anything about the network today.
+# RIPE's statuses. Connected and Disconnected are the two that say something
+# about the network today. The others -- a probe still in its box, one RIPE
+# has abandoned or written off after a long silence -- are drawn too, quietly,
+# because the map is a census of every probe there is, not only of the ones
+# that are news. A count that silently skipped a third of them read as "not
+# all the data is here", and it was right.
+NEVER_CONNECTED = 0
 CONNECTED = 1
 DISCONNECTED = 2
 
@@ -51,17 +57,25 @@ WINDOWS = {1: "1 h", 6: "6 h", 24: "24 h"}
 DEFAULT_WINDOW = 6
 
 # A probe offline for longer than this is not news, it is a probe nobody has
-# plugged back in. Kept off the map rather than drawn as a red dot, because a
-# red dot reads as "this just happened" and a month-old one did not.
+# plugged back in. Drawn small and dark grey rather than red, because a red dot
+# reads as "this just happened" and a month-old one did not.
 OFFLINE_TOO_LONG = dt.timedelta(days=7)
 
-# How many probes a single answer may hold, and how many pages of the probe
-# list that is worth asking for. RIPE Atlas pages at up to 500. A view of all
-# of Europe holds several thousand connected probes, so this caps a continental
-# view at the nearest few thousand rather than at whatever sorted first.
+# How much of the probe list one view may ask for. RIPE Atlas pages at up to
+# 500, and the whole fleet -- every probe that has ever existed, in every
+# status -- is a little over forty thousand. Eighty pages is all of it, so a
+# view of the whole world gets the whole world. The old limit was eight pages
+# and four thousand probes, which cut a continental view off at whatever RIPE
+# happened to list first.
 PAGE_SIZE = 500
-MOST_PAGES = 8
-MOST_RETURNED = 4000
+MOST_PAGES = 100
+MOST_RETURNED = 60000
+
+# Pages fetched at once. Once the first page says how many there are, the
+# rest are asked for together rather than one after another -- eighty pages in
+# a queue is over a minute; six at a time is a few seconds. Six, because it is
+# a free service and this is one user's map.
+PAGE_WORKERS = 6
 
 # How long one rectangle's answer is held. A probe's status is reported every
 # few minutes; asking more often than this gets the same answer back.
@@ -151,7 +165,12 @@ def classify(status: int | None, since: dt.datetime | None,
       back   came back online inside the window -- the other half of it;
       up     online, and has been since before the window;
       gone   offline since before the window, but not so long that it is
-             just a probe nobody plugged back in.
+             just a probe nobody plugged back in;
+      dead   offline for more than a week;
+      never  registered, never connected;
+      inactive  abandoned or written off by RIPE, or a status this does not
+             know -- drawn rather than dropped, because a probe nobody can
+             account for is still a probe that was there.
     """
     if status == CONNECTED:
         if since is not None and now - since <= window:
@@ -165,21 +184,28 @@ def classify(status: int | None, since: dt.datetime | None,
             return "down"
         if age <= OFFLINE_TOO_LONG:
             return "gone"
-    return None
+        return "dead"
+    if status == NEVER_CONNECTED:
+        return "never"
+    return "inactive"
+
+
+# Every state a probe can be in, quietest first -- the order they are counted
+# in, and the order the map draws them, so the news is on top.
+ALL_STATES = ("never", "inactive", "dead", "up", "gone", "back", "down")
 
 
 def read_probe(probe: dict[str, Any], window: dt.timedelta,
                now: dt.datetime) -> dict[str, Any] | None:
-    """One probe, in the shape the map draws. None for one not worth drawing."""
+    """One probe, in the shape the map draws. None only for one with no place."""
     where = position_of(probe)
     if where is None:
         return None
     status = status_of(probe)
     since = since_of(probe)
     state = classify(status, since, window, now)
-    if state is None:
-        return None
     text = " ".join(str(probe.get("description") or "").split())
+    said = probe.get("status")
     return {
         "id": probe.get("id"),
         "lat": where[0],
@@ -190,6 +216,9 @@ def read_probe(probe: dict[str, Any], window: dt.timedelta,
         "asn": probe.get("asn_v4") or probe.get("asn_v6"),
         "description": text[:DESCRIPTION_LIMIT],
         "anchor": bool(probe.get("is_anchor")),
+        # RIPE's own word for it, for the states this app lumps together:
+        # "Abandoned" and "Written Off" are both "inactive" on the map.
+        "status_name": str(said.get("name") or "")[:24] if isinstance(said, dict) else "",
     }
 
 
@@ -211,7 +240,7 @@ def by_country(probes: list[dict[str, Any]], most: int = 8) -> list[dict[str, An
     counts: dict[str, dict[str, int]] = {}
     for probe in probes:
         country = probe.get("country") or "??"
-        row = counts.setdefault(country, {"up": 0, "down": 0, "back": 0, "gone": 0})
+        row = counts.setdefault(country, dict.fromkeys(ALL_STATES, 0))
         row[probe["state"]] += 1
     out = []
     for country, row in counts.items():
@@ -225,7 +254,7 @@ def by_country(probes: list[dict[str, Any]], most: int = 8) -> list[dict[str, An
 
 
 def summary(probes: list[dict[str, Any]]) -> dict[str, Any]:
-    counts = {"up": 0, "down": 0, "back": 0, "gone": 0}
+    counts = dict.fromkeys(ALL_STATES, 0)
     for probe in probes:
         counts[probe["state"]] += 1
     was_up = counts["up"] + counts["down"] + counts["back"]
@@ -242,12 +271,6 @@ def _ask(params: dict[str, Any], get: Any) -> dict[str, Any]:
         resp = send(PROBES_URL, params=params, timeout=TIMEOUT)
     except requests.RequestException as exc:
         raise ConnectivityError(f"RIPE Atlas could not be reached: {exc}") from exc
-    if getattr(resp, "status_code", None) == 400 and "status__in" in params:
-        # The status filter is the one parameter here not taken straight from
-        # the published examples. If this version of the API refuses it, ask
-        # without it and filter here instead -- the answer is the same, it is
-        # only longer.
-        return _ask({k: v for k, v in params.items() if k != "status__in"}, get)
     if not getattr(resp, "ok", False):
         raise ConnectivityError(
             f"RIPE Atlas answered {getattr(resp, 'status_code', '?')}")
@@ -258,44 +281,93 @@ def _ask(params: dict[str, Any], get: Any) -> dict[str, Any]:
 
 
 def _fetch(box: tuple[float, float, float, float], get: Any) -> tuple[list[dict], bool]:
-    """Every connected or disconnected probe in the rectangle, page by page."""
+    """Every probe in the rectangle, whatever its status, every page of them.
+
+    No status filter: the map draws all of them. The first page says how many
+    there are; the rest are then asked for together, by page number, a few at
+    a time. If an answer does not say how many there are, or its pages are not
+    numbered, they are followed one by one through "next" instead -- slower,
+    and the same answer.
+    """
     west, south, east, north = box
     params: dict[str, Any] = {
         "latitude__gte": round(max(south, -90.0), 4),
         "latitude__lte": round(min(north, 90.0), 4),
         "longitude__gte": round(max(west, -180.0), 4),
         "longitude__lte": round(min(east, 180.0), 4),
-        "status__in": f"{CONNECTED},{DISCONNECTED}",
         "page_size": PAGE_SIZE,
         "format": "json",
     }
-    found: list[dict] = []
-    page = _ask(params, get)
-    pages = 1
-    truncated = False
     send = get or _session.get
-    while True:
-        found.extend(page.get("results") or [])
-        following = page.get("next")
-        if not following:
-            break
+    first = _ask(params, get)
+    found: list[dict] = list(first.get("results") or [])
+    following = first.get("next")
+    if not following:
+        return found, False
+
+    numbered = page_urls(following, first.get("count"), len(found))
+    if numbered is not None:
+        wanted = numbered[:MOST_PAGES - 1]
+        truncated = len(numbered) > len(wanted)
+
+        def one(url: str) -> list[dict] | None:
+            try:
+                resp = send(url, timeout=TIMEOUT)
+                if not getattr(resp, "ok", False):
+                    return None
+                return list(resp.json().get("results") or [])
+            except (requests.RequestException, ValueError):
+                return None
+
+        with ThreadPoolExecutor(max_workers=PAGE_WORKERS) as pool:
+            for got in pool.map(one, wanted):
+                if got is None:
+                    # A page that failed costs that page, and the answer says
+                    # it is partial rather than passing for the whole.
+                    truncated = True
+                else:
+                    found.extend(got)
+        return found, truncated
+
+    pages = 1
+    page = first
+    while following:
         if pages >= MOST_PAGES:
-            truncated = True
-            break
-        # The next page is a full URL with every filter already in it.
+            return found, True
         try:
             resp = send(following, timeout=TIMEOUT)
             if not getattr(resp, "ok", False):
                 raise ValueError(getattr(resp, "status_code", "?"))
             page = resp.json()
         except (requests.RequestException, ValueError):
-            # A later page that fails costs that page, not the whole answer:
-            # what arrived is still a true picture of part of the view, and
-            # the answer says it is partial.
-            truncated = True
-            break
+            return found, True
+        found.extend(page.get("results") or [])
+        following = page.get("next")
         pages += 1
-    return found, truncated
+    return found, False
+
+
+def page_urls(following: str, count: Any, per_page: int) -> list[str] | None:
+    """Every page after the first, by number, or None if that cannot be done.
+
+    Worked out from the "next" link RIPE gave -- so every filter it carries is
+    kept exactly -- with only its page number changed. None when the answer
+    did not say how many there are, or the link has no page number to change
+    (a cursor rather than a page), and then the pages are walked instead.
+    """
+    if not isinstance(count, int) or count <= 0 or per_page <= 0:
+        return None
+    parts = urllib.parse.urlsplit(following)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    if not any(k == "page" for k, _v in query):
+        return None
+    total = math.ceil(count / per_page)
+    out = []
+    for number in range(2, total + 1):
+        rebuilt = [(k, str(number) if k == "page" else v) for k, v in query]
+        out.append(urllib.parse.urlunsplit(parts._replace(
+            query=urllib.parse.urlencode(rebuilt))))
+    return out
 
 
 def probes(bbox: tuple[float, float, float, float], hours: int = DEFAULT_WINDOW,
@@ -339,7 +411,7 @@ def shape(raw: list[dict], hours: int, bbox: tuple[float, float, float, float],
     # drops: changes first, then the steady ones nearest the middle.
     west, south, east, north = bbox
     cx, cy = (west + east) / 2, (south + north) / 2
-    weight = {"down": 0, "back": 1, "gone": 2, "up": 3}
+    weight = {"down": 0, "back": 1, "gone": 2, "up": 3, "dead": 4, "inactive": 5, "never": 6}
     read.sort(key=lambda p: (weight[p["state"]],
                              math.hypot(p["lon"] - cx, p["lat"] - cy)))
     capped = len(read) > MOST_RETURNED
@@ -382,6 +454,14 @@ def demo(bbox: tuple[float, float, float, float], hours: int = DEFAULT_WINDOW,
         near_dark = math.hypot(lon - dark_lon, lat - dark_lat) < (east - west) * 0.08
         if near_dark:
             status, ago = DISCONNECTED, dt.timedelta(minutes=20 + i % 40)
+        # The rest of the census, so the offline build shows every kind of
+        # probe the live one does.
+        elif i % 11 == 0:
+            status, ago = 3, dt.timedelta(days=200)
+        elif i % 13 == 0:
+            status, ago = NEVER_CONNECTED, dt.timedelta(days=90)
+        elif i % 19 == 0:
+            status, ago = DISCONNECTED, dt.timedelta(days=30)
         elif i % 23 == 0:
             status, ago = DISCONNECTED, dt.timedelta(days=2)
         elif i % 17 == 0:
@@ -394,7 +474,8 @@ def demo(bbox: tuple[float, float, float, float], hours: int = DEFAULT_WINDOW,
             "id": 1_000_000 + i,
             "geometry": {"type": "Point", "coordinates": [round(lon, 3), round(lat, 3)]},
             "status": {"id": status,
-                       "name": "Connected" if status == CONNECTED else "Disconnected",
+                       "name": {CONNECTED: "Connected", DISCONNECTED: "Disconnected",
+                                NEVER_CONNECTED: "Never Connected"}.get(status, "Abandoned"),
                        "since": (now - ago).isoformat().replace("+00:00", "Z")},
             "country_code": "UA" if i % 3 else "PL",
             "asn_v4": 15895 + i % 5,
@@ -784,8 +865,15 @@ AREA_STEP_MINUTES = {24: 10, 48: 20, 168: 60}
 # request. A box over half of Europe holds thousands; the nearest few hundred
 # to its middle say what the region is doing, and the graph says it is a
 # sample when it is one.
-MOST_AREA_PROBES = 300
+MOST_AREA_PROBES = 2000
 IDS_PER_ASK = 100
+# Batches of connection logs asked for at once. Twenty batches one after
+# another was most of the wait for a big area.
+AREA_WORKERS = 4
+
+# How many corners a drawn area may have. Plenty for tracing a coastline or a
+# province border by hand, and a ceiling on what one request can carry.
+MOST_CORNERS = 200
 
 # Below this share of probes the line is drawn in the colour for trouble. The
 # middle band is for the ordinary wobble of volunteers' home connections,
@@ -902,14 +990,90 @@ def _area_name(bbox: tuple[float, float, float, float],
             f"{abs((west + east) / 2):.2f}°{'E' if west + east >= 0 else 'W'}")
 
 
+def inside(lon: float, lat: float, polygon: list[tuple[float, float]]) -> bool:
+    """Whether a point is inside a drawn area, by counting edge crossings.
+
+    The ordinary even-odd rule: a ray from the point crosses the outline an
+    odd number of times if the point is inside. Works for any shape a hand can
+    click out, concave ones included.
+    """
+    hit = False
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        if (y1 > lat) != (y2 > lat):
+            cross = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+            if lon < cross:
+                hit = not hit
+    return hit
+
+
+def read_corners(said: str) -> list[tuple[float, float]]:
+    """A drawn area, from "lon,lat;lon,lat;...". Raises ValueError if it is not one."""
+    corners = []
+    for pair in (said or "").split(";"):
+        if not pair.strip():
+            continue
+        lon_s, lat_s = pair.split(",")
+        lon, lat = float(lon_s), float(lat_s)
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90) or math.isnan(lon + lat):
+            raise ValueError(f"{pair} is not a place on Earth")
+        corners.append((lon, lat))
+    if len(corners) > 1 and corners[0] == corners[-1]:
+        corners.pop()
+    if not 3 <= len(corners) <= MOST_CORNERS:
+        raise ValueError(f"an area needs 3 to {MOST_CORNERS} corners, not {len(corners)}")
+    return corners
+
+
+def corners_box(corners: list[tuple[float, float]]) -> tuple[float, float, float, float]:
+    return (min(c[0] for c in corners), min(c[1] for c in corners),
+            max(c[0] for c in corners), max(c[1] for c in corners))
+
+
+def left_out(raw: list[dict[str, Any]], start: dt.datetime) -> dict[str, int]:
+    """The probes in the area that are not in the line, and why.
+
+    Said on the picture, because a graph of "47 probes" over an area holding
+    eighty reads as data that was not collected -- unless it says the other
+    thirty-three were collected, and what they were.
+    """
+    out = {"offline_before": 0, "never": 0, "inactive": 0}
+    for probe in raw:
+        if position_of(probe) is None:
+            continue
+        status = status_of(probe)
+        since = since_of(probe)
+        if status == CONNECTED:
+            continue
+        if status == DISCONNECTED:
+            if since is not None and since >= start:
+                continue
+            out["offline_before"] += 1
+        elif status == NEVER_CONNECTED:
+            out["never"] += 1
+        else:
+            out["inactive"] += 1
+    return out
+
+
 def area_history(bbox: tuple[float, float, float, float],
                  hours: int = DEFAULT_AREA_HISTORY, get: Any = None,
-                 now: dt.datetime | None = None, namer: Any = None) -> dict[str, Any]:
-    """How much of an area's internet was up, through the window."""
+                 now: dt.datetime | None = None, namer: Any = None,
+                 corners: list[tuple[float, float]] | None = None) -> dict[str, Any]:
+    """How much of an area's internet was up, through the window.
+
+    The area is the box, or -- when corners are given -- the shape they
+    outline, with the box only as what RIPE is asked about.
+    """
     if hours not in AREA_HISTORY:
         hours = DEFAULT_AREA_HISTORY
+    if corners:
+        bbox = corners_box(corners)
     west, south, east, north = bbox
-    key = f"{west:.3f},{south:.3f},{east:.3f},{north:.3f},{hours}"
+    shape_key = hashlib.sha1(repr(corners).encode()).hexdigest()[:12] if corners else "box"
+    key = f"{west:.3f},{south:.3f},{east:.3f},{north:.3f},{hours},{shape_key}"
     if get is None:
         with _lock:
             held = _area_held.get(key)
@@ -919,22 +1083,32 @@ def area_history(bbox: tuple[float, float, float, float],
     start = now - dt.timedelta(hours=hours)
 
     raw, truncated = _raw_probes(bbox, get)
+    if corners:
+        raw = [r for r in raw
+               if (at := position_of(r)) is not None and inside(at[1], at[0], corners)]
     every = area_members(raw, start, bbox)
     members = every[:MOST_AREA_PROBES]
 
-    events: dict[int, list[dict[str, Any]]] = {}
     ids = [m["id"] for m in members]
-    for i in range(0, len(ids), IDS_PER_ASK):
-        chunk = ",".join(str(n) for n in ids[i:i + IDS_PER_ASK])
-        for row in _results(CONNECTION_MSM, chunk, start, now, get):
-            events.setdefault(row.get("prb_id"), []).append(row)
+    chunks = [",".join(str(n) for n in ids[i:i + IDS_PER_ASK])
+              for i in range(0, len(ids), IDS_PER_ASK)]
+    events: dict[int, list[dict[str, Any]]] = {}
+    # Together, a few at a time. A batch that fails fails the graph rather
+    # than being left out: its probes would otherwise be drawn as if nothing
+    # had happened to them, which is a line that is wrong without saying so.
+    with ThreadPoolExecutor(max_workers=AREA_WORKERS) as pool:
+        for rows in pool.map(lambda c: _results(CONNECTION_MSM, c, start, now, get), chunks):
+            for row in rows:
+                events.setdefault(row.get("prb_id"), []).append(row)
 
     found = _aggregate(members, events, start, now, hours)
     found.update({
         "bbox": list(bbox),
+        "corners": [list(c) for c in corners] if corners else None,
         "name": _area_name(bbox, members, namer),
         "sampled": len(every) > len(members) or truncated,
         "in_box": len(every),
+        "left_out": left_out(raw, start),
     })
     if get is None:
         with _lock:
@@ -965,7 +1139,8 @@ def _aggregate(members: list[dict[str, Any]], events: dict[Any, list[dict[str, A
 
 
 def demo_area(bbox: tuple[float, float, float, float], hours: int = DEFAULT_AREA_HISTORY,
-              now: dt.datetime | None = None) -> dict[str, Any]:
+              now: dt.datetime | None = None,
+              corners: list[tuple[float, float]] | None = None) -> dict[str, Any]:
     """Sixty synthetic probes in the box, with an outage that hits a third of them.
 
     Its own sixty rather than the dots the demo map draws there: those are
@@ -979,11 +1154,13 @@ def demo_area(bbox: tuple[float, float, float, float], hours: int = DEFAULT_AREA
         hours = DEFAULT_AREA_HISTORY
     now = now or dt.datetime.now(dt.timezone.utc)
     start = now - dt.timedelta(hours=hours)
+    if corners:
+        bbox = corners_box(corners)
     west, south, east, north = bbox
     seed = int(hashlib.sha1(f"{west:.1f},{south:.1f}".encode()).hexdigest()[:8], 16)
     members, events = [], {}
     outage = now - dt.timedelta(hours=2, minutes=40)
-    for i in range(60):
+    for i in range(90 if corners else 60):
         pid = 2_000_000 + i
         a = ((seed + i * 7919) % 10007) / 10007
         b = ((seed // 3 + i * 104729) % 10009) / 10009
@@ -1003,13 +1180,18 @@ def demo_area(bbox: tuple[float, float, float, float], hours: int = DEFAULT_AREA
             if state == "up":
                 rows.append({"prb_id": pid, "timestamp": (outage + dt.timedelta(minutes=70 + i)).timestamp(),
                              "event": "connect"})
+        lat, lon = south + (north - south) * b, west + (east - west) * a
+        # A drawn shape keeps only the probes inside it, as the real one does.
+        if corners and not inside(lon, lat, corners):
+            continue
         events[pid] = rows
-        members.append({"id": pid, "lat": south + (north - south) * b,
-                        "lon": west + (east - west) * a, "state": state,
+        members.append({"id": pid, "lat": lat, "lon": lon, "state": state,
                         "since": None, "country": "UA"})
     found = _aggregate(members, events, start, now, hours)
     found.update({"bbox": list(bbox), "name": "Synthetic region", "sampled": False,
-                  "in_box": len(members), "demo": True})
+                  "corners": [list(c) for c in corners] if corners else None,
+                  "in_box": len(members), "demo": True,
+                  "left_out": {"offline_before": 4, "never": 2, "inactive": 7}})
     return found
 
 
@@ -1024,6 +1206,21 @@ def _font(size: int):
         # Pillow older than 10.1 has only the small bitmap face. The graph is
         # still a graph; the words are just smaller.
         return ImageFont.load_default()
+
+
+def _fitted(draw: Any, text: str, width: float, sizes: tuple[int, ...] = (22, 20, 18, 16)):
+    """The largest of these faces the text fits in, and the text -- shortened
+    with an ellipsis only if even the smallest will not hold it. Measured,
+    rather than cut at a character count, which chopped "never connected" to
+    "never" on one picture and let another run off the edge."""
+    for size in sizes:
+        face = _font(size)
+        if draw.textlength(text, font=face) <= width:
+            return face, text
+    face = _font(sizes[-1])
+    while text and draw.textlength(text + "…", font=face) > width:
+        text = text[:-1]
+    return face, text.rstrip(" ,·") + "…"
 
 
 _AREA_BG = (9, 14, 27)
@@ -1073,10 +1270,18 @@ def plot_area(found: dict[str, Any]) -> bytes:
     # it as an empty box.
     when = (f"{start:%d %b %H:%M} to {end:%d %b %H:%M} UTC" if found["hours"] <= 48
             else f"{start:%d %b} to {end:%d %b %Y} UTC")
-    said = (f"Share of RIPE Atlas probes online, against the most that were up at once"
-            f"   ·   {when}   ·   {found['members']} probes"
-            + (f" (nearest of {found['in_box']})" if found.get("sampled") else ""))
-    draw.text((left, 122), said, font=small, fill=_AREA_DIM)
+    gone = found.get("left_out") or {}
+    not_in = sum(gone.values())
+    said = (f"{when}   ·   {found['members']} probes in the line"
+            + (f" (nearest of {found['in_box']})" if found.get("sampled") else "")
+            + (f"   ·   {not_in} more in the area, not counted: "
+               + ", ".join(f"{n} {label}" for n, label in (
+                   (gone.get("offline_before", 0), "offline before the window"),
+                   (gone.get("inactive", 0), "inactive"),
+                   (gone.get("never", 0), "never connected")) if n)
+               if not_in else ""))
+    face, said = _fitted(draw, said, width - 2 * left)
+    draw.text((left, 122), said, font=face, fill=_AREA_DIM)
 
     # The figures: now, the low point, and how many probes it rests on.
     figures = [
@@ -1140,10 +1345,11 @@ def plot_area(found: dict[str, Any]) -> bytes:
         draw.text((x - 34, bottom + 14), label, font=small, fill=_AREA_DIM)
 
     # The source, and the key to the colours.
-    draw.text((left, height - 52),
-              "Source: RIPE Atlas, RIPE NCC · probe connection log (measurement 7000) · "
-              "each probe is a volunteer's device; positions blurred by RIPE",
-              font=small, fill=_AREA_DIM)
+    footer = ("Share of probes online, against the most up at once · RIPE Atlas, RIPE NCC, "
+              "connection log (measurement 7000) · positions blurred by RIPE"
+              + (" · drawn area" if found.get("corners") else ""))
+    face, footer = _fitted(draw, footer, width - 2 * left)
+    draw.text((left, height - 52), footer, font=face, fill=_AREA_DIM)
     # In the row of figures, at the right, where it is read with them -- it
     # used to sit along the bottom and land on the times.
     kx = right - 470

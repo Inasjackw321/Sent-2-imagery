@@ -53,7 +53,12 @@ const HINTS = {
   polygon: 'Click each corner, double-click to finish — Esc to cancel',
   capture: `Drag over the part you want — it is copied marked ${WATERMARK} — Esc to cancel`,
   pick: 'Drag a box over the area to graph — Esc to cancel',
+  pickpoly: 'Click each corner of the area, then double-click or click the first '
+    + 'corner to finish — Backspace undoes a corner, Esc cancels',
 };
+
+// How close a click has to land to the first corner to close the shape.
+const CLOSE_PX = 12;
 
 // The box being dragged out for another panel to use. Its own colour, so it is
 // not mistaken for the area the imagery is drawn for.
@@ -247,6 +252,13 @@ function bindDrawTools() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') setMode('none');
+    // Taking back the last corner, rather than starting the whole shape again.
+    if (e.key === 'Backspace' && mode === 'pickpoly' && drawing?.points.length
+        && !e.target.closest?.('input, textarea')) {
+      e.preventDefault();
+      drawing.points.pop();
+      sketchLayer?.setLatLngs(drawing.points);
+    }
   });
 
   $('#clearAoi').addEventListener('click', clearAoi);
@@ -273,11 +285,11 @@ function setMode(next) {
   document.getElementById('map').classList.toggle('is-drawing', drawingNow);
   // While a tool is armed the drag belongs to it; otherwise it pans the map.
   map.dragging[drawingNow ? 'disable' : 'enable']();
-  map.doubleClickZoom[mode === 'polygon' ? 'disable' : 'enable']();
+  map.doubleClickZoom[mode === 'polygon' || mode === 'pickpoly' ? 'disable' : 'enable']();
 }
 
 function onDown(e) {
-  if (mode === 'none' || mode === 'polygon' || drawing) return;
+  if (mode === 'none' || mode === 'polygon' || mode === 'pickpoly' || drawing) return;
   drawing = {
     mode, start: e.latlng, points: [e.latlng],
     lastPoint: e.containerPoint,
@@ -319,8 +331,19 @@ function onMove(e) {
  * no gesture to end here.
  */
 function looseEnd() {
-  if (!drawing || drawing.mode === 'polygon') return;
+  if (!drawing || builtByClicking(drawing.mode)) return;
   finish(drawing.at ?? drawing.start);
+}
+
+/**
+ * Whether a tool builds its shape from separate clicks rather than one drag.
+ *
+ * A button coming up ends a drag. It does not end a shape made of clicks --
+ * every corner is a button coming up -- and treating it as if it did put the
+ * tool away on the second corner, with the shape thrown away.
+ */
+function builtByClicking(mode) {
+  return mode === 'polygon' || mode === 'pickpoly';
 }
 
 function onUp(e) {
@@ -328,7 +351,7 @@ function onUp(e) {
 }
 
 function finish(at) {
-  if (!drawing) return;
+  if (!drawing || builtByClicking(drawing.mode)) return;
   const sketch = drawing;
   // Finished or abandoned, the tool is done: the map goes back to navigating
   // so the next drag pans instead of drawing over the area just chosen.
@@ -362,6 +385,7 @@ function onClick(e) {
     if (store.image) showProbe(e.latlng);
     return;
   }
+  if (mode === 'pickpoly') { addCorner(e); return; }
   if (mode !== 'polygon') return;
   if (!drawing) {
     drawing = { mode: 'polygon', points: [] };
@@ -371,7 +395,43 @@ function onClick(e) {
   sketchLayer.setLatLngs(drawing.points);
 }
 
+/**
+ * One more corner of a shape being clicked out for another panel.
+ *
+ * Drawn as the closed shape it will become, so the area is visible while it is
+ * being made rather than only once it is finished. A click back on the first
+ * corner closes it -- the way people expect to finish a shape -- as well as a
+ * double-click.
+ */
+function addCorner(e) {
+  if (!drawing) {
+    drawing = { mode: 'pickpoly', points: [] };
+    sketchLayer = L.polygon([], PICK_STYLE).addTo(map);
+  }
+  const points = drawing.points;
+  if (points.length >= 3
+      && map.latLngToContainerPoint(points[0]).distanceTo(e.containerPoint) <= CLOSE_PX) {
+    finishCorners();
+    return;
+  }
+  // A double-click arrives as two clicks first. The second lands on the
+  // first, and would otherwise be a corner of nothing.
+  const last = points.at(-1);
+  if (last && map.latLngToContainerPoint(last).distanceTo(e.containerPoint) < 4) return;
+  points.push(e.latlng);
+  sketchLayer.setLatLngs(points);
+}
+
+function finishCorners() {
+  const points = drawing?.points ?? [];
+  const done = picking;
+  picking = null;
+  setMode('none');
+  if (points.length >= 3) done?.(points.slice());
+}
+
 function onDblClick() {
+  if (mode === 'pickpoly' && drawing) { finishCorners(); return; }
   if (mode !== 'polygon' || !drawing) return;
   const points = drawing.points;
   setMode('none');
@@ -664,21 +724,24 @@ let captureWants = 'copy';
 let picking = null;
 
 /**
- * Let somebody drag a box on the map, and hand its bounds to `done`.
+ * Let somebody mark out an area on the map, and hand it to `done`.
  *
- * For a panel that needs an area of its own -- the connectivity graph -- and
- * deliberately not the imagery's area tools, which would replace the area the
- * imagery is drawn for. Asking again while armed puts the tool away, like
- * every other tool here.
+ * 'box' drags a rectangle and hands over its bounds; 'points' clicks out a
+ * shape corner by corner and hands over the corners. For a panel that needs
+ * an area of its own -- the connectivity graph -- and deliberately not the
+ * imagery's area tools, which would replace the area the imagery is drawn
+ * for. Asking for the tool that is already armed puts it away, like every
+ * other tool here; asking for the other one swaps.
  */
-export function pickArea(done) {
-  if (mode === 'pick') {
+export function pickArea(done, shape = 'box') {
+  const wanted = shape === 'points' ? 'pickpoly' : 'pick';
+  if (mode === wanted) {
     picking = null;
     setMode('none');
     return false;
   }
   picking = done;
-  setMode('pick');
+  setMode(wanted);
   return true;
 }
 

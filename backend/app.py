@@ -385,20 +385,31 @@ def connectivity_area_graph(
     east: float = Query(..., ge=-180, le=180),
     north: float = Query(..., ge=-90, le=90),
     hours: int = Query(connectivity.DEFAULT_AREA_HISTORY, ge=1, le=168),
+    # A shape clicked out corner by corner, as "lon,lat;lon,lat;...". When it
+    # is given, the probes counted are the ones inside it, and the four edges
+    # above are only the box RIPE is asked about.
+    poly: str = Query("", max_length=8000),
 ) -> Response:
-    """Every probe in a drawn box, as one line of how much of it was online.
+    """Every probe in a drawn area, as one line of how much of it was online.
 
     The figures the picture is about travel with it as headers too, so the
     window around it can say them without reading pixels.
     """
-    if west >= east or south >= north:
+    corners = None
+    if poly:
+        try:
+            corners = connectivity.read_corners(poly)
+        except ValueError as exc:
+            raise HTTPException(400, f"That shape could not be read: {exc}")
+    elif west >= east or south >= north:
         raise HTTPException(400, "Draw the box from one corner to the opposite one.")
-    box = (west, south, east, north)
+    box = connectivity.corners_box(corners) if corners else (west, south, east, north)
     if config.DEMO_MODE:
-        found = connectivity.demo_area(box, hours)
+        found = connectivity.demo_area(box, hours, corners=corners)
     else:
         try:
-            found = connectivity.area_history(box, hours, namer=gazetteer.region_at)
+            found = connectivity.area_history(box, hours, namer=gazetteer.region_at,
+                                              corners=corners)
         except connectivity.ConnectivityError as exc:
             raise _fail(exc)
     if not found["members"]:
