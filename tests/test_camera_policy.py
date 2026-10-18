@@ -141,3 +141,48 @@ def test_every_camera_host_is_allowed_by_the_policy(
             f"not allow. Add it to the CSP in backend/app.py, or the browser "
             f"will block it and the camera will look like it is off."
         )
+
+
+# ── The other direction: nothing allowed that nothing uses ─────────────
+
+
+def test_every_frame_grant_is_used_by_a_camera() -> None:
+    """frame-src is there for the cameras and nothing else, so a host in it
+    that no camera embeds is a site allowed to load inside this page for no
+    reason at all. www.earthcam.com had been left in it that way, though its
+    one camera opens on its own site and is never framed."""
+    framed = {host for _id, kind, host in cameras() if kind == "embed"}
+    granted = {source.removeprefix("https://")
+               for source in policy("frame-src").split()[1:]}
+    assert granted - framed == set(), f"framed by nothing: {sorted(granted - framed)}"
+
+
+def test_every_camera_address_is_encrypted() -> None:
+    """A camera over plain http could be swapped in transit for anything at
+    all, and would be shown in this page as if it were the camera."""
+    source = CAMS_JS.read_text(encoding="utf-8")
+    body = source[source.index("export const CAMS"):]
+    plain = re.findall(r"(?:src|template): '(http://[^']+)'", body)
+    assert plain == []
+
+
+def test_a_camera_shown_off_site_opens_safely() -> None:
+    """Off-site cameras are a link, so the link is the whole attack surface:
+    a new tab with no handle back to this page and no referrer sent."""
+    source = CAMS_JS.read_text(encoding="utf-8")
+    at = source.index("if (cam.offsite) {")
+    block = source[at:source.index("}", source.index("`Watch on", at))]
+    assert "target: '_blank'" in block
+    assert "rel: 'noopener noreferrer'" in block
+
+
+def test_embedded_cameras_are_sandboxed() -> None:
+    """A framed camera page runs a player and nothing else: no pop-ups, no
+    forms, and no navigating this tab away. Pinned, because loosening the
+    sandbox is a one-word change that would not show up anywhere else."""
+    source = CAMS_JS.read_text(encoding="utf-8")
+    at = source.index("const player = el('iframe', {")
+    block = source[at:source.index("});", at)]
+    sandbox = re.search(r"sandbox: '([^']+)'", block).group(1).split()
+    assert set(sandbox) == {"allow-scripts", "allow-same-origin", "allow-presentation"}
+    assert "referrerpolicy: 'no-referrer'" in block

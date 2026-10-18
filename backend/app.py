@@ -109,8 +109,12 @@ CSP = "; ".join([
     "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
     "https://*.earthcam.com https://*.galata.ai",
     # The camera embeds, named one host at a time.
+    # Only hosts a camera on the list actually embeds. A grant nothing uses is
+    # a site allowed to load inside this page for no reason: www.earthcam.com
+    # had been left here that way, though its one camera opens on its own site
+    # and is never framed. A test now fails on a grant like that.
     "frame-src https://ipcamlive.com https://rtsp.me https://vkvideo.ru "
-    "https://www.earthcam.com https://balticlivecam.com",
+    "https://balticlivecam.com",
     # Nothing here submits a form, embeds a plugin, or should ever be framed
     # by anybody else.
     "form-action 'none'",

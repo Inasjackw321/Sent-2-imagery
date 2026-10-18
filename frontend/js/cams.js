@@ -523,6 +523,34 @@ export const CAMS = [
     src: 'https://vkvideo.ru/video_ext.php?oid=1025087646&id=456239017&hash=42c649342965ddbe&hd=3',
     host: 'vkvideo.ru',
   },
+  // Two more in St Petersburg, both given by position: one on Vasilievsky Island,
+  // and one on the Lakhta Center, the tower on the north shore of the gulf.
+  //
+  // Both links are a viewer PAGE on the host's own site, not a player built
+  // to be framed. Framing a page that was not made for it gives a window that
+  // is blank or shows a refusal, which looks exactly like a camera that is
+  // down -- so these open on their own sites, and nothing is fetched from
+  // either host by this app at all.
+  {
+    id: 'st-petersburg-vasilievsky', name: 'St Petersburg, Vasilievsky Island',
+    place: 'St Petersburg, Russia', tz: 'Europe/Moscow',
+    // 59°55'26" N 30°14'24" E
+    lat: 59.9239, lon: 30.2400, precision: 'given position',
+    src: 'https://public.ivideon.com/camera/100-VBPoWKrNcZ6SBhucwbvQCD:0/',
+    host: 'public.ivideon.com',
+    offsite: true,
+    why: 'This link is Ivideon’s viewer page, not a player made to be embedded',
+  },
+  {
+    id: 'st-petersburg-lakhta', name: 'Lakhta Center', place: 'St Petersburg, Russia',
+    tz: 'Europe/Moscow',
+    // 59°59'14" N 30°10'32" E
+    lat: 59.9872, lon: 30.1756, precision: 'given position',
+    src: 'https://lakhta.center/online/',
+    host: 'lakhta.center',
+    offsite: true,
+    why: 'This link is the Lakhta Center’s own viewer page, not a player made to be embedded',
+  },
 ];
 
 // How often a snapshot camera is asked for again. Windy's hosts overwrite the
@@ -685,7 +713,10 @@ function body(cam) {
     // No iframe at all: this host refuses to be framed, so an embed here would
     // be a panel that is blank for ever with nothing to explain itself.
     return [el('div', { class: 'cam-wait' },
-      el('span', {}, `${cam.host} does not allow embedding`),
+      // A camera can say why itself, where "does not allow embedding" would be
+      // a claim nobody checked: some are off-site because their link is a
+      // viewer page rather than a player, not because framing was refused.
+      el('span', {}, cam.why ?? `${cam.host} does not allow embedding`),
       el('small', {}, 'It plays on its own site rather than in here.'),
       el('a', {
         class: 'cam-go', href: cam.src, target: '_blank', rel: 'noopener noreferrer',
