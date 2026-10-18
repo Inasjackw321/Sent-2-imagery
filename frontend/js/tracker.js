@@ -204,9 +204,12 @@ function colourOf(event) {
 }
 const motionOf = (event) => event.motion ?? look(event).motion ?? 'track';
 
-/** How long this kind of marker stays, in minutes. */
-const keepOf = (event) => feed?.keep?.[event.kind] ?? look(event).keep
-  ?? feed?.keep_minutes ?? 20;
+/**
+ * How long this marker stays, in minutes: its own hold where it carries one
+ * (a Russian subject's warning, held until stood down), otherwise its kind's.
+ */
+const keepOf = (event) => event.keep_minutes ?? feed?.keep?.[event.kind]
+  ?? look(event).keep ?? feed?.keep_minutes ?? 20;
 
 // The furthest a mark is carried past its last confirmed position, in
 // minutes. The backend's number; the fallback matches it and exists only for
@@ -290,6 +293,10 @@ function positionOf(event) {
  * sit at full strength for its whole life and then vanish.
  */
 function freshness(event) {
+  // A warning in force until it is called off does not get less true as it
+  // ages, so it does not fade. Fading it would say "this is going stale"
+  // about a regime nobody has lifted.
+  if (event.until_lifted) return 1;
   const minutes = event.age_minutes ?? 0;
   return Math.max(0, Math.min(1, 1 - minutes / Math.max(1, keepOf(event))));
 }
@@ -2312,7 +2319,10 @@ function paintDock() {
         + 'not the same as an unknown direction: something on station is not '
         + 'going anywhere.');
     }
-    lines.push('Warnings are held for '
+    lines.push('Warnings over a named Russian region are held until the '
+      + 'channel stands that region down, and at most '
+      + `${Math.round((feed?.hold_minutes ?? 600) / 60)} hours. `
+      + 'Other warnings are held for '
       + `${Math.round((feed?.keep?.alert ?? 90))} minutes, fading as they age; `
       + `things in flight go after ${feed?.keep_minutes ?? 20} minutes, when `
       + 'the report has stopped describing anything current. Strikes are not '

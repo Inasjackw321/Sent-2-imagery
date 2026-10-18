@@ -42,7 +42,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from . import places
+from . import places, subjects
 
 # ---------------------------------------------------------------------------
 # What kind of thing
@@ -1242,6 +1242,56 @@ def _listed(text: str) -> tuple[list[str], str] | None:
     return (names, match.group("says")) if len(names) >= 2 else None
 
 
+# "Навля, Брянская область - опасность БПЛА": the town, then its region.
+TOWN_FIRST = re.compile(
+    r"^\s*(?P<what>[А-ЯЁ][а-яё\-]+(?:\s+[А-ЯЁ][а-яё\-]+)?)\s*,")
+
+
+def _subject_readings(text: str) -> list[dict[str, Any]]:
+    """One reading per Russian subject a warning post names. [] if none."""
+    found = subjects.read(text, find_kind, find_cause)
+    if not found:
+        return []
+    # The town, where a one-region post names one: "Навля, Брянская область
+    # - опасность БПЛА". The warning is the oblast's -- that is what gets
+    # shaded and what a stand-down lifts -- and the town is said beside it.
+    town = None
+    if len(found) == 1:
+        flat = " ".join(str(text).split())
+        plain = read(flat)
+        place = (plain or {}).get("place")
+        lead = TOWN_FIRST.match(flat)
+        if lead and (not place or subjects.find_all(place)):
+            place = lead.group("what")
+        # Only a name standing apart from the subject's own words. Without
+        # this "Санкт-Петербург" gave the town "Санкт", which is the first
+        # half of the city the warning is already about.
+        named = subjects.spans(flat)
+        at = flat.find(place) if place else -1
+        if (place and at >= 0 and not subjects.find_all(place)
+                and not any(s <= at < e for s, e, _ in named)):
+            town = _canonical(_nominative(place))
+    out = []
+    for row in found:
+        name = row["subject"]
+        # "Москва", not "город Москва": the row is filed that way to keep it
+        # apart from the city's point, which is nothing a reader needs.
+        said = _canonical(name).removeprefix("город ")
+        out.append({
+            "kind": row["kind"], "cause": row["cause"], "place": name,
+            "region": None, "toward": None, "course": None, "count": 1,
+            "summary": summarise(row["kind"],
+                                 f"{said} ({town})" if town else said,
+                                 None, None, 1),
+            # Which subject this is about, by its canonical name. The tracker
+            # holds a warning carrying one until a stand-down for the SAME
+            # subject arrives, rather than for a fixed hour and a half.
+            "subject": name,
+            "by": "rules",
+        })
+    return out
+
+
 def read_all(text: str) -> list[dict[str, Any]]:
     """Every report in one post. Usually one; for a digest, one per place.
 
@@ -1249,6 +1299,12 @@ def read_all(text: str) -> list[dict[str, Any]]:
     every caller can treat a post as a list and the common case costs one
     regular expression that does not match.
     """
+    # A warning or stand-down over Russian federal subjects, read by name
+    # against the full list of them -- see subjects.py. Before the text is
+    # flattened, because the line breaks are where one statement ends.
+    named = _subject_readings(text)
+    if named:
+        return named
     text = " ".join(str(text or "").split())
 
     # Several regions, one thing said about all of them. Checked before the

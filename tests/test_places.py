@@ -28,8 +28,14 @@ from backend import places
 # Bashkortostan and Kurgan, which are past the old 49E edge, and a bound that
 # excludes places the app legitimately reports on is a bound that will get
 # loosened carelessly the next time rather than deliberately this time.
-SOUTH, NORTH = 42.0, 66.0
-WEST, EAST = 21.0, 66.0
+#
+# And widened to the whole of Russia once every federal subject was listed:
+# the radar channel names Murmansk, Kaliningrad, Tyumen and Irkutsk, and a row
+# for each is what lets their warnings shade. Wide enough now that it no longer
+# catches much -- which is why each region's point is also checked against its
+# own outline, below, which catches far more than any box could.
+SOUTH, NORTH = 41.0, 70.0
+WEST, EAST = 20.0, 165.0
 
 
 class TestEveryEntryIsSomewhereReal:
@@ -47,6 +53,23 @@ class TestEveryEntryIsSomewhereReal:
             for name, (lat, lon) in table.items():
                 assert SOUTH <= lat <= NORTH, f"{name} at {lat}"
                 assert WEST <= lon <= EAST, f"{name} at {lon}"
+
+    def test_every_region_is_inside_its_own_outline(self):
+        """The box above is a continent wide; this is a province wide.
+
+        Three were outside when this was first run: Moscow oblast's point sat
+        in the federal city, Sakhalin's was the label of a Kuril island the
+        thinned outline does not keep -- and Vologda's was outside because
+        its outline was ARKHANGELSK'S, shipped under the wrong name since the
+        file was made. A warning for Vologda shaded the White Sea coast and
+        nothing tested for it.
+        """
+        from backend import neighbours, tracker
+        outside = [name for name, (lat, lon) in places.REGIONS.items()
+                   if neighbours.shape_for(name)
+                   and not tracker._shape_holds(neighbours.shape_for(name),
+                                                lat, lon)]
+        assert outside == []
 
     def test_no_two_places_share_a_position(self):
         """Catches the copy-paste, which is how a table like this goes wrong.

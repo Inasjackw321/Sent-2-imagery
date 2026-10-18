@@ -2156,8 +2156,9 @@ class TestWhatEachChannelActuallyDid:
         #
         # Ninety minutes no longer qualifies -- the window is the longest keep
         # time now, so a post is only "not news" once nothing it could become
-        # would still be drawn. Aged past that.
-        stale = tracker.LOOKBACK_MINUTES + 60
+        # would still be drawn. Aged past that -- and past the hold on a
+        # Russian subject's warning, the longest-lived thing there is.
+        stale = tracker.HOLD_MINUTES + 60
         rows = self.read_one(monkeypatch,
                              {ONLY: "Шахед над Нікополем"}, {ONLY: stale})
         assert rows[ONLY]["posts"] == 1
@@ -3865,13 +3866,13 @@ class TestRussiaIsDrawnLikeUkraine:
         remembered and never read -- which is the bug this class was
         originally written for.
         """
-        gaz.remember("Омская область", "ru,ua",
-                     {"name": "Омская область", "lat": 55.0, "lon": 73.4,
+        gaz.remember("Чукотский автономный округ", "ru,ua",
+                     {"name": "Чукотский автономный округ", "lat": 55.0, "lon": 73.4,
                       "category": "boundary", "kind": "administrative",
                       "bbox": (54.0, 56.0, 72.0, 75.0),
                       "shape": self.SHAPE})
         got = tracker.place_event(
-            {"kind": "alert", "place": "Омская область", "toward": None,
+            {"kind": "alert", "place": "Чукотский автономный округ", "toward": None,
              "course": None, "count": 1, "summary": "Air alert",
              "region": None},
             "ru,ua", lookup=lambda name, countries="": gaz.find(name, countries))
@@ -4032,8 +4033,8 @@ class TestTheBordersForAPictureOfItsOwn:
         # Russia's western provinces ship with the app now. Anything east of
         # them is still learned one at a time, and without this it would have
         # no outline in the picture at all.
-        gaz.remember("Омская область", "ru",
-                     {"name": "Омская область", "lat": 55.0, "lon": 73.4,
+        gaz.remember("Чукотский автономный округ", "ru",
+                     {"name": "Чукотский автономный округ", "lat": 55.0, "lon": 73.4,
                       "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
                       "shape": self.SHAPE})
         assert [o["shape"] for o in self.provinces()] == [self.SHAPE]
@@ -4128,6 +4129,18 @@ class TestTheNeighboursAreOnTheMapToo:
             "Одеська область": (46.4825, 30.7233),
             "Сумська область": (50.9077, 34.7981),
             "Закарпатська область": (48.6208, 22.2879),
+            # The subjects added with the full list, and Vologda, whose
+            # outline was Arkhangelsk's until these were checked.
+            "Вологодская область": (59.2206, 39.8915),
+            "Архангельская область": (64.5401, 40.5433),
+            "город Москва": (55.7558, 37.6173),
+            "город Санкт-Петербург": (59.9311, 30.3609),
+            "Чеченская Республика": (43.3178, 45.6949),
+            "Республика Северная Осетия — Алания": (43.0205, 44.6819),
+            "Кабардино-Балкарская Республика": (43.4853, 43.6071),
+            "Мурманская область": (68.9585, 33.0827),
+            "Калининградская область": (54.7104, 20.4522),
+            "Тюменская область": (57.1530, 65.5343),
         }
         for name, (lat, lon) in capitals.items():
             holds = [n for n, row in neighbours.provinces().items()
@@ -4369,8 +4382,8 @@ class TestTheNeighboursAreOnTheMapToo:
         Somewhere east of the file, mentioned in a report for the first
         time: one lookup, when a warning actually arrives.
         """
-        gaz.remember("Омская область", "ru", {
-            "name": "Омская область", "lat": 55.0, "lon": 73.4,
+        gaz.remember("Чукотский автономный округ", "ru", {
+            "name": "Чукотский автономный округ", "lat": 55.0, "lon": 73.4,
             "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
             "shape": {"type": "Polygon", "coordinates": [
                 [[72.0, 54.0], [75.0, 54.0], [75.0, 56.0], [72.0, 54.0]]]}})
@@ -4868,8 +4881,8 @@ class TestAskingForOneCountry:
                      [33.0, 50.0]]]}})
             # And what the gazetteer learned on its own is "elsewhere" rather
             # than "ru": it will hand back a Kazakh oblast just as readily.
-            gaz.remember("Омская область", "ru", {
-                "name": "Омская область", "lat": 55.0, "lon": 73.4,
+            gaz.remember("Чукотский автономный округ", "ru", {
+                "name": "Чукотский автономный округ", "lat": 55.0, "lon": 73.4,
                 "category": "boundary", "bbox": (54.0, 56.0, 72.0, 75.0),
                 "shape": {"type": "Polygon", "coordinates": [
                     [[80.0, 55.0], [81.0, 55.0], [81.0, 56.0],
@@ -4878,7 +4891,7 @@ class TestAskingForOneCountry:
             whose = {o["name"]: o["in"] for o in tracker.outlines()
                      if o["level"] != "country" and o["name"] not in shipped}
             assert whose == {"сумська область": "ua",
-                             "омская область": "elsewhere"}
+                             "чукотский автономный округ": "elsewhere"}
         finally:
             tracker.reset()
             neptun.forget()
@@ -5579,8 +5592,11 @@ class TestARegionalWarningReachesTheMap:
         assert len(warned) == 4, [e.get("place") for e in events]
         assert all(e["placed"] for e in warned)
         assert all(e["region_scope"] == "covers" for e in warned)
+        # Every one by the name the table files it under -- the Chuvash one
+        # used to come back rebuilt in lower case, "Чувашская республика",
+        # which matched only because the lookup folds case.
         assert {e["place"] for e in warned} == {
-            "Республика Башкортостан", "Чувашская республика",
+            "Республика Башкортостан", "Чувашская Республика",
             "Оренбургская область", "Курская область"}
 
     def test_nothing_is_drawn_as_a_sighting_nobody_reported(self, monkeypatch):
@@ -5623,3 +5639,239 @@ class TestARegionalWarningReachesTheMap:
             "БпЛА курсом на Житомирщину",
         ])
         assert [e["kind"] for e in events] == ["drone"]
+
+
+class TestARussianWarningLastsUntilItIsCalledOff:
+    """"The drone warnings don't work for Russia still."
+
+    The picture was Ukraine's oblasts shaded and Russia blank. The posts were
+    arriving and were being read; what went wrong was how long a warning
+    lasted and what ended one. Every alert was held for ninety minutes from
+    its post, and the radar channel declares a regime once and lifts it hours
+    later -- so on any night the shading went before the warning did. A
+    stand-down lifted whatever was near it, which for provinces Russia's size
+    meant the neighbours too. And on a cold start the one page of posts the
+    preview serves reached back an hour, so declarations from earlier in the
+    night were never seen at all.
+    """
+
+    def setup_method(self):
+        tracker.reset()
+
+    teardown_method = setup_method
+
+    def night(self, monkeypatch, posts, older=None):
+        """posts: (minutes ago, text), newest page. older: the history."""
+        now = dt.datetime.now(dt.timezone.utc)
+
+        def page(rows, start):
+            return [{"id": f"radarrussiia/{start + i}", "channel": "radarrussiia",
+                     "text": text, "photos": [], "link": None,
+                     "when": (now - dt.timedelta(minutes=ago)).isoformat()}
+                    for i, (ago, text) in enumerate(rows)]
+
+        history = page(older or [], 100)
+        newest = page(posts, 100 + len(history))
+        asked = []
+
+        def fetch_older(channel, before):
+            asked.append(before)
+            return [p for p in history
+                    if int(p["id"].split("/")[1]) < before][-20:]
+
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda name: (
+            newest if name == "radarrussiia" else []))
+        monkeypatch.setattr(tracker, "_fetch_older", fetch_older)
+        self.looked_up = []
+
+        def find(name, countries=""):
+            self.looked_up.append(name)
+            return None
+
+        monkeypatch.setattr(tracker.gazetteer, "find", find)
+        monkeypatch.setattr(tracker, "MIN_POLL_SECONDS", 0)
+        tracker.poll()
+        return asked
+
+    def shaded(self):
+        return sorted(e["place"] for e in tracker.current()["events"]
+                      if e["kind"] == "alert")
+
+    # ── how long ────────────────────────────────────────────────
+
+    def test_a_warning_outlives_the_old_ninety_minutes(self, monkeypatch):
+        self.night(monkeypatch, [(180, "Тамбовская область Опасность по БПЛА")])
+        assert self.shaded() == ["Тамбовская область"]
+        one = [e for e in tracker.current()["events"] if e["kind"] == "alert"][0]
+        assert one["until_lifted"] is True
+        assert one["shape"] is not None
+
+    def test_its_row_stays_as_long_as_its_mark(self, monkeypatch):
+        self.night(monkeypatch, [(180, "Тамбовская область Опасность по БПЛА")])
+        rows = [a for a in tracker.current()["alerts"] if a["kind"] == "alert"]
+        assert [a["place"] for a in rows] == ["Тамбовская область"]
+
+    def test_but_not_for_ever(self, monkeypatch):
+        self.night(monkeypatch, [
+            (tracker.HOLD_MINUTES + 30, "Курская область Опасность по БПЛА"),
+            (tracker.HOLD_MINUTES - 30, "Орловская область Опасность по БПЛА"),
+        ])
+        assert self.shaded() == ["Орловская область"]
+
+    def test_a_warning_with_no_named_subject_keeps_the_old_clock(self, monkeypatch):
+        # A town, read by the general reader: nothing to stand it down by
+        # name, so it is not held as though there were.
+        self.night(monkeypatch, [(120, "Опасность БПЛА в Новороссийске")])
+        assert self.shaded() == []
+
+    # ── what ends one ───────────────────────────────────────────
+
+    def test_a_stand_down_lifts_the_region_it_names(self, monkeypatch):
+        self.night(monkeypatch, [
+            (200, "Саратовская область\nПензенская область\nОпасность по БПЛА"),
+            (100, "Саратовская область Отбой опасности по БПЛА"),
+        ])
+        assert self.shaded() == ["Пензенская область"]
+
+    def test_and_not_its_neighbours(self, monkeypatch):
+        # Volgograd borders Saratov, and the old reach -- the stand-down's
+        # own region's size -- took it down with Saratov.
+        self.night(monkeypatch, [
+            (60, "Волгоградская область Опасность по БПЛА"),
+            (50, "Саратовская область Опасность по БПЛА"),
+            (40, "Саратовская область Отбой опасности по БПЛА"),
+        ])
+        assert self.shaded() == ["Волгоградская область"]
+
+    def test_and_not_a_federal_city_inside_its_oblast(self, monkeypatch):
+        # Moscow's point is ninety kilometres from Moscow oblast's -- inside
+        # the old reach, so lifting the oblast lifted the city.
+        self.night(monkeypatch, [
+            (60, "Москва Опасность по БПЛА"),
+            (50, "Московская область Опасность по БПЛА"),
+            (40, "Московская область Отбой опасности по БПЛА"),
+        ])
+        assert self.shaded() == ["город Москва"]
+
+    def test_a_stand_down_reaches_a_warning_named_by_its_town(self, monkeypatch):
+        self.night(monkeypatch, [
+            (60, "Навля, Брянская область - опасность БПЛА"),
+            (30, "Брянская область Отбой опасности по БПЛА"),
+        ])
+        assert self.shaded() == []
+
+    def test_and_one_the_general_reader_shaded_as_its_region(self, monkeypatch):
+        # "в Новороссийске" names a town, not a subject; it is shaded as
+        # Krasnodar krai, and Krasnodar krai's stand-down is what ends it.
+        self.night(monkeypatch, [(20, "Опасность БПЛА в Новороссийске")])
+        assert len(self.shaded()) == 1
+        tracker._seen.clear()
+        self.night(monkeypatch, [
+            (10, "Краснодарский край Отбой опасности по БПЛА")])
+        assert self.shaded() == []
+
+    def test_a_stand_down_read_late_leaves_a_newer_warning_up(self, monkeypatch):
+        self.night(monkeypatch, [(10, "Курская область Опасность по БПЛА")])
+        tracker._seen.clear()
+        self.night(monkeypatch, [(60, "Курская область Отбой опасности по БПЛА")])
+        assert self.shaded() == ["Курская область"]
+
+    def test_a_declaration_after_the_stand_down_is_a_new_warning(self, monkeypatch):
+        self.night(monkeypatch, [
+            (90, "Курская область Опасность по БПЛА"),
+            (60, "Курская область Отбой опасности по БПЛА"),
+            (10, "Курская область Опасность по БПЛА"),
+        ])
+        assert self.shaded() == ["Курская область"]
+
+    def test_a_declaration_read_after_its_own_stand_down_is_not_drawn(
+            self, monkeypatch):
+        # Two polls, the older post arriving second -- which is what reading
+        # history back makes possible.
+        self.night(monkeypatch, [(30, "Курская область Отбой опасности по БПЛА")])
+        tracker._seen.clear()
+        self.night(monkeypatch, [(90, "Курская область Опасность по БПЛА")])
+        assert self.shaded() == []
+        row = [a for a in tracker.current()["alerts"]
+               if a["kind"] == "alert" and not a.get("lifts")][0]
+        assert row["lifted"] is True
+
+    def test_a_re_declaration_renews_rather_than_doubles(self, monkeypatch):
+        self.night(monkeypatch, [
+            (300, "Тамбовская область Опасность по БПЛА"),
+            (5, "Тамбовская область Опасность по БПЛА"),
+        ])
+        held = [e for e in tracker.current()["events"] if e["kind"] == "alert"]
+        assert len(held) == 1
+        assert held[0]["age_minutes"] < 10
+
+    def test_both_regions_of_one_post_are_warned(self, monkeypatch):
+        self.night(monkeypatch, [
+            (10, "Курская область Белгородская область Опасность по БПЛА")])
+        assert self.shaded() == ["Белгородская область", "Курская область"]
+
+    def test_moscow_is_shaded_as_the_federal_city(self, monkeypatch):
+        self.night(monkeypatch, [(10, "Москва Опасность по БПЛА")])
+        assert self.shaded() == ["город Москва"]
+        one = [e for e in tracker.current()["events"] if e["kind"] == "alert"][0]
+        assert one["shape"] is not None
+
+    # ── reading back ────────────────────────────────────────────
+
+    def test_an_earlier_declaration_is_found_by_reading_back(self, monkeypatch):
+        asked = self.night(
+            monkeypatch,
+            [(5, "Подписывайтесь")] * 3,
+            older=[(400, "Республика Татарстан Опасность по БПЛА")]
+            + [(300 - i, "Подписывайтесь") for i in range(30)])
+        assert self.shaded() == ["Республика Татарстан"]
+        assert len(asked) >= 2
+
+    def test_reading_back_stops_at_the_hold(self, monkeypatch):
+        filler = [(tracker.HOLD_MINUTES + 60 - i, "Подписывайтесь")
+                  for i in range(60)]
+        asked = self.night(monkeypatch, [(5, "Подписывайтесь")], older=filler)
+        # One page reaches past the hold; nothing older is asked for.
+        assert len(asked) == 1
+
+    def test_and_at_the_page_ceiling(self, monkeypatch):
+        filler = [(300 - i / 10, "Подписывайтесь") for i in range(2000)]
+        asked = self.night(monkeypatch, [(5, "Подписывайтесь")], older=filler)
+        assert len(asked) == tracker.HISTORY_PAGES
+
+    def test_it_reads_back_once(self, monkeypatch):
+        older = [(200 - i, "Подписывайтесь") for i in range(40)]
+        first = self.night(monkeypatch, [(5, "Подписывайтесь")], older=older)
+        again = []
+        monkeypatch.setattr(tracker, "_fetch_older",
+                            lambda c, b: again.append(b) or [])
+        tracker.poll()
+        assert first and again == []
+
+    def test_a_failed_page_keeps_what_it_has(self, monkeypatch):
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+
+        def broken(channel, before):
+            raise tracker.TrackerError("history answered 429")
+
+        monkeypatch.setattr(tracker, "_fetch_channel", lambda name: (
+            [{"id": "radarrussiia/9", "channel": name, "when": now,
+              "text": "Курская область Опасность по БПЛА"}]
+            if name == "radarrussiia" else []))
+        monkeypatch.setattr(tracker, "_fetch_older", broken)
+        monkeypatch.setattr(tracker.gazetteer, "find", lambda n, c="": None)
+        got = tracker.poll()
+        assert self.shaded() == ["Курская область"]
+        assert all(row["problem"] is None for row in got["sources"]
+                   if row["channel"] == "radarrussiia")
+
+    def test_only_the_channel_that_asks_for_it_is_read_back(self):
+        assert [c["name"] for c in tracker.CHANNELS if c.get("history")] \
+            == ["radarrussiia"]
+
+    def test_old_posts_are_read_for_warnings_and_nothing_else(self, monkeypatch):
+        # A drone three hours ago is not on the map whatever it says, and
+        # placing it would cost a gazetteer request for a town.
+        self.night(monkeypatch, [(180, "БПЛА над Навлей курсом на север")])
+        assert tracker.current()["events"] == []
+        assert self.looked_up == []

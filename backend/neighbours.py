@@ -98,11 +98,17 @@ def forget() -> None:
 #
 # They used to be fetched, one name at a time, which is the bulk querying the
 # note above describes and which never arrived. Natural Earth publishes them
-# and Natural Earth is public domain: seventy-four regions, the ones the
+# and Natural Earth is public domain: a hundred and nine regions, the ones the
 # built-in table can name, thinned to about two hundred and sixty points each
-# and rounded to four decimal places. 340 KB, no network, on the first poll.
+# and rounded to four decimal places. 480 KB, no network, on the first poll.
 #
-# Checked rather than trusted: every one of them contains its own capital.
+# Every Russian federal subject but three is here. Crimea and Sevastopol are
+# not, for the reason the frontier note above gives; Chukotka is not, because
+# its outline crosses the antimeridian and no drone has gone near it.
+#
+# Checked rather than trusted: every one of them contains its own capital,
+# and the table's point for it. That second check is how Vologda was found to
+# have been shipped with Arkhangelsk's outline.
 PROVINCES_FILE = pathlib.Path(__file__).with_name("data") / "provinces.json"
 
 _provinces: dict[str, dict[str, Any]] | None = None

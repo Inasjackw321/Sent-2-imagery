@@ -67,7 +67,7 @@ from typing import Any
 
 import requests
 
-from . import config, gazetteer, neighbours, neptun, places, reports
+from . import config, gazetteer, neighbours, neptun, places, reports, subjects
 
 log = logging.getLogger("sent2.tracker")
 
@@ -111,7 +111,11 @@ log = logging.getLogger("sent2.tracker")
 CHANNELS = (
     {"name": "lpr1_treugolnik", "region": "Luhansk and Russia",
      "countries": "ru,ua"},
-    {"name": "radarrussiia", "region": "Russia", "countries": "ru"},
+    # "history": read back past the one page the preview serves, once, when
+    # the process starts -- see _with_history. Only this channel, because
+    # only its warnings are held until they are called off.
+    {"name": "radarrussiia", "region": "Russia", "countries": "ru",
+     "history": True},
 )
 
 # The public web preview. Not the API: this is the page Telegram serves to a
@@ -135,6 +139,28 @@ KEEP_MINUTES = 20
 # text does not go stale the way an extrapolated position does -- "a strike was
 # reported in Kharkiv an hour ago" is still true an hour later.
 ALERT_MINUTES = 90
+
+# How long a warning over a named Russian subject is held when no stand-down
+# for it arrives.
+#
+# Those warnings are not ninety-minute things. The radar channel posts
+# "Тамбовская область Опасность по БПЛА" when a regime is declared and
+# "Тамбовская область Отбой опасности по БПЛА" when it ends, and in between
+# there can be most of a night. Held for ninety minutes like any other alert,
+# the shading went away while the warning was still in force -- which is what
+# "the drone warnings don't work for Russia" was looking at: Ukraine shaded,
+# Russia blank, on a night the channel had a dozen regions under warning.
+#
+# So a subject's warning stays until the channel lifts THAT subject, and this
+# is only the ceiling for a stand-down that never came: a regime that has
+# really run ten hours will have been re-declared by then, and a re-declaration
+# starts the clock again.
+HOLD_HOURS = 10
+HOLD_MINUTES = HOLD_HOURS * 60
+
+# How many pages back to read a channel's history on a cold start, at about
+# twenty posts a page. See _with_history.
+HISTORY_PAGES = 12
 
 # How far back to read. Every post the page offers that could still be on the
 # map -- which means the longest time any kind is held for, not less.
@@ -322,7 +348,9 @@ NOT_AIRBORNE = tuple(name for name, look in KINDS.items() if look["motion"] == "
 # with concentrate mode on, and that is the only thing here worse than
 # linear.
 MAX_EVENTS = 1200
-MAX_ALERTS = 600
+# Ten hours of the radar channel is several hundred rows, and a row must not
+# be dropped while the warning it explains is still shaded.
+MAX_ALERTS = 1500
 
 _lock = threading.Lock()
 # Post ids already read, oldest first -- a dict rather than a set so the
@@ -352,6 +380,12 @@ _polling = False
 # gazetteer does not know -- four quite different problems that all look like
 # an empty map.
 _sources: dict[str, dict[str, Any]] = {}
+# When each subject was last stood down, by canonical name. A declaration read
+# AFTER its own stand-down -- the history is read back in one go, and two posts
+# can arrive in either order -- is a warning already over and is not drawn.
+_cleared: dict[str, float] = {}
+# The channels whose history has been read back this run.
+_backfilled: set[str] = set()
 # When OpenRouter may be asked again, and how long the last rest was.
 
 
@@ -442,6 +476,70 @@ def _fetch_channel(channel: str) -> list[dict[str, Any]]:
     if not resp.ok:
         raise TrackerError(f"{channel} answered {resp.status_code}")
     return parse_preview(resp.text, channel)
+
+
+def _fetch_older(channel: str, before: int) -> list[dict[str, Any]]:
+    """The page of a channel's preview that ends just before a post."""
+    try:
+        resp = requests.get(PREVIEW.format(channel=channel),
+                            params={"before": int(before)}, timeout=20,
+                            headers={"User-Agent": config.USER_AGENT})
+    except requests.RequestException as exc:
+        raise TrackerError(f"{channel} history could not be read: {exc}") from exc
+    if not resp.ok:
+        raise TrackerError(f"{channel} history answered {resp.status_code}")
+    return parse_preview(resp.text, channel)
+
+
+def _number(post_id: Any) -> int | None:
+    """The message number out of "channel/12345"."""
+    tail = str(post_id or "").rpartition("/")[2]
+    return int(tail) if tail.isdigit() else None
+
+
+def _with_history(channel: str, posts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A channel's posts, read back to the longest a warning is held.
+
+    The preview is about twenty posts, which on a busy night is an hour of the
+    radar channel. A process started at midnight therefore never saw the
+    declarations made at nine, and the regions under them stayed blank until
+    each happened to be re-declared -- while the stand-downs it DID see had
+    nothing to lift. Reading back once, at start, is a dozen page fetches;
+    after that the twenty-post window is wider than a poll interval and
+    nothing is missed.
+
+    Stops at the first failure and keeps what it has: history is a better
+    start, never a reason for the first poll to fail.
+    """
+    since = time.time() - HOLD_MINUTES * 60
+    out = list(posts)
+    ids = {p["id"] for p in out}
+    for _ in range(HISTORY_PAGES):
+        numbered = [p for p in out if _number(p["id"]) is not None]
+        if not numbered:
+            break
+        oldest = min(numbered, key=lambda p: _number(p["id"]))
+        if _when(oldest) < since:
+            break
+        try:
+            older = _fetch_older(channel, _number(oldest["id"]))
+        except TrackerError:
+            break
+        new = [p for p in older if p["id"] not in ids]
+        if not new:
+            break
+        out += new
+        ids |= {p["id"] for p in new}
+    return out
+
+
+def _read_channel(channel: dict[str, Any]) -> list[dict[str, Any]]:
+    """One channel's posts, with its history the first time it is read."""
+    posts = _fetch_channel(channel["name"])
+    if channel.get("history") and channel["name"] not in _backfilled:
+        posts = _with_history(channel["name"], posts)
+        _backfilled.add(channel["name"])
+    return posts
 
 
 # Things a model offers as a place name when it has not got one. Each of these
@@ -593,6 +691,12 @@ def _clean(item: Any) -> dict[str, Any] | None:
     summary = " ".join(str(item.get("summary") or "").split())[:160]
     cause = item.get("cause")
     cause = cause if cause in ("drone", "missile") else None
+    # Only a name from the list, and only on a warning or a stand-down. It is
+    # what a stand-down is matched on, so a stray string here would lift
+    # nothing -- or, worse, be held for ten hours as though it were a region.
+    subject = item.get("subject")
+    subject = subject if (kind in ("alert", LIFTED)
+                          and subjects.is_subject(subject)) else None
     return {
         "id": str(item.get("id") or "")[:120] or None,
         "kind": kind,
@@ -607,6 +711,7 @@ def _clean(item: Any) -> dict[str, Any] | None:
         "course": course,
         "count": count,
         "summary": summary,
+        "subject": subject,
     }
 
 
@@ -1524,7 +1629,15 @@ def _record(item: dict[str, Any], message: dict[str, Any],
     # the opposite of what happened.
     if placed["kind"] == LIFTED:
         took_down = 0
-        if placed["placed"]:
+        subject = placed.get("subject")
+        if subject:
+            # By name, and only by name. Proximity was the rule below and it
+            # is wrong for these: Russia's subjects are big enough that the
+            # reach of a stand-down for Saratov took in Penza and Volgograd,
+            # so lifting one region quietly lifted its neighbours too.
+            _cleared[subject] = max(_cleared.get(subject, 0.0), seen)
+            took_down = lift_subject(subject, seen)
+        elif placed["placed"]:
             # As far as the thing it named reaches, and never less than the
             # floor. A stand-down for a province calls off that province: if
             # it only reached ninety kilometres from the centroid, the corners
@@ -1558,6 +1671,13 @@ def _record(item: dict[str, Any], message: dict[str, Any],
 
     _counter += 1
     ident = f"AO{_counter:04d}"
+    subject = placed.get("subject") if placed["kind"] == "alert" else None
+    # Held until stood down, for a warning over a named subject.
+    held = {"keep_minutes": HOLD_MINUTES, "until_lifted": True} if subject else {}
+    # Already called off: the stand-down was read first, which a history read
+    # back in one go makes possible. The row says what was said; nothing is
+    # drawn for a warning that is over.
+    over = bool(subject) and _cleared.get(subject, -1.0) >= seen
     _alerts.append({
         "id": ident,
         # Which post this came from, so a rules-first reading can be replaced
@@ -1584,17 +1704,29 @@ def _record(item: dict[str, Any], message: dict[str, Any],
         # hand them the viewer's address on every popup.
         "photos": photo_paths(message.get("photos")),
         "link": message.get("link"),
+        **held,
+        **({"lifted": True} if over else {}),
     })
 
-    if not placed["placed"]:
+    if not placed["placed"] or over:
         return False
     # A post somebody dismissed stays dismissed when it is read again. Without
     # this the mark returns on the next poll with a new identifier, which from
     # the outside is the dismissal simply not working.
     if str(message.get("id")) in _dismissed:
         return False
+    if subject:
+        # A re-declaration renews the warning rather than stacking a second
+        # copy of the same province on the first. The older row stays in the
+        # stream; only its mark goes.
+        renewed = {e["id"] for e in _events
+                   if e["kind"] == "alert" and e.get("subject") == subject
+                   and e["seen"] <= seen}
+        if renewed:
+            _events[:] = [e for e in _events if e["id"] not in renewed]
     _events.append({
         **placed,
+        **held,
         # The oblast the READER found, kept under its own name.
         #
         # "region" on an event is the channel's beat -- "Ukraine", "Luhansk
@@ -1764,6 +1896,27 @@ def _drone_from_warning(placed: dict[str, Any], ident: str,
 LIFT_WITHIN_KM = 90.0
 
 
+def lift_subject(subject: str, when: float) -> int:
+    """Take down the warnings over one named subject, declared by `when`.
+
+    A warning declared after the stand-down is a new one and stays. Also
+    takes a warning that named a town in the subject and was shaded as the
+    subject's -- "опасность в Навле" is Bryansk oblast's warning, and
+    Bryansk's stand-down ends it.
+    """
+    lifted = {e["id"] for e in _events
+              if e["kind"] == "alert" and e["seen"] <= when
+              and subject in (e.get("subject"), e.get("region_over"),
+                              e.get("place_match"))}
+    if not lifted:
+        return 0
+    _events[:] = [e for e in _events if e["id"] not in lifted]
+    for alert in _alerts:
+        if alert["id"] in lifted:
+            alert["lifted"] = True
+    return len(lifted)
+
+
 def lift_alerts(lat: float, lon: float, within_km: float = LIFT_WITHIN_KM) -> int:
     """Take down the warnings near a point. Returns how many were lifted.
 
@@ -1911,8 +2064,13 @@ def keep_minutes(kind: str) -> int:
     return KEEP.get(kind, KEEP_MINUTES)
 
 
+def _held_for(item: dict[str, Any]) -> int:
+    """Minutes this mark or row stays: its own hold, or its kind's."""
+    return item.get("keep_minutes") or keep_minutes(item["kind"])
+
+
 def _alive(event: dict[str, Any], now: float) -> bool:
-    return event["seen"] >= now - keep_minutes(event["kind"]) * 60
+    return event["seen"] >= now - _held_for(event) * 60
 
 
 def _expire(now: float) -> None:
@@ -1925,7 +2083,7 @@ def _expire(now: float) -> None:
     # as the map does.
     _alerts[:] = [a for a in _alerts
                   if a["seen"] >= now - max(ALERT_MINUTES,
-                                            keep_minutes(a["kind"])) * 60][-MAX_ALERTS:]
+                                            _held_for(a)) * 60][-MAX_ALERTS:]
 
 
 def reset() -> None:
@@ -1936,6 +2094,8 @@ def reset() -> None:
         _seen.clear()
         _events.clear()
         _alerts.clear()
+        _cleared.clear()
+        _backfilled.clear()
         _counter = 0
         _shadowed = 0
         _state = "not started"
@@ -2544,6 +2704,11 @@ def poll() -> dict[str, Any]:
     fresh: list[dict[str, Any]] = []
     trouble: list[str] = []
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=LOOKBACK_MINUTES)
+    # Further back for the one thing that lasts longer: a warning over a named
+    # subject, and the stand-down that ends it. Everything else older than
+    # `cutoff` is still skipped -- reading a nine-hour-old drone would cost a
+    # gazetteer lookup to place a mark that expires on arrival.
+    held_cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=HOLD_MINUTES)
     seen_now: dict[str, dict[str, Any]] = {}
     # All four channels at once, not one after another.
     #
@@ -2558,7 +2723,7 @@ def poll() -> dict[str, Any]:
     # socket read cost nothing, and making the whole module async to save them
     # would be a rewrite for no gain.
     with futures.ThreadPoolExecutor(max_workers=len(CHANNELS)) as pool:
-        got = {channel["name"]: pool.submit(_fetch_channel, channel["name"])
+        got = {channel["name"]: pool.submit(_read_channel, channel)
                for channel in CHANNELS}
 
     for channel in CHANNELS:
@@ -2596,12 +2761,15 @@ def poll() -> dict[str, Any]:
                 # on .replace(), which took the whole poll down rather than
                 # one post.
                 continue
-            if when < cutoff:
-                # Older than the longest any kind is held for, so there is
+            if when < held_cutoff:
+                # Older than the longest anything is held for, so there is
                 # nothing it could become that would still be on the map.
                 # Remembered so it is not weighed again next poll.
                 mark_seen(post["id"])
                 continue
+            # Old enough that only a subject's warning or stand-down in it
+            # can still matter. Read for those and nothing else.
+            post["old"] = when < cutoff
             tally["fresh"] += 1
             fresh.append(post)
 
@@ -2659,10 +2827,14 @@ def poll() -> dict[str, Any]:
         _last_poll = now
         return current()
 
-    # Newest first, so that where anything has to be cut it is the oldest
-    # that goes. They arrive grouped by channel, which is an order that means
-    # nothing: cutting that list cut whole channels.
-    fresh.sort(key=_when, reverse=True)
+    # Oldest first, in the order things were said.
+    #
+    # It was newest first, so that a cut would take the oldest -- but nothing
+    # here cuts the list any more, and the order now decides an outcome: a
+    # warning and its stand-down read in the wrong order put the warning back
+    # up after it was lifted. Read as written, the later post wins, which is
+    # what the channel meant.
+    fresh.sort(key=_when)
 
     # Read by rule. Every post, every place in it, no model.
     #
@@ -2689,6 +2861,8 @@ def poll() -> dict[str, Any]:
             plain["kind"] = fold_kind(plain.get("kind"))
             item = _clean({**plain, "id": post["id"]})
             if not item:
+                continue
+            if post.get("old") and not item.get("subject"):
                 continue
             item["by"] = "rules"
             _record(item, post, post.get("countries", ""))
@@ -2794,6 +2968,9 @@ def current() -> dict[str, Any]:
         "keep_minutes": KEEP_MINUTES,
         "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
+        # The ceiling on a Russian subject's warning that is never called
+        # off. Sent so the panel can say it rather than restate a number.
+        "hold_minutes": HOLD_MINUTES,
         # The furthest a mark is carried past its last confirmed
         # position. Sent rather than written into the page as well, so
         # the cap is one number: the map keeps drifting between polls
@@ -3385,6 +3562,9 @@ def demo() -> dict[str, Any]:
         "dismissed": len(_dismissed),
         "keep_minutes": KEEP_MINUTES, "keep": KEEP,
         "alert_minutes": ALERT_MINUTES,
+        # The ceiling on a Russian subject's warning that is never called
+        # off. Sent so the panel can say it rather than restate a number.
+        "hold_minutes": HOLD_MINUTES,
         # The furthest a mark is carried past its last confirmed
         # position. Sent rather than written into the page as well, so
         # the cap is one number: the map keeps drifting between polls
