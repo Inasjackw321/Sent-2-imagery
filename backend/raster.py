@@ -268,7 +268,7 @@ def native_grid(href: str, bounds4326) -> NativeGrid:
     from rasterio.windows import Window, from_bounds
 
     try:
-        with rasterio.open(href) as src:
+        with _gdal(), rasterio.open(href) as src:
             _check_georeferencing(src, href)
             west, south, east, north = transform_bounds(WGS84, src.crs, *bounds4326)
             window = from_bounds(west, south, east, north, transform=src.transform)
@@ -332,9 +332,28 @@ def read_native(scene: dict, bounds4326, bands: list[str], mask_clouds: bool = F
     return out, grid, cloud
 
 
+def _gdal():
+    """This app's GDAL settings, for the thread that is about to open a file.
+
+    Every open goes through one of these, in its own thread. A rasterio.Env
+    belongs to the thread that entered it, so the one read_bands holds did
+    nothing for the pool threads doing the actual reading -- and a remote
+    file opened with no Env in its thread holds Python's global lock for a
+    whole network round trip. The app window runs in this same process, so
+    each such open froze it: clicking the imagery for its measurements
+    stopped the map dead for half a second or more per band, measured.
+
+    It also meant the settings themselves never applied where they matter.
+    The pool threads read with GDAL's defaults -- listing every remote
+    directory on open, no read cache, unsigned S3 not asked for -- which is
+    more requests per band than the settings exist to avoid.
+    """
+    return rasterio.Env(**config.GDAL_ENV)
+
+
 def _read_one(href: str, grid: Grid, resampling: Resampling):
     try:
-        with rasterio.open(href) as src:
+        with _gdal(), rasterio.open(href) as src:
             _check_georeferencing(src, href)
             nodata = 0 if src.nodata is None else src.nodata
             with _placed(src, nodata) as placed, WarpedVRT(

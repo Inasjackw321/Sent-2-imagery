@@ -84,6 +84,9 @@ SHAKES: tuple[dict[str, Any], ...] = (
      "lat": 25.0898023, "lon": 55.4304727, "given": True},
     {"code": "R85A6", "place": "Abu Dhabi, United Arab Emirates",
      "lat": 24.4302849, "lon": 54.4478012, "given": True},
+    # Kurdistan Region of Iraq. Pinned on the city until the station service
+    # gives the instrument's own position.
+    {"code": "R079D", "place": "Erbil, Iraq", "lat": 36.1911, "lon": 44.0092},
 )
 
 # Every one of them records the same way: a vertical geophone at 100 samples a

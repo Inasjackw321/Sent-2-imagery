@@ -49,7 +49,7 @@ AM|R2DB7|49.9700|36.2500|140.0|Kharkiv Shake|2021-06-01T00:00:00|
 
 
 ASKED_FOR = ["RD834", "R2DB7", "S29F5", "SE569",
-             "S5D35", "R1F39", "S994C", "R85A6"]
+             "S5D35", "R1F39", "S994C", "R85A6", "R079D"]
 
 
 def test_every_one_asked_for_is_there():
@@ -73,7 +73,8 @@ def test_the_places_are_the_ones_asked_for():
         "S5D35": "Sillam\u00e4e, Estonia",
         "R1F39": "Dubai, United Arab Emirates",
         "S994C": "Dubai, United Arab Emirates",
-        "R85A6": "Abu Dhabi, United Arab Emirates"}
+        "R85A6": "Abu Dhabi, United Arab Emirates",
+        "R079D": "Erbil, Iraq"}
 
 
 def test_no_station_code_is_listed_twice():
@@ -100,6 +101,8 @@ def test_each_one_is_in_the_country_its_name_says():
         "Sillam\u00e4e, Estonia": (57.5, 60.0, 21.5, 28.3),
         "Dubai, United Arab Emirates": (24.7, 25.4, 55.0, 55.8),
         "Abu Dhabi, United Arab Emirates": (24.0, 24.7, 54.0, 55.0),
+        # Erbil governorate, in the Kurdistan Region.
+        "Erbil, Iraq": (35.8, 36.6, 43.6, 44.6),
     }
     for s in shake.stations(get=_refuses)["stations"]:
         south, north, west, east = boxes[s["place"]]

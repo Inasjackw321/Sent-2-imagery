@@ -551,6 +551,17 @@ export const CAMS = [
     offsite: true,
     why: 'This link is the Lakhta Center’s own viewer page, not a player made to be embedded',
   },
+  {
+    id: 'negev-highlands', name: 'Negev Highlands', place: 'Negev, Israel',
+    tz: 'Asia/Jerusalem',
+    lat: 30.8124, lon: 34.8595, precision: 'given position',
+    // ipcamlive's stream itself rather than its player page: the playlist is
+    // fetched by hls.js like the other streams, so the Dubai camera's
+    // framed player is not involved and nothing from ipcamlive runs here.
+    kind: 'hls',
+    src: 'https://s122.ipcamlive.com/streams/7awpi1zjkecdzlxtg/stream.m3u8',
+    host: 'ipcamlive.com',
+  },
 ];
 
 // How often a snapshot camera is asked for again. Windy's hosts overwrite the

@@ -102,12 +102,15 @@ CSP = "; ".join([
     # galata.ai numbers its CDN hosts (cdn-101 and cdn-104 have both served
     # the same camera, and a playlist may name another again for its
     # segments), so it is a wildcard for the same reason EarthCam is.
+    # ipcamlive likewise: its streams live on numbered servers (s122 today)
+    # that a camera is moved between. Already trusted to be framed below.
     "connect-src 'self' https://api.rainviewer.com "
     "https://server.arcgisonline.com "
     "https://*.streamlock.net https://*.vdotcameras.com "
-    "https://*.earthcam.com https://*.galata.ai https://cdn.jsdelivr.net",
+    "https://*.earthcam.com https://*.galata.ai https://*.ipcamlive.com "
+    "https://cdn.jsdelivr.net",
     "media-src 'self' blob: https://*.streamlock.net https://*.vdotcameras.com "
-    "https://*.earthcam.com https://*.galata.ai",
+    "https://*.earthcam.com https://*.galata.ai https://*.ipcamlive.com",
     # The camera embeds, named one host at a time.
     # Only hosts a camera on the list actually embeds. A grant nothing uses is
     # a site allowed to load inside this page for no reason: www.earthcam.com
