@@ -370,6 +370,31 @@ rather than on the ground. Tying its radius to the merge scale adds 41% more
 fine detail at the same fidelity to the truth, which is the difference between
 sharpening the picture and sharpening the grain.
 
+### Or one date, redrawn by SEN2SR
+
+**✦ Enhance with SEN2SR**, under *Show imagery*, redraws the Sentinel-2 date
+on screen at **2.5 m** with [SEN2SR](https://github.com/ESAOpenSR/SEN2SR)
+(ESA OpenSR) — a network trained on pairs of Sentinel-2 and aerial imagery.
+It uses the light **SEN2SRLite RGBN ×4** model, which runs on an ordinary CPU
+in seconds: red, green, blue and near-infrared in, the same four out at four
+times the resolution. So it works for true colour, the NIR false colour and
+NDVI, on one date, up to about 10 × 10 km.
+
+It is a different kind of answer from merging dates. A merge recovers what
+several passes genuinely measured; SEN2SR's finer detail is the network's
+estimate of what is probably there, kept consistent with what the satellite
+did measure. The picture says so every time.
+
+The bands are read on the satellite's own 10 m grid with nothing resampled —
+the network was trained on pixels as delivered — enhanced there, and only then
+put on the map.
+
+It needs PyTorch, which is not part of the app: the first press offers to
+install it (a few hundred MB, once), or run `python app.py --sen2sr`. The
+model's weights, three megabytes, are fetched from Hugging Face on first use
+and kept. They are read as safetensors, and the project's own loader — which
+downloads and runs a Python script beside the weights — is not used.
+
 ---
 
 ## When does it next fly over?
@@ -675,6 +700,7 @@ run.py           the same thing with more command-line options
 backend/
   enhance.py     compositing, haze removal, CLAHE, denoise, white balance
   superres.py    sub-pixel registration, multi-frame fusion, deconvolution
+  neural.py      SEN2SR: the 2.5 m network, its install, its weights, tiling
   app.py         FastAPI routes and static hosting
   config.py      the satellites, band table, composites, indices, colour maps
   stac.py        catalogue search over both collections, plus synthetic scenes
@@ -696,6 +722,7 @@ tools/           icon generator
 tests/
   test_pipeline.py   reading, reprojection, cloud masking, indices, export
   test_superres.py   registration, fusion, restoration, the resolution gain
+  test_neural.py     SEN2SR: tiling, masking, the native read, install, weights
   test_enhance.py    compositing and the image-quality tools
   test_launcher.py   ports, windows, shortcuts, manifest and service worker
   test_satellites.py radar reading and colour, the two satellites apart, overpasses
@@ -754,6 +781,10 @@ toolkit is available EarthViewer falls back to a chrome-less browser window.
 
 Internet access is needed for imagery, map tiles, place search, overpass
 prediction and fire data — but not in `--demo` mode.
+
+Optional: PyTorch, `safetensors` and `sen2sr`, for the SEN2SR button. The app
+offers to install them when the button is first pressed, or
+`python app.py --sen2sr` does it from a terminal.
 
 Two optional settings, both with sensible defaults. `FIRMS_MAP_KEY` — a free
 key from NASA — makes the fire layer ask for just the rectangle on screen

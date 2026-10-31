@@ -93,6 +93,8 @@ export const api = {
   aisTest: () => request('/api/vessels/test', { body: {} }),
   probe: (body) => request('/api/probe', { body }),
   render: (body) => request('/api/render', { body }),
+  sen2sr: () => request('/api/sen2sr', { method: 'GET' }),
+  sen2srInstall: () => request('/api/sen2sr/install', { body: {} }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
   // The province borders, for drawing a picture with no map tiles in it.
   // Asked for once, when somebody exports one -- see trackershot.js.

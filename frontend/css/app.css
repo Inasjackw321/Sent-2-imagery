@@ -153,6 +153,10 @@ html, body {
 .btn-ghost { background: transparent; }
 .btn-sm { padding: 6px 10px; font-size: 12.5px; }
 .btn-big { padding: 12px 14px; font-size: 14px; font-weight: 650; }
+/* The SEN2SR button: the accent as an outline, so it reads as the second
+   thing to press after "Show imagery" rather than a rival to it. */
+.btn-sen2sr { border-color: rgba(76, 194, 255, .45); color: var(--accent); }
+.btn-sen2sr.is-on { background: rgba(76, 194, 255, .12); }
 
 .row { display: flex; gap: 8px; }
 .row .btn { flex: 1; }

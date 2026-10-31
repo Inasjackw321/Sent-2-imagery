@@ -8,6 +8,7 @@ its own desktop window. No terminal needed.
     python app.py --demo          synthetic imagery, works offline
     python app.py --tab           open in a browser tab instead
     python app.py --install-shortcut    add it to your applications menu
+    python app.py --sen2sr        install PyTorch for the SEN2SR button
 """
 
 from __future__ import annotations
@@ -93,6 +94,16 @@ def main() -> int:
         print(launcher.install_shortcut())
         _pause_if_double_clicked()
         return 0
+
+    if "--sen2sr" in argv:
+        # The same fixed list the button installs, for anyone who would
+        # rather watch it happen in a terminal.
+        from backend import neural
+        print("  Installing PyTorch and SEN2SR — a large download, once…")
+        worked = neural.install()
+        print("  Done." if worked else f"  Failed: {neural.status()['install_error']}")
+        _pause_if_double_clicked()
+        return 0 if worked else 1
 
     if "--demo" in argv:
         os.environ["DEMO_MODE"] = "1"

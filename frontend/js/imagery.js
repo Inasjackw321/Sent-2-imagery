@@ -13,6 +13,7 @@ import { api } from './api.js';
 import { canMake, changePlan, changeSaid, sarLabel, sarPolarisations }
   from './sarview.js';
 import { openMarkup } from './markup.js';
+import { sen2srRefusal } from './sen2sr.js';
 import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
 import * as adjust from './adjust.js';
@@ -208,6 +209,7 @@ export function initImagery() {
     btn.addEventListener('click', () => setMode(btn.dataset.mode)));
   $('#searchDates').addEventListener('click', runSearch);
   $('#showBtn').addEventListener('click', showImagery);
+  $('#sen2srBtn').addEventListener('click', enhanceWithSen2sr);
   $('#downloadPng').addEventListener('click', () => downloadImagery('png'));
   $('#downloadTif').addEventListener('click', () => downloadImagery('geotiff'));
   // The picture that is on screen, opened in a box to be marked up. Not a
@@ -815,6 +817,80 @@ function sync() {
   $('#markupBtn').disabled = !store.image?.src;
   $('#animateBtn').disabled = chosenDates().length < 2;
   $('#copyRegion').disabled = $('#saveRegion').disabled = !store.image;
+  syncSen2sr();
+}
+
+// ── SEN2SR ─────────────────────────────────────────────────────
+
+function syncSen2sr() {
+  const button = $('#sen2srBtn');
+  if (!button) return;
+  const why = sen2srRefusal(lastRequest, store.config);
+  const done = Boolean(lastRequest?.sen2sr);
+  button.disabled = Boolean(why) || done;
+  button.classList.toggle('is-on', done);
+  button.textContent = done ? '✦ Enhanced with SEN2SR' : '✦ Enhance with SEN2SR';
+  button.title = why || (done
+    ? 'This picture is the SEN2SR one. Show the date again for the original.'
+    : 'Redraw this date at 2.5 m with the SEN2SR network (ESA OpenSR)');
+}
+
+const INSTALL_POLL_MS = 3000;
+const INSTALL_GIVE_UP_MS = 45 * 60 * 1000;
+
+async function waitForInstall() {
+  const until = Date.now() + INSTALL_GIVE_UP_MS;
+  for (;;) {
+    const state = await api.sen2sr();
+    if (!state.installing || Date.now() > until) return state;
+    await new Promise((done) => setTimeout(done, INSTALL_POLL_MS));
+  }
+}
+
+/**
+ * The picture on screen, redrawn through SEN2SR.
+ *
+ * PyTorch is not part of the app -- it is a large download only this button
+ * needs -- so the first press offers to install it, and says what it is
+ * about to fetch before fetching it.
+ */
+async function enhanceWithSen2sr() {
+  if (sen2srRefusal(lastRequest, store.config)) return;
+  const base = lastRequest;
+  try {
+    let state = await api.sen2sr();
+    if (!state.installed) {
+      if (!state.installing) {
+        const go = window.confirm(
+          'SEN2SR runs on PyTorch, which is not installed yet.\n\n'
+          + 'Install it now? It is a one-off download of a few hundred MB '
+          + '(more with an NVIDIA card) and can take several minutes.\n\n'
+          + `Or run this yourself:\n${state.command}`);
+        if (!go) return;
+        state = await api.sen2srInstall();
+      }
+      state = await withBusy(
+        'Installing PyTorch and SEN2SR — a one-off download, this takes a few minutes…',
+        waitForInstall);
+      if (!state.installed) {
+        throw new Error(state.install_error || 'the install did not finish');
+      }
+      toast('SEN2SR is installed.', 'ok');
+    }
+    const body = { ...base, sen2sr: true };
+    const what = state.weights
+      ? 'Enhancing with SEN2SR…'
+      : 'Fetching the SEN2SR weights (3 MB, once) and enhancing…';
+    const data = await withBusy(what, () => api.render(body));
+    const element = await loadImage(data.image);
+    lastRequest = body;
+    setImage({ src: data.image, meta: data.meta, element, request: body });
+    sync();
+    toast(describeResult(data.meta), 'ok');
+    reportCoverage(data.meta, 1);
+  } catch (err) {
+    toast(`SEN2SR could not enhance this: ${err.message}`, 'err');
+  }
 }
 
 /** One line above the button saying exactly what pressing it will produce. */
@@ -928,6 +1004,12 @@ function describeResult(meta) {
   // How much of it moved is the whole reading. Without it a change picture is
   // a wash of pale colour that could be a quiet fortnight or a broken render.
   if (meta.change) return `${changeSaid(meta, fmt.date)} — ${size}`;
+  // Said every time: the detail in this one was drawn by a network that has
+  // learnt what 2.5 m imagery looks like, not measured by the satellite.
+  if (meta.sen2sr) {
+    return `SEN2SR ×${meta.sen2sr.scale} · ${fmt.date(meta.scene.date)} — ${size} · `
+      + 'fine detail is the network\u2019s estimate, not a measurement';
+  }
   if (!sr && meta.scenes?.length > 1 && meta.source?.kind === 'radar') {
     return `${meta.scenes.length} radar passes averaged — ${size}`;
   }

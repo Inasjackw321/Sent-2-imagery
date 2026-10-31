@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (
     aisstream, animate as animation, composite, config, connectivity, copernicus,
-    fires, gazetteer, mtg,
+    fires, gazetteer, mtg, neural,
     ollama, passes, seismic, service, shake, stac, tracker, version, vessels,
     weather,
 )
@@ -950,6 +950,47 @@ def _render_response(result: dict, download: bool, stem: str):
     })
 
 
+@app.get("/api/sen2sr")
+def sen2sr_status() -> dict:
+    """Whether the SEN2SR button can run, and what it needs if not."""
+    return neural.status()
+
+
+def _from_this_page(request: Request) -> bool:
+    """Whether a request came from the app's own page.
+
+    Installing packages is the one thing this API does to the machine rather
+    than for the page, so it is not left to the same-origin policy alone: a
+    form or a no-CORS fetch from any website can still SEND a POST to
+    127.0.0.1 even though it cannot read the answer. A JSON body forces a
+    preflight that nothing here answers, and an Origin naming anywhere else
+    is refused outright.
+    """
+    kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if kind != "application/json":
+        return False
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    host = request.headers.get("host", "")
+    return urllib.parse.urlsplit(origin).netloc == host
+
+
+@app.post("/api/sen2sr/install")
+def sen2sr_install(request: Request, body: dict = Body(default={})) -> dict:
+    """Install PyTorch and SEN2SR, on a thread. Poll /api/sen2sr for progress.
+
+    Nothing about WHAT is installed comes from the request: it is the fixed
+    list in neural.NEEDS, and the body is ignored.
+    """
+    if not _from_this_page(request):
+        raise HTTPException(status_code=403, detail="Not from this app's page")
+    if not neural.missing():
+        return neural.status()
+    neural.install_in_background()
+    return neural.status()
+
+
 @app.post("/api/render")
 def render(body: dict = Body(...), download: bool = Query(False)):
     # See the note in probe(): the addresses in a scene are the caller's.
@@ -966,7 +1007,8 @@ def render(body: dict = Body(...), download: bool = Query(False)):
     meta = result["meta"]
     stem = (f"{meta.get('satellite', 'sentinel-2').replace('-', '')}"
             f"_{meta['scene'].get('date', 'scene')}"
-            f"_{meta.get('index') or meta.get('preset')}")
+            f"_{meta.get('index') or meta.get('preset')}"
+            f"{'_sen2sr' if meta.get('sen2sr') else ''}")
     return _render_response(result, download, stem)
 
 

@@ -244,6 +244,94 @@ def read_bands(scene: dict, grid: Grid, bands: list[str], mask_clouds: bool = Fa
     return out, cloud_fraction
 
 
+class NativeGrid:
+    """The satellite's own pixels over an area: its CRS, its 10 m spacing.
+
+    Shaped like a Grid as far as _read_one cares -- crs, transform, width,
+    height -- so the same reader fills it. Reading onto it is reading the file
+    as it is: the pixel edges line up with the file's own, and nearest
+    resampling onto identical pixels copies them.
+    """
+
+    def __init__(self, crs, transform, width: int, height: int):
+        self.crs, self.transform = crs, transform
+        self.width, self.height = int(width), int(height)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.height, self.width
+
+
+def native_grid(href: str, bounds4326) -> NativeGrid:
+    """The file's own grid, cut to the area and snapped to its pixel edges."""
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    try:
+        with rasterio.open(href) as src:
+            _check_georeferencing(src, href)
+            west, south, east, north = transform_bounds(WGS84, src.crs, *bounds4326)
+            window = from_bounds(west, south, east, north, transform=src.transform)
+            col0, row0 = math.floor(window.col_off), math.floor(window.row_off)
+            col1 = math.ceil(window.col_off + window.width)
+            row1 = math.ceil(window.row_off + window.height)
+            # Kept inside the file. The tile may end inside the area, and a
+            # window running off it reads as nodata it did not need to.
+            col0, row0 = max(col0, 0), max(row0, 0)
+            col1, row1 = min(col1, src.width), min(row1, src.height)
+            if col1 <= col0 or row1 <= row0:
+                raise BandReadError("That date does not cover this area.")
+            snapped = Window(col0, row0, col1 - col0, row1 - row0)
+            return NativeGrid(src.crs, src.window_transform(snapped),
+                              snapped.width, snapped.height)
+    except rasterio.RasterioIOError as exc:
+        raise BandReadError(_explain(href, exc)) from exc
+
+
+def read_native(scene: dict, bounds4326, bands: list[str], mask_clouds: bool = False):
+    """Bands on the satellite's own grid, with nothing resampled.
+
+    For SEN2SR, which was trained on Sentinel-2 pixels as delivered: warped
+    onto the map's grid first, each pixel would be a blend of its neighbours.
+    Returns ({band: masked reflectance}, grid, cloud fraction).
+
+    A demo scene has no files and no grid of its own, so it is drawn onto a
+    Web Mercator grid at the same 10 m spacing -- near enough to exercise
+    everything downstream.
+    """
+    bands = list(dict.fromkeys(bands))
+    sat = config.satellite(scene.get("satellite"))
+    if scene.get("demo"):
+        probe = Grid(bounds4326, config.DEFAULT_SIZE)
+        across = max(probe.width, probe.height) * probe.ground_res_m
+        grid = Grid(bounds4326, max(config.MIN_SIZE,
+                                    round(across / sat["resolution"])))
+        out, cloud = _demo_bands(scene, grid, bands, mask_clouds, Resampling.nearest)
+        return out, grid, cloud
+
+    _, targets = _resolve_assets(scene, bands)
+    grid = native_grid(next(iter(targets.values())), bounds4326)
+    want_mask = mask_clouds and config.SCL_ASSET in scene.get("assets", {})
+
+    with rasterio.Env(**config.GDAL_ENV):
+        with ThreadPoolExecutor(max_workers=min(8, len(targets) + 1)) as pool:
+            futures = {band: pool.submit(_read_one, href, grid, Resampling.nearest)
+                       for band, href in targets.items()}
+            mask_future = (pool.submit(_read_one, scene["assets"][config.SCL_ASSET],
+                                       grid, Resampling.nearest) if want_mask else None)
+            out = {band: _to_physical(fut.result(), scene, band)
+                   for band, fut in futures.items()}
+            scl = mask_future.result() if mask_future else None
+
+    cloud = 0.0
+    if scl is not None:
+        cloudy = np.isin(np.ma.filled(scl, 0).astype("uint8"), config.CLOUD_CLASSES)
+        cloud = float(cloudy.mean())
+        out = {band: np.ma.masked_array(arr.data, mask=np.ma.getmaskarray(arr) | cloudy)
+               for band, arr in out.items()}
+    return out, grid, cloud
+
+
 def _read_one(href: str, grid: Grid, resampling: Resampling):
     try:
         with rasterio.open(href) as src:

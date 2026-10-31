@@ -10,7 +10,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from . import composite, config, enhance, raster, sar, stac, superres
+from . import composite, config, enhance, neural, raster, sar, stac, superres
 from .geo import (Grid, circle_to_polygon, geodesic_area_km2, geometry_bounds,
                   normalise_aoi)
 
@@ -257,6 +257,78 @@ def _gather(scenes: list[dict], geometry, grid, names, req, sat=None):
     return merged, cloud_fraction, report, None, grid
 
 
+# The last SEN2SR result. Separate from _cache and much smaller: one of these
+# can be four bands of a 4096-pixel picture, a quarter of a gigabyte, and what
+# it saves is the network's run when only the stretch or the tuning changed.
+_neural_cache = _LRU(capacity=1)
+
+
+def neural_check(req: dict, scenes: list[dict], sat: dict, mode: str,
+                 names: list[str]) -> None:
+    """Refuse, in words, anything SEN2SR cannot be asked to do."""
+    if sat["key"] != "sentinel-2":
+        raise RenderError(
+            f"SEN2SR is trained on Sentinel-2 only — this is {sat['short']}.")
+    if len(scenes) != 1:
+        raise RenderError(
+            "SEN2SR enhances one date. Untick all but one, or use Merge dates "
+            "for the multi-date sharpening instead.")
+    if mode == "change":
+        raise RenderError("SEN2SR draws one date, not a difference between two.")
+    outside = [b for b in names if b not in neural.BANDS]
+    if outside:
+        labels = ", ".join(config.BANDS[b]["label"] for b in outside)
+        raise RenderError(
+            f"SEN2SR enhances the red, green, blue and near-infrared bands; "
+            f"this picture also needs {labels}. True colour, the NIR false "
+            "colour and NDVI all work.")
+
+
+def _neural_gather(scene: dict, geometry, req: dict):
+    """One date, read on its own grid, through SEN2SR, onto a 2.5 m map grid."""
+    from rasterio.warp import Resampling, reproject
+
+    bounds = geometry_bounds(geometry)
+    key = _cache_key("sen2sr", scene["id"], sorted((scene.get("assets") or {}).items()),
+                     bounds, bool(req.get("mask_clouds")))
+    hit = _neural_cache.get(key)
+    if hit is None:
+        native, native_grid, cloud = raster.read_native(
+            scene, bounds, list(neural.BANDS), mask_clouds=bool(req.get("mask_clouds")))
+        fine = neural.enhance(native)
+        hit = (fine, native_grid, cloud)
+        _neural_cache.put(key, hit)
+    fine, native_grid, cloud = hit
+
+    # Onto the map's grid at 2.5 m, which is the only resampling anywhere in
+    # this path -- after the network, where it belongs.
+    probe = Grid(bounds, config.DEFAULT_SIZE)
+    dim = round(max(probe.width, probe.height) * probe.ground_res_m / neural.RES_M)
+    grid = Grid(bounds, min(config.MAX_SIZE, max(config.MIN_SIZE, dim)))
+    a, k = native_grid.transform, neural.SCALE
+    # The same corner, pixels a quarter the size.
+    fine_transform = type(a)(a.a / k, a.b / k, a.c, a.d / k, a.e / k, a.f)
+    out = {}
+    for band, arr in fine.items():
+        dest = np.full(grid.shape, np.nan, dtype="float32")
+        reproject(np.ma.filled(arr.astype("float32"), np.nan), dest,
+                  src_transform=fine_transform, src_crs=native_grid.crs,
+                  dst_transform=grid.transform, dst_crs=grid.crs,
+                  src_nodata=np.nan, dst_nodata=np.nan,
+                  resampling=Resampling.bilinear)
+        out[band] = np.ma.masked_invalid(dest)
+    if req.get("clip"):
+        out = raster.apply_clip(out, raster.aoi_mask(geometry, grid))
+    report = {
+        "model": neural.MODEL,
+        "credit": neural.CREDIT,
+        "scale": neural.SCALE,
+        "native_px": list(native_grid.shape),
+        "resolution_m": neural.RES_M,
+    }
+    return out, cloud, grid, report
+
+
 def change_pair(scenes: list[dict], geometry, grid, req: dict):
     """Two passes, and what is different between them. Returns (dB, band, pair).
 
@@ -434,8 +506,21 @@ def render(req: dict) -> dict:
         return _change_result(change, rgb, valid, legend, pair, change_band_name,
                               grid, geometry, sat, req, applied)
 
-    bands, cloud_fraction, composite_report, sr_report, grid = _gather(
-        scenes, geometry, grid, names, req, sat)
+    neural_report = None
+    if req.get("sen2sr"):
+        neural_check(req, scenes, sat, mode, names)
+        try:
+            bands, cloud_fraction, grid, neural_report = _neural_gather(
+                scenes[0], geometry, req)
+        except neural.NotInstalled as exc:
+            raise RenderError(f"{exc} — press the SEN2SR button to install it.") from exc
+        except neural.NeuralError as exc:
+            raise RenderError(str(exc)) from exc
+        composite_report = sr_report = None
+        applied.append(f"SEN2SR ×{neural.SCALE} — {neural.RES_M:g} m")
+    else:
+        bands, cloud_fraction, composite_report, sr_report, grid = _gather(
+            scenes, geometry, grid, names, req, sat)
     if sr_report:
         applied.append(f"{sr_report['scale']}× merge of {sr_report['scenes']} dates")
     elif len(scenes) > 1:
@@ -460,7 +545,9 @@ def render(req: dict) -> dict:
     else:
         rgb, valid, stretch_bounds = composite.render_composite(bands, preset, req)
         rgb = _enhance_rgb(rgb, req, applied,
-                           scale=sr_report["scale"] if sr_report else 1, valid=valid)
+                           scale=(sr_report["scale"] if sr_report
+                                  else neural.SCALE if neural_report else 1),
+                           valid=valid)
 
     # A radar swath is a slanted strip, so the catalogue can offer a pass whose
     # bounding box covers the area while the strip itself misses it. Saying so
@@ -513,12 +600,16 @@ def render(req: dict) -> dict:
         "enhancements": applied,
         "composite_report": composite_report,
         "superres": sr_report,
+        # What SEN2SR did, if it was asked to. Its own key rather than a kind
+        # of "superres": that one is a measurement of several dates, this is a
+        # network's drawing of one, and the page says which it is looking at.
+        "sen2sr": neural_report,
         # Pixel size is not resolution. A small area asked for at 2048 px has
         # tiny pixels and still cannot resolve anything Sentinel-2 did not: the
         # honest figure is the satellite's 10 m, divided by what the merge won.
         "native_res_m": sat["resolution"],
-        "effective_res_m": round(
-            sat["resolution"] / (sr_report["scale"] if sr_report else 1), 2),
+        "effective_res_m": (neural.RES_M if neural_report else round(
+            sat["resolution"] / (sr_report["scale"] if sr_report else 1), 2)),
         "cloud_masked_pct": round(cloud_fraction * 100, 2) if req.get("mask_clouds") else 0.0,
         "valid_pct": round(float(valid.mean()) * 100, 2),
         "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
