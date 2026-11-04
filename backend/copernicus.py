@@ -209,6 +209,18 @@ EVERYDAY: dict[str, tuple[str, ...]] = {
               "ascat", "wind", "ndvi"),
 }
 
+# The one product each family opens on and keeps in front of you, whatever
+# the shortlist does: pinned. Meteosat's is the Fire Temperature RGB -- fires
+# burn yellow and white out of a dark scene, day and night, every ten minutes
+# -- and the map switches it on as it loads.
+#
+# Matched by words, as the shortlist is, because EUMETSAT renames products.
+# Where both Meteosat generations serve one, the newer imager (MTG FCI, ids
+# starting "mtg") wins: finer pixels and a frame every ten minutes.
+PINNED: dict[str, tuple[str, ...]] = {
+    "mtg": ("fire temperature", "firetemperature", "fire_temperature"),
+}
+
 # And at most this many of them, even where the words above match more. The
 # complaint this answers is the length of the list, so the shortlist has to be
 # short whatever the catalogue does.
@@ -275,6 +287,16 @@ def is_everyday(key: str, name: str, title: str) -> bool:
     return everyday_rank(key, name, title) <= len(EVERYDAY.get(key, ()))
 
 
+def pinned_of(key: str, group: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The family's pinned product, if the catalogue has one. See PINNED."""
+    words = PINNED.get(key, ())
+    found = [entry for entry in group
+             if any(w in f"{entry['id']} {entry['title']}".lower() for w in words)]
+    if not found:
+        return None
+    return min(found, key=lambda e: (not e["id"].lower().startswith("mtg"), e["id"]))
+
+
 def shortlist(key: str, group: list[dict[str, Any]]) -> None:
     """Mark the few of a family's products that open with the panel.
 
@@ -290,9 +312,17 @@ def shortlist(key: str, group: list[dict[str, Any]]) -> None:
     for entry in group:
         entry["rank"] = everyday_rank(key, entry["id"], entry["title"])
         entry["everyday"] = is_everyday(key, entry["id"], entry["title"])
+        entry["pinned"] = False
     # Most wanted first, and alphabetical within a rank so the order is stable
     # across polls rather than whatever the catalogue happened to list.
     group.sort(key=lambda entry: (entry["rank"], entry["id"]))
+    pin = pinned_of(key, group)
+    if pin is not None:
+        # First in the list and always on it: the cap below counts it among
+        # the five rather than ever cutting it.
+        pin["pinned"] = pin["everyday"] = True
+        group.remove(pin)
+        group.insert(0, pin)
     kept = [entry for entry in group if entry["everyday"]]
     if not kept:
         for entry in group[:MOST_EVERYDAY]:
@@ -491,6 +521,9 @@ def demo() -> dict[str, Any]:
         # a satellite that publishes every ten minutes -- and the demo should
         # not show a state the live service would refuse.
         "mtg": [entry("mtg_fd:rgb_truecolour", "MTG FCI true colour (demo)",
+                      spans=False, minutes=20),
+                entry("mtg_fd:rgb_firetemperature",
+                      "MTG FCI Fire Temperature RGB (demo)",
                       spans=False, minutes=20),
                 entry("msg_fes:rgb_naturalcolour",
                       "MSG SEVIRI natural colour (demo)",

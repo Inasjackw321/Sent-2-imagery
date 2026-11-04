@@ -257,10 +257,13 @@ class TestTheAnswer:
         assert copernicus.FAMILIES[0]["key"] == "mtg"
         assert copernicus.demo()["families"][0]["key"] == "mtg"
 
-    def test_and_it_opens_on_its_true_colour(self):
-        # Not on whichever of its products sorts first.
-        first = copernicus.demo()["families"][0]["layers"][0]
-        assert "truecolour" in first["id"]
+    def test_and_it_opens_on_its_fire_temperature(self):
+        # It opened on true colour until the Fire Temperature RGB was asked to
+        # be pinned; not, either way, on whichever product sorts first.
+        layers = copernicus.demo()["families"][0]["layers"]
+        assert "firetemperature" in layers[0]["id"]
+        # True colour is still the first of the rest.
+        assert "truecolour" in layers[1]["id"]
 
     def test_leading_the_panel_takes_no_layer_from_anyone(self):
         # FAMILIES order is also match order, so putting Meteosat first could
@@ -409,6 +412,48 @@ class TestTheShortlist:
                           ("mtg", "fci_solar_zenith_angle"),
                           ("metop", "iasi_channel_radiance_0421")]:
             assert not copernicus.is_everyday(key, name, name), name
+
+    def meteosat(self, *pairs: tuple[str, str]) -> list[dict]:
+        got = copernicus.sort_layers(capabilities(
+            *[layer(name, title=title, extent=iso(0.2)) for name, title in pairs]),
+            now=NOW)
+        return [f for f in got["families"] if f["key"] == "mtg"][0]["layers"]
+
+    def test_meteosat_fire_temperature_is_pinned_and_first(self):
+        got = self.meteosat(("mtg_fd:rgb_truecolour", "MTG FCI True Colour RGB"),
+                            ("mtg_fd:rgb_firetemperature", "MTG FCI Fire Temperature RGB"))
+        assert [e["id"] for e in got if e["pinned"]] == ["mtg_fd:rgb_firetemperature"]
+        assert got[0]["id"] == "mtg_fd:rgb_firetemperature"
+
+    def test_the_newer_imager_wins_the_pin(self):
+        got = self.meteosat(
+            ("msg_fes:rgb_firetemperature", "MSG SEVIRI Fire Temperature RGB"),
+            ("mtg_fd:rgb_firetemperature", "MTG FCI Fire Temperature RGB"))
+        assert [e["id"] for e in got if e["pinned"]] == ["mtg_fd:rgb_firetemperature"]
+
+    def test_the_pin_survives_a_full_shortlist(self):
+        # Five everyday products already; the pinned one is still on the list
+        # rather than the sixth to be cut.
+        everyday = [(f"mtg_fd:{w}", f"MTG FCI {w}") for w in
+                    ("truecolour", "natural", "ir108", "water_vapour", "dust")]
+        got = self.meteosat(*everyday,
+                            ("mtg_fd:rgb_firetemperature", "MTG FCI Fire Temperature RGB"))
+        pin = [e for e in got if e["pinned"]]
+        assert pin and pin[0]["everyday"]
+        assert len([e for e in got if e["everyday"]]) == copernicus.MOST_EVERYDAY
+
+    def test_by_its_title_when_the_name_says_nothing(self):
+        got = self.meteosat(("mtg_fd:product_17", "MTG FCI Fire Temperature RGB"))
+        assert got[0]["pinned"]
+
+    def test_with_no_fire_product_nothing_is_pinned(self):
+        got = self.meteosat(("mtg_fd:rgb_truecolour", "MTG FCI True Colour RGB"))
+        assert not any(e["pinned"] for e in got)
+
+    def test_the_demo_carries_the_pinned_product_too(self):
+        mtg = [f for f in copernicus.demo()["families"] if f["key"] == "mtg"][0]
+        assert [e["id"] for e in mtg["layers"] if e["pinned"]] == [
+            "mtg_fd:rgb_firetemperature"]
 
     def test_the_demo_is_shortlisted_the_same_way(self):
         # Otherwise the offline build opens with every product and the live one

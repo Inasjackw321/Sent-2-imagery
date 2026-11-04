@@ -19,8 +19,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { clockLabel, dateLabel, frameIndex, framesPer, nextFrame,
-         productsShown, stepFrame, warmOrder, wmsOptions, wmsTime }
+import { PRELOAD, clockLabel, dateLabel, frameIndex, framesPer, nextFrame,
+         pickLayer, productsShown, stepFrame, warmOrder, wmsOptions, wmsTime }
   from '../frontend/js/copernicus.js';
 
 // A week of whole days, as a satellite that flies over offers them.
@@ -507,4 +507,33 @@ test('a refresh with nothing new does not rebuild the layer', () => {
 
 test('the panel asks for the newest frame every five minutes', () => {
   assert.match(SOURCE, /const REFRESH_MS = 5 \* 60 \* 1000;/);
+});
+
+// ── The pinned product ────────────────────────────────────────
+
+const offer = (...layers) => layers.map((layer) => ({ family: { key: 'mtg' }, layer }));
+
+test('the map opens on the pinned product, not the first on the list', () => {
+  const all = offer({ id: 'true', everyday: true }, { id: 'fire', everyday: true, pinned: true });
+  assert.equal(pickLayer(all, null).layer.id, 'fire');
+});
+
+test('what somebody chose stays chosen across a refresh', () => {
+  const all = offer({ id: 'true', everyday: true }, { id: 'fire', pinned: true });
+  assert.equal(pickLayer(all, 'true').layer.id, 'true');
+});
+
+test('a choice that has gone falls back to the pinned one', () => {
+  const all = offer({ id: 'true', everyday: true }, { id: 'fire', pinned: true });
+  assert.equal(pickLayer(all, 'gone').layer.id, 'fire');
+});
+
+test('with nothing pinned it is the first everyday product, as before', () => {
+  const all = offer({ id: 'odd', everyday: false }, { id: 'true', everyday: true });
+  assert.equal(pickLayer(all, null).layer.id, 'true');
+  assert.equal(pickLayer([], null), null);
+});
+
+test('the layer is switched on as the map loads', () => {
+  assert.equal(PRELOAD, true);
 });

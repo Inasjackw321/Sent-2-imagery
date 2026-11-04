@@ -69,6 +69,22 @@ export function initCopernicus(leafletMap) {
     if (enabled && chosen?.layer?.animates) warm();
   });
   buildDock();
+  // On from the start, so the map opens with the pinned product -- Meteosat's
+  // Fire Temperature RGB -- already drawn rather than behind a button.
+  if (PRELOAD) toggle();
+}
+
+// Whether the layer switches itself on as the map loads.
+export const PRELOAD = true;
+
+/**
+ * Which product to draw: the one already on screen if it is still offered,
+ * otherwise the pinned one, otherwise the first everyday one, otherwise any.
+ */
+export function pickLayer(all, currentId) {
+  return all.find((c) => c.layer.id === currentId)
+    ?? all.find((c) => c.layer.pinned)
+    ?? all.find((c) => c.layer.everyday !== false) ?? all[0] ?? null;
 }
 
 // ── The layer ──────────────────────────────────────────────────
@@ -150,10 +166,9 @@ async function load() {
     // live layer of the first family that has one.
     const all = (catalogue.families ?? []).flatMap(
       (family) => family.layers.map((layer) => ({ family, layer })));
-    // An everyday one by preference, so the panel does not open on a product
-    // that is only visible after pressing "all products".
-    chosen = all.find((c) => c.layer.id === chosen?.layer?.id)
-      ?? all.find((c) => c.layer.everyday !== false) ?? all[0] ?? null;
+    // The pinned one by preference, then an everyday one, so the panel does
+    // not open on a product only visible after pressing "all products".
+    chosen = pickLayer(all, chosen?.layer?.id);
     if (!all.length) problem = nothingLive(catalogue);
   } catch (err) {
     problem = err.message;
@@ -265,7 +280,10 @@ function buildDock() {
     (n, f) => n + productsShown(f.layers, showAll, chosen?.layer?.id).length, 0);
   dock.innerHTML = '';
   dock.append(
-    el('button', { class: 'cop-toggle', id: 'copToggle', onclick: toggle },
+    // Built with its state, because this runs on every refresh: built plain,
+    // the button read off while the layer was on the map.
+    el('button', { class: `cop-toggle${enabled ? ' is-on' : ''}`, id: 'copToggle',
+      onclick: toggle },
       el('span', { class: 'cop-mark' }, '🛰'), 'Live satellites'),
     el('div', { class: 'cop-body', id: 'copBody', hidden: !enabled },
       ...families.map((family) => el('div', { class: 'cop-family' },
@@ -289,7 +307,8 @@ function buildDock() {
           ...productsShown(family.layers, showAll, chosen?.layer?.id)
             .map((layer) => el('button', {
               class: `cop-layer${layer.id === chosen?.layer?.id ? ' is-on' : ''}`,
-              title: `${layer.title} — ${layer.id}`,
+              title: `${layer.pinned ? 'Pinned — opens with the map. ' : ''}`
+                + `${layer.title} — ${layer.id}`,
               onclick: () => {
         chosen = { family, layer };
         pause();
@@ -298,7 +317,7 @@ function buildDock() {
         show();
         if (layer.animates) warm();
       },
-            }, shortName(layer)))))),
+            }, layer.pinned ? `📌 ${shortName(layer)}` : shortName(layer)))))),
       listed < held || showAll
         ? el('button', {
           class: `cop-more${showAll ? ' is-on' : ''}`,
