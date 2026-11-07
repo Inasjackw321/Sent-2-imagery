@@ -98,7 +98,8 @@ export function sizeSaid({ west, south, east, north }) {
 /** "6 Nov 2026" and "14:30 UTC" for a frame time. */
 export function whenSaid(time) {
   if (!time) return { day: '', clock: '' };
-  const d = new Date(time);
+  // A whole-day frame is a range, "start/end", which is not a date on its own.
+  const d = new Date(String(time).split('/')[0]);
   const day = d.toLocaleDateString('en-GB',
     { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
   // A whole-day frame (a satellite that flies over) has no single clock time.
@@ -284,8 +285,8 @@ export function drawTemplate(ctx, {
   const last = whenSaid(frames[frames.length - 1]?.time);
   text(ctx, `${first.day}`, left, ty + 24, { size: 11, colour: DIM });
   text(ctx, `${last.day}`, left + inner, ty + 24, { size: 11, colour: DIM, align: 'right' });
-  text(ctx, first.clock.replace(' UTC', ''), left, ty + 39, { size: 11, colour: FAINT });
-  text(ctx, last.clock.replace(' UTC', ''), left + inner, ty + 39,
+  text(ctx, first.clock.replace(/,? UTC$/, ''), left, ty + 39, { size: 11, colour: FAINT });
+  text(ctx, last.clock.replace(/,? UTC$/, ''), left + inner, ty + 39,
     { size: 11, colour: FAINT, align: 'right' });
   text(ctx, `frame ${index + 1} of ${frames.length}`, left + inner / 2, ty + 39,
     { size: 11, colour: FAINT, align: 'center' });

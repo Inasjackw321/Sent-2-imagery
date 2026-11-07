@@ -60,7 +60,8 @@ test('the timeline knows where a frame is in the span', () => {
 
 test('the panel says when, in UTC, and a whole-day frame says so', () => {
   assert.deepEqual(whenSaid('2026-11-06T21:30:00Z'), { day: '6 Nov 2026', clock: '21:30 UTC' });
-  assert.equal(whenSaid('2026-11-06T00:00:00Z/2026-11-06T23:59:59Z').clock, 'whole day, UTC');
+  assert.deepEqual(whenSaid('2026-11-06T00:00:00Z/2026-11-06T23:59:59Z'),
+    { day: '6 Nov 2026', clock: 'whole day, UTC' });
   assert.deepEqual(whenSaid(undefined), { day: '', clock: '' });
 });
 

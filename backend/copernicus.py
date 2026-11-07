@@ -54,6 +54,7 @@ import time
 from typing import Any
 
 import requests
+from urllib3.util.retry import Retry
 
 from . import config, mtg, reasons
 
@@ -539,20 +540,64 @@ def history_frames(entry: dict[str, Any], hours: float,
              "time": mtg._stamp(when)} for when in moments]
 
 
-def history(found: dict[str, Any], layer_id: str, hours: float) -> dict[str, Any]:
-    """The frames to fetch for an area loop of one layer. See history_frames."""
+# For a satellite that flies over once a day, the area loop is days instead:
+# one whole-day picture each -- every pass that day over the box -- for the
+# last two weeks. Two days of a polar orbiter is two pictures, which is not a
+# loop; a fortnight is a fire's whole life.
+AREA_DAYS = 14
+MOST_AREA_DAYS = 31
+
+
+def history_days(entry: dict[str, Any], days: int) -> list[dict[str, str]]:
+    """The last `days` whole days of one fly-over layer, oldest first.
+
+    Asked for as the range that covers each day, as the live panel does,
+    because one instant of a polar orbiter is one orbit strip. Stopped at the
+    oldest day the service says it holds.
+    """
+    newest = entry.get("newest")
+    if not newest:
+        return []
+    end = dt.datetime.fromisoformat(newest.replace("Z", "+00:00")).date()
+    days = max(1, min(int(days), MOST_AREA_DAYS))
+    first = end - dt.timedelta(days=days - 1)
+    held = entry.get("oldest")
+    if held:
+        first = max(first, dt.datetime.fromisoformat(held.replace("Z", "+00:00")).date())
+    out = []
+    day = first
+    while day <= end:
+        stamp = day.isoformat()
+        out.append({"label": stamp, "at": stamp,
+                    "time": f"{stamp}T00:00:00Z/{stamp}T23:59:59Z"})
+        day += dt.timedelta(days=1)
+    return out
+
+
+def history(found: dict[str, Any], layer_id: str, hours: float,
+            days: int = AREA_DAYS) -> dict[str, Any]:
+    """The frames to fetch for an area loop of one layer.
+
+    Meteosat, which stares: every frame of the last `hours` (see
+    history_frames). A satellite that flies over: the last `days` whole days.
+    """
     hit = find_layer(found, layer_id)
     if hit is None:
         raise CopernicusError(f"{layer_id} is not a layer EUMETSAT is serving now")
     family, entry = hit
-    if family.get("spans_days"):
-        raise CopernicusError(
-            f"{family['short']} flies over once a day; only a satellite that "
-            "stares, like Meteosat, has frames close enough to play")
-    frames = history_frames(entry, hours)
-    return {"layer": layer_id, "title": entry.get("title"),
-            "step_minutes": entry.get("step_minutes"), "frames": frames,
-            "hours": round(len(frames) * (entry.get("step_minutes") or 10) / 60, 1),
+    daily = bool(family.get("spans_days"))
+    frames = history_days(entry, days) if daily else history_frames(entry, hours)
+    step = 24 * 60 if daily else (entry.get("step_minutes") or 10)
+    return {"layer": layer_id, "title": entry.get("title"), "family": family["short"],
+            "daily": daily, "step_minutes": step, "frames": frames,
+            "hours": round(len(frames) * step / 60, 1),
+            "span": (f"last {len(frames)} days" if daily
+                     else f"last {round(len(frames) * step / 60)} hours"),
+            # A day of a polar orbiter has gaps between its swaths, and a
+            # transparent PNG shows the map through them; a JPEG would paint
+            # them black. Meteosat's disc has no gaps, and a JPEG is a tenth
+            # of the size.
+            "format": "image/png" if daily else "image/jpeg",
             "wms": TILES, "attribution": found.get("attribution")}
 
 
@@ -731,7 +776,33 @@ TILE_TIMEOUT = 12
 # Short, because it has to stop being true the moment the service comes back.
 TILE_SULK_SECONDS = 20
 
+# And how many failures in a row it takes before the host is treated as gone.
+#
+# It was one, and that was the blank map on Windows: EUMETSAT closes idle
+# connections, the pool hands out a closed one, the request fails with
+# "Remote end closed connection without response" -- and every tile for the
+# next twenty seconds was refused on the strength of one stale socket, while
+# the host was answering perfectly well. A run of failures is an outage; one
+# is a bad connection, and the retry below deals with those.
+TILE_TRIP_AFTER = 4
+
 _tile_trouble: tuple[str, float] = ("", 0.0)
+_tile_streak = 0
+
+# How long a whole-area picture gets: the area loop asks EUMETSAT to render
+# one image of up to 768 pixels a side, which is a dozen tiles' work in one
+# request. Twelve seconds was timing those out ("Read timed out") on a busy
+# afternoon.
+AREA_TIMEOUT = 30
+AREA_PIXELS = 512 * 512
+
+# How many requests may be with EUMETSAT at once, from this app.
+#
+# The live layer, the frames fetched ahead, a recording and an area loop can
+# all be asking together, and the pool used to let sixteen through. A free
+# service under that answers by closing connections -- the "Connection
+# aborted" in the log -- so the rest wait their turn here instead.
+UPSTREAM_AT_ONCE = 6
 
 # One connection pool to EUMETSAT, kept open between tiles.
 #
@@ -746,10 +817,21 @@ _tile_trouble: tuple[str, float] = ("", 0.0)
 # (the one on screen and the one fetching ahead), and some slack for a second
 # person watching.
 TILE_POOL = 16
+
+# Retried, quietly, before anything counts as a failure: a connection the
+# server had already closed, a reset, a 502 or 503 from a server catching
+# its breath. Twice, with a short backoff, honouring Retry-After. GET only,
+# which is all this sends.
+TILE_RETRY = Retry(
+    total=2, connect=2, read=2, status=2, backoff_factor=0.4,
+    status_forcelist=(429, 500, 502, 503, 504), allowed_methods=frozenset({"GET"}),
+    respect_retry_after_header=True, raise_on_status=False)
+
 _session = requests.Session()
 _session.mount("https://", requests.adapters.HTTPAdapter(
-    pool_connections=2, pool_maxsize=TILE_POOL))
+    pool_connections=2, pool_maxsize=TILE_POOL, max_retries=TILE_RETRY))
 _session.headers["User-Agent"] = config.USER_AGENT
+_upstream = threading.BoundedSemaphore(UPSTREAM_AT_ONCE)
 
 # Tiles being fetched right now, so a second ask for the same one waits for
 # the first rather than fetching it again.
@@ -849,10 +931,12 @@ def tiles_held() -> dict[str, Any]:
 def forget_tiles() -> None:
     """Empty it. For the tests."""
     global _tiles_bytes, _tile_trouble
+    global _tile_streak
     with _tiles_lock:
         _tiles.clear()
         _tiles_bytes = 0
         _tile_trouble = ("", 0.0)
+        _tile_streak = 0
 
 
 def sulking(now: float | None = None) -> str:
@@ -872,10 +956,20 @@ def sulking(now: float | None = None) -> str:
 
 
 def _tile_trouble_was(said: str, now: float | None = None) -> None:
-    """Remember that the host could not be reached. Or, with "", that it could."""
-    global _tile_trouble
+    """Count a failure to reach the host, or with "" a success.
+
+    The breaker trips on a run of TILE_TRIP_AFTER failures, not on one: see
+    there. A success ends the run and clears any trip.
+    """
+    global _tile_trouble, _tile_streak
     with _tiles_lock:
-        _tile_trouble = (said, time.time() if now is None else now) if said else ("", 0.0)
+        if not said:
+            _tile_streak = 0
+            _tile_trouble = ("", 0.0)
+            return
+        _tile_streak += 1
+        if _tile_streak >= TILE_TRIP_AFTER:
+            _tile_trouble = (said, time.time() if now is None else now)
 
 
 def tile(asked: dict[str, str]) -> tuple[bytes, str, bool]:
@@ -922,10 +1016,20 @@ def tile(asked: dict[str, str]) -> tuple[bytes, str, bool]:
         mine.set()
 
 
+def timeout_for(params: dict[str, str]) -> int:
+    """A tile's timeout, or a whole-area picture's longer one."""
+    try:
+        pixels = int(params.get("width", 256)) * int(params.get("height", 256))
+    except ValueError:
+        return TILE_TIMEOUT
+    return AREA_TIMEOUT if pixels > AREA_PIXELS else TILE_TIMEOUT
+
+
 def _fetch_tile(key: str, params: dict[str, str]) -> tuple[bytes, str, bool]:
     """Ask EUMETSAT for one tile, over the pooled connection, and hold it."""
     try:
-        resp = _session.get(mtg.WMS, params=params, timeout=TILE_TIMEOUT)
+        with _upstream:
+            resp = _session.get(mtg.WMS, params=params, timeout=timeout_for(params))
     except requests.RequestException as exc:
         said = f"EUMETSAT View could not be reached: {reasons.why(exc)}"
         _tile_trouble_was(said)

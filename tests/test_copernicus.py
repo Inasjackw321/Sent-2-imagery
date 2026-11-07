@@ -775,9 +775,18 @@ class TestNotAskingFortyTimesOver:
     which the one fact was no easier to find than it would have been in
     silence, and which buried anything else that failed in the same minute.
 
-    So the first failure is remembered for a few seconds and the rest are
-    refused immediately with the same reason.
+    So a run of failures is remembered for a few seconds and the rest are
+    refused immediately with the same reason. A run, not one: a single stale
+    connection used to switch every tile off for twenty seconds while
+    EUMETSAT was answering perfectly well -- the blank map on Windows.
     """
+
+    @staticmethod
+    def trip(get):
+        """Fail enough times in a row to trip the breaker."""
+        for n in range(copernicus.TILE_TRIP_AFTER):
+            with pytest.raises(copernicus.CopernicusError):
+                copernicus.tile({"layers": "trip", "bbox": f"t{n}"})
 
     def setup_method(self):
         copernicus.forget_tiles()
@@ -801,18 +810,37 @@ class TestNotAskingFortyTimesOver:
     def test_a_host_that_is_not_answering_is_asked_once(self, monkeypatch):
         tries = []
         monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
-        for n in range(8):
+        for n in range(12):
             with pytest.raises(copernicus.CopernicusError):
                 copernicus.tile({"layers": "x", "bbox": f"{n}"})
-        assert len(tries) == 1
+        assert len(tries) == copernicus.TILE_TRIP_AFTER
+
+    def test_one_failure_is_not_an_outage(self, monkeypatch):
+        tries = []
+        monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
+        with pytest.raises(copernicus.CopernicusError):
+            copernicus.tile({"layers": "x", "bbox": "one"})
+        assert copernicus.sulking() == ""
+        # And the next tile is asked for, not refused.
+        monkeypatch.setattr(copernicus._session, "get", lambda *a, **kw: self.Answer())
+        assert copernicus.tile({"layers": "x", "bbox": "two"})[0] == b"PNGDATA"
+
+    def test_a_success_ends_the_run(self, monkeypatch):
+        for _ in range(copernicus.TILE_TRIP_AFTER - 1):
+            monkeypatch.setattr(copernicus._session, "get", self._unreachable([]))
+            with pytest.raises(copernicus.CopernicusError):
+                copernicus.tile({"layers": "x", "bbox": str(time.time_ns())})
+            monkeypatch.setattr(copernicus._session, "get", lambda *a, **kw: self.Answer())
+            copernicus.tile({"layers": "x", "bbox": str(time.time_ns())})
+        assert copernicus.sulking() == ""
 
     def test_the_refusal_still_says_why(self, monkeypatch):
         tries = []
         monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
-        with pytest.raises(copernicus.CopernicusError):
-            copernicus.tile({"layers": "x"})
+        self.trip(copernicus._session.get)
         with pytest.raises(copernicus.CopernicusError, match="Read timed out"):
             copernicus.tile({"layers": "y"})
+        assert len(tries) == copernicus.TILE_TRIP_AFTER
 
     def test_the_reason_is_a_sentence_rather_than_a_stack(self, monkeypatch):
         def refuse(*a, **kw):
@@ -836,15 +864,14 @@ class TestNotAskingFortyTimesOver:
                             lambda *a, **kw: self.Answer())
         copernicus.tile({"layers": "x", "bbox": "held"})
         monkeypatch.setattr(copernicus._session, "get", self._unreachable([]))
-        with pytest.raises(copernicus.CopernicusError):
-            copernicus.tile({"layers": "x", "bbox": "new"})
+        self.trip(copernicus._session.get)
+        assert copernicus.sulking()
         assert copernicus.tile({"layers": "x", "bbox": "held"})[2] is True
 
     def test_it_stops_sulking_after_a_few_seconds(self, monkeypatch):
         tries = []
         monkeypatch.setattr(copernicus._session, "get", self._unreachable(tries))
-        with pytest.raises(copernicus.CopernicusError):
-            copernicus.tile({"layers": "x"})
+        self.trip(copernicus._session.get)
         assert copernicus.sulking()
         later = time.time() + copernicus.TILE_SULK_SECONDS + 1
         assert copernicus.sulking(later) == ""
@@ -857,8 +884,7 @@ class TestNotAskingFortyTimesOver:
     def test_a_host_that_answers_clears_the_memory_of_one_that_did_not(
             self, monkeypatch):
         monkeypatch.setattr(copernicus._session, "get", self._unreachable([]))
-        with pytest.raises(copernicus.CopernicusError):
-            copernicus.tile({"layers": "x"})
+        self.trip(copernicus._session.get)
         assert copernicus.sulking(), "the failure was not remembered at all"
         # The sulk expired, so this one goes out and succeeds. The memory of
         # the outage has to go with it, or the next failure's twenty seconds
@@ -890,6 +916,46 @@ class TestNotAskingFortyTimesOver:
                             lambda *a, **kw: (seen.update(kw), self.Answer())[1])
         copernicus.tile({"layers": "x"})
         assert seen["timeout"] == copernicus.TILE_TIMEOUT
+
+    def test_a_whole_area_picture_gets_longer(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(copernicus._session, "get",
+                            lambda *a, **kw: (seen.update(kw), self.Answer())[1])
+        copernicus.tile({"layers": "x", "width": "768", "height": "500"})
+        assert seen["timeout"] == copernicus.AREA_TIMEOUT
+        assert copernicus.timeout_for({"width": "256", "height": "256"}) == copernicus.TILE_TIMEOUT
+        assert copernicus.timeout_for({"width": "junk"}) == copernicus.TILE_TIMEOUT
+
+    def test_a_closed_connection_is_retried_before_it_counts(self):
+        """EUMETSAT closes idle connections; the pool can hand one out. The
+        adapter retries that, a 502 and a 503, before anything here sees it."""
+        adapter = copernicus._session.get_adapter("https://view.eumetsat.int/")
+        retry = adapter.max_retries
+        assert retry.total >= 2 and retry.read >= 1 and retry.connect >= 1
+        assert {502, 503, 504, 429} <= set(retry.status_forcelist)
+        assert retry.allowed_methods == frozenset({"GET"})
+
+    def test_no_more_than_a_handful_go_to_eumetsat_at_once(self, monkeypatch):
+        import threading as th
+        inside, most, lock = [0], [0], th.Lock()
+
+        def slow(*a, **kw):
+            with lock:
+                inside[0] += 1
+                most[0] = max(most[0], inside[0])
+            time.sleep(0.05)
+            with lock:
+                inside[0] -= 1
+            return self.Answer()
+
+        monkeypatch.setattr(copernicus._session, "get", slow)
+        threads = [th.Thread(target=copernicus.tile, args=({"layers": "x", "bbox": str(n)},))
+                   for n in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert most[0] <= copernicus.UPSTREAM_AT_ONCE
 
 
 class TestEightHoursInHand:
@@ -971,9 +1037,30 @@ class TestTwoDaysOverAnArea:
     def test_nothing_without_a_newest_frame(self):
         assert copernicus.history_frames({"id": "x"}, 48) == []
 
-    def test_only_a_satellite_that_stares(self):
-        with pytest.raises(copernicus.CopernicusError, match="once a day"):
-            copernicus.history(copernicus.demo(), "copernicus:s3_olci_truecolour", 48)
+    def test_a_satellite_that_flies_over_gets_days(self):
+        # Every satellite now: a polar orbiter's loop is whole days, each the
+        # range covering every pass that day, as a transparent PNG so the map
+        # shows through the gaps between swaths.
+        got = copernicus.history(copernicus.demo(), "copernicus:s3_olci_truecolour", 48)
+        assert got["daily"] is True and got["format"] == "image/png"
+        assert all(f["time"].endswith("T23:59:59Z") and "/" in f["time"] for f in got["frames"])
+        assert got["span"] == f"last {len(got['frames'])} days"
+
+    def test_meteosat_stays_a_jpeg_of_frames(self):
+        got = copernicus.history(copernicus.demo(), "mtg_fd:rgb_firetemperature", 48)
+        assert got["daily"] is False and got["format"] == "image/jpeg"
+        assert got["span"] == "last 48 hours"
+
+    def test_days_back_from_the_newest_and_no_further_than_held(self):
+        entry = {"newest": "2026-11-07T10:00:00Z"}
+        got = copernicus.history_days(entry, 14)
+        assert len(got) == 14
+        assert got[0]["at"] == "2026-10-25" and got[-1]["at"] == "2026-11-07"
+        held = copernicus.history_days({**entry, "oldest": "2026-11-04T06:00:00Z"}, 14)
+        assert [f["at"] for f in held] == ["2026-11-04", "2026-11-05", "2026-11-06",
+                                           "2026-11-07"]
+        assert len(copernicus.history_days(entry, 500)) == copernicus.MOST_AREA_DAYS
+        assert copernicus.history_days({}, 14) == []
 
     def test_only_a_layer_that_is_being_served(self):
         with pytest.raises(copernicus.CopernicusError, match="not a layer"):
@@ -1005,6 +1092,11 @@ class TestTwoDaysOverAnArea:
                           params={"layer": "mtg_fd:nothing"}).status_code == 400
         assert client.get("/api/copernicus/history",
                           params={"layer": "x", "hours": 49}).status_code == 422
+        daily = client.get("/api/copernicus/history",
+                           params={"layer": "copernicus:s3_olci_truecolour", "days": 2})
+        assert daily.status_code == 200 and len(daily.json()["frames"]) == 2
+        assert client.get("/api/copernicus/history",
+                          params={"layer": "x", "days": 99}).status_code == 422
 
     def test_the_demo_draws_a_whole_area_picture_that_moves(self, monkeypatch):
         params = {"layers": "x", "width": "300", "height": "200",

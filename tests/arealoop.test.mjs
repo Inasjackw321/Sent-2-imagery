@@ -138,3 +138,35 @@ test('the background is the frame\'s own 97th percentile of red', () => {
   for (let i = 0; i < 20; i += 1) special[i] = [250, 0, 0];
   assert.equal(redPercentile(frame(1000, [50, 0, 0], special), 0.97), 50);
 });
+
+// ── Every satellite ───────────────────────────────────────────
+
+import { isHeat, spanSaid } from '../frontend/js/arealoop.js';
+
+test('a day of orbit strips is asked for as a transparent PNG', () => {
+  const q = Object.fromEntries(new URL(frameUrl('/w', 'x', [0, 0, 1, 1], { width: 1, height: 1 },
+    '2026-11-06T00:00:00Z/2026-11-06T23:59:59Z', 'image/png'), 'http://h').searchParams);
+  assert.equal(q.format, 'image/png');
+  assert.equal(q.transparent, 'true');
+  assert.equal(q.time, '2026-11-06T00:00:00Z/2026-11-06T23:59:59Z');
+});
+
+test('a whole-day frame says so rather than a clock time', () => {
+  assert.equal(frameSaid({ time: '2026-11-06T00:00:00Z/2026-11-06T23:59:59Z' }),
+    '6 Nov · whole day');
+});
+
+test('heat contrast starts on only for heat products', () => {
+  for (const hot of ['MTG FCI Fire Temperature RGB', 'SLSTR Level 2 FRP', 'LST thermal']) {
+    assert.equal(isHeat(hot), true, hot);
+  }
+  for (const not of ['OLCI true colour', 'Sentinel-5P nitrogen dioxide', 'ASCAT winds']) {
+    assert.equal(isHeat(not), false, not);
+  }
+});
+
+test('the span is said the way the backend counted it', () => {
+  assert.equal(spanSaid({ span: 'last 14 days' }), 'Last 14 days');
+  assert.equal(spanSaid({ span: 'last 48 hours' }), 'Last 48 hours');
+  assert.equal(spanSaid(null), 'Last 48 hours');
+});

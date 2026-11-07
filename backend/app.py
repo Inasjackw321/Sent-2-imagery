@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import datetime as dt
 import logging
 import threading
@@ -29,7 +31,29 @@ from .raster import BandReadError, scenes_are_safe
 log = logging.getLogger("sent2")
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
-app = FastAPI(title="EarthViewer", version="1.0.0")
+# A browser that cancels a request -- Leaflet does it for every tile that
+# panned out of view before it arrived -- closes the connection under the
+# server. On Windows the event loop reports each one as a ConnectionResetError
+# with a full traceback, "Exception in callback
+# _ProactorBasePipeTransport._call_connection_lost", which is a screenful of
+# alarming text about nothing: the request was abandoned on purpose. Those are
+# dropped; anything else goes to the loop's own handler as before.
+QUIET = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+
+
+def quiet_disconnects(loop, context) -> None:
+    if isinstance(context.get("exception"), QUIET):
+        return
+    loop.default_exception_handler(context)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app):
+    asyncio.get_running_loop().set_exception_handler(quiet_disconnects)
+    yield
+
+
+app = FastAPI(title="EarthViewer", version="1.0.0", lifespan=lifespan)
 
 
 @app.exception_handler(Exception)
@@ -662,7 +686,9 @@ def whereis(lat: float = Query(..., ge=-90, le=90),
 
 @app.get("/api/copernicus/history")
 def copernicus_history(layer: str = Query(..., min_length=1, max_length=200),
-                       hours: float = Query(48, gt=0, le=48)) -> dict:
+                       hours: float = Query(48, gt=0, le=48),
+                       days: int = Query(copernicus.AREA_DAYS, ge=1,
+                                         le=copernicus.MOST_AREA_DAYS)) -> dict:
     """Every frame of one Meteosat product over the last `hours`, oldest first.
 
     For the area loop: the page fetches one picture of the area per frame
@@ -671,10 +697,9 @@ def copernicus_history(layer: str = Query(..., min_length=1, max_length=200),
     """
     try:
         found = copernicus.demo() if config.DEMO_MODE else copernicus.layers()
-        return copernicus.history(found, layer, hours)
+        return copernicus.history(found, layer, hours, days)
     except copernicus.CopernicusError as exc:
-        raise _fail(exc, 400 if "not a layer" in str(exc) or "flies over" in str(exc)
-                    else 502)
+        raise _fail(exc, 400 if "not a layer" in str(exc) else 502)
 
 
 @app.get("/api/copernicus/wms")

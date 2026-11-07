@@ -19,7 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { PRELOAD, clockLabel, dateLabel, frameIndex, framesPer, nextFrame,
+import { PRELOAD, areaSpan, clockLabel, dateLabel, frameIndex, framesPer, nextFrame,
          pickLayer, productsShown, stepFrame, warmOrder, wmsOptions, wmsTime }
   from '../frontend/js/copernicus.js';
 
@@ -541,4 +541,9 @@ test('with nothing pinned it is the first everyday product, as before', () => {
 
 test('the layer is switched on as the map loads', () => {
   assert.equal(PRELOAD, true);
+});
+
+test('every satellite offers an area loop, in hours or in days', () => {
+  assert.equal(areaSpan({ animates: true }), 'last 48 h');
+  assert.equal(areaSpan({ animates: false }), 'last 14 days');
 });

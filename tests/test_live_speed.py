@@ -169,6 +169,10 @@ class TestOneFetchPerTile:
         assert len(trips) == 2
 
     def test_a_host_known_to_be_down_is_not_asked_again_by_the_waiter(self, monkeypatch):
+        # Known to be down means the breaker has tripped. It takes a run of
+        # failures now rather than one (a single stale connection is not an
+        # outage), so the run is made one long here to test the waiters alone.
+        monkeypatch.setattr(copernicus, "TILE_TRIP_AFTER", 1)
         trips = []
         gate = threading.Event()
 

@@ -1,4 +1,6 @@
-// Two days of a Meteosat product over one place you mark out.
+// The history of a live satellite product over one place you mark out:
+// Meteosat's last 48 hours at ten minutes, or for a satellite that flies over
+// once a day -- Sentinel-3, Sentinel-5P, Metop -- its last two weeks of days.
 //
 // The live layer's loop is the last eight hours over whatever is on screen.
 // This answers the other question: a fire you want to watch start, spread and
@@ -28,8 +30,10 @@ export const MOST_PX = 768;
 export const LEAST_PX = 256;
 
 // Frames a second when playing and in the saved video.
-export const SPEEDS = [4, 8, 12, 16];
+export const SPEEDS = [1, 2, 4, 8, 12, 16];
 const DEFAULT_SPEED = 8;
+// A fortnight of days at eight a second is under two seconds of video.
+const DAILY_SPEED = 2;
 const FILM_FPS = 25;
 
 // The data credit EUMETSAT asks for, carried in every saved video.
@@ -58,13 +62,14 @@ export function areaSize([x0, y0, x1, y1], groundKm) {
 }
 
 /** The address of one frame of the area, through this app's WMS proxy. */
-export function frameUrl(wms, layerId, box, size, time) {
+export function frameUrl(wms, layerId, box, size, time, format = 'image/jpeg') {
   const q = new URLSearchParams({
     service: 'WMS', request: 'GetMap', version: '1.3.0',
     layers: layerId, styles: '',
     // JPEG: a whole-area picture has no holes to be transparent, and it is
     // a tenth of the size of a PNG of the same frame.
-    format: 'image/jpeg', transparent: 'false',
+    // PNG where the picture has gaps to see through (a day of orbit strips).
+    format, transparent: format === 'image/png' ? 'true' : 'false',
     crs: 'EPSG:3857', bbox: box.map((v) => v.toFixed(1)).join(','),
     width: String(size.width), height: String(size.height),
     time,
@@ -194,9 +199,23 @@ export function filmName(layerId, frames) {
 /** "6 Nov 14:30 UTC" for a frame. */
 export function frameSaid(frame) {
   if (!frame?.time) return '';
-  const d = new Date(frame.time);
+  // A whole-day frame is a range, "start/end", which is not a date on its own.
+  const d = new Date(frame.time.split('/')[0]);
   const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  // A whole day of passes has no clock time of its own.
+  if (frame.time.includes('/')) return `${day} · whole day`;
   return `${day} ${frame.time.slice(11, 16)} UTC`;
+}
+
+/** Whether a product is about heat, so heat contrast starts on for it. */
+export function isHeat(title) {
+  return /fire|frp|temperature|hotspot|thermal/i.test(String(title ?? ''));
+}
+
+/** "Last 48 hours" or "Last 14 days", from the plan the backend sent. */
+export function spanSaid(plan) {
+  const span = plan?.span || 'last 48 hours';
+  return span.charAt(0).toUpperCase() + span.slice(1);
 }
 
 // ── Loading ────────────────────────────────────────────────────
@@ -218,8 +237,10 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   loop = {
     layerId, title, bounds, box, size, abort, frames: [], at: -1,
     done: 0, missing: 0, playing: null, speed: DEFAULT_SPEED, filming: null,
-    // On from the start: the hottest pixels are what this view is for.
-    contrast: true,
+    // On from the start for a heat product, where the hottest pixels are the
+    // point; off for anything else, whose colours it would only distort.
+    contrast: isHeat(title),
+    daily: false, span: '', format: 'image/jpeg',
     outline: L.rectangle(bounds, {
       color: '#ffb74d', weight: 1.5, fill: false, dashArray: '4 4', interactive: false,
     }).addTo(map),
@@ -240,6 +261,11 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   mine.frames = plan.frames.map((f) => ({ ...f, url: null, img: null, failed: false }));
   mine.wms = plan.wms;
   mine.title = plan.title || title;
+  mine.contrast = isHeat(mine.title);
+  mine.daily = Boolean(plan.daily);
+  mine.span = spanSaid(plan);
+  mine.format = plan.format || 'image/jpeg';
+  if (mine.daily) mine.speed = DAILY_SPEED;
   if (!mine.frames.length) {
     toast('EUMETSAT is not holding any frames of that product to fetch.', 'err');
     closeLoop();
@@ -271,13 +297,13 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
 async function fetchFrame(mine, i) {
   const frame = mine.frames[i];
   try {
-    const res = await fetch(frameUrl(mine.wms, mine.layerId, mine.box, mine.size, frame.time),
+    const res = await fetch(frameUrl(mine.wms, mine.layerId, mine.box, mine.size, frame.time, mine.format),
       { signal: mine.abort.signal });
     if (!res.ok) throw new Error(String(res.status));
     const blob = await res.blob();
     if (!blob.type.startsWith('image/')) throw new Error(blob.type);
     const raw = await picture(blob);
-    const hot = await heated(raw.img);
+    const hot = await heated(raw.img, mine.format);
     if (loop !== mine) {
       URL.revokeObjectURL(raw.url);
       if (hot) URL.revokeObjectURL(hot.url);
@@ -287,8 +313,9 @@ async function fetchFrame(mine, i) {
     frame.hot = hot ?? raw;
     Object.assign(frame, mine.contrast ? frame.hot : frame.raw);
     mine.done += 1;
-    // The first to arrive -- the newest -- goes on the map straight away.
-    if (mine.at < 0) show(i);
+    // The newest frame in hand goes on the map as it arrives, until somebody
+    // plays, steps or scrubs -- after which the picture is theirs to choose.
+    if (!mine.touched && i > mine.at) show(i);
   } catch (err) {
     if (err.name === 'AbortError' || loop !== mine) return;
     frame.failed = true;
@@ -307,7 +334,7 @@ async function picture(blob) {
 }
 
 /** The heat-contrasted copy of a frame, or null if the browser will not make one. */
-async function heated(img) {
+async function heated(img, format = 'image/jpeg') {
   try {
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth;
@@ -317,7 +344,8 @@ async function heated(img) {
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     heatContrast(pixels.data);
     ctx.putImageData(pixels, 0, 0);
-    const blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
+    // Saved as it came: a PNG keeps the gaps between a day's swaths clear.
+    const blob = await new Promise((done) => canvas.toBlob(done, format, 0.92));
     return blob ? await picture(blob) : null;
   } catch {
     // The plain frame is still the frame; losing the contrast is not a
@@ -347,7 +375,7 @@ function buildLoader() {
     el('div', { class: 'loop-load-head' },
       el('b', {}, loop.title || 'Meteosat'),
       el('button', { class: 'loop-x', title: 'Stop and close', onclick: closeLoop }, '✕')),
-    el('div', { class: 'loop-load-sub' }, 'Last 48 hours over your area'),
+    el('div', { class: 'loop-load-sub' }, `${loop.span || 'Fetching the history'} over your area`),
     el('div', { class: 'loop-track' }, el('div', { class: 'loop-fill', id: 'loopFill' })),
     el('div', { class: 'loop-count', id: 'loopCount' },
       total ? progressSaid(0, 0, total) : 'Listing the frames…'));
@@ -387,6 +415,7 @@ function show(i) {
 
 function play() {
   if (!loop || loop.playing || loop.done < 2) return;
+  loop.touched = true;
   loop.playing = setInterval(() => {
     const i = nextHeld(loop.frames, loop.at);
     if (i >= 0) show(i);
@@ -424,6 +453,7 @@ function buildBar() {
   const frames = loop.frames;
   const step = (by) => () => {
     pause();
+    loop.touched = true;
     const i = nextHeld(frames, Math.max(0, loop.at), by);
     if (i >= 0) show(i);
   };
@@ -436,6 +466,7 @@ function buildBar() {
       class: 'loop-scrub', type: 'range', min: '0', max: String(frames.length - 1),
       oninput: (e) => {
         pause();
+        loop.touched = true;
         const want = Number(e.target.value);
         const i = frames[want]?.img ? want : nextHeld(frames, want, 1);
         if (i >= 0) show(i);
@@ -463,7 +494,8 @@ function buildBar() {
   };
   loop.bar = parts;
   const bar = el('div', { class: 'loop-bar', id: 'loopBar' },
-    el('span', { class: 'loop-tag', title: loop.title }, '48 h · area'),
+    el('span', { class: 'loop-tag', title: loop.title },
+      loop.daily ? `${loop.frames.length} days · area` : '48 h · area'),
     parts.play, parts.back, parts.scrub, parts.on, parts.when, parts.speed, parts.heat,
     parts.rec,
     el('button', { class: 'loop-x', title: 'Close the area loop', onclick: closeLoop }, '✕'));
@@ -477,14 +509,14 @@ function refreshBar() {
   const at = Math.max(0, loop.at);
   const filming = Boolean(loop.filming);
   parts.play.textContent = loop.playing ? '❚❚' : '▶';
-  parts.play.title = loop.playing ? 'Stop' : 'Play the 48 hours on a loop';
+  parts.play.title = loop.playing ? 'Stop' : `Play the ${loop.span.toLowerCase()} on a loop`;
   parts.play.classList.toggle('is-on', Boolean(loop.playing));
   parts.play.disabled = loop.done < 2 || filming;
   for (const b of [parts.back, parts.on, parts.scrub]) b.disabled = filming;
   parts.scrub.value = String(at);
   parts.when.textContent = frameSaid(loop.frames[at]);
   parts.rec.textContent = filming ? '■ Recording' : '⏺ Video';
-  parts.rec.title = filming ? 'Stop recording' : 'Save the 48 hours as a video';
+  parts.rec.title = filming ? 'Stop recording' : `Save the ${loop.span.toLowerCase()} as a video`;
   parts.rec.classList.toggle('is-on', filming);
   parts.rec.disabled = loop.done < 2;
   parts.heat.classList.toggle('is-on', loop.contrast);
@@ -531,7 +563,7 @@ async function film() {
     if (mine.filming.stop || loop !== mine) break;
     drawTemplate(ctx, {
       picture: frame.img, title: mine.title, frames: held, index, bounds, where, rings,
-      note: `${spanHours(held)} h over the highlighted area`
+      note: `${mine.daily ? `${held.length} days` : `${spanHours(held)} h`} over the highlighted area`
         + (mine.contrast ? ' · heat contrast on' : ''),
       credit: CREDIT,
     });
