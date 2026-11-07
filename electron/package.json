@@ -1,0 +1,38 @@
+{
+  "name": "earthviewer",
+  "productName": "EarthViewer",
+  "version": "1.0.0",
+  "description": "Free satellite imagery, live layers and monitoring, as a desktop app",
+  "main": "main.js",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "app.earthviewer.desktop",
+    "productName": "EarthViewer",
+    "files": ["main.js", "shell.js", "package.json"],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "earthviewer",
+        "filter": [
+          "app.py", "run.py", "requirements.txt",
+          "backend/**/*", "frontend/**/*",
+          "!**/__pycache__/**", "!**/*.pyc"
+        ]
+      }
+    ],
+    "mac": { "category": "public.app-category.education", "icon": "../frontend/icons/icon-1024.png" },
+    "win": { "target": "nsis", "icon": "../frontend/icons/icon-512.png" },
+    "linux": { "target": "AppImage", "category": "Education", "icon": "../frontend/icons/icon-512.png" }
+  }
+}

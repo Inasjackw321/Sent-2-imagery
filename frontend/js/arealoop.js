@@ -12,6 +12,9 @@
 
 import { api } from './api.js';
 import { el, toast } from './ui.js';
+import {
+  FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
+} from './filmtemplate.js';
 
 // How many frames are asked for at once. Enough to keep the line busy, few
 // enough not to queue in front of the live layer's own tiles.
@@ -29,7 +32,8 @@ export const SPEEDS = [4, 8, 12, 16];
 const DEFAULT_SPEED = 8;
 const FILM_FPS = 25;
 
-const WATERMARK = '@Kaldockhi';
+// The data credit EUMETSAT asks for, carried in every saved video.
+const CREDIT = 'Contains modified Copernicus data · EUMETSAT View';
 
 let map = null;
 let loop = null;   // the one loop open at a time
@@ -171,6 +175,13 @@ export function heatContrast(data) {
     data[i + 2] = data[i + 2] * HEAT_DIM * (1 - a) + b * a;
   }
   return { background, lo, hi, hot };
+}
+
+/** How many hours a run of frames covers, first to last. */
+export function spanHours(frames) {
+  if (!frames?.length) return 0;
+  const ms = new Date(frames[frames.length - 1].time) - new Date(frames[0].time);
+  return Math.round(ms / 3600000);
 }
 
 /** What the saved video is called. */
@@ -499,27 +510,31 @@ async function film() {
   pause();
   const mine = loop;
   const held = mine.frames.filter((f) => f.img);
+  // Laid out in the video template: the imagery, and beside it the date, the
+  // timeline and a minimap of where it is. See filmtemplate.js.
   const canvas = document.createElement('canvas');
-  // At least 720 pixels across: the frames are small, and a video player
-  // scaling up a 400-pixel picture blurs the time stamp with it.
-  const scale = Math.max(1, 720 / mine.size.width);
-  canvas.width = Math.round(mine.size.width * scale / 2) * 2;
-  canvas.height = Math.round(mine.size.height * scale / 2) * 2;
+  canvas.width = FILM_W;
+  canvas.height = FILM_H;
   const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingQuality = 'high';
+  mine.filming = { stop: false };
+  refreshBar();
+  const [rings, where] = await Promise.all([loadLand(), placeOf(mine.bounds)]);
+  const bounds = boundsOf(mine.bounds);
   const kind = filmType();
   const chunks = [];
   const rec = new MediaRecorder(canvas.captureStream(FILM_FPS),
     kind ? { mimeType: kind } : undefined);
   rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   const stopped = new Promise((ready) => { rec.onstop = ready; });
-  mine.filming = { stop: false };
-  refreshBar();
   rec.start();
-  for (const frame of held) {
+  for (const [index, frame] of held.entries()) {
     if (mine.filming.stop || loop !== mine) break;
-    ctx.drawImage(frame.img, 0, 0, canvas.width, canvas.height);
-    stamp(ctx, canvas, frame, mine.title);
+    drawTemplate(ctx, {
+      picture: frame.img, title: mine.title, frames: held, index, bounds, where, rings,
+      note: `${spanHours(held)} h over the highlighted area`
+        + (mine.contrast ? ' · heat contrast on' : ''),
+      credit: CREDIT,
+    });
     show(mine.frames.indexOf(frame));
     // eslint-disable-next-line no-await-in-loop
     await new Promise((done) => setTimeout(done, 1000 / mine.speed));
@@ -538,24 +553,4 @@ async function film() {
   link.download = `${filmName(mine.layerId, held)}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
-}
-
-function stamp(ctx, canvas, frame, title) {
-  const size = Math.max(14, Math.round(canvas.width * 0.022));
-  ctx.save();
-  ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
-  ctx.textBaseline = 'middle';
-  const label = (text, x, y, align = 'left') => {
-    const wide = ctx.measureText(text).width;
-    const left = align === 'right' ? x - wide - size : x;
-    ctx.fillStyle = 'rgba(5, 7, 11, 0.72)';
-    ctx.fillRect(left, y - size * 0.95, wide + size, size * 1.9);
-    ctx.fillStyle = '#e9eef7';
-    ctx.fillText(text, left + size / 2, y);
-  };
-  label(frameSaid(frame), 12, canvas.height - size * 1.4);
-  label(WATERMARK, canvas.width - 12, canvas.height - size * 1.4, 'right');
-  ctx.font = `500 ${Math.round(size * 0.8)}px system-ui, -apple-system, Segoe UI, sans-serif`;
-  label(title || 'Meteosat', 12, size * 1.3);
-  ctx.restore();
 }

@@ -366,8 +366,13 @@ test('the video does not draw the basemap', () => {
 test('every frame of the video is stamped with its own time', () => {
   // Without it the video is a loop of pictures with no way to say when any of
   // them was, which is the first question anybody asks of one.
-  const at = SOURCE.indexOf('async function filmFrame');
-  assert.match(SOURCE.slice(at, at + 1400), /stampFilm\(ctx, canvas, frame\)/);
+  // The time now comes from the video template (filmtemplate.js), which is
+  // handed every frame's index in turn -- so each one says its own moment, in
+  // the panel beside the picture, along with where it falls in the span.
+  const at = SOURCE.indexOf('async function startFilm');
+  const block = SOURCE.slice(at, at + 3000);
+  assert.match(block, /for \(const \[index, frame\] of frames\.entries\(\)\)/);
+  assert.match(block, /drawTemplate\(ctx, \{ \.\.\.template, picture: shot, index \}\)/);
 });
 
 // ── Loading faster, newest first ───────────────────────────────

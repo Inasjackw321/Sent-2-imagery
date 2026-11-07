@@ -8,3 +8,5 @@ env/
 *.egg-info/
 .idea/
 .vscode/
+electron/node_modules/
+electron/dist/

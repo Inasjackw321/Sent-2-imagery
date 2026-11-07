@@ -18,6 +18,9 @@
 // sees Europe every ten minutes, including at night.
 import { api } from './api.js';
 import { startAreaLoop } from './arealoop.js';
+import {
+  FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
+} from './filmtemplate.js';
 import { $, el, toast } from './ui.js';
 
 // How often to ask the backend what the newest frame is.
@@ -689,10 +692,21 @@ async function startFilm() {
   pause();
 
   const box = map.getContainer().getBoundingClientRect();
+  // The map is drawn onto `shot`, and the shot laid out in the video template
+  // -- the date, the timeline and a minimap of where -- on `canvas`, which is
+  // what is recorded. See filmtemplate.js.
+  const shot = document.createElement('canvas');
+  shot.width = Math.round(box.width);
+  shot.height = Math.round(box.height);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(box.width);
-  canvas.height = Math.round(box.height);
+  canvas.width = FILM_W;
+  canvas.height = FILM_H;
   const ctx = canvas.getContext('2d');
+  const [rings, where] = await Promise.all([loadLand(), placeOf(map.getBounds())]);
+  const template = {
+    title: layer.title, frames, bounds: boundsOf(map.getBounds()), where, rings,
+    note: `${chosen.family.short} · the view on screen`, credit: catalogue?.attribution ?? '',
+  };
   const chunks = [];
   const kind = filmType();
   const rec = new MediaRecorder(canvas.captureStream(FILM_FPS),
@@ -704,10 +718,13 @@ async function startFilm() {
   rec.start();
 
   const outlines = await bordersForFilm();
-  for (const frame of frames) {
+  for (const [index, frame] of frames.entries()) {
     if (filming?.stop) break;
     // eslint-disable-next-line no-await-in-loop
-    await filmFrame(ctx, canvas, frame, outlines, box);
+    await filmFrame(shot.getContext('2d'), shot, frame, outlines, box);
+    drawTemplate(ctx, { ...template, picture: shot, index });
+    // eslint-disable-next-line no-await-in-loop
+    await held(FILM_HOLD_MS);
   }
   rec.stop();
   await done;
@@ -723,7 +740,7 @@ function stopFilm() {
   if (filming) filming.stop = true;
 }
 
-/** Draw one frame of the video and hold it for its share of the running time. */
+/** Draw the map as it stands at one frame: the satellite and the borders. */
 async function filmFrame(ctx, canvas, frame, outlines, box) {
   const tiles = await oneFrame(frame);
   ctx.fillStyle = '#05070b';
@@ -737,8 +754,6 @@ async function filmFrame(ctx, canvas, frame, outlines, box) {
     } catch { /* one tile that will not draw is not a reason to lose the film */ }
   }
   drawFilmBorders(ctx, outlines);
-  stampFilm(ctx, canvas, frame);
-  await held(FILM_HOLD_MS);
 }
 
 async function bordersForFilm() {
@@ -772,20 +787,6 @@ function drawFilmBorders(ctx, outlines) {
       ctx.stroke();
     }
   }
-  ctx.restore();
-}
-
-function stampFilm(ctx, canvas, frame) {
-  const text = `${dateLabel(frame)}  ${frame.label ?? ''}`.trim();
-  const size = Math.max(14, Math.round(canvas.width * 0.016));
-  ctx.save();
-  ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
-  const wide = ctx.measureText(text).width;
-  ctx.fillStyle = 'rgba(5, 7, 11, 0.72)';
-  ctx.fillRect(14, canvas.height - size * 2.6, wide + size, size * 1.9);
-  ctx.fillStyle = '#e9eef7';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 14 + size / 2, canvas.height - size * 1.65);
   ctx.restore();
 }
 

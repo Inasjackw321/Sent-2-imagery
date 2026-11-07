@@ -644,6 +644,22 @@ def copernicus_layers(refresh: bool = Query(False)) -> dict:
         raise _fail(exc)
 
 
+@app.get("/api/whereis")
+def whereis(lat: float = Query(..., ge=-90, le=90),
+            lon: float = Query(..., ge=-180, le=180)) -> dict:
+    """The region a point is in, for the place name in a saved video.
+
+    Never an error: a video with coordinates and no place name is a fine
+    video, so a gazetteer that cannot answer is an empty answer.
+    """
+    if config.DEMO_MODE:
+        return {"region": None}
+    try:
+        return {"region": gazetteer.region_at(lat, lon)}
+    except gazetteer.GazetteerError:
+        return {"region": None}
+
+
 @app.get("/api/copernicus/history")
 def copernicus_history(layer: str = Query(..., min_length=1, max_length=200),
                        hours: float = Query(48, gt=0, le=48)) -> dict:

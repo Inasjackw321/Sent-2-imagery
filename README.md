@@ -31,6 +31,31 @@ engine and opens EarthViewer in a desktop window. No account, no API key, no
 terminal needed afterwards. Add `--demo` to explore the interface offline with
 synthetic imagery (see [Demo mode](#demo-mode)).
 
+## As an Electron app
+
+`electron/` wraps the same app in Electron. The Python backend is still the
+engine; Electron starts it (`app.py --serve`, which installs anything missing
+first, as always), waits for it to answer, and shows it in its own window.
+Closing the window stops the engine.
+
+```bash
+cd electron
+npm install
+npm start            # live imagery
+npm run demo         # synthetic imagery, offline
+```
+
+It needs Python 3.10+ on the machine: the project's own `.venv` if the
+launchers made one, otherwise `python3`/`python` on the PATH, or whichever
+`EARTHVIEWER_PYTHON` names. `npm run dist` builds an installer with
+electron-builder (AppImage, NSIS or a macOS app), which carries the backend
+and front end but still uses the machine's Python.
+
+The window is locked down like a browser tab: no Node in the page, a
+sandboxed renderer, and it shows only the app's own page. Any other link
+opens in your normal browser. Saved files ask where to go, as a browser
+would.
+
 ## Opening it as an app
 
 **Double-click `app.py`.** On most systems that is all it takes. If your

@@ -9,6 +9,7 @@ its own desktop window. No terminal needed.
     python app.py --tab           open in a browser tab instead
     python app.py --install-shortcut    add it to your applications menu
     python app.py --sen2sr        install PyTorch for the SEN2SR button
+    python app.py --serve         serve only, for the Electron shell (see electron/)
 """
 
 from __future__ import annotations
@@ -33,6 +34,9 @@ REQUIRED = {
     "requests": "requests>=2.31",
 }
 OPTIONAL = {"webview": "pywebview>=5.0"}
+
+# The line --serve prints, which electron/main.js waits for.
+SERVE_LINE = "EARTHVIEWER_URL="
 
 
 def missing_packages(wanted: dict[str, str]) -> list[str]:
@@ -114,6 +118,10 @@ def main() -> int:
     running = launcher.probe(host, port)
     if running:
         url = f"http://{host}:{port}"
+        if "--serve" in argv:
+            # Somebody else's server: hand over its address and open nothing.
+            print(f"{SERVE_LINE}{url}", flush=True)
+            return 0
         print(f"  Already running → {url}")
         _open(url, argv)
         return 0
@@ -130,6 +138,15 @@ def main() -> int:
 
     config = uvicorn.Config("backend.app:app", host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
+
+    if "--serve" in argv:
+        # The Electron shell owns the window and this process: it reads the
+        # address from this one line and stops the server by ending the
+        # process. Run in the foreground, so uvicorn's own signal handling
+        # shuts it down cleanly.
+        print(f"{SERVE_LINE}{url}", flush=True)
+        server.run()
+        return 0
 
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
