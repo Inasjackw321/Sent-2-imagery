@@ -89,6 +89,90 @@ export function nextHeld(frames, at, step = 1) {
   return -1;
 }
 
+// ── Heat contrast ──────────────────────────────────────────────
+//
+// In the Fire Temperature RGB a fire is a few red-to-white pixels in a
+// picture that is otherwise mostly dark, and at the scale of a box over a
+// region a small fire is easy to miss. So the hottest pixels are pushed apart
+// from everything else: the scene is dimmed, and whatever is clearly hotter
+// than the rest of its own frame is redrawn on a flame scale -- red, then
+// yellow, then white as it gets hotter -- the same order the RGB itself uses
+// for fire intensity, only louder.
+//
+// "Hotter than the rest of its own frame", and not a fixed level, because the
+// red channel is the 3.8 micron brightness temperature and the whole scene
+// moves with the day: sunlit desert at noon is warmer than a fire at night.
+// A fixed threshold would light up every afternoon. The frame's own 97th
+// percentile is its background, and only pixels a clear margin above it count
+// as heat, so a frame with no fire in it stays plain rather than inventing
+// speckle out of noise.
+
+// How far above the frame's background a pixel must be before it counts, and
+// over how many levels it goes from first glow to full white.
+export const HEAT_MARGIN = 25;
+export const HEAT_SPAN = 60;
+// How dark the rest of the picture goes, so the heat stands out against it.
+export const HEAT_DIM = 0.5;
+const BACKGROUND_PERCENTILE = 0.97;
+
+/** The red channel's value below which `share` of the pixels fall. */
+export function redPercentile(data, share) {
+  const counts = new Uint32Array(256);
+  for (let i = 0; i < data.length; i += 4) counts[data[i]] += 1;
+  const want = (data.length / 4) * share;
+  let seen = 0;
+  for (let v = 0; v < 256; v += 1) {
+    seen += counts[v];
+    if (seen >= want) return v;
+  }
+  return 255;
+}
+
+/** 0 to 1 across [lo, hi], eased at both ends. */
+function smooth(lo, hi, x) {
+  const t = Math.min(1, Math.max(0, (x - lo) / (hi - lo)));
+  return t * t * (3 - 2 * t);
+}
+
+/** The flame scale: red, then yellow, then white, for 0 to 1. */
+export function flame(h) {
+  if (h < 0.5) {
+    const t = h / 0.5;
+    return [230 + 25 * t, 60 + 160 * t, 30 * t];
+  }
+  const t = (h - 0.5) / 0.5;
+  return [255, 220 + 35 * t, 30 + 205 * t];
+}
+
+/**
+ * Push a frame's hot pixels apart from the rest, in place, on RGBA bytes.
+ * Returns the levels used and how many pixels counted as heat.
+ */
+export function heatContrast(data) {
+  const background = redPercentile(data, BACKGROUND_PERCENTILE);
+  const lo = Math.min(254, background + HEAT_MARGIN);
+  const hi = Math.min(255, Math.max(lo + 1, lo + HEAT_SPAN));
+  let hot = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const h = smooth(lo, hi, data[i]);
+    if (h <= 0) {
+      data[i] *= HEAT_DIM;
+      data[i + 1] *= HEAT_DIM;
+      data[i + 2] *= HEAT_DIM;
+      continue;
+    }
+    hot += 1;
+    // Even a faint fire is drawn clearly: most of the way to the flame
+    // colour by the time it is a third of the way up the scale.
+    const a = Math.min(1, h * 2.5);
+    const [r, g, b] = flame(h);
+    data[i] = data[i] * HEAT_DIM * (1 - a) + r * a;
+    data[i + 1] = data[i + 1] * HEAT_DIM * (1 - a) + g * a;
+    data[i + 2] = data[i + 2] * HEAT_DIM * (1 - a) + b * a;
+  }
+  return { background, lo, hi, hot };
+}
+
 /** What the saved video is called. */
 export function filmName(layerId, frames) {
   const from = frames[0]?.time?.slice(0, 16).replace(/[:T-]/g, '') ?? '';
@@ -123,6 +207,8 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   loop = {
     layerId, title, bounds, box, size, abort, frames: [], at: -1,
     done: 0, missing: 0, playing: null, speed: DEFAULT_SPEED, filming: null,
+    // On from the start: the hottest pixels are what this view is for.
+    contrast: true,
     outline: L.rectangle(bounds, {
       color: '#ffb74d', weight: 1.5, fill: false, dashArray: '4 4', interactive: false,
     }).addTo(map),
@@ -179,13 +265,16 @@ async function fetchFrame(mine, i) {
     if (!res.ok) throw new Error(String(res.status));
     const blob = await res.blob();
     if (!blob.type.startsWith('image/')) throw new Error(blob.type);
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.src = url;
-    await img.decode();
-    if (loop !== mine) { URL.revokeObjectURL(url); return; }
-    frame.url = url;
-    frame.img = img;
+    const raw = await picture(blob);
+    const hot = await heated(raw.img);
+    if (loop !== mine) {
+      URL.revokeObjectURL(raw.url);
+      if (hot) URL.revokeObjectURL(hot.url);
+      return;
+    }
+    frame.raw = raw;
+    frame.hot = hot ?? raw;
+    Object.assign(frame, mine.contrast ? frame.hot : frame.raw);
     mine.done += 1;
     // The first to arrive -- the newest -- goes on the map straight away.
     if (mine.at < 0) show(i);
@@ -195,6 +284,45 @@ async function fetchFrame(mine, i) {
     mine.missing += 1;
   }
   updateLoader();
+  refreshBar();
+}
+
+async function picture(blob) {
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return { url, img };
+}
+
+/** The heat-contrasted copy of a frame, or null if the browser will not make one. */
+async function heated(img) {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    heatContrast(pixels.data);
+    ctx.putImageData(pixels, 0, 0);
+    const blob = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
+    return blob ? await picture(blob) : null;
+  } catch {
+    // The plain frame is still the frame; losing the contrast is not a
+    // reason to lose the picture.
+    return null;
+  }
+}
+
+/** Switch every frame between plain and heat-contrasted, keeping the place. */
+function setContrast(on) {
+  if (!loop) return;
+  loop.contrast = on;
+  for (const frame of loop.frames) {
+    if (frame.raw) Object.assign(frame, on ? frame.hot : frame.raw);
+  }
+  if (loop.at >= 0) show(loop.at);
   refreshBar();
 }
 
@@ -269,7 +397,11 @@ export function closeLoop() {
   if (loop.filming) loop.filming.stop = true;
   loop.overlay?.remove();
   loop.outline?.remove();
-  for (const frame of loop.frames) if (frame.url) URL.revokeObjectURL(frame.url);
+  for (const frame of loop.frames) {
+    for (const copy of new Set([frame.raw, frame.hot])) {
+      if (copy?.url) URL.revokeObjectURL(copy.url);
+    }
+  }
   loop = null;
   hideLoader();
   document.querySelector('#loopBar')?.remove();
@@ -308,6 +440,11 @@ function buildBar() {
       },
     }, ...SPEEDS.map((sp) => el('option', { value: String(sp), selected: sp === loop.speed },
       `${sp} fps`))),
+    heat: el('button', {
+      class: 'loop-heat',
+      title: 'Dim the scene and draw the hottest pixels red to white, so fires stand out',
+      onclick: () => setContrast(!loop.contrast),
+    }, '🔥 Heat contrast'),
     rec: el('button', {
       class: 'cop-rec',
       onclick: () => (loop.filming ? (loop.filming.stop = true) : film()),
@@ -316,7 +453,8 @@ function buildBar() {
   loop.bar = parts;
   const bar = el('div', { class: 'loop-bar', id: 'loopBar' },
     el('span', { class: 'loop-tag', title: loop.title }, '48 h · area'),
-    parts.play, parts.back, parts.scrub, parts.on, parts.when, parts.speed, parts.rec,
+    parts.play, parts.back, parts.scrub, parts.on, parts.when, parts.speed, parts.heat,
+    parts.rec,
     el('button', { class: 'loop-x', title: 'Close the area loop', onclick: closeLoop }, '✕'));
   document.querySelector('.stage')?.append(bar);
   refreshBar();
@@ -338,6 +476,8 @@ function refreshBar() {
   parts.rec.title = filming ? 'Stop recording' : 'Save the 48 hours as a video';
   parts.rec.classList.toggle('is-on', filming);
   parts.rec.disabled = loop.done < 2;
+  parts.heat.classList.toggle('is-on', loop.contrast);
+  parts.heat.disabled = filming;
 }
 
 // ── The video ──────────────────────────────────────────────────

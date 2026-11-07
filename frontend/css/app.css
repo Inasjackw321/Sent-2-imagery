@@ -1671,6 +1671,15 @@ body.is-walled { overflow: hidden; }
 }
 .loop-bar button:disabled, .loop-bar input:disabled { opacity: .4; cursor: not-allowed; }
 .loop-tag { font-size: 11px; color: #ffd9a3; white-space: nowrap; }
+.loop-heat {
+  height: 30px; padding: 0 9px; cursor: pointer; white-space: nowrap;
+  font: inherit; font-size: 11.5px; color: var(--ink-dim); background: transparent;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.loop-heat:hover { color: var(--ink); border-color: #3a4a66; }
+.loop-heat.is-on {
+  color: #fff1d6; background: rgba(255,138,59,.18); border-color: rgba(255,138,59,.6);
+}
 .loop-bar > * { flex: none; }
 .loop-bar .cop-rec { width: auto; padding: 0 9px; white-space: nowrap; }
 .loop-scrub { width: 190px; min-width: 80px; accent-color: #ffb74d; flex: 0 1 190px; }

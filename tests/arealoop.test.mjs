@@ -76,3 +76,65 @@ test('a sensible pace and a sensible number of requests at once', () => {
   assert.ok(AT_ONCE >= 2 && AT_ONCE <= 8);
   assert.ok(SPEEDS.every((s) => s > 0 && s <= 30));
 });
+
+// ── Heat contrast ─────────────────────────────────────────────
+
+import { HEAT_DIM, HEAT_MARGIN, flame, heatContrast, redPercentile } from '../frontend/js/arealoop.js';
+
+/** A frame of `n` pixels at one colour, with some pixels set apart. */
+function frame(n, background, special = {}) {
+  const data = new Uint8ClampedArray(n * 4);
+  for (let i = 0; i < n; i += 1) {
+    const [r, g, b] = special[i] ?? background;
+    data.set([r, g, b, 255], i * 4);
+  }
+  return data;
+}
+const px = (data, i) => Array.from(data.slice(i * 4, i * 4 + 3));
+
+test('a fire stands out: its pixel goes to the flame scale, the scene goes dark', () => {
+  const data = frame(1000, [80, 40, 60], { 7: [235, 120, 40] });
+  const got = heatContrast(data);
+  assert.equal(got.background, 80);
+  assert.equal(got.hot, 1);
+  const [r, g] = px(data, 7);
+  assert.ok(r >= 240 && g >= 180, `the fire is bright: ${px(data, 7)}`);
+  assert.deepEqual(px(data, 0), [80 * HEAT_DIM, 40 * HEAT_DIM, 60 * HEAT_DIM]);
+});
+
+test('hotter is whiter, the order the RGB itself uses for intensity', () => {
+  const [, warmG, warmB] = flame(0.2);
+  const [, hotG, hotB] = flame(0.9);
+  assert.ok(hotG > warmG && hotB > warmB);
+  assert.deepEqual(flame(1).map(Math.round), [255, 255, 235]);
+});
+
+test('a frame with no fire stays plain rather than inventing speckle', () => {
+  // Noise a few levels either side of the background is not heat.
+  const special = {};
+  for (let i = 0; i < 1000; i += 37) special[i] = [80 + (i % 9), 40, 60];
+  const data = frame(1000, [80, 40, 60], special);
+  assert.equal(heatContrast(data).hot, 0);
+});
+
+test('heat is judged against the frame itself, not a fixed level', () => {
+  // A sunlit desert at noon is warmer everywhere than a fire at night. The
+  // same reading that is a fire against a cold night is background here.
+  const night = frame(1000, [60, 20, 20], { 3: [150, 60, 20] });
+  const noon = frame(1000, [170, 120, 90], { 3: [150, 60, 20] });
+  assert.equal(heatContrast(night).hot, 1);
+  assert.equal(heatContrast(noon).hot, 0);
+});
+
+test('only pixels a clear margin above the background count', () => {
+  const just = frame(1000, [100, 40, 40], { 5: [100 + HEAT_MARGIN, 40, 40] });
+  assert.equal(heatContrast(just).hot, 0);
+  const clear = frame(1000, [100, 40, 40], { 5: [100 + HEAT_MARGIN + 20, 40, 40] });
+  assert.equal(heatContrast(clear).hot, 1);
+});
+
+test('the background is the frame\'s own 97th percentile of red', () => {
+  const special = {};
+  for (let i = 0; i < 20; i += 1) special[i] = [250, 0, 0];
+  assert.equal(redPercentile(frame(1000, [50, 0, 0], special), 0.97), 50);
+});
