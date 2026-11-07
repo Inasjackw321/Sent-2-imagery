@@ -9,6 +9,8 @@ its own desktop window. No terminal needed.
     python app.py --tab           open in a browser tab instead
     python app.py --install-shortcut    add it to your applications menu
     python app.py --sen2sr        install PyTorch for the SEN2SR button
+    python app.py --sr4rs         set up TensorFlow for the SR4RS button
+    python app.py --s2dr3         install the Gamma Earth client for the S2DR3 button
     python app.py --serve         serve only, for the Electron shell (see electron/)
 """
 
@@ -125,6 +127,22 @@ def main() -> int:
         print("  Installing PyTorch and SEN2SR — a large download, once…")
         worked = neural.install()
         print("  Done." if worked else f"  Failed: {neural.status()['install_error']}")
+        _pause_if_double_clicked()
+        return 0 if worked else 1
+
+    if "--sr4rs" in argv:
+        from backend import sr4rs
+        print("  Setting up SR4RS's TensorFlow runtime — a large download, once…")
+        worked = sr4rs.install()
+        print("  Done." if worked else f"  Failed: {sr4rs.status()['install_error']}")
+        _pause_if_double_clicked()
+        return 0 if worked else 1
+
+    if "--s2dr3" in argv:
+        from backend import s2dr3
+        print("  Installing the Gamma Earth client for S2DR3…")
+        worked = s2dr3.install()
+        print("  Done." if worked else f"  Failed: {s2dr3.status()['install_error']}")
         _pause_if_double_clicked()
         return 0 if worked else 1
 

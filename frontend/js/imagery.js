@@ -13,7 +13,9 @@ import { api } from './api.js';
 import { canMake, changePlan, changeSaid, sarLabel, sarPolarisations }
   from './sarview.js';
 import { openMarkup } from './markup.js';
-import { sen2srRefusal } from './sen2sr.js';
+import {
+  NETWORKS, networkOf, networkRefusal, plainRequest, priceSaid,
+} from './sen2sr.js';
 import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
 import * as adjust from './adjust.js';
@@ -209,7 +211,11 @@ export function initImagery() {
     btn.addEventListener('click', () => setMode(btn.dataset.mode)));
   $('#searchDates').addEventListener('click', runSearch);
   $('#showBtn').addEventListener('click', showImagery);
-  $('#sen2srBtn').addEventListener('click', enhanceWithSen2sr);
+  $('#sen2srBtn').addEventListener('click', () => enhanceWithNetwork('sen2sr'));
+  // Optional chaining: a page still cached from before these buttons existed
+  // must not stop the rest of the panel from starting.
+  $('#sr4rsBtn')?.addEventListener('click', () => enhanceWithNetwork('sr4rs'));
+  $('#s2dr3Btn')?.addEventListener('click', enhanceWithS2dr3);
   $('#downloadPng').addEventListener('click', () => downloadImagery('png'));
   $('#downloadTif').addEventListener('click', () => downloadImagery('geotiff'));
   // The picture that is on screen, opened in a box to be marked up. Not a
@@ -817,79 +823,225 @@ function sync() {
   $('#markupBtn').disabled = !store.image?.src;
   $('#animateBtn').disabled = chosenDates().length < 2;
   $('#copyRegion').disabled = $('#saveRegion').disabled = !store.image;
-  syncSen2sr();
+  syncNetworks();
 }
 
-// ── SEN2SR ─────────────────────────────────────────────────────
+// ── The networks: SEN2SR, SR4RS, S2DR3 ─────────────────────────
 
-function syncSen2sr() {
-  const button = $('#sen2srBtn');
-  if (!button) return;
-  const why = sen2srRefusal(lastRequest, store.config);
-  const done = Boolean(lastRequest?.sen2sr);
-  button.disabled = Boolean(why) || done;
-  button.classList.toggle('is-on', done);
-  button.textContent = done ? '✦ Enhanced with SEN2SR' : '✦ Enhance with SEN2SR';
-  button.title = why || (done
-    ? 'This picture is the SEN2SR one. Show the date again for the original.'
-    : 'Redraw this date at 2.5 m with the SEN2SR network (ESA OpenSR)');
+const NET_BUTTONS = { sen2sr: '#sen2srBtn', sr4rs: '#sr4rsBtn', s2dr3: '#s2dr3Btn' };
+
+// One network at a time: each is minutes of work, and two at once would only
+// race to replace the same picture.
+let busyNetwork = '';
+
+function syncNetworks() {
+  const drawn = networkOf(lastRequest);
+  for (const [key, selector] of Object.entries(NET_BUTTONS)) {
+    const button = $(selector);
+    if (!button) continue;
+    const net = NETWORKS[key];
+    const why = networkRefusal(key, lastRequest, store.config);
+    const done = drawn === key;
+    button.disabled = Boolean(why) || done || busyNetwork !== '';
+    button.classList.toggle('is-on', done);
+    button.textContent = done ? `✓ ${net.name}` : net.name;
+    button.title = why || (done
+      ? `This picture is the ${net.name} one. Show the date again for the original.`
+      : net.does);
+  }
 }
 
 const INSTALL_POLL_MS = 3000;
 const INSTALL_GIVE_UP_MS = 45 * 60 * 1000;
 
-async function waitForInstall() {
+/** Poll a status call until it stops installing, saying each step. */
+async function waitForInstall(check, said) {
   const until = Date.now() + INSTALL_GIVE_UP_MS;
   for (;;) {
-    const state = await api.sen2sr();
+    const state = await check();
     if (!state.installing || Date.now() > until) return state;
+    if (state.step) $('#busyText').textContent = `${said} — ${state.step}…`;
     await new Promise((done) => setTimeout(done, INSTALL_POLL_MS));
   }
 }
 
+const INSTALLS = {
+  sen2sr: {
+    check: () => api.sen2sr(),
+    start: () => api.sen2srInstall(),
+    ask: (state) => 'SEN2SR runs on PyTorch, which is not installed yet.\n\n'
+      + 'Install it now? It is a one-off download of a few hundred MB '
+      + '(more with an NVIDIA card) and can take several minutes.\n\n'
+      + `Or run this yourself:\n${state.command}`,
+    busy: 'Installing PyTorch and SEN2SR — a one-off download, this takes a few minutes',
+    working: (state) => (state.weights
+      ? 'Enhancing with SEN2SR…'
+      : 'Fetching the SEN2SR weights (3 MB, once) and enhancing…'),
+  },
+  sr4rs: {
+    check: () => api.sr4rs(),
+    start: () => api.sr4rsInstall(),
+    ask: (state) => 'SR4RS runs on TensorFlow, which is not set up yet.\n\n'
+      + 'TensorFlow does not support every Python, so SR4RS gets a small runtime '
+      + 'of its own, kept beside the app (made with uv, which fetches a Python '
+      + 'TensorFlow supports if this one is too new). It is a one-off download '
+      + 'of several hundred MB and can take several minutes.\n\n'
+      + `Set it up now? Or run this yourself:\n${state.command}`,
+    busy: 'Setting up SR4RS — a one-off download, this takes a few minutes',
+    working: (state) => (state.weights
+      ? 'Enhancing with SR4RS — about a minute for a large area…'
+      : 'Fetching the SR4RS model from INRAE (once) and enhancing…'),
+  },
+};
+
+/** Install what a network needs, after asking. Resolves to its status. */
+async function ensureInstalled(key) {
+  const how = INSTALLS[key];
+  let state = await how.check();
+  if (state.installed) return state;
+  if (!state.installing) {
+    if (!window.confirm(how.ask(state))) return null;
+    state = await how.start();
+  }
+  state = await withBusy(`${how.busy}…`, () => waitForInstall(how.check, how.busy));
+  if (!state.installed) throw new Error(state.install_error || 'the install did not finish');
+  toast(`${NETWORKS[key].name} is installed.`, 'ok');
+  return state;
+}
+
+/** The picture a network drew, put on the map the way any other one is. */
+async function showNetworkPicture(body, what) {
+  const data = await withBusy(what, () => api.render(body));
+  const element = await loadImage(data.image);
+  lastRequest = body;
+  setImage({ src: data.image, meta: data.meta, element, request: body });
+  sync();
+  toast(describeResult(data.meta), 'ok');
+  reportCoverage(data.meta, 1);
+}
+
 /**
- * The picture on screen, redrawn through SEN2SR.
+ * The picture on screen, redrawn through SEN2SR or SR4RS, on this computer.
  *
- * PyTorch is not part of the app -- it is a large download only this button
- * needs -- so the first press offers to install it, and says what it is
- * about to fetch before fetching it.
+ * Neither PyTorch nor TensorFlow is part of the app -- each is a large
+ * download only its button needs -- so the first press offers to install it,
+ * and says what it is about to fetch before fetching it.
  */
-async function enhanceWithSen2sr() {
-  if (sen2srRefusal(lastRequest, store.config)) return;
-  const base = lastRequest;
+async function enhanceWithNetwork(key) {
+  const base = plainRequest(lastRequest);
+  if (networkRefusal(key, base, store.config) || busyNetwork) return;
+  busyNetwork = key;
+  syncNetworks();
   try {
-    let state = await api.sen2sr();
+    const state = await ensureInstalled(key);
+    if (!state) return;
+    await showNetworkPicture({ ...base, [key]: true }, INSTALLS[key].working(state));
+  } catch (err) {
+    toast(`${NETWORKS[key].name} could not enhance this: ${err.message}`, 'err');
+  } finally {
+    busyNetwork = '';
+    syncNetworks();
+  }
+}
+
+/**
+ * Ask for a Gamma Earth API key, in a box of the page's own rather than
+ * prompt(), which would show it in plain text. Resolves to the key or null.
+ * The key goes to this app's backend, which holds it in memory only.
+ */
+function askForKey(site) {
+  return new Promise((resolve) => {
+    const box = document.createElement('dialog');
+    box.className = 'key-box';
+    box.innerHTML = `
+      <form method="dialog">
+        <h3>Your Gamma Earth API key</h3>
+        <p>S2DR3 runs on Gamma Earth's servers, on your account. The free tier
+          covers a number of scenes; <a href="${site}" target="_blank"
+          rel="noopener">get a key here</a>.</p>
+        <p>The key stays in this app's memory until you close it — it is not
+          saved anywhere and goes only to api.gamma.earth.</p>
+        <input type="password" name="key" autocomplete="off" spellcheck="false"
+               placeholder="API key" required minlength="8" maxlength="256">
+        <div class="row">
+          <button class="btn btn-ghost btn-sm" value="cancel" formnovalidate>Cancel</button>
+          <button class="btn btn-primary btn-sm" value="ok">Use this key</button>
+        </div>
+      </form>`;
+    document.body.append(box);
+    box.addEventListener('close', () => {
+      const key = box.returnValue === 'ok' ? box.querySelector('input').value.trim() : '';
+      box.remove();
+      resolve(key || null);
+    });
+    box.showModal();
+  });
+}
+
+const JOB_POLL_MS = 5000;
+const JOB_GIVE_UP_MS = 70 * 60 * 1000;
+
+async function waitForJob() {
+  const until = Date.now() + JOB_GIVE_UP_MS;
+  for (;;) {
+    const state = await api.s2dr3();
+    const job = state.job ?? {};
+    if (job.state !== 'running') return job;
+    if (Date.now() > until) throw new Error('it is taking over an hour — try again later');
+    if (job.said) $('#busyText').textContent = job.said;
+    await new Promise((done) => setTimeout(done, JOB_POLL_MS));
+  }
+}
+
+/**
+ * The picture on screen's area and date, made by S2DR3 at 1 m.
+ *
+ * Run by Gamma Earth, not here: it needs the person's own API key, and it
+ * costs credits. So the price is fetched first (free) and shown, and nothing
+ * is charged unless that price is agreed to -- the backend holds the job to
+ * it.
+ */
+async function enhanceWithS2dr3() {
+  const base = plainRequest(lastRequest);
+  if (networkRefusal('s2dr3', base, store.config) || busyNetwork) return;
+  busyNetwork = 's2dr3';
+  syncNetworks();
+  try {
+    let state = await api.s2dr3();
     if (!state.installed) {
       if (!state.installing) {
         const go = window.confirm(
-          'SEN2SR runs on PyTorch, which is not installed yet.\n\n'
-          + 'Install it now? It is a one-off download of a few hundred MB '
-          + '(more with an NVIDIA card) and can take several minutes.\n\n'
-          + `Or run this yourself:\n${state.command}`);
+          'S2DR3 is run by Gamma Earth on their servers. The app talks to it '
+          + 'with their small Python client (gamma-earth-s2dr), which is not '
+          + `installed yet.\n\nInstall it now? Or run this yourself:\n${state.command}`);
         if (!go) return;
-        state = await api.sen2srInstall();
+        await api.s2dr3Install();
       }
-      state = await withBusy(
-        'Installing PyTorch and SEN2SR — a one-off download, this takes a few minutes…',
-        waitForInstall);
-      if (!state.installed) {
-        throw new Error(state.install_error || 'the install did not finish');
-      }
-      toast('SEN2SR is installed.', 'ok');
+      state = await withBusy('Installing the Gamma Earth client…',
+        () => waitForInstall(() => api.s2dr3(), 'Installing the Gamma Earth client'));
+      if (!state.installed) throw new Error(state.install_error || 'the install did not finish');
     }
-    const body = { ...base, sen2sr: true };
-    const what = state.weights
-      ? 'Enhancing with SEN2SR…'
-      : 'Fetching the SEN2SR weights (3 MB, once) and enhancing…';
-    const data = await withBusy(what, () => api.render(body));
-    const element = await loadImage(data.image);
-    lastRequest = body;
-    setImage({ src: data.image, meta: data.meta, element, request: body });
-    sync();
-    toast(describeResult(data.meta), 'ok');
-    reportCoverage(data.meta, 1);
+    if (!state.has_key) {
+      const key = await askForKey(state.site);
+      if (!key) return;
+      await api.s2dr3Key(key);
+    }
+    const quote = await withBusy('Asking Gamma Earth what this would cost…',
+      () => api.s2dr3Quote(base.aoi, base.scene));
+    const go = window.confirm(
+      `S2DR3 of this area on ${fmt.date(quote.date)}, at 1 m.\n\n${priceSaid(quote)}\n\n`
+      + (quote.owned ? 'Fetch it?' : 'Gamma Earth makes it on their servers, which takes '
+        + 'several minutes. Go ahead and spend the credits?'));
+    if (!go) return;
+    await api.s2dr3Start(quote.token, quote.credits);
+    const job = await withBusy('Starting S2DR3…', waitForJob);
+    if (job.state !== 'done') throw new Error(job.error || 'the job did not finish');
+    await showNetworkPicture({ ...base, s2dr3: true }, 'Drawing the S2DR3 picture…');
   } catch (err) {
-    toast(`SEN2SR could not enhance this: ${err.message}`, 'err');
+    toast(`S2DR3 could not enhance this: ${err.message}`, 'err');
+  } finally {
+    busyNetwork = '';
+    syncNetworks();
   }
 }
 
@@ -1006,8 +1158,9 @@ function describeResult(meta) {
   if (meta.change) return `${changeSaid(meta, fmt.date)} — ${size}`;
   // Said every time: the detail in this one was drawn by a network that has
   // learnt what 2.5 m imagery looks like, not measured by the satellite.
-  if (meta.sen2sr) {
-    return `SEN2SR ×${meta.sen2sr.scale} · ${fmt.date(meta.scene.date)} — ${size} · `
+  const net = meta.s2dr3 || meta.neural || meta.sen2sr;
+  if (net) {
+    return `${net.name ?? 'SEN2SR'} ×${net.scale} · ${fmt.date(meta.scene.date)} — ${size} · `
       + 'fine detail is the network\u2019s estimate, not a measurement';
   }
   if (!sr && meta.scenes?.length > 1 && meta.source?.kind === 'radar') {

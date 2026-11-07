@@ -143,10 +143,15 @@
     <div class="sidebar-foot">
       <div class="plan" id="planSummary"></div>
       <button class="btn btn-primary btn-big" id="showBtn" disabled>Show imagery</button>
-      <button class="btn btn-ghost btn-sen2sr" id="sen2srBtn" disabled
-              title="Redraw this Sentinel-2 date at 2.5 m with the SEN2SR network">
-        ✦ Enhance with SEN2SR
-      </button>
+      <div class="nets" role="group" aria-label="Enhance with a network">
+        <span class="nets-label">✦ Enhance</span>
+        <button class="btn btn-ghost btn-sm btn-sen2sr" id="sen2srBtn" data-net="sen2sr" disabled
+                title="Redraw this Sentinel-2 date at 2.5 m with the SEN2SR network">SEN2SR</button>
+        <button class="btn btn-ghost btn-sm btn-sen2sr" id="sr4rsBtn" data-net="sr4rs" disabled
+                title="Redraw this Sentinel-2 date at 2.5 m with the SR4RS network">SR4RS</button>
+        <button class="btn btn-ghost btn-sm btn-sen2sr" id="s2dr3Btn" data-net="s2dr3" disabled
+                title="Redraw this Sentinel-2 date at 1 m with Gamma Earth's S2DR3">S2DR3</button>
+      </div>
       <div class="row">
         <button class="btn btn-ghost btn-sm" id="downloadPng" disabled>Save PNG</button>
         <button class="btn btn-ghost btn-sm" id="downloadTif" disabled>GeoTIFF</button>
