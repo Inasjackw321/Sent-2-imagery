@@ -99,11 +99,6 @@ export const api = {
   sen2srInstall: () => request('/api/sen2sr/install', { body: {} }),
   sr4rs: () => request('/api/sr4rs', { method: 'GET' }),
   sr4rsInstall: () => request('/api/sr4rs/install', { body: {} }),
-  s2dr3: () => request('/api/s2dr3', { method: 'GET' }),
-  s2dr3Install: () => request('/api/s2dr3/install', { body: {} }),
-  s2dr3Key: (key) => request('/api/s2dr3/key', { body: { key } }),
-  s2dr3Quote: (aoi, scene) => request('/api/s2dr3/quote', { body: { aoi, scene } }),
-  s2dr3Start: (token, credits) => request('/api/s2dr3/start', { body: { token, credits } }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
   // The province borders, for drawing a picture with no map tiles in it.
   // Asked for once, when somebody exports one -- see trackershot.js.

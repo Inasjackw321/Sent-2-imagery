@@ -1,4 +1,4 @@
-"""Run the SR4RS and S2DR3 button tests alongside the Python ones.
+"""Run the SEN2SR and SR4RS button tests alongside the Python ones.
 
 The backend refuses what a network cannot do; this half decides whether
 each button is offered at all.

@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from . import (
     aisstream, animate as animation, composite, config, connectivity, copernicus,
     fires, gazetteer, mtg, neural,
-    ollama, passes, s2dr3, seismic, service, shake, sr4rs, stac, tracker, version, vessels,
+    ollama, passes, seismic, service, shake, sr4rs, stac, tracker, version, vessels,
     weather,
 )
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
@@ -999,9 +999,7 @@ def filename_stem(stem: str, fallback: str = "imagery") -> str:
 
 
 def _network_stem(meta: dict) -> str:
-    """'_sen2sr', '_sr4rs', '_s2dr3' or nothing: which network drew it."""
-    if meta.get("s2dr3"):
-        return "_s2dr3"
+    """'_sen2sr', '_sr4rs' or nothing: which network drew it."""
     network = (meta.get("neural") or {}).get("network") or (
         "sen2sr" if meta.get("sen2sr") else "")
     return f"_{network}" if network else ""
@@ -1083,66 +1081,6 @@ def sr4rs_install(request: Request, body: dict = Body(default={})) -> dict:
     if not sr4rs.runtime_ready():
         sr4rs.install_in_background()
     return sr4rs.status()
-
-
-@app.get("/api/s2dr3")
-def s2dr3_status() -> dict:
-    """Whether the S2DR3 button can run, whether a key is held (never the key
-    itself), and how the current job is going."""
-    return s2dr3.status()
-
-
-def _page_only(request: Request) -> None:
-    if not _from_this_page(request):
-        raise HTTPException(status_code=403, detail="Not from this app's page")
-
-
-@app.post("/api/s2dr3/install")
-def s2dr3_install(request: Request, body: dict = Body(default={})) -> dict:
-    """Install the Gamma Earth client (gamma-earth-s2dr): the fixed list in
-    s2dr3.NEEDS, nothing from the body."""
-    _page_only(request)
-    if s2dr3.missing():
-        s2dr3.install_in_background()
-    return s2dr3.status()
-
-
-@app.post("/api/s2dr3/key")
-def s2dr3_key(request: Request, body: dict = Body(...)) -> dict:
-    """Hold a Gamma Earth API key in memory for this run, or forget it.
-
-    Never written anywhere and never sent back: the answer says only whether
-    there is one.
-    """
-    _page_only(request)
-    try:
-        s2dr3.set_key(body.get("key") or None)
-    except s2dr3.S2dr3Error as exc:
-        raise _fail(exc, 400)
-    return s2dr3.status()
-
-
-@app.post("/api/s2dr3/quote")
-def s2dr3_quote(request: Request, body: dict = Body(...)) -> dict:
-    """What S2DR3 of the picture's area and date would cost. Spends nothing."""
-    _page_only(request)
-    try:
-        aoi = normalise_aoi(body.get("aoi"))
-        return s2dr3.quote(geometry_bounds(aoi), (body.get("scene") or {}).get("date"))
-    except (ValueError, s2dr3.S2dr3Error) as exc:
-        raise _fail(exc, 400)
-
-
-@app.post("/api/s2dr3/start")
-def s2dr3_start(request: Request, body: dict = Body(...)) -> dict:
-    """Make the quoted product, charged to the key's account at no more than
-    the price quoted. Only from this app's page: a stray POST from any website
-    must never be able to spend somebody's credits."""
-    _page_only(request)
-    try:
-        return s2dr3.start(body.get("token"), body.get("credits"))
-    except s2dr3.S2dr3Error as exc:
-        raise _fail(exc, 400)
 
 
 @app.post("/api/render")

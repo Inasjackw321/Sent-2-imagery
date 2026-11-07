@@ -10,7 +10,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from . import composite, config, enhance, neural, raster, s2dr3, sar, sr4rs, stac, superres
+from . import composite, config, enhance, neural, raster, sar, sr4rs, stac, superres
 from .geo import (Grid, circle_to_polygon, geodesic_area_km2, geometry_bounds,
                   normalise_aoi)
 
@@ -348,70 +348,6 @@ def _neural_gather(scene: dict, geometry, req: dict, network: str = "sen2sr"):
     return out, cloud, grid, report
 
 
-def s2dr3_render(req: dict, geometry, scenes: list[dict], sat: dict, mode: str) -> dict:
-    """The S2DR3 product already fetched for this area and date, on the map.
-
-    Nothing is asked of Gamma Earth here: the product was made and downloaded
-    by s2dr3.start() after its price was agreed to. This only draws it -- so
-    the PNG and GeoTIFF downloads come out of the same picture.
-    """
-    if sat["key"] != "sentinel-2" or len(scenes) != 1 or mode == "change":
-        raise RenderError("S2DR3 redraws one Sentinel-2 date.")
-    bounds = geometry_bounds(geometry)
-    date = str(scenes[0].get("date") or "")[:10]
-    product = s2dr3.product_for(bounds, date)
-    if product is None:
-        raise RenderError("There is no S2DR3 picture of this area for "
-                          f"{date} yet — press the S2DR3 button to make one.")
-    probe = Grid(bounds, config.DEFAULT_SIZE)
-    dim = round(max(probe.width, probe.height) * probe.ground_res_m / s2dr3.RES_M)
-    grid = Grid(bounds, min(config.MAX_SIZE, max(config.MIN_SIZE, dim)))
-    rgb, valid = s2dr3.read_rgb(product["path"], grid)
-    if req.get("clip"):
-        valid &= ~raster.aoi_mask(geometry, grid)      # True outside the shape
-    if not valid.any():
-        raise RenderError("The S2DR3 picture does not cover this area.")
-    rgba = composite.to_rgba(rgb, valid)
-    fmt = req.get("format", "png")
-    if fmt in ("geotiff", "float_geotiff"):
-        payload, media = composite.encode_geotiff(rgba, grid), "image/tiff"
-    elif fmt == "jpeg":
-        payload, media = composite.encode_jpeg(rgba), "image/jpeg"
-    else:
-        payload, media = composite.encode_png(rgba), "image/png"
-    report = {"name": "S2DR3", "credit": s2dr3.CREDIT, "scale": s2dr3.SCALE,
-              "resolution_m": s2dr3.RES_M, "product": product.get("id"),
-              "product_date": product.get("date")}
-    scene = {k: v for k, v in scenes[0].items() if k != "assets"}
-    meta = {
-        "scene": scene,
-        "scenes": [{"id": scene.get("id"), "date": scene.get("date"),
-                    "cloud": scene.get("cloud")}],
-        "satellite": sat["key"],
-        "source": satellite_meta(sat["key"], scenes[0].get("source")),
-        "grid": grid.as_dict(),
-        "mode": "composite",
-        "preset": "true_color",
-        "index": None,
-        "label": "True colour · S2DR3",
-        "bands": [], "band_labels": [], "sar": None, "sar_merge": None,
-        "sar_swapped": "", "stretch": None, "legend": None, "stats": None,
-        "histogram": None,
-        "enhancements": [f"S2DR3 ×{s2dr3.SCALE} — {s2dr3.RES_M:g} m (Gamma Earth)"],
-        "composite_report": None, "superres": None, "sen2sr": None,
-        "neural": None,
-        "s2dr3": report,
-        "native_res_m": sat["resolution"],
-        "effective_res_m": s2dr3.RES_M,
-        "cloud_masked_pct": 0.0,
-        "valid_pct": round(float(valid.mean()) * 100, 2),
-        "aoi_area_km2": round(geodesic_area_km2(geometry), 4),
-        "scene_area_km2": round(grid.width * grid.height * grid.ground_res_m ** 2 / 1e6, 4),
-        "demo": False,
-    }
-    return {"bytes": payload, "media_type": media, "meta": meta}
-
-
 def change_pair(scenes: list[dict], geometry, grid, req: dict):
     """Two passes, and what is different between them. Returns (dB, band, pair).
 
@@ -532,8 +468,6 @@ def render(req: dict) -> dict:
 
     sat = satellite_of(scenes)
     mode = req.get("mode", "composite")
-    if req.get("s2dr3"):
-        return s2dr3_render(req, geometry, scenes, sat, mode)
     # A radar scene opens on a picture it can make. The satellite's default is
     # a VV/VH one, and over sea ice the instrument transmits HH instead -- so
     # for those the default used to be a picture out of bands the scene does

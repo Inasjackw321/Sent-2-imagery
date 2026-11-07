@@ -14,7 +14,7 @@ import { canMake, changePlan, changeSaid, sarLabel, sarPolarisations }
   from './sarview.js';
 import { openMarkup } from './markup.js';
 import {
-  NETWORKS, networkOf, networkRefusal, plainRequest, priceSaid,
+  NETWORKS, networkOf, networkRefusal, plainRequest,
 } from './sen2sr.js';
 import { store, on, setImage } from './store.js';
 import { updateOverlay } from './map.js';
@@ -212,10 +212,9 @@ export function initImagery() {
   $('#searchDates').addEventListener('click', runSearch);
   $('#showBtn').addEventListener('click', showImagery);
   $('#sen2srBtn').addEventListener('click', () => enhanceWithNetwork('sen2sr'));
-  // Optional chaining: a page still cached from before these buttons existed
+  // Optional chaining: a page still cached from before this button existed
   // must not stop the rest of the panel from starting.
   $('#sr4rsBtn')?.addEventListener('click', () => enhanceWithNetwork('sr4rs'));
-  $('#s2dr3Btn')?.addEventListener('click', enhanceWithS2dr3);
   $('#downloadPng').addEventListener('click', () => downloadImagery('png'));
   $('#downloadTif').addEventListener('click', () => downloadImagery('geotiff'));
   // The picture that is on screen, opened in a box to be marked up. Not a
@@ -826,9 +825,9 @@ function sync() {
   syncNetworks();
 }
 
-// ── The networks: SEN2SR, SR4RS, S2DR3 ─────────────────────────
+// ── The networks: SEN2SR and SR4RS ─────────────────────────────
 
-const NET_BUTTONS = { sen2sr: '#sen2srBtn', sr4rs: '#sr4rsBtn', s2dr3: '#s2dr3Btn' };
+const NET_BUTTONS = { sen2sr: '#sen2srBtn', sr4rs: '#sr4rsBtn' };
 
 // One network at a time: each is minutes of work, and two at once would only
 // race to replace the same picture.
@@ -938,107 +937,6 @@ async function enhanceWithNetwork(key) {
     await showNetworkPicture({ ...base, [key]: true }, INSTALLS[key].working(state));
   } catch (err) {
     toast(`${NETWORKS[key].name} could not enhance this: ${err.message}`, 'err');
-  } finally {
-    busyNetwork = '';
-    syncNetworks();
-  }
-}
-
-/**
- * Ask for a Gamma Earth API key, in a box of the page's own rather than
- * prompt(), which would show it in plain text. Resolves to the key or null.
- * The key goes to this app's backend, which holds it in memory only.
- */
-function askForKey(site) {
-  return new Promise((resolve) => {
-    const box = document.createElement('dialog');
-    box.className = 'key-box';
-    box.innerHTML = `
-      <form method="dialog">
-        <h3>Your Gamma Earth API key</h3>
-        <p>S2DR3 runs on Gamma Earth's servers, on your account. The free tier
-          covers a number of scenes; <a href="${site}" target="_blank"
-          rel="noopener">get a key here</a>.</p>
-        <p>The key stays in this app's memory until you close it — it is not
-          saved anywhere and goes only to api.gamma.earth.</p>
-        <input type="password" name="key" autocomplete="off" spellcheck="false"
-               placeholder="API key" required minlength="8" maxlength="256">
-        <div class="row">
-          <button class="btn btn-ghost btn-sm" value="cancel" formnovalidate>Cancel</button>
-          <button class="btn btn-primary btn-sm" value="ok">Use this key</button>
-        </div>
-      </form>`;
-    document.body.append(box);
-    box.addEventListener('close', () => {
-      const key = box.returnValue === 'ok' ? box.querySelector('input').value.trim() : '';
-      box.remove();
-      resolve(key || null);
-    });
-    box.showModal();
-  });
-}
-
-const JOB_POLL_MS = 5000;
-const JOB_GIVE_UP_MS = 70 * 60 * 1000;
-
-async function waitForJob() {
-  const until = Date.now() + JOB_GIVE_UP_MS;
-  for (;;) {
-    const state = await api.s2dr3();
-    const job = state.job ?? {};
-    if (job.state !== 'running') return job;
-    if (Date.now() > until) throw new Error('it is taking over an hour — try again later');
-    if (job.said) $('#busyText').textContent = job.said;
-    await new Promise((done) => setTimeout(done, JOB_POLL_MS));
-  }
-}
-
-/**
- * The picture on screen's area and date, made by S2DR3 at 1 m.
- *
- * Run by Gamma Earth, not here: it needs the person's own API key, and it
- * costs credits. So the price is fetched first (free) and shown, and nothing
- * is charged unless that price is agreed to -- the backend holds the job to
- * it.
- */
-async function enhanceWithS2dr3() {
-  const base = plainRequest(lastRequest);
-  if (networkRefusal('s2dr3', base, store.config) || busyNetwork) return;
-  busyNetwork = 's2dr3';
-  syncNetworks();
-  try {
-    let state = await api.s2dr3();
-    if (!state.installed) {
-      if (!state.installing) {
-        const go = window.confirm(
-          'S2DR3 is run by Gamma Earth on their servers. The app talks to it '
-          + 'with their small Python client (gamma-earth-s2dr), which is not '
-          + `installed yet.\n\nInstall it now? Or run this yourself:\n${state.command}`);
-        if (!go) return;
-        await api.s2dr3Install();
-      }
-      state = await withBusy('Installing the Gamma Earth client…',
-        () => waitForInstall(() => api.s2dr3(), 'Installing the Gamma Earth client'));
-      if (!state.installed) throw new Error(state.install_error || 'the install did not finish');
-    }
-    if (!state.has_key) {
-      const key = await askForKey(state.site);
-      if (!key) return;
-      await api.s2dr3Key(key);
-    }
-    const quote = await withBusy('Asking Gamma Earth what this would cost…',
-      () => api.s2dr3Quote(base.aoi, base.scene));
-    const go = window.confirm(
-      `S2DR3 of this area on ${fmt.date(quote.date)}, at 1 m.\n\n${priceSaid(quote)}\n\n`
-      + (quote.owned ? 'Fetch it?' : 'Gamma Earth makes it on their servers, which takes '
-        + 'several minutes. Go ahead and spend the credits?'));
-    if (!go) return;
-    await api.s2dr3Start(quote.token, quote.credits);
-    const job = await withBusy('Starting S2DR3…', waitForJob);
-    if (job.state !== 'done') throw new Error(job.error || 'the job did not finish');
-    await showNetworkPicture({ ...base, s2dr3: true }, 'Drawing the S2DR3 picture…');
-  } catch (err) {
-    toast(`S2DR3 could not enhance this: ${err.message}`, 'err');
   } finally {
     busyNetwork = '';
     syncNetworks();
@@ -1158,7 +1056,7 @@ function describeResult(meta) {
   if (meta.change) return `${changeSaid(meta, fmt.date)} — ${size}`;
   // Said every time: the detail in this one was drawn by a network that has
   // learnt what 2.5 m imagery looks like, not measured by the satellite.
-  const net = meta.s2dr3 || meta.neural || meta.sen2sr;
+  const net = meta.neural || meta.sen2sr;
   if (net) {
     return `${net.name ?? 'SEN2SR'} ×${net.scale} · ${fmt.date(meta.scene.date)} — ${size} · `
       + 'fine detail is the network\u2019s estimate, not a measurement';

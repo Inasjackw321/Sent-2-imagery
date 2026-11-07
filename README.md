@@ -395,18 +395,16 @@ rather than on the ground. Tying its radius to the merge scale adds 41% more
 fine detail at the same fidelity to the truth, which is the difference between
 sharpening the picture and sharpening the grain.
 
-### Or one date, redrawn by a network: SEN2SR, SR4RS or S2DR3
+### Or one date, redrawn by a network: SEN2SR or SR4RS
 
-Under *Show imagery* is a row of three: **✦ Enhance — SEN2SR · SR4RS ·
-S2DR3**. Each redraws the Sentinel-2 date on screen finer than the satellite
-measured it, and each picture says which network drew it and that the fine
+Under *Show imagery* is a row of two: **✦ Enhance — SEN2SR · SR4RS**. Each
+redraws the Sentinel-2 date on screen finer than the satellite measured it, and each picture says which network drew it and that the fine
 detail is its estimate, not a measurement.
 
 | | runs | detail | needs |
 |---|---|---|---|
 | SEN2SR | on this computer | 2.5 m, RGB + NIR | PyTorch (offered on first press) |
 | SR4RS | on this computer | 2.5 m, RGB + NIR | TensorFlow, in a runtime of its own (offered on first press) |
-| S2DR3 | on Gamma Earth's servers | 1 m true colour | a Gamma Earth API key and credits |
 
 **SEN2SR** redraws the Sentinel-2 date
 on screen at **2.5 m** with [SEN2SR](https://github.com/ESAOpenSR/SEN2SR)
@@ -443,22 +441,6 @@ and installs TensorFlow into it. Several hundred MB, once; or run
 and is checked for being a SavedModel before it is unpacked. It runs as a
 child process, tiled exactly as the project's own `sr.py` tiles it, so it
 needs neither OTBTF nor the Orfeo ToolBox. A large area takes a minute or two.
-
-**S2DR3** ([Gamma Earth](https://www.gamma.earth/)) goes to 1 m, but the model
-is closed and runs only on Gamma Earth's servers, with your own API key and
-credits (there is a free tier — [get a key](https://www.gamma.earth/try-it-free/)).
-The app uses their official Python client, `gamma-earth-s2dr`, offered on the
-first press (or `python app.py --s2dr3`). Pressing it:
-
-1. asks for your key once per run — it is held in memory only, never saved,
-   and goes only to `api.gamma.earth`;
-2. asks Gamma Earth what this area on this date would cost, which is free, and
-   **shows you the price**; a product your account already owns costs nothing;
-3. only if you say yes, starts the job, at no more than that price, follows it
-   (a few minutes) and downloads the 1 m true-colour GeoTIFF.
-
-The product is kept, so showing it again, or saving it as PNG or GeoTIFF,
-does not cost anything again.
 
 ---
 
@@ -768,7 +750,6 @@ backend/
   neural.py      SEN2SR: the 2.5 m network, its install, its weights, tiling
   sr4rs.py       SR4RS: its TensorFlow runtime (uv), its model, the child run
   sr4rs_worker.py  run inside that runtime: loads the SavedModel, tiles 160 → 512
-  s2dr3.py       S2DR3: Gamma Earth's API — price first, key in memory, the job
   app.py         FastAPI routes and static hosting
   config.py      the satellites, band table, composites, indices, colour maps
   stac.py        catalogue search over both collections, plus synthetic scenes
@@ -792,7 +773,6 @@ tests/
   test_superres.py   registration, fusion, restoration, the resolution gain
   test_neural.py     SEN2SR: tiling, masking, the native read, install, weights
   test_sr4rs.py      SR4RS: tiling, its runtime, the model zip, the render
-  test_s2dr3.py      S2DR3: the price, the key, the job, the product, the routes
   test_enhance.py    compositing and the image-quality tools
   test_launcher.py   ports, windows, shortcuts, manifest and service worker
   test_satellites.py radar reading and colour, the two satellites apart, overpasses
@@ -853,10 +833,9 @@ Internet access is needed for imagery, map tiles, place search, overpass
 prediction and fire data — but not in `--demo` mode.
 
 Optional: PyTorch, `safetensors` and `sen2sr`, for the SEN2SR button; `uv`
-and a TensorFlow runtime of its own for SR4RS; `gamma-earth-s2dr` for S2DR3.
-The app offers to install each when its button is first pressed, or
-`python app.py --sen2sr`, `--sr4rs` or `--s2dr3` does it from a terminal.
-`GE_API_KEY` in the environment is used for S2DR3 if set.
+and a TensorFlow runtime of its own for SR4RS. The app offers to install each
+when its button is first pressed, or `python app.py --sen2sr` or `--sr4rs`
+does it from a terminal.
 
 Two optional settings, both with sensible defaults. `FIRMS_MAP_KEY` — a free
 key from NASA — makes the fire layer ask for just the rectangle on screen
