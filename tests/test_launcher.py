@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import launcher  # noqa: E402
 
+ROOT = Path(__file__).resolve().parent.parent
+
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
 
 
@@ -114,6 +116,8 @@ def test_app_window_returns_none_without_a_browser(monkeypatch):
 
 def test_linux_desktop_entry_is_valid(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    # Without the Electron app installed; with it, see the test below.
+    monkeypatch.setattr(launcher, "electron_binary", lambda *a, **k: None)
     note = launcher._install_linux_desktop()
 
     entry = tmp_path / ".local" / "share" / "applications" / f"{launcher.APP_ID}.desktop"
@@ -195,3 +199,105 @@ def test_service_worker_shell_lists_real_files():
         if path == "/":
             continue
         assert (FRONTEND / path.lstrip("/")).exists(), f"{path} is precached but missing"
+
+
+# ── A shortcut that says what went wrong ───────────────────────
+
+
+def test_a_shortcut_opens_the_electron_app_when_it_is_installed(tmp_path, monkeypatch):
+    exe = tmp_path / "electron" / "node_modules" / "electron" / "dist" / "electron.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    assert launcher.electron_binary(tmp_path, "Windows") == exe
+    assert launcher.electron_binary(tmp_path, "Linux") is None
+    monkeypatch.setattr(launcher, "ROOT", tmp_path)
+    monkeypatch.setattr(launcher, "electron_binary", lambda *a, **k: exe)
+    assert launcher._launch_command() == [str(exe), str(tmp_path / "electron")]
+
+
+def test_and_app_py_when_it_is_not(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "electron_binary", lambda *a, **k: None)
+    assert launcher._launch_command()[-1].endswith("app.py")
+
+
+def test_with_no_console_the_output_goes_to_a_log(tmp_path, monkeypatch):
+    """A desktop shortcut runs app.py with pythonw: no console, so every
+    error went nowhere and a failure to start looked like nothing at all."""
+    import importlib.util
+    import sys as real_sys
+    spec = importlib.util.spec_from_file_location("app_entry", ROOT / "app.py")
+    app_entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(app_entry)
+    log = tmp_path / "earthviewer.log"
+    monkeypatch.setattr(app_entry, "LOG", log)
+    monkeypatch.setattr(real_sys, "stdout", None)
+    monkeypatch.setattr(real_sys, "stderr", None)
+    assert app_entry._attach_log() is True
+    print("written where it can be read")
+    real_sys.stdout.flush()
+    assert "written where it can be read" in log.read_text(encoding="utf-8")
+
+
+def test_with_a_console_nothing_is_redirected(tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("app_entry2", ROOT / "app.py")
+    app_entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(app_entry)
+    monkeypatch.setattr(app_entry, "LOG", tmp_path / "x.log")
+    assert app_entry._attach_log() is False
+    assert not (tmp_path / "x.log").exists()
+
+
+def test_no_console_does_not_wait_for_a_key_nobody_can_press(monkeypatch):
+    import importlib.util
+    import sys as real_sys
+    spec = importlib.util.spec_from_file_location("app_entry3", ROOT / "app.py")
+    app_entry = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(app_entry)
+    monkeypatch.setattr(real_sys, "stdin", None)
+    app_entry._pause_if_double_clicked()   # used to raise "lost sys.stdin"
+
+
+def test_a_failed_start_with_no_console_writes_the_log(tmp_path):
+    """The whole path, for real: app.py run with no output streams, made to
+    fail, leaves the reason in the log."""
+    import subprocess
+    import sys as real_sys
+    runner = tmp_path / "run_without_console.py"
+    runner.write_text(
+        "import runpy, sys\n"
+        "sys.stdout = sys.stderr = None\n"
+        f"sys.argv = [{str(ROOT / 'app.py')!r}, '--port', '1']\n"
+        # Make main() fail the way a missing dependency would.
+        "import builtins\n"
+        "real = builtins.__import__\n"
+        "def broken(name, *a, **k):\n"
+        "    if name == 'backend' or name.startswith('backend.'):\n"
+        "        raise RuntimeError('the engine would not load')\n"
+        "    return real(name, *a, **k)\n"
+        "builtins.__import__ = broken\n"
+        f"runpy.run_path({str(ROOT / 'app.py')!r}, run_name='__main__')\n",
+        encoding="utf-8")
+    log = ROOT / "earthviewer.log"
+    before = log.read_text(encoding="utf-8") if log.exists() else ""
+    try:
+        done = subprocess.run([real_sys.executable, str(runner)], cwd=ROOT,
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == 1
+        added = log.read_text(encoding="utf-8")[len(before):]
+        assert "the engine would not load" in added
+    finally:
+        if before:
+            log.write_text(before, encoding="utf-8")
+        elif log.exists():
+            log.unlink()
+
+
+def test_with_electron_installed_the_desktop_entry_opens_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    exe = tmp_path / "electron-bin"
+    monkeypatch.setattr(launcher, "electron_binary", lambda *a, **k: exe)
+    launcher._install_linux_desktop()
+    text = (tmp_path / ".local" / "share" / "applications"
+            / f"{launcher.APP_ID}.desktop").read_text()
+    assert f"Exec={exe} {launcher.ROOT / 'electron'}" in text

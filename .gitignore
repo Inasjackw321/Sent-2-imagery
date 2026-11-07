@@ -10,3 +10,4 @@ env/
 .vscode/
 electron/node_modules/
 electron/dist/
+earthviewer.log

@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -235,7 +236,9 @@ def _flag_value(argv: list[str], flag: str, default, cast=str):
 
 def _pause_if_double_clicked() -> None:
     """Keep the window open long enough to read the error."""
-    if sys.stdin and sys.stdin.isatty():
+    # No console at all (pythonw, a shortcut): nothing to keep open, and
+    # input() would raise "lost sys.stdin" on top of whatever went wrong.
+    if sys.stdin is None or sys.stdin.isatty():
         return
     try:
         input("\nPress return to close.")
@@ -251,8 +254,51 @@ def _wait_for_enter() -> None:
         pass
 
 
-if __name__ == "__main__":
+# Where a run with no console writes what it would have printed. In the
+# project folder, so it is easy to find and send.
+LOG = ROOT / "earthviewer.log"
+
+
+def _attach_log() -> bool:
+    """Send output to LOG when there is no console. Returns whether it did.
+
+    A desktop shortcut runs this with pythonw, which has no console: every
+    message, and every error, went nowhere, so a failure to start looked
+    exactly like a shortcut that did nothing.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return False
     try:
-        raise SystemExit(main())
+        stream = open(LOG, "a", encoding="utf-8", errors="replace", buffering=1)
+    except OSError:
+        return False
+    stream.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+    sys.stdout = sys.stderr = stream
+    return True
+
+
+def _say_it_failed(said: str) -> None:
+    """A message box, where there is no console to read an error in."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, said, "EarthViewer", 0x10)
+    except Exception:  # noqa: BLE001 - nothing more can be done without a console
+        pass
+
+
+if __name__ == "__main__":
+    logged = _attach_log()
+    try:
+        code = main()
     except KeyboardInterrupt:
         print("\n  Stopped.")
+        code = 0
+    except Exception:  # noqa: BLE001 - reported below rather than lost
+        import traceback
+        traceback.print_exc()
+        code = 1
+    if code and logged:
+        _say_it_failed(f"EarthViewer could not start.\n\nWhat went wrong was written to:\n{LOG}")
+    raise SystemExit(code)

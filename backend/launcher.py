@@ -196,8 +196,26 @@ def install_shortcut() -> str:
     return _install_linux_desktop()
 
 
+def electron_binary(root: Path = ROOT, system: str | None = None) -> Path | None:
+    """The Electron that `npm install` put in electron/, if it is there."""
+    system = system or platform.system()
+    dist = root / "electron" / "node_modules" / "electron" / "dist"
+    exe = {"Windows": dist / "electron.exe",
+           "Darwin": dist / "Electron.app" / "Contents" / "MacOS" / "Electron"
+           }.get(system, dist / "electron")
+    return exe if exe.exists() else None
+
+
 def _launch_command() -> list[str]:
-    """app.py is the double-click entry point: it self-installs, then opens."""
+    """What a shortcut runs: the Electron app if it is installed, else app.py.
+
+    Electron first, because once somebody has installed it that is the app
+    they are using -- and because its shell reports a failure in a window,
+    where app.py run without a console used to fail without a word.
+    """
+    electron = electron_binary()
+    if electron:
+        return [str(electron), str(ROOT / "electron")]
     return [sys.executable, str(ROOT / "app.py")]
 
 
@@ -281,6 +299,11 @@ def _install_windows_shortcut() -> str:
         if not folder.exists():
             continue
         link = folder / f"{APP_NAME}.lnk"
+        electron = electron_binary(system="Windows")
+        if electron:
+            target, argument, workdir = electron, ROOT / "electron", ROOT / "electron"
+        else:
+            target, argument, workdir = _pythonw(), ROOT / "app.py", ROOT
         script = (
             "$s=(New-Object -COM WScript.Shell).CreateShortcut('{link}');"
             "$s.TargetPath='{python}';"
@@ -289,8 +312,8 @@ def _install_windows_shortcut() -> str:
             "$s.IconLocation='{icon}';"
             "$s.Description='Sentinel-2 imagery studio';"
             "$s.Save()"
-        ).format(link=link, python=_pythonw(), script_path=ROOT / "app.py",
-                 root=ROOT, icon=icon)
+        ).format(link=link, python=target, script_path=argument,
+                 root=workdir, icon=icon)
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             check=False, capture_output=True,
