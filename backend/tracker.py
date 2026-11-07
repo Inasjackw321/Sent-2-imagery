@@ -152,10 +152,11 @@ ALERT_MINUTES = 90
 # Russia blank, on a night the channel had a dozen regions under warning.
 #
 # So a subject's warning stays until the channel lifts THAT subject, and this
-# is only the ceiling for a stand-down that never came: a regime that has
-# really run ten hours will have been re-declared by then, and a re-declaration
+# is the ceiling for a stand-down that never came. Two hours, asked for: it was
+# ten, and a missed stand-down left a region shaded most of a night. A regime
+# that really runs longer is re-declared by the channel, and a re-declaration
 # starts the clock again.
-HOLD_HOURS = 10
+HOLD_HOURS = 2
 HOLD_MINUTES = HOLD_HOURS * 60
 
 # How many pages back to read a channel's history on a cold start, at about

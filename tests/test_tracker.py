@@ -5700,16 +5700,21 @@ class TestARussianWarningLastsUntilItIsCalledOff:
     # ── how long ────────────────────────────────────────────────
 
     def test_a_warning_outlives_the_old_ninety_minutes(self, monkeypatch):
-        self.night(monkeypatch, [(180, "Тамбовская область Опасность по БПЛА")])
+        self.night(monkeypatch, [(105, "Тамбовская область Опасность по БПЛА")])
         assert self.shaded() == ["Тамбовская область"]
         one = [e for e in tracker.current()["events"] if e["kind"] == "alert"][0]
         assert one["until_lifted"] is True
         assert one["shape"] is not None
 
     def test_its_row_stays_as_long_as_its_mark(self, monkeypatch):
-        self.night(monkeypatch, [(180, "Тамбовская область Опасность по БПЛА")])
+        self.night(monkeypatch, [(105, "Тамбовская область Опасность по БПЛА")])
         rows = [a for a in tracker.current()["alerts"] if a["kind"] == "alert"]
         assert [a["place"] for a in rows] == ["Тамбовская область"]
+
+    def test_two_hours_at_most(self):
+        # Asked for: a stand-down the channel never posts leaves a region
+        # shaded for two hours, not most of a night.
+        assert tracker.HOLD_MINUTES == 120
 
     def test_but_not_for_ever(self, monkeypatch):
         self.night(monkeypatch, [
@@ -5728,8 +5733,8 @@ class TestARussianWarningLastsUntilItIsCalledOff:
 
     def test_a_stand_down_lifts_the_region_it_names(self, monkeypatch):
         self.night(monkeypatch, [
-            (200, "Саратовская область\nПензенская область\nОпасность по БПЛА"),
-            (100, "Саратовская область Отбой опасности по БПЛА"),
+            (110, "Саратовская область\nПензенская область\nОпасность по БПЛА"),
+            (60, "Саратовская область Отбой опасности по БПЛА"),
         ])
         assert self.shaded() == ["Пензенская область"]
 
@@ -5822,8 +5827,8 @@ class TestARussianWarningLastsUntilItIsCalledOff:
         asked = self.night(
             monkeypatch,
             [(5, "Подписывайтесь")] * 3,
-            older=[(400, "Республика Татарстан Опасность по БПЛА")]
-            + [(300 - i, "Подписывайтесь") for i in range(30)])
+            older=[(115, "Республика Татарстан Опасность по БПЛА")]
+            + [(110 - i * 3, "Подписывайтесь") for i in range(30)])
         assert self.shaded() == ["Республика Татарстан"]
         assert len(asked) >= 2
 
@@ -5835,7 +5840,7 @@ class TestARussianWarningLastsUntilItIsCalledOff:
         assert len(asked) == 1
 
     def test_and_at_the_page_ceiling(self, monkeypatch):
-        filler = [(300 - i / 10, "Подписывайтесь") for i in range(2000)]
+        filler = [(115 - i / 100, "Подписывайтесь") for i in range(2000)]
         asked = self.night(monkeypatch, [(5, "Подписывайтесь")], older=filler)
         assert len(asked) == tracker.HISTORY_PAGES
 

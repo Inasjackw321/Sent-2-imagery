@@ -2321,7 +2321,7 @@ function paintDock() {
     }
     lines.push('Warnings over a named Russian region are held until the '
       + 'channel stands that region down, and at most '
-      + `${Math.round((feed?.hold_minutes ?? 600) / 60)} hours. `
+      + `${Math.round((feed?.hold_minutes ?? 120) / 60)} hours. `
       + 'Other warnings are held for '
       + `${Math.round((feed?.keep?.alert ?? 90))} minutes, fading as they age; `
       + `things in flight go after ${feed?.keep_minutes ?? 20} minutes, when `
