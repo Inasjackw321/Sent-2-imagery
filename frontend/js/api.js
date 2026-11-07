@@ -49,6 +49,8 @@ export const api = {
   // Names the Ollama model to read with; null lets the backend choose from
   // whatever is installed.
   copernicus: () => request('/api/copernicus', { method: 'GET' }),
+  copernicusHistory: (layer, hours = 48) => request(
+    `/api/copernicus/history?${new URLSearchParams({ layer, hours })}`, { method: 'GET' }),
 
   // Several passes as one animated GIF. Raw, because it comes back as
   // a file rather than as JSON with a data URL in it -- a dozen frames

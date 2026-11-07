@@ -121,6 +121,27 @@ def newest_time(extent: str) -> dt.datetime | None:
     return newest
 
 
+def oldest_time(extent: str) -> dt.datetime | None:
+    """The earliest instant a WMS time dimension covers -- how far back it goes.
+
+    The same three shapes as newest_time: the start of an interval, or the
+    first of a list once sorted.
+    """
+    if not extent:
+        return None
+    stamps: list[dt.datetime] = []
+    for part in extent.replace("\n", "").split(","):
+        piece = part.strip().split("/")[0].strip()
+        if not piece:
+            continue
+        try:
+            when = dt.datetime.fromisoformat(piece.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        stamps.append(when if when.tzinfo else when.replace(tzinfo=dt.timezone.utc))
+    return min(stamps) if stamps else None
+
+
 _PERIOD = re.compile(
     r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<mins>\d+)M)?"
     r"(?:(?P<secs>\d+)S)?)?$", re.I)
@@ -194,6 +215,9 @@ def _entry(node: ET.Element, name: str,
         # WMS does, and this costs nothing.
         "time_default": _stamp(newest) if newest else default,
         "newest": _stamp(newest) if newest else None,
+        # How far back the service holds it, so a request for history knows
+        # where to stop rather than finding out one refused frame at a time.
+        "oldest": _stamp(oldest) if (oldest := oldest_time(extent)) else None,
     }
 
 

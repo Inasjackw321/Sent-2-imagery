@@ -485,8 +485,118 @@ def layers(refresh: bool = False) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# History over an area
+# ---------------------------------------------------------------------------
+#
+# The panel's loop is the last eight hours over whatever is on screen. This is
+# the other question: the last two days over one place you mark out -- a fire
+# you want to watch start, spread and die down, which is what the Fire
+# Temperature RGB is for. One picture of the area per frame rather than tiles
+# of the whole view, so two days is a few hundred small images rather than
+# tens of thousands of tiles.
+
+# The longest history offered, in hours. Two days at Meteosat's ten minutes is
+# 288 frames.
+MOST_HISTORY_HOURS = 48
+
+# And a ceiling on the frames whatever the cadence, so a layer declaring a
+# one-minute period cannot turn a request into thousands of fetches.
+MOST_HISTORY_FRAMES = 300
+
+
+def find_layer(found: dict[str, Any], layer_id: str) -> tuple[dict, dict] | None:
+    """(family, layer) for one id in a catalogue answer, or None."""
+    for family in found.get("families", []):
+        for entry in family.get("layers", []):
+            if entry.get("id") == layer_id:
+                return family, entry
+    return None
+
+
+def history_frames(entry: dict[str, Any], hours: float,
+                   now: dt.datetime | None = None) -> list[dict[str, str]]:
+    """Every frame of one staring layer over the last `hours`, oldest first.
+
+    Counted back from its newest frame at its own cadence, and stopped at the
+    oldest the service says it holds -- a frame from before that is a refusal
+    waiting to happen, so it is not asked for.
+    """
+    newest = entry.get("newest")
+    if not newest:
+        return []
+    end = dt.datetime.fromisoformat(newest.replace("Z", "+00:00"))
+    step = dt.timedelta(minutes=max(1, int(entry.get("step_minutes") or 10)))
+    hours = min(max(float(hours), 0.0), MOST_HISTORY_HOURS)
+    # Two days at ten minutes is 288 frames: the newest and the 287 before it.
+    count = int(dt.timedelta(hours=hours) / step)
+    held = entry.get("oldest")
+    if held:
+        start = dt.datetime.fromisoformat(held.replace("Z", "+00:00"))
+        count = min(count, int((end - start) / step) + 1)
+    count = max(0, min(count, MOST_HISTORY_FRAMES))
+    moments = [end - step * n for n in range(count - 1, -1, -1)]
+    return [{"label": when.strftime("%H:%M"), "at": when.date().isoformat(),
+             "time": mtg._stamp(when)} for when in moments]
+
+
+def history(found: dict[str, Any], layer_id: str, hours: float) -> dict[str, Any]:
+    """The frames to fetch for an area loop of one layer. See history_frames."""
+    hit = find_layer(found, layer_id)
+    if hit is None:
+        raise CopernicusError(f"{layer_id} is not a layer EUMETSAT is serving now")
+    family, entry = hit
+    if family.get("spans_days"):
+        raise CopernicusError(
+            f"{family['short']} flies over once a day; only a satellite that "
+            "stares, like Meteosat, has frames close enough to play")
+    frames = history_frames(entry, hours)
+    return {"layer": layer_id, "title": entry.get("title"),
+            "step_minutes": entry.get("step_minutes"), "frames": frames,
+            "hours": round(len(frames) * (entry.get("step_minutes") or 10) / 60, 1),
+            "wms": TILES, "attribution": found.get("attribution")}
+
+
+# ---------------------------------------------------------------------------
 # Demo
 # ---------------------------------------------------------------------------
+
+
+def demo_tile(asked: dict[str, str]) -> bytes:
+    """A stand-in frame for the demo build: a dark scene and a fire that moves.
+
+    Placed in map coordinates rather than in the picture, so a tile and a
+    whole-area image of the same time agree, and moving with the time asked
+    for, so a loop of them visibly plays.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    params = tile_params(asked)
+    width = min(max(int(params.get("width", 256) or 256), 16), 2048)
+    height = min(max(int(params.get("height", 256) or 256), 16), 2048)
+    try:
+        x0, y0, x1, y1 = (float(v) for v in params.get("bbox", "").split(","))
+    except ValueError:
+        x0, y0, x1, y1 = -2e7, -2e7, 2e7, 2e7
+    try:
+        when = dt.datetime.fromisoformat(params.get("time", "").replace("Z", "+00:00"))
+        phase = (when.timestamp() / 600) % 288 / 288
+    except ValueError:
+        phase = 0.0
+    xs = np.linspace(x0, x1, width)[None, :]
+    ys = np.linspace(y1, y0, height)[:, None]
+    # A fire that circles a point in the eastern Mediterranean once a demo day.
+    cx = 3.9e6 + 1.5e5 * np.cos(2 * np.pi * phase)
+    cy = 3.6e6 + 1.5e5 * np.sin(2 * np.pi * phase)
+    heat = np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * 4e4 ** 2))
+    ground = 0.5 + 0.5 * np.sin(xs / 9e4) * np.cos(ys / 7e4)
+    rgb = np.stack([60 + 40 * ground + 195 * heat, 20 + 30 * ground + 220 * heat,
+                    70 + 40 * ground + 60 * heat], axis=-1)
+    out = io.BytesIO()
+    Image.fromarray(np.clip(rgb, 0, 255).astype("uint8"), "RGB").save(out, "PNG")
+    return out.getvalue()
 
 
 def demo() -> dict[str, Any]:
@@ -501,6 +611,7 @@ def demo() -> dict[str, Any]:
         family = by_key["mtg"] if not spans else by_key["sentinel-3"]
         return {"id": ident, "title": title, "time_default": stamp,
                 "newest": stamp, "age_minutes": minutes, "live": True,
+                "oldest": mtg._stamp(when - dt.timedelta(days=3)),
                 # Built the same way the live answer builds them, so the
                 # offline build cannot grow a scrubber the real one never
                 # shows -- or lose one it does.

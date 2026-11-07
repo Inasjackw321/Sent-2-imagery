@@ -1624,6 +1624,65 @@ body.is-walled { overflow: hidden; }
   font-size: 10.5px; color: var(--ink-dim);
 }
 .cop-fade input { flex: 1; accent-color: #4ce0b3; }
+.cop-area {
+  width: 100%; padding: 6px 8px; cursor: pointer; font: inherit; font-size: 11px;
+  color: #ffd9a3; background: rgba(255,183,77,.1);
+  border: 1px solid rgba(255,183,77,.45); border-radius: 6px;
+}
+.cop-area:hover { background: rgba(255,183,77,.2); }
+
+/* The 48-hour area loop. The loading card sits at the side of the map, under
+   the zoom buttons; the player sits above the live layer's own time bar. */
+.loop-load {
+  position: absolute; left: 12px; top: 92px; z-index: 640; width: 230px;
+  padding: 10px 12px; border-radius: 10px;
+  background: rgba(13,16,21,.94); border: 1px solid var(--line);
+  box-shadow: 0 6px 22px rgba(0,0,0,.45); font-size: 11.5px; color: var(--ink);
+}
+.loop-load-head { display: flex; align-items: center; gap: 8px; }
+.loop-load-head b {
+  flex: 1; font-size: 12px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.loop-load-sub { margin: 2px 0 8px; font-size: 10.5px; color: var(--ink-dim); }
+.loop-track {
+  height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg-3);
+}
+.loop-fill {
+  width: 0; height: 100%; border-radius: 3px; transition: width .2s;
+  background: linear-gradient(90deg, #ff8a3b, #ffd166);
+}
+.loop-count {
+  margin-top: 6px; font-size: 10.5px; color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+.loop-x {
+  padding: 2px 7px; cursor: pointer; font: inherit; font-size: 11px; line-height: 1.4;
+  background: transparent; color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.loop-x:hover { color: var(--ink); border-color: #3a4a66; }
+.loop-bar {
+  position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%);
+  z-index: 621; display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-radius: 11px; max-width: calc(100% - 32px);
+  background: rgba(13,16,21,.94); border: 1px solid rgba(255,183,77,.4);
+  box-shadow: 0 6px 22px rgba(0,0,0,.45);
+}
+.loop-bar button:disabled, .loop-bar input:disabled { opacity: .4; cursor: not-allowed; }
+.loop-tag { font-size: 11px; color: #ffd9a3; white-space: nowrap; }
+.loop-bar > * { flex: none; }
+.loop-bar .cop-rec { width: auto; padding: 0 9px; white-space: nowrap; }
+.loop-scrub { width: 190px; min-width: 80px; accent-color: #ffb74d; flex: 0 1 190px; }
+.loop-when { min-width: 132px; font-size: 13px; white-space: nowrap; }
+.loop-speed {
+  padding: 4px 6px; font: inherit; font-size: 11px; color: var(--ink);
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: 7px;
+}
+@media (max-width: 720px) {
+  .loop-scrub { width: 110px; }
+  .loop-tag, .loop-speed { display: none; }
+}
 .cop-count { font-size: 11.5px; color: var(--ink); }
 .cop-note { font-size: 10px; color: var(--ink-faint); line-height: 1.45; }
 

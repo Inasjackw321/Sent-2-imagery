@@ -17,7 +17,8 @@
 // once every five days; Sentinel-3 sees the whole planet every day; Meteosat
 // sees Europe every ten minutes, including at night.
 import { api } from './api.js';
-import { $, el } from './ui.js';
+import { startAreaLoop } from './arealoop.js';
+import { $, el, toast } from './ui.js';
 
 // How often to ask the backend what the newest frame is.
 //
@@ -50,9 +51,13 @@ let playing = null;
 let showAll = false;
 let timer = null;
 let problem = '';
+// The map's box tool, handed in by map.js -- which imports this module, so
+// importing it back would be a cycle.
+let pickArea = null;
 
-export function initCopernicus(leafletMap) {
+export function initCopernicus(leafletMap, { pickArea: pick } = {}) {
   map = leafletMap;
+  pickArea = pick ?? null;
   // Under the cloud mask and the radar, over the basemap. This is a picture
   // of the ground and the air above it, so it belongs at the bottom of the
   // things drawn on top of the map.
@@ -325,6 +330,17 @@ function buildDock() {
           onclick: () => { showAll = !showAll; buildDock(); },
         }, showAll ? `Just the everyday ${listedEveryday(families)}`
           : `All ${held} products`)
+        : null,
+      // Two days of the chosen product over one place, played and saved as a
+      // video. Only for a satellite that stares: a day-apart orbit strip has
+      // no 48 hours of frames to play.
+      chosen?.layer?.animates && pickArea
+        ? el('button', {
+          class: 'cop-area', id: 'copArea',
+          title: `Drag a box on the map: every ${shortName(chosen.layer)} frame over it `
+            + 'from the last 48 hours, to play and save as a video',
+          onclick: askForArea,
+        }, '⬚ Highlight an area · last 48 h')
         : null,
       families.length
         ? el('label', { class: 'cop-fade' }, 'Fade',
@@ -854,6 +870,16 @@ function shortName(layer) {
     .replace(/\s*\(.*\)\s*$/, '')
     .trim()
     .slice(0, 18) || layer.id.split(':').pop().slice(0, 18);
+}
+
+/** Arm the box tool; the box drawn becomes a 48-hour loop of the chosen product. */
+function askForArea() {
+  const layer = chosen?.layer;
+  if (!layer || !pickArea) return;
+  const armed = pickArea((bounds) => {
+    startAreaLoop({ layerId: layer.id, title: layer.title, bounds });
+  }, 'box');
+  if (armed) toast('Drag a box over the area to fetch its last 48 hours.');
 }
 
 function toggle() {

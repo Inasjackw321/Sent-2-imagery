@@ -644,6 +644,23 @@ def copernicus_layers(refresh: bool = Query(False)) -> dict:
         raise _fail(exc)
 
 
+@app.get("/api/copernicus/history")
+def copernicus_history(layer: str = Query(..., min_length=1, max_length=200),
+                       hours: float = Query(48, gt=0, le=48)) -> dict:
+    """Every frame of one Meteosat product over the last `hours`, oldest first.
+
+    For the area loop: the page fetches one picture of the area per frame
+    through /api/copernicus/wms, so two days of a fire is a few hundred small
+    images that this app holds once fetched.
+    """
+    try:
+        found = copernicus.demo() if config.DEMO_MODE else copernicus.layers()
+        return copernicus.history(found, layer, hours)
+    except copernicus.CopernicusError as exc:
+        raise _fail(exc, 400 if "not a layer" in str(exc) or "flies over" in str(exc)
+                    else 502)
+
+
 @app.get("/api/copernicus/wms")
 def copernicus_tile(request: Request) -> Response:
     """One WMS tile, fetched through this app rather than from the browser.
@@ -660,6 +677,10 @@ def copernicus_tile(request: Request) -> Response:
     video would both be impossible. Not a convenience: the feature cannot
     exist without it.
     """
+    if config.DEMO_MODE:
+        # Stand-ins, as the panel says: the demo build reaches nobody.
+        return Response(content=copernicus.demo_tile(dict(request.query_params)),
+                        media_type="image/png")
     try:
         body, kind, _hit = copernicus.tile(dict(request.query_params))
     except copernicus.CopernicusError as exc:

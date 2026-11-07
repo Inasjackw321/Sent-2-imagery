@@ -928,3 +928,87 @@ class TestEightHoursInHand:
         entry = [f for f in got["families"] if f["key"] == "mtg"][0]["layers"][0]
         assert entry["step_minutes"] == 15
         assert len(entry["frames"]) == copernicus.FRAMES_OFFERED
+
+
+class TestTwoDaysOverAnArea:
+    """"Highlight an area and download all Fire Temperature RGB from it over the
+    last 48 hours, and make a video."
+
+    The backend's part is the list of frames: every one of a staring layer's
+    frames over the last two days, at its own cadence, stopping where the
+    service says its holdings start.
+    """
+
+    def entry(self, **extra):
+        return {"id": "mtg_fd:rgb_firetemperature", "newest": "2026-11-07T12:00:00Z",
+                "step_minutes": 10, **extra}
+
+    def test_two_days_at_ten_minutes_is_288_frames(self):
+        got = copernicus.history_frames(self.entry(), 48)
+        assert len(got) == 288
+        assert got[-1]["time"] == "2026-11-07T12:00:00Z"
+        assert got[0]["time"] == "2026-11-05T12:10:00Z"
+
+    def test_oldest_first_and_evenly_spaced(self):
+        got = copernicus.history_frames(self.entry(), 2)
+        times = [dt.datetime.fromisoformat(f["time"].replace("Z", "+00:00")) for f in got]
+        assert times == sorted(times)
+        assert {b - a for a, b in zip(times, times[1:])} == {dt.timedelta(minutes=10)}
+
+    def test_it_stops_where_the_service_stops_holding(self):
+        got = copernicus.history_frames(self.entry(oldest="2026-11-07T00:00:00Z"), 48)
+        assert got[0]["time"] == "2026-11-07T00:00:00Z"
+        assert len(got) == 73
+
+    def test_its_own_cadence(self):
+        assert len(copernicus.history_frames(self.entry(step_minutes=15), 48)) == 192
+
+    def test_never_more_than_two_days_or_the_frame_ceiling(self):
+        assert len(copernicus.history_frames(self.entry(), 500)) == 288
+        fast = copernicus.history_frames(self.entry(step_minutes=1), 48)
+        assert len(fast) == copernicus.MOST_HISTORY_FRAMES
+
+    def test_nothing_without_a_newest_frame(self):
+        assert copernicus.history_frames({"id": "x"}, 48) == []
+
+    def test_only_a_satellite_that_stares(self):
+        with pytest.raises(copernicus.CopernicusError, match="once a day"):
+            copernicus.history(copernicus.demo(), "copernicus:s3_olci_truecolour", 48)
+
+    def test_only_a_layer_that_is_being_served(self):
+        with pytest.raises(copernicus.CopernicusError, match="not a layer"):
+            copernicus.history(copernicus.demo(), "mtg_fd:nothing", 48)
+
+    def test_the_demo_answers_in_full(self):
+        got = copernicus.history(copernicus.demo(), "mtg_fd:rgb_firetemperature", 48)
+        assert len(got["frames"]) == 288 and got["hours"] == 48.0
+        assert got["wms"] == copernicus.TILES
+
+    def test_how_far_back_is_read_from_the_catalogue(self):
+        assert mtg.oldest_time(
+            "2026-11-05T00:00:00Z/2026-11-07T12:00:00Z/PT10M") == dt.datetime(
+            2026, 11, 5, tzinfo=dt.timezone.utc)
+        assert mtg.oldest_time(
+            "2026-11-07T12:00:00Z,2026-11-06T12:00:00Z") == dt.datetime(
+            2026, 11, 6, 12, tzinfo=dt.timezone.utc)
+        assert mtg.oldest_time("") is None
+
+    def test_the_route(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from backend import app as app_module, config
+        monkeypatch.setattr(config, "DEMO_MODE", True)
+        client = TestClient(app_module.app)
+        ok = client.get("/api/copernicus/history",
+                        params={"layer": "mtg_fd:rgb_firetemperature"})
+        assert ok.status_code == 200 and len(ok.json()["frames"]) == 288
+        assert client.get("/api/copernicus/history",
+                          params={"layer": "mtg_fd:nothing"}).status_code == 400
+        assert client.get("/api/copernicus/history",
+                          params={"layer": "x", "hours": 49}).status_code == 422
+
+    def test_the_demo_draws_a_whole_area_picture_that_moves(self, monkeypatch):
+        params = {"layers": "x", "width": "300", "height": "200",
+                  "bbox": "3.7e6,3.4e6,4.1e6,3.8e6"}
+        one = copernicus.demo_tile({**params, "time": "2026-11-07T12:00:00Z"})
+        two = copernicus.demo_tile({**params, "time": "2026-11-07T18:00:00Z"})
+        assert one[:8] == b"\x89PNG\r\n\x1a\n" and one != two
