@@ -546,6 +546,29 @@ instead, which is far smaller and a little fresher. A continent's worth of
 detections would bury the browser, so when there are too many the fiercest are
 kept and the panel says how many were left out.
 
+### Detected fires on the Fire Temperature picture
+
+Meteosat's **Fire Temperature RGB** shows where it is hot every ten minutes,
+but a colour is not a measurement: a fire goes red, then yellow, then white as
+it gets hotter, and a sun-warmed surface or a cloud edge can lift a pixel too.
+So over the Fire Temperature picture the FIRMS detections are drawn on top
+with their megawatts — **🔥 87 MW** — following the frame on screen: each is
+shown for six hours after it was made, which is how long it stays the best
+evidence about that place between polar-orbiter passes. Click one for its
+time, sensor, confidence and brightness temperature.
+
+In a **Highlight an area** loop the same marks follow the 48 hours frame by
+frame and go into the saved video, and a card lists the **fire incidents** in
+the box — nearby detections grouped into one fire, biggest first, with its
+peak and summed megawatts and when it was first and last seen. Click one to
+go to the frame where it was strongest.
+
+The loop also looks for hot patches in each frame itself: pixels well above
+the frame's own background, with red leading. One with a detection within
+6 km in the 12 hours before is part of that fire; one without is drawn as
+**? heat** — worth a look, but not a fire until something with a thermal
+sensor agrees.
+
 ## Taking a picture away
 
 **Copy a region** (or **Save region**) arms a highlight tool: drag a box over

@@ -17,6 +17,10 @@ import { el, toast } from './ui.js';
 import {
   FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
 } from './filmtemplate.js';
+import {
+  HOLD_HOURS, MATCH_KM, clusterIncidents, drawMarksOn, hotspots, incidentSaid, marksFor,
+  paintMarks, whenSaid,
+} from './incidents.js';
 
 // How many frames are asked for at once. Enough to keep the line busy, few
 // enough not to queue in front of the live layer's own tiles.
@@ -47,6 +51,8 @@ export function initAreaLoop(leafletMap) {
   // Above the live layer it sits inside, below everything drawn on the map.
   map.createPane('arealoop').style.zIndex = 430;
   map.getPane('arealoop').style.pointerEvents = 'none';
+  // The fire marks over it, clickable, under the popups.
+  map.createPane('loopfires').style.zIndex = 615;
 }
 
 // ── Pure pieces, tested in Node ────────────────────────────────
@@ -245,8 +251,15 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
       color: '#ffb74d', weight: 1.5, fill: false, dashArray: '4 4', interactive: false,
     }).addTo(map),
     overlay: null,
+    // Detected fires (NASA FIRMS, with their megawatts) and the incidents
+    // they group into; drawn for heat products. See incidents.js.
+    fires: [], incidents: [], firesSaid: '', showFires: isHeat(title),
+    marks: L.layerGroup([], { pane: 'loopfires' }).addTo(map),
   };
   const mine = loop;
+  // The live layer hides its own fire marks while a loop is open: two sets,
+  // for two different moments, over the same ground would contradict.
+  window.dispatchEvent(new Event('arealoop'));
   buildLoader();
 
   let plan;
@@ -266,6 +279,8 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   mine.span = spanSaid(plan);
   mine.format = plan.format || 'image/jpeg';
   if (mine.daily) mine.speed = DAILY_SPEED;
+  mine.showFires = mine.contrast;
+  if (mine.contrast) loadFires(mine, mine.daily ? 168 : hours);
   if (!mine.frames.length) {
     toast('EUMETSAT is not holding any frames of that product to fetch.', 'err');
     closeLoop();
@@ -303,7 +318,7 @@ async function fetchFrame(mine, i) {
     const blob = await res.blob();
     if (!blob.type.startsWith('image/')) throw new Error(blob.type);
     const raw = await picture(blob);
-    const hot = await heated(raw.img, mine.format);
+    const { hot, spots } = await heated(raw.img, mine.format);
     if (loop !== mine) {
       URL.revokeObjectURL(raw.url);
       if (hot) URL.revokeObjectURL(hot.url);
@@ -311,6 +326,7 @@ async function fetchFrame(mine, i) {
     }
     frame.raw = raw;
     frame.hot = hot ?? raw;
+    frame.spots = spots;
     Object.assign(frame, mine.contrast ? frame.hot : frame.raw);
     mine.done += 1;
     // The newest frame in hand goes on the map as it arrives, until somebody
@@ -333,8 +349,12 @@ async function picture(blob) {
   return { url, img };
 }
 
-/** The heat-contrasted copy of a frame, or null if the browser will not make one. */
+/**
+ * The heat-contrasted copy of a frame (null if the browser will not make
+ * one), and the frame's own hot patches, found before the contrast changes it.
+ */
 async function heated(img, format = 'image/jpeg') {
+  let spots = [];
   try {
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth;
@@ -342,15 +362,16 @@ async function heated(img, format = 'image/jpeg') {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(img, 0, 0);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    spots = hotspots(pixels.data, canvas.width, canvas.height);
     heatContrast(pixels.data);
     ctx.putImageData(pixels, 0, 0);
     // Saved as it came: a PNG keeps the gaps between a day's swaths clear.
     const blob = await new Promise((done) => canvas.toBlob(done, format, 0.92));
-    return blob ? await picture(blob) : null;
+    return { hot: blob ? await picture(blob) : null, spots };
   } catch {
     // The plain frame is still the frame; losing the contrast is not a
     // reason to lose the picture.
-    return null;
+    return { hot: null, spots };
   }
 }
 
@@ -410,6 +431,7 @@ function show(i) {
   } else {
     loop.overlay.setUrl(url);
   }
+  paintFires();
   refreshBar();
 }
 
@@ -437,6 +459,8 @@ export function closeLoop() {
   if (loop.filming) loop.filming.stop = true;
   loop.overlay?.remove();
   loop.outline?.remove();
+  loop.marks?.remove();
+  document.querySelector('#loopFires')?.remove();
   for (const frame of loop.frames) {
     for (const copy of new Set([frame.raw, frame.hot])) {
       if (copy?.url) URL.revokeObjectURL(copy.url);
@@ -445,6 +469,12 @@ export function closeLoop() {
   loop = null;
   hideLoader();
   document.querySelector('#loopBar')?.remove();
+  window.dispatchEvent(new Event('arealoop'));
+}
+
+/** Whether an area loop is open. */
+export function loopOpen() {
+  return loop !== null;
 }
 
 function buildBar() {
@@ -482,6 +512,12 @@ function buildBar() {
       },
     }, ...SPEEDS.map((sp) => el('option', { value: String(sp), selected: sp === loop.speed },
       `${sp} fps`))),
+    fires: el('button', {
+      class: 'loop-heat',
+      title: 'Detected fires with their megawatts (NASA FIRMS), and hot patches no '
+        + 'detection confirms',
+      onclick: () => setFires(!loop.showFires),
+    }, '🎯 Fires'),
     heat: el('button', {
       class: 'loop-heat',
       title: 'Dim the scene and draw the hottest pixels red to white, so fires stand out',
@@ -497,7 +533,7 @@ function buildBar() {
     el('span', { class: 'loop-tag', title: loop.title },
       loop.daily ? `${loop.frames.length} days · area` : '48 h · area'),
     parts.play, parts.back, parts.scrub, parts.on, parts.when, parts.speed, parts.heat,
-    parts.rec,
+    parts.fires, parts.rec,
     el('button', { class: 'loop-x', title: 'Close the area loop', onclick: closeLoop }, '✕'));
   document.querySelector('.stage')?.append(bar);
   refreshBar();
@@ -521,6 +557,8 @@ function refreshBar() {
   parts.rec.disabled = loop.done < 2;
   parts.heat.classList.toggle('is-on', loop.contrast);
   parts.heat.disabled = filming;
+  parts.fires.classList.toggle('is-on', loop.showFires);
+  parts.fires.textContent = loop.incidents.length ? `🎯 Fires · ${loop.incidents.length}` : '🎯 Fires';
 }
 
 // ── The video ──────────────────────────────────────────────────
@@ -562,9 +600,10 @@ async function film() {
   for (const [index, frame] of held.entries()) {
     if (mine.filming.stop || loop !== mine) break;
     drawTemplate(ctx, {
-      picture: frame.img, title: mine.title, frames: held, index, bounds, where, rings,
+      picture: mine.showFires ? withMarks(mine, frame) : frame.img, title: mine.title, frames: held, index, bounds, where, rings,
       note: `${mine.daily ? `${held.length} days` : `${spanHours(held)} h`} over the highlighted area`
-        + (mine.contrast ? ' · heat contrast on' : ''),
+        + (mine.contrast ? ' · heat contrast on' : '')
+        + (mine.showFires && mine.fires.length ? ' · 🔥 = NASA FIRMS detection, MW' : ''),
       credit: CREDIT,
     });
     show(mine.frames.indexOf(frame));
@@ -585,4 +624,127 @@ async function film() {
   link.download = `${filmName(mine.layerId, held)}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+// ── Detected fires and incidents ───────────────────────────────
+
+function loopBox(mine) {
+  return {
+    west: mine.bounds.getWest(), south: mine.bounds.getSouth(),
+    east: mine.bounds.getEast(), north: mine.bounds.getNorth(),
+  };
+}
+
+/** Every FIRMS detection in the box over the loop's span, grouped into incidents. */
+async function loadFires(mine, hours) {
+  mine.firesSaid = 'Looking for satellite fire detections…';
+  buildFires();
+  try {
+    const got = await api.fires({ ...loopBox(mine), hours: Math.min(168, Math.max(1, hours)) });
+    if (loop !== mine) return;
+    mine.fires = got.fires ?? [];
+    mine.incidents = clusterIncidents(mine.fires);
+    mine.firesSaid = '';
+  } catch (err) {
+    if (loop !== mine) return;
+    mine.firesSaid = `Fire detections unavailable: ${err.message}`;
+  }
+  buildFires();
+  paintFires();
+  refreshBar();
+}
+
+function setFires(on) {
+  if (!loop) return;
+  loop.showFires = on;
+  if (on && !loop.fires.length && !loop.firesSaid) loadFires(loop, loop.daily ? 168 : 48);
+  buildFires();
+  paintFires();
+  refreshBar();
+}
+
+function currentMarks(mine, frame) {
+  return marksFor(mine.fires, frame?.spots, frame?.time, loopBox(mine));
+}
+
+function paintFires() {
+  if (!loop?.marks) return;
+  const frame = loop.frames[loop.at];
+  if (!loop.showFires || !frame) { loop.marks.clearLayers(); return; }
+  const marks = currentMarks(loop, frame);
+  paintMarks(loop.marks, marks, { autoPanPaddingBottomRight: [260, 120] });
+  const line = document.querySelector('#loopFiresNow');
+  if (line) {
+    const bits = [];
+    bits.push(marks.detections.length
+      ? `${marks.detections.length} detected fire${marks.detections.length === 1 ? '' : 's'} on this frame`
+      : 'No detected fire on this frame');
+    if (marks.unconfirmed.length) {
+      bits.push(`${marks.unconfirmed.length} unconfirmed hot patch${marks.unconfirmed.length === 1 ? '' : 'es'}`);
+    }
+    line.textContent = bits.join(' · ');
+  }
+}
+
+/** A copy of the frame with its fire marks drawn on, for the video. */
+function withMarks(mine, frame) {
+  const canvas = document.createElement('canvas');
+  canvas.width = frame.img.naturalWidth;
+  canvas.height = frame.img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(frame.img, 0, 0);
+  drawMarksOn(ctx, canvas.width, canvas.height, currentMarks(mine, frame), loopBox(mine));
+  return canvas;
+}
+
+/** Go to the frame nearest a moment, and to the place. */
+function jumpTo(incident) {
+  if (!loop) return;
+  pause();
+  loop.touched = true;
+  const want = Date.parse(incident.peakAt);
+  let best = -1;
+  let gap = Infinity;
+  loop.frames.forEach((f, i) => {
+    if (!f.img) return;
+    const t = Date.parse(String(f.time).split('/')[0]);
+    // The first frame at or after the detection, so the fire is on it.
+    const d = t >= want ? t - want : (want - t) * 4;
+    if (d < gap) { gap = d; best = i; }
+  });
+  if (best >= 0) show(best);
+  map.panTo([incident.lat, incident.lon]);
+}
+
+/** The incidents card: what was detected in the box, biggest first. */
+function buildFires() {
+  document.querySelector('#loopFires')?.remove();
+  if (!loop || !loop.showFires) return;
+  const rows = loop.incidents.slice(0, 8).map((inc) => {
+    const said = incidentSaid(inc);
+    return el('button', { class: 'loop-fire', onclick: () => jumpTo(inc),
+      title: `Go to ${whenSaid(inc.peakAt)}, when it was strongest` },
+      el('b', {}, `🔥 ${said.head}`),
+      el('span', {}, said.sub),
+      el('span', { class: 'dim' }, `${inc.lat.toFixed(3)}, ${inc.lon.toFixed(3)}`
+        + ` · ${inc.totalMw ? `${inc.totalMw} MW summed` : ''}`));
+  });
+  const more = loop.incidents.length > 8 ? el('div', { class: 'loop-fires-note' },
+    `and ${loop.incidents.length - 8} smaller`) : null;
+  const empty = !loop.incidents.length && !loop.firesSaid
+    ? el('div', { class: 'loop-fires-note' },
+      'No satellite fire detection in this box over this time. A bright patch in '
+      + 'the picture with no detection is not a confirmed fire.')
+    : null;
+  const card = el('div', { class: 'loop-fires', id: 'loopFires' },
+    el('div', { class: 'loop-load-head' },
+      el('b', {}, loop.incidents.length
+        ? `Fire incidents · ${loop.incidents.length}` : 'Fire incidents'),
+      el('button', { class: 'loop-x', title: 'Hide the fire marks', onclick: () => setFires(false) }, '✕')),
+    el('div', { class: 'loop-load-sub', id: 'loopFiresNow' }, loop.firesSaid || ''),
+    ...rows, more, empty,
+    el('div', { class: 'loop-fires-note' },
+      `🔥 a NASA FIRMS thermal detection, with its fire radiative power, shown for ${HOLD_HOURS} h `
+      + `after it was made. ? heat: a hot patch in the frame with no detection within ${MATCH_KM} km.`));
+  document.querySelector('.stage')?.append(card);
 }

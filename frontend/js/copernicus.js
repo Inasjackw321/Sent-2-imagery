@@ -17,11 +17,12 @@
 // once every five days; Sentinel-3 sees the whole planet every day; Meteosat
 // sees Europe every ten minutes, including at night.
 import { api } from './api.js';
-import { startAreaLoop } from './arealoop.js';
+import { isHeat, loopOpen, startAreaLoop } from './arealoop.js';
+import { activeAt, paintMarks } from './incidents.js';
 import {
   FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
 } from './filmtemplate.js';
-import { $, el, toast } from './ui.js';
+import { $, debounce, el, toast } from './ui.js';
 
 // How often to ask the backend what the newest frame is.
 //
@@ -76,6 +77,11 @@ export function initCopernicus(leafletMap, { pickArea: pick } = {}) {
   map.on('moveend', () => {
     if (enabled && chosen?.layer?.animates) warm();
   });
+  // Detected fires over the Fire Temperature picture, with their megawatts.
+  map.createPane('copfires').style.zIndex = 612;
+  liveFires.group = L.layerGroup([], { pane: 'copfires' }).addTo(map);
+  map.on('moveend', debounce(() => syncFires(), 400));
+  window.addEventListener('arealoop', () => syncFires());
   buildDock();
   // On from the start, so the map opens with the pinned product -- Meteosat's
   // Fire Temperature RGB -- already drawn rather than behind a button.
@@ -133,7 +139,10 @@ export function wmsOptions(layerId, time, extra = {}) {
 function show() {
   drawn?.remove();
   drawn = null;
-  if (!enabled || !chosen || !catalogue) return;
+  if (!enabled || !chosen || !catalogue) {
+    liveFires.group?.clearLayers();
+    return;
+  }
 
   let missing = 0;
   // Whichever moment the bar is showing. What that IS depends on the orbit,
@@ -164,6 +173,7 @@ function show() {
     paint();
   });
   drawn.addTo(map);
+  syncFires();
 }
 
 async function load() {
@@ -847,6 +857,57 @@ function retime() {
   if (!drawn) { show(); return; }
   // Always the time key, even empty, so it keeps its place in the address.
   drawn.setParams({ time: timeParam() ?? '' });
+  syncFires();
+}
+
+// ── Detected fires on the live heat picture ────────────────────
+//
+// The Fire Temperature RGB shows where it is hot; it cannot say whether that
+// is a fire or how big. NASA FIRMS's thermal detections can, in megawatts, so
+// over a heat product they are drawn on top: the ones made in the hours
+// before the frame on screen (see incidents.js), following the frame as it
+// is scrubbed or played.
+
+const liveFires = { group: null, fires: [], covered: null, at: 0, asking: null };
+const LIVE_REASK_MS = 10 * 60 * 1000;
+const LIVE_HOURS = 48;
+
+function heatShown() {
+  return enabled && chosen && isHeat(chosen.layer.title) && map.getZoom() >= 4 && !loopOpen();
+}
+
+function frameTime() {
+  const time = timeParam();
+  return time ? String(time).split('/')[0] : new Date().toISOString();
+}
+
+async function syncFires() {
+  if (!liveFires.group) return;
+  if (!heatShown()) { liveFires.group.clearLayers(); return; }
+  const view = map.getBounds();
+  const stale = Date.now() - liveFires.at > LIVE_REASK_MS;
+  if (stale || !liveFires.covered?.contains(view)) {
+    const wide = view.pad(0.3);
+    const ask = api.fires({
+      west: Math.max(-180, wide.getWest()), south: Math.max(-90, wide.getSouth()),
+      east: Math.min(180, wide.getEast()), north: Math.min(90, wide.getNorth()),
+      hours: LIVE_HOURS,
+    });
+    liveFires.asking = ask;
+    try {
+      const got = await ask;
+      if (liveFires.asking !== ask) return;
+      liveFires.fires = got.fires ?? [];
+      liveFires.covered = wide;
+      liveFires.at = Date.now();
+    } catch {
+      return;       // the Active fires panel says why, if anybody asks it
+    }
+  }
+  if (!heatShown()) { liveFires.group.clearLayers(); return; }
+  paintMarks(liveFires.group,
+    { detections: activeAt(liveFires.fires, frameTime()), unconfirmed: [] },
+    { autoPanPaddingBottomRight: [260, 150] });
 }
 
 /** Scrolling over the bar walks the frames: down is back in time. */
@@ -902,6 +963,7 @@ function toggle() {
     stopWarming();
     drawn?.remove();
     drawn = null;
+    liveFires.group?.clearLayers();
   }
   paint();
   buildBar();
