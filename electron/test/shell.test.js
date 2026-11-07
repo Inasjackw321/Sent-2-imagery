@@ -67,6 +67,13 @@ test('the engine prints the line this shell waits for', () => {
   assert.ok(source.includes(`SERVE_LINE = "${shell.SERVE_LINE}"`));
 });
 
+test('the engine is asked for UTF-8 output', () => {
+  // Windows gives a pipe its old code page otherwise: the messages arrive
+  // garbled, and before app.py guarded its output, the first arrow crashed it.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(main, /PYTHONIOENCODING: 'utf-8'/);
+});
+
 test('the window is locked down', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   for (const needed of ['contextIsolation: true', 'nodeIntegration: false', 'sandbox: true',

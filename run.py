@@ -17,6 +17,13 @@ import threading
 
 
 def main() -> int:
+    # The same guard as app.py's: a Windows pipe's code page has no arrow in
+    # it, and the address line below has one.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(
         description="EarthViewer",
         formatter_class=argparse.RawDescriptionHelpFormatter,

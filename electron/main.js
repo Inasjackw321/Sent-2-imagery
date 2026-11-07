@@ -70,7 +70,13 @@ function startEngine(port) {
   const args = [...pre, ...serveArgs(ROOT, port, process.argv)];
   engine = spawn(command, args, {
     cwd: ROOT,
-    env: { ...process.env, PYTHONUNBUFFERED: '1', SENT2_NO_AUTO_NATIVE: '1' },
+    // UTF-8 output: Windows would otherwise give a pipe its old code page,
+    // and the engine's messages would arrive garbled (or, before app.py
+    // guarded against it, crash it outright on the first arrow).
+    env: {
+      ...process.env, PYTHONUNBUFFERED: '1', SENT2_NO_AUTO_NATIVE: '1',
+      PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });

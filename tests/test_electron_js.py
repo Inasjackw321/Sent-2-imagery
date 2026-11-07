@@ -37,12 +37,21 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-def test_serve_mode_prints_its_address_and_serves(tmp_path):
+# The second is Windows: a pipe gets the old cp1252 code page there, which
+# has no arrow in it, and the first message app.py printed has one. It
+# crashed on that line, before serving anything -- the very first thing the
+# Electron app did on Windows. The encoding is forced here so that the
+# failure is reproduced on any machine, not only on Windows.
+@pytest.mark.parametrize("encoding", [None, "cp1252"])
+def test_serve_mode_prints_its_address_and_serves(tmp_path, encoding):
     """What electron/main.js does, done from here: start app.py --serve, read
     the one line, ask the address for its health, stop it."""
     port = free_port()
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "SENT2_NO_AUTO_NATIVE": "1",
            "PYTHONDONTWRITEBYTECODE": "1"}
+    env.pop("PYTHONUTF8", None)
+    if encoding:
+        env["PYTHONIOENCODING"] = encoding
     proc = subprocess.Popen([sys.executable, str(ROOT / "app.py"), "--serve", "--demo",
                              "--port", str(port)], cwd=ROOT, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -55,7 +64,8 @@ def test_serve_mode_prints_its_address_and_serves(tmp_path):
                 break
             if line.startswith("EARTHVIEWER_URL="):
                 url = line.split("=", 1)[1].strip()
-        assert url == f"http://localhost:{port}", url
+        assert url == f"http://localhost:{port}", (url, proc.stdout.read()
+                                                  if url is None else "")
         health = None
         while time.time() < until:
             try:

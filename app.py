@@ -39,6 +39,23 @@ OPTIONAL = {"webview": "pywebview>=5.0"}
 SERVE_LINE = "EARTHVIEWER_URL="
 
 
+def _safe_output() -> None:
+    """Never crash on a character the console cannot show.
+
+    Windows hands Python an old code page (cp1252) for its output when that
+    output is a pipe -- which it is under the Electron shell -- and the arrows
+    and dashes in the messages below are not in it. Printing one raised
+    UnicodeEncodeError and took the app down before it had served a page.
+    Unshowable characters now become "?" instead. Under pythonw there is no
+    stream at all, and nothing to change.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def missing_packages(wanted: dict[str, str]) -> list[str]:
     import importlib.util
 
@@ -83,6 +100,7 @@ def ensure_dependencies() -> bool:
 
 
 def main() -> int:
+    _safe_output()
     argv = sys.argv[1:]
     if "--help" in argv or "-h" in argv:
         print(__doc__)
