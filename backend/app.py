@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (
-    aisstream, animate as animation, composite, config, connectivity, copernicus,
+    aisstream, animate as animation, composite, config, connectivity, copernicus, gibs,
     fires, gazetteer, mtg, neural,
     ollama, passes, seismic, service, shake, sr4rs, stac, tracker, version, vessels,
     weather,
@@ -660,12 +660,35 @@ def copernicus_layers(refresh: bool = Query(False)) -> dict:
     on windowed reads of cloud-optimised GeoTIFFs -- cannot use. EUMETSAT
     serves them as ordinary WMS, so that is how they arrive.
     """
-    if config.DEMO_MODE:
-        return copernicus.demo()
     try:
-        return copernicus.layers(refresh=refresh)
+        return _live_catalogue(refresh)
     except copernicus.CopernicusError as exc:
         raise _fail(exc)
+
+
+def _live_catalogue(refresh: bool = False) -> dict:
+    """EUMETSAT's families and NASA's, as one catalogue for the live panel.
+
+    Either can be down without taking the other with it: NASA's family says
+    its own problem, and if EUMETSAT is the one down the panel still gets
+    NASA's layers.
+    """
+    if config.DEMO_MODE:
+        found = copernicus.demo()
+        found["families"] = [*found["families"], gibs.demo()]
+        return found
+    nasa = gibs.family(refresh=refresh)
+    try:
+        found = copernicus.layers(refresh=refresh)
+    except copernicus.CopernicusError:
+        if not nasa["layers"]:
+            raise
+        found = {"families": [], "wms": copernicus.TILES,
+                 "attribution": gibs.ATTRIBUTION,
+                 "live_within_hours": copernicus.LIVE_WITHIN.total_seconds() / 3600,
+                 "days_offered": copernicus.DAYS_OFFERED}
+    found["families"] = [*found["families"], nasa]
+    return found
 
 
 @app.get("/api/whereis")
@@ -696,8 +719,7 @@ def copernicus_history(layer: str = Query(..., min_length=1, max_length=200),
     images that this app holds once fetched.
     """
     try:
-        found = copernicus.demo() if config.DEMO_MODE else copernicus.layers()
-        return copernicus.history(found, layer, hours, days)
+        return copernicus.history(_live_catalogue(), layer, hours, days)
     except copernicus.CopernicusError as exc:
         raise _fail(exc, 400 if "not a layer" in str(exc) else 502)
 
@@ -729,6 +751,22 @@ def copernicus_tile(request: Request) -> Response:
     return Response(content=body, media_type=kind, headers={
         # A published frame of a fixed past moment never changes, so the
         # browser may keep it as long as it likes.
+        "Cache-Control": "public, max-age=86400, immutable",
+    })
+
+
+@app.get("/api/gibs/wms")
+def gibs_tile(request: Request) -> Response:
+    """One NASA GIBS tile, through this app for the same two reasons as
+    EUMETSAT's: held once fetched, and same-origin so a video can be made."""
+    if config.DEMO_MODE:
+        return Response(content=copernicus.demo_tile(dict(request.query_params)),
+                        media_type="image/png")
+    try:
+        body, kind, _hit = gibs.tile(dict(request.query_params))
+    except gibs.GibsError as exc:
+        raise _fail(exc)
+    return Response(content=body, media_type=kind, headers={
         "Cache-Control": "public, max-age=86400, immutable",
     })
 

@@ -511,6 +511,28 @@ merge just removed actually looked like. Fade it against the imagery with the
 slider; it draws under your drawn area and under the render, because it is
 context rather than the subject.
 
+## Carbon dioxide and more: NASA's satellites
+
+The **Live satellites** panel has a **NASA** family alongside EUMETSAT's,
+from NASA's GIBS map service (no account, no key):
+
+- **Carbon dioxide** — OCO-2's column-average CO₂, in parts per million. It
+  measures a narrow strip under the satellite, so a day is a set of thin
+  tracks, not a full map; scrub back through the days to fill an area in.
+  Its products reach NASA's map service days to weeks after the overpass.
+- **Land surface temperature** — MODIS, about 1 km, blue for cold through red
+  for hot, by day (and by night behind *all products*).
+- **Fires and thermal anomalies** — VIIRS 375 m detections as a map layer.
+- **Carbon monoxide** and **aerosols** (smoke, dust, haze), with methane,
+  nitrogen dioxide, sulphur dioxide, night lights and daily true colour
+  behind *all products*.
+
+Layers are picked from NASA's live catalogue by what they are, so a renamed
+product is still found, and one is offered only while it has data from the
+last two months. **Highlight an area** works on them too: the last 14 days
+over your box. Tiles come through this app, like EUMETSAT's, so videos can
+be recorded.
+
 ## What is on fire
 
 Switch on **Active fires** in the corner of the map and every thermal
@@ -798,6 +820,7 @@ backend/
   enhance.py     compositing, haze removal, CLAHE, denoise, white balance
   superres.py    sub-pixel registration, multi-frame fusion, deconvolution
   neural.py      SEN2SR: the 2.5 m network, its install, its weights, tiling
+  gibs.py        NASA GIBS live layers: CO2 (OCO-2), surface temperature, fires, air
   activefire.py  active fire pixels in Sentinel-2 / Landsat (Schroeder et al. 2016)
   sr4rs.py       SR4RS: its TensorFlow runtime (uv), its model, the child run
   sr4rs_worker.py  run inside that runtime: loads the SavedModel, tiles 160 → 512

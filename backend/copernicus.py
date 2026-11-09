@@ -208,6 +208,10 @@ EVERYDAY: dict[str, tuple[str, ...]] = {
             "dust"),
     "metop": ("truecolour", "true_colour", "true colour", "natural",
               "ascat", "wind", "ndvi"),
+    # NASA through GIBS (gibs.py): carbon dioxide first, then heat and fire.
+    # Daytime surface temperature only: night's is one click behind.
+    "nasa": ("carbon dioxide", "surface_temp_day", "temperature (day",
+             "thermal anomalies", "carbon monoxide", "aerosol"),
 }
 
 # The one product each family opens on and keeps in front of you, whatever
@@ -548,7 +552,8 @@ AREA_DAYS = 14
 MOST_AREA_DAYS = 31
 
 
-def history_days(entry: dict[str, Any], days: int) -> list[dict[str, str]]:
+def history_days(entry: dict[str, Any], days: int,
+                 as_date: bool = False) -> list[dict[str, str]]:
     """The last `days` whole days of one fly-over layer, oldest first.
 
     Asked for as the range that covers each day, as the live panel does,
@@ -568,8 +573,10 @@ def history_days(entry: dict[str, Any], days: int) -> list[dict[str, str]]:
     day = first
     while day <= end:
         stamp = day.isoformat()
+        # A service that names its days by date (NASA's GIBS) is asked for
+        # the date; the rest for the range of instants that covers the day.
         out.append({"label": stamp, "at": stamp,
-                    "time": f"{stamp}T00:00:00Z/{stamp}T23:59:59Z"})
+                    "time": stamp if as_date else f"{stamp}T00:00:00Z/{stamp}T23:59:59Z"})
         day += dt.timedelta(days=1)
     return out
 
@@ -583,10 +590,11 @@ def history(found: dict[str, Any], layer_id: str, hours: float,
     """
     hit = find_layer(found, layer_id)
     if hit is None:
-        raise CopernicusError(f"{layer_id} is not a layer EUMETSAT is serving now")
+        raise CopernicusError(f"{layer_id} is not a layer being served now")
     family, entry = hit
     daily = bool(family.get("spans_days"))
-    frames = history_days(entry, days) if daily else history_frames(entry, hours)
+    frames = (history_days(entry, days, as_date=bool(family.get("time_as_date")))
+              if daily else history_frames(entry, hours))
     step = 24 * 60 if daily else (entry.get("step_minutes") or 10)
     return {"layer": layer_id, "title": entry.get("title"), "family": family["short"],
             "daily": daily, "step_minutes": step, "frames": frames,
@@ -598,7 +606,8 @@ def history(found: dict[str, Any], layer_id: str, hours: float,
             # them black. Meteosat's disc has no gaps, and a JPEG is a tenth
             # of the size.
             "format": "image/png" if daily else "image/jpeg",
-            "wms": TILES, "attribution": found.get("attribution")}
+            "wms": family.get("wms") or TILES,
+            "attribution": family.get("attribution") or found.get("attribution")}
 
 
 # ---------------------------------------------------------------------------

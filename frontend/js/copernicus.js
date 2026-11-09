@@ -136,6 +136,12 @@ export function wmsOptions(layerId, time, extra = {}) {
   };
 }
 
+/** Where a product's tiles come from: its family's own address (NASA's), or
+ * the catalogue's (EUMETSAT's). Both are this app's proxies. */
+function tilesFor(pick) {
+  return pick?.family?.wms ?? catalogue.wms;
+}
+
 function show() {
   drawn?.remove();
   drawn = null;
@@ -155,9 +161,9 @@ function show() {
   // rest of the world yet. A WMS given a TIME range draws everything inside
   // it, so a day is every pass that day, and at three hundred metres that
   // is the globe.
-  drawn = L.tileLayer.wms(catalogue.wms, wmsOptions(chosen.layer.id, timeParam(), {
+  drawn = L.tileLayer.wms(tilesFor(chosen), wmsOptions(chosen.layer.id, timeParam(), {
     opacity,
-    attribution: catalogue.attribution,
+    attribution: chosen.family.attribution ?? catalogue.attribution,
   }));
   // A swath does not cover the globe, so missing tiles are ordinary: a polar
   // orbiter has simply not been over that ground today. A run of them
@@ -605,7 +611,7 @@ function heatOven(time) {
   if (oven || !map || !catalogue || !chosen) return oven;
   // Through wmsOptions, with a time from the start, so every tile this asks
   // for has exactly the address the layer on screen will ask for later.
-  oven = L.tileLayer.wms(catalogue.wms, wmsOptions(chosen.layer.id, time, {
+  oven = L.tileLayer.wms(tilesFor(chosen), wmsOptions(chosen.layer.id, time, {
     opacity: 0,
   }));
   oven.addTo(map);
@@ -1010,9 +1016,11 @@ function paint() {
   } else {
     // Said once, because it is the question the picker raises: why are these
     // two not in the list of satellites you can search by date?
-    lines.push('Published as NetCDF rather than tiled GeoTIFF, so these are '
-      + 'live layers rather than scenes you can pick a date for.');
-    lines.push(catalogue.attribution);
+    if (chosen.family.key !== 'nasa') {
+      lines.push('Published as NetCDF rather than tiled GeoTIFF, so these are '
+        + 'live layers rather than scenes you can pick a date for.');
+    }
+    lines.push(chosen.family.attribution ?? catalogue.attribution);
   }
   if (problem) lines.push(problem);
   note.textContent = lines.filter(Boolean).join(' ');

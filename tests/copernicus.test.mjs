@@ -461,10 +461,10 @@ test('and it comes before anything Leaflet adds itself', () => {
 test('both layers are built through it', () => {
   const show = SOURCE.slice(SOURCE.indexOf('function show()'));
   assert.match(show.slice(0, show.indexOf('\n}\n')),
-    /L\.tileLayer\.wms\(catalogue\.wms, wmsOptions\(chosen\.layer\.id, timeParam\(\)/);
+    /L\.tileLayer\.wms\(tilesFor\(chosen\), wmsOptions\(chosen\.layer\.id, timeParam\(\)/);
   const oven = SOURCE.slice(SOURCE.indexOf('function heatOven('));
   assert.match(oven.slice(0, oven.indexOf('\n}\n')),
-    /L\.tileLayer\.wms\(catalogue\.wms, wmsOptions\(chosen\.layer\.id, time,/);
+    /L\.tileLayer\.wms\(tilesFor\(chosen\), wmsOptions\(chosen\.layer\.id, time,/);
 });
 
 test('the fetch-ahead layer is born with a time, not given one afterwards', () => {

@@ -393,13 +393,22 @@ export function frameSaid(frame) {
   const d = new Date(frame.time.split('/')[0]);
   const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   // A whole day of passes has no clock time of its own.
-  if (frame.time.includes('/')) return `${day} · whole day`;
+  // So has a plain date, which is how NASA names its days.
+  if (frame.time.includes('/') || frame.time.length === 10) return `${day} · whole day`;
   return `${day} ${frame.time.slice(11, 16)} UTC`;
 }
 
-/** Whether a product is about heat, so heat contrast starts on for it. */
+/**
+ * Whether a product is a fire-heat picture, so the Thermal view starts on for
+ * it: Meteosat's Fire Temperature RGB, a fire radiative power product. Not a
+ * product that already draws a measurement on its own colour scale -- a
+ * land surface temperature map recoloured by its red channel would be
+ * nonsense -- nor NASA's fire detections, which are coloured dots.
+ */
 export function isHeat(title) {
-  return /fire|frp|temperature|hotspot|thermal/i.test(String(title ?? ''));
+  const t = String(title ?? '');
+  if (/land surface|surface temp|thermal anomal|carbon|anomalies/i.test(t)) return false;
+  return /fire temp|firetemp|fire_temp|frp|fire radiative|hotspot/i.test(t);
 }
 
 /** "Last 48 hours" or "Last 14 days", from the plan the backend sent. */

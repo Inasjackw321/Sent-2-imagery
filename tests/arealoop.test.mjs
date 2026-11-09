@@ -179,13 +179,18 @@ test('a day of orbit strips is asked for as a transparent PNG', () => {
 test('a whole-day frame says so rather than a clock time', () => {
   assert.equal(frameSaid({ time: '2026-11-06T00:00:00Z/2026-11-06T23:59:59Z' }),
     '6 Nov · whole day');
+  assert.equal(frameSaid({ time: '2026-11-08' }), '8 Nov · whole day');
 });
 
-test('heat contrast starts on only for heat products', () => {
-  for (const hot of ['MTG FCI Fire Temperature RGB', 'SLSTR Level 2 FRP', 'LST thermal']) {
+test('the thermal view starts on only for fire-heat products', () => {
+  for (const hot of ['MTG FCI Fire Temperature RGB', 'SLSTR Level 2 FRP',
+    'SLSTR Level 2 Fire Radiative Power (FRP) - Sentinel-3A', 'rgb_firetemperature']) {
     assert.equal(isHeat(hot), true, hot);
   }
-  for (const not of ['OLCI true colour', 'Sentinel-5P nitrogen dioxide', 'ASCAT winds']) {
+  // Products with a colour scale of their own are left as drawn.
+  for (const not of ['OLCI true colour', 'Sentinel-5P nitrogen dioxide', 'ASCAT winds',
+    'Land Surface Temperature (Day, MODIS, Terra)', 'Fires and Thermal Anomalies (VIIRS)',
+    'Carbon Dioxide (Total Column Average, OCO-2)']) {
     assert.equal(isHeat(not), false, not);
   }
 });
