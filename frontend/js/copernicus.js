@@ -905,8 +905,7 @@ async function syncFires() {
     }
   }
   if (!heatShown()) { liveFires.group.clearLayers(); return; }
-  paintMarks(liveFires.group,
-    { detections: activeAt(liveFires.fires, frameTime()), unconfirmed: [] },
+  paintMarks(liveFires.group, activeAt(liveFires.fires, frameTime()),
     { autoPanPaddingBottomRight: [260, 150] });
 }
 

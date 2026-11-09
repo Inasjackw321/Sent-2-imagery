@@ -79,26 +79,28 @@ test('a sensible pace and a sensible number of requests at once', () => {
 
 // ── Heat contrast ─────────────────────────────────────────────
 
-import { HEAT_DIM, HEAT_MARGIN, flame, heatContrast, redPercentile } from '../frontend/js/arealoop.js';
+import {
+  HEAT_DIM, HEAT_MARGIN, LOCAL_KM, flame, heatContrast, localRadius, localRed,
+} from '../frontend/js/arealoop.js';
 
-/** A frame of `n` pixels at one colour, with some pixels set apart. */
-function frame(n, background, special = {}) {
-  const data = new Uint8ClampedArray(n * 4);
-  for (let i = 0; i < n; i += 1) {
+/** A `w` x `h` frame at one colour, with some pixels (by index) set apart. */
+function frame(w, h, background, special = {}) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i += 1) {
     const [r, g, b] = special[i] ?? background;
     data.set([r, g, b, 255], i * 4);
   }
   return data;
 }
 const px = (data, i) => Array.from(data.slice(i * 4, i * 4 + 3));
+const at = (w, x, y) => y * w + x;
 
 test('a fire stands out: its pixel goes to the flame scale, the scene goes dark', () => {
-  const data = frame(1000, [80, 40, 60], { 7: [235, 120, 40] });
-  const got = heatContrast(data);
-  assert.equal(got.background, 80);
+  const data = frame(40, 25, [80, 40, 60], { [at(40, 20, 12)]: [235, 120, 40] });
+  const got = heatContrast(data, 40, 25, 6);
   assert.equal(got.hot, 1);
-  const [r, g] = px(data, 7);
-  assert.ok(r >= 240 && g >= 180, `the fire is bright: ${px(data, 7)}`);
+  const [r, g] = px(data, at(40, 20, 12));
+  assert.ok(r >= 240 && g >= 180, `the fire is bright: ${px(data, at(40, 20, 12))}`);
   assert.deepEqual(px(data, 0), [80 * HEAT_DIM, 40 * HEAT_DIM, 60 * HEAT_DIM]);
 });
 
@@ -113,30 +115,53 @@ test('a frame with no fire stays plain rather than inventing speckle', () => {
   // Noise a few levels either side of the background is not heat.
   const special = {};
   for (let i = 0; i < 1000; i += 37) special[i] = [80 + (i % 9), 40, 60];
-  const data = frame(1000, [80, 40, 60], special);
-  assert.equal(heatContrast(data).hot, 0);
+  assert.equal(heatContrast(frame(40, 25, [80, 40, 60], special), 40, 25, 6).hot, 0);
 });
 
-test('heat is judged against the frame itself, not a fixed level', () => {
+test('heat is judged against the ground around it, not a fixed level', () => {
   // A sunlit desert at noon is warmer everywhere than a fire at night. The
   // same reading that is a fire against a cold night is background here.
-  const night = frame(1000, [60, 20, 20], { 3: [150, 60, 20] });
-  const noon = frame(1000, [170, 120, 90], { 3: [150, 60, 20] });
-  assert.equal(heatContrast(night).hot, 1);
-  assert.equal(heatContrast(noon).hot, 0);
+  const fire = { [at(40, 20, 12)]: [150, 60, 20] };
+  assert.equal(heatContrast(frame(40, 25, [60, 20, 20], fire), 40, 25, 6).hot, 1);
+  assert.equal(heatContrast(frame(40, 25, [170, 120, 90], fire), 40, 25, 6).hot, 0);
 });
 
-test('only pixels a clear margin above the background count', () => {
-  const just = frame(1000, [100, 40, 40], { 5: [100 + HEAT_MARGIN, 40, 40] });
-  assert.equal(heatContrast(just).hot, 0);
-  const clear = frame(1000, [100, 40, 40], { 5: [100 + HEAT_MARGIN + 20, 40, 40] });
-  assert.equal(heatContrast(clear).hot, 1);
+test('only pixels a clear margin above their surroundings count', () => {
+  const just = frame(40, 25, [100, 40, 40], { [at(40, 20, 12)]: [100 + HEAT_MARGIN, 40, 40] });
+  assert.equal(heatContrast(just, 40, 25, 6).hot, 0);
+  const clear = frame(40, 25, [100, 40, 40], { [at(40, 20, 12)]: [100 + HEAT_MARGIN + 25, 40, 40] });
+  assert.equal(heatContrast(clear, 40, 25, 6).hot, 1);
 });
 
-test('the background is the frame\'s own 97th percentile of red', () => {
+test('a fire is not hidden by warm ground elsewhere in the box', () => {
+  // The bug: half the box warm ground, and the fire on the cold half
+  // disappeared because the whole box's 97th percentile rose past it. Judged
+  // against its own surroundings it stays a fire, and the warm half, being
+  // warm all the way across, is not.
+  const w = 120;
+  const h = 60;
   const special = {};
-  for (let i = 0; i < 20; i += 1) special[i] = [250, 0, 0];
-  assert.equal(redPercentile(frame(1000, [50, 0, 0], special), 0.97), 50);
+  for (let y = 0; y < h; y += 1) for (let x = 60; x < w; x += 1) special[at(w, x, y)] = [170, 40, 40];
+  special[at(w, 20, 30)] = [160, 70, 30];
+  const data = frame(w, h, [50, 15, 30], special);
+  heatContrast(data, w, h, 8);
+  const [r, g] = px(data, at(w, 20, 30));
+  assert.ok(r >= 230 && g >= 60, `the fire is still a fire: ${px(data, at(w, 20, 30))}`);
+  assert.ok(px(data, at(w, 100, 30))[0] <= 170 * HEAT_DIM + 1, 'the warm half is not heat');
+});
+
+test('the same fire is judged alike in a small box and a large one', () => {
+  // The neighbourhood is kilometres, so the radius in pixels follows the scale.
+  assert.equal(localRadius(2), LOCAL_KM * 2);
+  assert.equal(localRadius(0.5), LOCAL_KM / 2);
+  assert.ok(localRadius(1000) <= 96 && localRadius(0.001) >= 4);
+});
+
+test('the neighbourhood mean is the plain average, clipped at the edges', () => {
+  const data = frame(3, 3, [0, 0, 0], { 4: [90, 0, 0] });
+  const mean = localRed(data, 3, 3, 1);
+  assert.equal(mean[4], 10);          // the middle: 90 over nine pixels
+  assert.equal(mean[0], 90 / 4);      // a corner: 90 over its four
 });
 
 // ── Every satellite ───────────────────────────────────────────

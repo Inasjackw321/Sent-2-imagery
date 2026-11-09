@@ -17,10 +17,6 @@ import { el, toast } from './ui.js';
 import {
   FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
 } from './filmtemplate.js';
-import {
-  HOLD_HOURS, MATCH_KM, clusterIncidents, drawMarksOn, hotspots, incidentSaid, marksFor,
-  paintMarks, whenSaid,
-} from './incidents.js';
 
 // How many frames are asked for at once. Enough to keep the line busy, few
 // enough not to queue in front of the live layer's own tiles.
@@ -51,8 +47,6 @@ export function initAreaLoop(leafletMap) {
   // Above the live layer it sits inside, below everything drawn on the map.
   map.createPane('arealoop').style.zIndex = 430;
   map.getPane('arealoop').style.pointerEvents = 'none';
-  // The fire marks over it, clickable, under the popups.
-  map.createPane('loopfires').style.zIndex = 615;
 }
 
 // ── Pure pieces, tested in Node ────────────────────────────────
@@ -114,33 +108,65 @@ export function nextHeld(frames, at, step = 1) {
 // yellow, then white as it gets hotter -- the same order the RGB itself uses
 // for fire intensity, only louder.
 //
-// "Hotter than the rest of its own frame", and not a fixed level, because the
-// red channel is the 3.8 micron brightness temperature and the whole scene
-// moves with the day: sunlit desert at noon is warmer than a fire at night.
-// A fixed threshold would light up every afternoon. The frame's own 97th
-// percentile is its background, and only pixels a clear margin above it count
-// as heat, so a frame with no fire in it stays plain rather than inventing
-// speckle out of noise.
+// "Hotter than the ground around it", and not a fixed level, because the red
+// channel is the 3.8 micron brightness temperature and the whole scene moves
+// with the day: sunlit desert at noon is warmer than a fire at night. A fixed
+// threshold would light up every afternoon.
+//
+// And around it, not across the whole box. It used to be judged against the
+// box's own 97th percentile, which made the answer depend on what else the
+// box held: drawn a little wider over warm ground, that percentile rose past
+// the fire, and the fire vanished from a picture of the same moment. Each
+// pixel is now compared with the average of the ground within LOCAL_KM of it
+// -- a fire is a few pixels hotter than its surroundings, a warm landscape is
+// warm all the way across -- and that neighbourhood is measured in
+// kilometres, so a small box and a large one judge the same fire alike.
 
-// How far above the frame's background a pixel must be before it counts, and
+// How far above the surrounding ground a pixel must be before it counts, and
 // over how many levels it goes from first glow to full white.
 export const HEAT_MARGIN = 25;
 export const HEAT_SPAN = 60;
 // How dark the rest of the picture goes, so the heat stands out against it.
 export const HEAT_DIM = 0.5;
-const BACKGROUND_PERCENTILE = 0.97;
+// The neighbourhood a pixel is compared with: this far each way.
+export const LOCAL_KM = 20;
+const LEAST_RADIUS = 4;
+const MOST_RADIUS = 96;
 
-/** The red channel's value below which `share` of the pixels fall. */
-export function redPercentile(data, share) {
-  const counts = new Uint32Array(256);
-  for (let i = 0; i < data.length; i += 4) counts[data[i]] += 1;
-  const want = (data.length / 4) * share;
-  let seen = 0;
-  for (let v = 0; v < 256; v += 1) {
-    seen += counts[v];
-    if (seen >= want) return v;
+/** The neighbourhood radius in pixels, for a picture at `pxPerKm`. */
+export function localRadius(pxPerKm) {
+  const r = Math.round(LOCAL_KM * (pxPerKm > 0 ? pxPerKm : 1));
+  return Math.min(MOST_RADIUS, Math.max(LEAST_RADIUS, r));
+}
+
+/**
+ * The mean of the red channel over a (2r+1)-pixel square round every pixel,
+ * clipped at the edges. One pass to sum, one to read: the same cost for any
+ * radius.
+ */
+export function localRed(data, width, height, radius) {
+  const w1 = width + 1;
+  const sums = new Float64Array(w1 * (height + 1));
+  for (let y = 0; y < height; y += 1) {
+    let row = 0;
+    for (let x = 0; x < width; x += 1) {
+      row += data[(y * width + x) * 4];
+      sums[(y + 1) * w1 + x + 1] = sums[y * w1 + x + 1] + row;
+    }
   }
-  return 255;
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y += 1) {
+    const y0 = Math.max(0, y - radius);
+    const y1 = Math.min(height, y + radius + 1);
+    for (let x = 0; x < width; x += 1) {
+      const x0 = Math.max(0, x - radius);
+      const x1 = Math.min(width, x + radius + 1);
+      const total = sums[y1 * w1 + x1] - sums[y0 * w1 + x1]
+        - sums[y1 * w1 + x0] + sums[y0 * w1 + x0];
+      out[y * width + x] = total / ((y1 - y0) * (x1 - x0));
+    }
+  }
+  return out;
 }
 
 /** 0 to 1 across [lo, hi], eased at both ends. */
@@ -160,16 +186,17 @@ export function flame(h) {
 }
 
 /**
- * Push a frame's hot pixels apart from the rest, in place, on RGBA bytes.
- * Returns the levels used and how many pixels counted as heat.
+ * Push a frame's hot pixels apart from the rest, in place, on the RGBA bytes
+ * of a `width` x `height` picture, each judged against the ground within
+ * `radius` pixels of it. Returns how many pixels counted as heat.
  */
-export function heatContrast(data) {
-  const background = redPercentile(data, BACKGROUND_PERCENTILE);
-  const lo = Math.min(254, background + HEAT_MARGIN);
-  const hi = Math.min(255, Math.max(lo + 1, lo + HEAT_SPAN));
+export function heatContrast(data, width, height, radius = LEAST_RADIUS) {
+  const around = localRed(data, width, height, radius);
   let hot = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    const h = smooth(lo, hi, data[i]);
+  for (let p = 0; p < width * height; p += 1) {
+    const i = p * 4;
+    const lo = Math.min(254, around[p] + HEAT_MARGIN);
+    const h = smooth(lo, Math.min(255, Math.max(lo + 1, lo + HEAT_SPAN)), data[i]);
     if (h <= 0) {
       data[i] *= HEAT_DIM;
       data[i + 1] *= HEAT_DIM;
@@ -185,7 +212,7 @@ export function heatContrast(data) {
     data[i + 1] = data[i + 1] * HEAT_DIM * (1 - a) + g * a;
     data[i + 2] = data[i + 2] * HEAT_DIM * (1 - a) + b * a;
   }
-  return { background, lo, hi, hot };
+  return { hot, radius };
 }
 
 /** How many hours a run of frames covers, first to last. */
@@ -238,10 +265,13 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   const groundKm = map.distance(bounds.getSouthWest(), bounds.getSouthEast()) / 1000;
   const size = areaSize(box, Math.max(groundKm,
     map.distance(bounds.getSouthWest(), bounds.getNorthWest()) / 1000));
+  // Pixels per kilometre of ground, so heat contrast's neighbourhood is the
+  // same stretch of ground whatever size of box was drawn.
+  const pxPerKm = size.width / Math.max(groundKm, 0.001);
 
   const abort = new AbortController();
   loop = {
-    layerId, title, bounds, box, size, abort, frames: [], at: -1,
+    layerId, title, bounds, box, size, pxPerKm, abort, frames: [], at: -1,
     done: 0, missing: 0, playing: null, speed: DEFAULT_SPEED, filming: null,
     // On from the start for a heat product, where the hottest pixels are the
     // point; off for anything else, whose colours it would only distort.
@@ -251,10 +281,6 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
       color: '#ffb74d', weight: 1.5, fill: false, dashArray: '4 4', interactive: false,
     }).addTo(map),
     overlay: null,
-    // Detected fires (NASA FIRMS, with their megawatts) and the incidents
-    // they group into; drawn for heat products. See incidents.js.
-    fires: [], incidents: [], firesSaid: '', showFires: isHeat(title),
-    marks: L.layerGroup([], { pane: 'loopfires' }).addTo(map),
   };
   const mine = loop;
   // The live layer hides its own fire marks while a loop is open: two sets,
@@ -279,8 +305,6 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   mine.span = spanSaid(plan);
   mine.format = plan.format || 'image/jpeg';
   if (mine.daily) mine.speed = DAILY_SPEED;
-  mine.showFires = mine.contrast;
-  if (mine.contrast) loadFires(mine, mine.daily ? 168 : hours);
   if (!mine.frames.length) {
     toast('EUMETSAT is not holding any frames of that product to fetch.', 'err');
     closeLoop();
@@ -318,7 +342,7 @@ async function fetchFrame(mine, i) {
     const blob = await res.blob();
     if (!blob.type.startsWith('image/')) throw new Error(blob.type);
     const raw = await picture(blob);
-    const { hot, spots } = await heated(raw.img, mine.format);
+    const hot = await heated(raw.img, mine.format, mine.pxPerKm);
     if (loop !== mine) {
       URL.revokeObjectURL(raw.url);
       if (hot) URL.revokeObjectURL(hot.url);
@@ -326,7 +350,6 @@ async function fetchFrame(mine, i) {
     }
     frame.raw = raw;
     frame.hot = hot ?? raw;
-    frame.spots = spots;
     Object.assign(frame, mine.contrast ? frame.hot : frame.raw);
     mine.done += 1;
     // The newest frame in hand goes on the map as it arrives, until somebody
@@ -349,12 +372,8 @@ async function picture(blob) {
   return { url, img };
 }
 
-/**
- * The heat-contrasted copy of a frame (null if the browser will not make
- * one), and the frame's own hot patches, found before the contrast changes it.
- */
-async function heated(img, format = 'image/jpeg') {
-  let spots = [];
+/** The heat-contrasted copy of a frame, or null if the browser will not make one. */
+async function heated(img, format = 'image/jpeg', pxPerKm = 1) {
   try {
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth;
@@ -362,16 +381,15 @@ async function heated(img, format = 'image/jpeg') {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(img, 0, 0);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    spots = hotspots(pixels.data, canvas.width, canvas.height);
-    heatContrast(pixels.data);
+    heatContrast(pixels.data, canvas.width, canvas.height, localRadius(pxPerKm));
     ctx.putImageData(pixels, 0, 0);
     // Saved as it came: a PNG keeps the gaps between a day's swaths clear.
     const blob = await new Promise((done) => canvas.toBlob(done, format, 0.92));
-    return { hot: blob ? await picture(blob) : null, spots };
+    return blob ? await picture(blob) : null;
   } catch {
     // The plain frame is still the frame; losing the contrast is not a
     // reason to lose the picture.
-    return { hot: null, spots };
+    return null;
   }
 }
 
@@ -431,7 +449,6 @@ function show(i) {
   } else {
     loop.overlay.setUrl(url);
   }
-  paintFires();
   refreshBar();
 }
 
@@ -459,8 +476,6 @@ export function closeLoop() {
   if (loop.filming) loop.filming.stop = true;
   loop.overlay?.remove();
   loop.outline?.remove();
-  loop.marks?.remove();
-  document.querySelector('#loopFires')?.remove();
   for (const frame of loop.frames) {
     for (const copy of new Set([frame.raw, frame.hot])) {
       if (copy?.url) URL.revokeObjectURL(copy.url);
@@ -512,12 +527,6 @@ function buildBar() {
       },
     }, ...SPEEDS.map((sp) => el('option', { value: String(sp), selected: sp === loop.speed },
       `${sp} fps`))),
-    fires: el('button', {
-      class: 'loop-heat',
-      title: 'Detected fires with their megawatts (NASA FIRMS), and hot patches no '
-        + 'detection confirms',
-      onclick: () => setFires(!loop.showFires),
-    }, '🎯 Fires'),
     heat: el('button', {
       class: 'loop-heat',
       title: 'Dim the scene and draw the hottest pixels red to white, so fires stand out',
@@ -533,7 +542,7 @@ function buildBar() {
     el('span', { class: 'loop-tag', title: loop.title },
       loop.daily ? `${loop.frames.length} days · area` : '48 h · area'),
     parts.play, parts.back, parts.scrub, parts.on, parts.when, parts.speed, parts.heat,
-    parts.fires, parts.rec,
+    parts.rec,
     el('button', { class: 'loop-x', title: 'Close the area loop', onclick: closeLoop }, '✕'));
   document.querySelector('.stage')?.append(bar);
   refreshBar();
@@ -557,8 +566,6 @@ function refreshBar() {
   parts.rec.disabled = loop.done < 2;
   parts.heat.classList.toggle('is-on', loop.contrast);
   parts.heat.disabled = filming;
-  parts.fires.classList.toggle('is-on', loop.showFires);
-  parts.fires.textContent = loop.incidents.length ? `🎯 Fires · ${loop.incidents.length}` : '🎯 Fires';
 }
 
 // ── The video ──────────────────────────────────────────────────
@@ -600,10 +607,9 @@ async function film() {
   for (const [index, frame] of held.entries()) {
     if (mine.filming.stop || loop !== mine) break;
     drawTemplate(ctx, {
-      picture: mine.showFires ? withMarks(mine, frame) : frame.img, title: mine.title, frames: held, index, bounds, where, rings,
+      picture: frame.img, title: mine.title, frames: held, index, bounds, where, rings,
       note: `${mine.daily ? `${held.length} days` : `${spanHours(held)} h`} over the highlighted area`
-        + (mine.contrast ? ' · heat contrast on' : '')
-        + (mine.showFires && mine.fires.length ? ' · 🔥 = NASA FIRMS detection, MW' : ''),
+        + (mine.contrast ? ' · heat contrast on' : ''),
       credit: CREDIT,
     });
     show(mine.frames.indexOf(frame));
@@ -626,125 +632,3 @@ async function film() {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-// ── Detected fires and incidents ───────────────────────────────
-
-function loopBox(mine) {
-  return {
-    west: mine.bounds.getWest(), south: mine.bounds.getSouth(),
-    east: mine.bounds.getEast(), north: mine.bounds.getNorth(),
-  };
-}
-
-/** Every FIRMS detection in the box over the loop's span, grouped into incidents. */
-async function loadFires(mine, hours) {
-  mine.firesSaid = 'Looking for satellite fire detections…';
-  buildFires();
-  try {
-    const got = await api.fires({ ...loopBox(mine), hours: Math.min(168, Math.max(1, hours)) });
-    if (loop !== mine) return;
-    mine.fires = got.fires ?? [];
-    mine.incidents = clusterIncidents(mine.fires);
-    mine.firesSaid = '';
-  } catch (err) {
-    if (loop !== mine) return;
-    mine.firesSaid = `Fire detections unavailable: ${err.message}`;
-  }
-  buildFires();
-  paintFires();
-  refreshBar();
-}
-
-function setFires(on) {
-  if (!loop) return;
-  loop.showFires = on;
-  if (on && !loop.fires.length && !loop.firesSaid) loadFires(loop, loop.daily ? 168 : 48);
-  buildFires();
-  paintFires();
-  refreshBar();
-}
-
-function currentMarks(mine, frame) {
-  return marksFor(mine.fires, frame?.spots, frame?.time, loopBox(mine));
-}
-
-function paintFires() {
-  if (!loop?.marks) return;
-  const frame = loop.frames[loop.at];
-  if (!loop.showFires || !frame) { loop.marks.clearLayers(); return; }
-  const marks = currentMarks(loop, frame);
-  paintMarks(loop.marks, marks, { autoPanPaddingBottomRight: [260, 120] });
-  const line = document.querySelector('#loopFiresNow');
-  if (line) {
-    const bits = [];
-    bits.push(marks.detections.length
-      ? `${marks.detections.length} detected fire${marks.detections.length === 1 ? '' : 's'} on this frame`
-      : 'No detected fire on this frame');
-    if (marks.unconfirmed.length) {
-      bits.push(`${marks.unconfirmed.length} unconfirmed hot patch${marks.unconfirmed.length === 1 ? '' : 'es'}`);
-    }
-    line.textContent = bits.join(' · ');
-  }
-}
-
-/** A copy of the frame with its fire marks drawn on, for the video. */
-function withMarks(mine, frame) {
-  const canvas = document.createElement('canvas');
-  canvas.width = frame.img.naturalWidth;
-  canvas.height = frame.img.naturalHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(frame.img, 0, 0);
-  drawMarksOn(ctx, canvas.width, canvas.height, currentMarks(mine, frame), loopBox(mine));
-  return canvas;
-}
-
-/** Go to the frame nearest a moment, and to the place. */
-function jumpTo(incident) {
-  if (!loop) return;
-  pause();
-  loop.touched = true;
-  const want = Date.parse(incident.peakAt);
-  let best = -1;
-  let gap = Infinity;
-  loop.frames.forEach((f, i) => {
-    if (!f.img) return;
-    const t = Date.parse(String(f.time).split('/')[0]);
-    // The first frame at or after the detection, so the fire is on it.
-    const d = t >= want ? t - want : (want - t) * 4;
-    if (d < gap) { gap = d; best = i; }
-  });
-  if (best >= 0) show(best);
-  map.panTo([incident.lat, incident.lon]);
-}
-
-/** The incidents card: what was detected in the box, biggest first. */
-function buildFires() {
-  document.querySelector('#loopFires')?.remove();
-  if (!loop || !loop.showFires) return;
-  const rows = loop.incidents.slice(0, 8).map((inc) => {
-    const said = incidentSaid(inc);
-    return el('button', { class: 'loop-fire', onclick: () => jumpTo(inc),
-      title: `Go to ${whenSaid(inc.peakAt)}, when it was strongest` },
-      el('b', {}, `🔥 ${said.head}`),
-      el('span', {}, said.sub),
-      el('span', { class: 'dim' }, `${inc.lat.toFixed(3)}, ${inc.lon.toFixed(3)}`
-        + ` · ${inc.totalMw ? `${inc.totalMw} MW summed` : ''}`));
-  });
-  const more = loop.incidents.length > 8 ? el('div', { class: 'loop-fires-note' },
-    `and ${loop.incidents.length - 8} smaller`) : null;
-  const empty = !loop.incidents.length && !loop.firesSaid
-    ? el('div', { class: 'loop-fires-note' },
-      'No satellite fire detection in this box over this time. A bright patch in '
-      + 'the picture with no detection is not a confirmed fire.')
-    : null;
-  const card = el('div', { class: 'loop-fires', id: 'loopFires' },
-    el('div', { class: 'loop-load-head' },
-      el('b', {}, loop.incidents.length
-        ? `Fire incidents · ${loop.incidents.length}` : 'Fire incidents'),
-      el('button', { class: 'loop-x', title: 'Hide the fire marks', onclick: () => setFires(false) }, '✕')),
-    el('div', { class: 'loop-load-sub', id: 'loopFiresNow' }, loop.firesSaid || ''),
-    ...rows, more, empty,
-    el('div', { class: 'loop-fires-note' },
-      `🔥 a NASA FIRMS thermal detection, with its fire radiative power, shown for ${HOLD_HOURS} h `
-      + `after it was made. ? heat: a hot patch in the frame with no detection within ${MATCH_KM} km.`));
-  document.querySelector('.stage')?.append(card);
-}

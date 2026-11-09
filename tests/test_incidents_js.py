@@ -1,6 +1,6 @@
 """Run the fire incident tests alongside the Python ones.
 
-Grouping detections, finding hot patches in a frame, matching the two.
+Which detections are shown for the frame on screen, and how they are said.
 """
 
 from __future__ import annotations
