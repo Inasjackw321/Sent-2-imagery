@@ -2,7 +2,7 @@
 // (and offline). Imagery always comes from the network -- never cached.
 
 // Bumped whenever the shell changes, so an installed copy picks the new one up.
-const VERSION = 'sent2-v12';
+const VERSION = 'sent2-v13';
 const SHELL = [
   '/',
   '/css/app.css',

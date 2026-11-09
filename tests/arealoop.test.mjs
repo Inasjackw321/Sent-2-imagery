@@ -195,3 +195,21 @@ test('the span is said the way the backend counted it', () => {
   assert.equal(spanSaid({ span: 'last 48 hours' }), 'Last 48 hours');
   assert.equal(spanSaid(null), 'Last 48 hours');
 });
+
+// ── An empty loop says why ───────────────────────────────────
+
+import { drawnShare, emptySaid } from '../frontend/js/arealoop.js';
+
+test('how much of a frame has anything drawn on it', () => {
+  const clear = new Uint8ClampedArray(4 * 10);           // all transparent
+  assert.equal(drawnShare(clear), 0);
+  const some = new Uint8ClampedArray(4 * 10);
+  some[3] = 255; some[7] = 255;
+  assert.equal(drawnShare(some), 0.2);
+});
+
+test('an empty fire product is explained, not left looking broken', () => {
+  assert.match(emptySaid('SLSTR Level 2 Fire', 14, true),
+    /only the pixels where the satellite detected a fire.*none in this box over these 14 days/);
+  assert.match(emptySaid('OLCI Level 2 CHL', 14, true), /nothing over this box in these 14 days/);
+});

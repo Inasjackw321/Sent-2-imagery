@@ -997,6 +997,13 @@ function paint() {
           + 'back.'
         : 'One whole day: every pass that day.',
     chosen.family.about,
+    // A fire product from a satellite that flies over draws only the pixels
+    // where it detected a fire. Over most of the map, most days, that is
+    // nothing at all -- which looks exactly like a layer that failed.
+    !chosen.layer.animates && /fire|frp/i.test(chosen.layer.title)
+      ? 'This draws only the pixels where a fire was detected, so an empty map '
+        + 'means no fires were seen there, not a broken layer.'
+      : '',
   ];
   if (catalogue.attribution === 'synthetic') {
     lines.push('Demo mode: the tiles are stand-ins.');

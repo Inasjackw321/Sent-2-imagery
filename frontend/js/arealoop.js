@@ -215,6 +215,26 @@ export function heatContrast(data, width, height, radius = LEAST_RADIUS) {
   return { hot, radius };
 }
 
+/** The share of a frame's pixels with anything drawn on them (not transparent). */
+export function drawnShare(data) {
+  let drawn = 0;
+  for (let i = 3; i < data.length; i += 4) if (data[i] > 8) drawn += 1;
+  return data.length ? drawn / (data.length / 4) : 0;
+}
+
+/** Why a loop whose every frame came back empty is empty. */
+export function emptySaid(title, frames, daily) {
+  const span = daily ? `${frames} days` : `${frames} frames`;
+  if (/fire|frp|hotspot/i.test(String(title ?? ''))) {
+    return `${title} draws only the pixels where the satellite detected a fire, `
+      + `and it found none in this box over these ${span}. An empty box here means `
+      + 'no fires were seen, not a broken layer. Draw a larger box, or try the '
+      + 'Meteosat Fire Temperature product, which shows heat every ten minutes.';
+  }
+  return `${title} has nothing over this box in these ${span}: the satellite's `
+    + 'passes or the product\'s coverage miss it. Try a larger box or another product.';
+}
+
 /** How many hours a run of frames covers, first to last. */
 export function spanHours(frames) {
   if (!frames?.length) return 0;
@@ -327,9 +347,16 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   if (loop !== mine) return;
   hideLoader();
   const held = mine.done;
-  toast(`${held} of ${mine.frames.length} frames over your area`
-    + `${mine.missing ? ` — ${mine.missing} EUMETSAT did not serve` : ''}. `
-    + 'Press play, or save it as a video.', held ? 'ok' : 'err');
+  // Every frame arrived and every one is empty: say why, rather than leave a
+  // box of nothing that looks like a broken layer.
+  const empty = held > 0 && mine.frames.every((f) => !f.img || f.drawn === 0);
+  if (empty) {
+    toast(emptySaid(mine.title, held, mine.daily), 'warn');
+  } else {
+    toast(`${held} of ${mine.frames.length} frames over your area`
+      + `${mine.missing ? ` — ${mine.missing} EUMETSAT did not serve` : ''}. `
+      + 'Press play, or save it as a video.', held ? 'ok' : 'err');
+  }
   buildBar();
 }
 
@@ -342,7 +369,7 @@ async function fetchFrame(mine, i) {
     const blob = await res.blob();
     if (!blob.type.startsWith('image/')) throw new Error(blob.type);
     const raw = await picture(blob);
-    const hot = await heated(raw.img, mine.format, mine.pxPerKm);
+    const { hot, drawn } = await heated(raw.img, mine.format, mine.pxPerKm);
     if (loop !== mine) {
       URL.revokeObjectURL(raw.url);
       if (hot) URL.revokeObjectURL(hot.url);
@@ -350,6 +377,7 @@ async function fetchFrame(mine, i) {
     }
     frame.raw = raw;
     frame.hot = hot ?? raw;
+    frame.drawn = drawn;
     Object.assign(frame, mine.contrast ? frame.hot : frame.raw);
     mine.done += 1;
     // The newest frame in hand goes on the map as it arrives, until somebody
@@ -372,8 +400,12 @@ async function picture(blob) {
   return { url, img };
 }
 
-/** The heat-contrasted copy of a frame, or null if the browser will not make one. */
+/**
+ * The heat-contrasted copy of a frame (null if the browser will not make
+ * one), and how much of the frame has anything drawn on it at all.
+ */
 async function heated(img, format = 'image/jpeg', pxPerKm = 1) {
+  let drawn = null;
   try {
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth;
@@ -381,15 +413,16 @@ async function heated(img, format = 'image/jpeg', pxPerKm = 1) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(img, 0, 0);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    drawn = drawnShare(pixels.data);
     heatContrast(pixels.data, canvas.width, canvas.height, localRadius(pxPerKm));
     ctx.putImageData(pixels, 0, 0);
     // Saved as it came: a PNG keeps the gaps between a day's swaths clear.
     const blob = await new Promise((done) => canvas.toBlob(done, format, 0.92));
-    return blob ? await picture(blob) : null;
+    return { hot: blob ? await picture(blob) : null, drawn };
   } catch {
     // The plain frame is still the frame; losing the contrast is not a
     // reason to lose the picture.
-    return null;
+    return { hot: null, drawn };
   }
 }
 
