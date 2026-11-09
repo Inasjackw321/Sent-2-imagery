@@ -139,34 +139,64 @@ export function localRadius(pxPerKm) {
   return Math.min(MOST_RADIUS, Math.max(LEAST_RADIUS, r));
 }
 
+// Where the ground round a pixel varies a lot -- the edge between warm land
+// and cold sea, say -- an average says little, and the warm side of the edge
+// sits well above it without being anything. So a pixel must also stand this
+// many spreads (standard deviations) above its surroundings. A fire on even
+// ground clears it easily; one side of a coastline does not.
+export const HEAT_SIGMA = 2;
+// But never more than this far above the mean: a big fire raises the spread
+// of its own surroundings, and uncapped it would hide itself. A coast's warm
+// side (land 140 levels over sea) still stays under it.
+export const HEAT_SPREAD_CAP = 90;
+
 /**
  * The mean of the red channel over a (2r+1)-pixel square round every pixel,
- * clipped at the edges. One pass to sum, one to read: the same cost for any
- * radius.
+ * clipped at the edges, and its spread. One pass to sum, one to read: the
+ * same cost for any radius.
  */
-export function localRed(data, width, height, radius) {
+export function localStats(data, width, height, radius) {
   const w1 = width + 1;
   const sums = new Float64Array(w1 * (height + 1));
+  const squares = new Float64Array(w1 * (height + 1));
   for (let y = 0; y < height; y += 1) {
     let row = 0;
+    let rowSq = 0;
     for (let x = 0; x < width; x += 1) {
-      row += data[(y * width + x) * 4];
+      const v = data[(y * width + x) * 4];
+      row += v;
+      rowSq += v * v;
       sums[(y + 1) * w1 + x + 1] = sums[y * w1 + x + 1] + row;
+      squares[(y + 1) * w1 + x + 1] = squares[y * w1 + x + 1] + rowSq;
     }
   }
-  const out = new Float32Array(width * height);
+  const mean = new Float32Array(width * height);
+  const spread = new Float32Array(width * height);
+  const box = (table, x0, y0, x1, y1) => table[y1 * w1 + x1] - table[y0 * w1 + x1]
+    - table[y1 * w1 + x0] + table[y0 * w1 + x0];
   for (let y = 0; y < height; y += 1) {
     const y0 = Math.max(0, y - radius);
     const y1 = Math.min(height, y + radius + 1);
     for (let x = 0; x < width; x += 1) {
       const x0 = Math.max(0, x - radius);
       const x1 = Math.min(width, x + radius + 1);
-      const total = sums[y1 * w1 + x1] - sums[y0 * w1 + x1]
-        - sums[y1 * w1 + x0] + sums[y0 * w1 + x0];
-      out[y * width + x] = total / ((y1 - y0) * (x1 - x0));
+      const n = (y1 - y0) * (x1 - x0);
+      const m = box(sums, x0, y0, x1, y1) / n;
+      mean[y * width + x] = m;
+      spread[y * width + x] = Math.sqrt(Math.max(0, box(squares, x0, y0, x1, y1) / n - m * m));
     }
   }
-  return out;
+  return { mean, spread };
+}
+
+/** Just the mean: see localStats. */
+export function localRed(data, width, height, radius) {
+  return localStats(data, width, height, radius).mean;
+}
+
+/** The red level a pixel must reach to count as heat, given its surroundings. */
+function heatFloor(mean, spread) {
+  return mean + Math.max(HEAT_MARGIN, Math.min(HEAT_SPREAD_CAP, HEAT_SIGMA * spread));
 }
 
 /** 0 to 1 across [lo, hi], eased at both ends. */
@@ -191,11 +221,11 @@ export function flame(h) {
  * `radius` pixels of it. Returns how many pixels counted as heat.
  */
 export function heatContrast(data, width, height, radius = LEAST_RADIUS) {
-  const around = localRed(data, width, height, radius);
+  const { mean, spread } = localStats(data, width, height, radius);
   let hot = 0;
   for (let p = 0; p < width * height; p += 1) {
     const i = p * 4;
-    const lo = Math.min(254, around[p] + HEAT_MARGIN);
+    const lo = Math.min(254, heatFloor(mean[p], spread[p]));
     const h = smooth(lo, Math.min(255, Math.max(lo + 1, lo + HEAT_SPAN)), data[i]);
     if (h <= 0) {
       data[i] *= HEAT_DIM;
@@ -233,6 +263,113 @@ export function emptySaid(title, frames, daily) {
   }
   return `${title} has nothing over this box in these ${span}: the satellite's `
     + 'passes or the product\'s coverage miss it. Try a larger box or another product.';
+}
+
+// ── Thermal view ───────────────────────────────────────────────
+//
+// The Fire Temperature RGB's red channel is Meteosat's 3.8 micron channel:
+// the one fires show up in, because a fire radiates far more at 3.8 microns
+// than the ground around it. Drawn on its own, on a blue-to-yellow scale --
+// navy for cold, through crimson and red to orange, yellow and white for the
+// hottest -- it reads as a heat map: cold sea and cloud blue, warm ground red
+// and orange, a fire a yellow-white point.
+//
+// The scale is fixed, the same for every frame and every box, so a loop does
+// not flicker as its brightest pixel changes and two pictures can be
+// compared. Hot spots -- pixels well above the ground around them, by the
+// same rule heat contrast uses -- are ringed in white and counted.
+
+export const VIEWS = [['thermal', '🌡 Thermal'], ['contrast', '🔥 Heat contrast'],
+  ['picture', 'Picture']];
+
+export const THERMAL_STOPS = [
+  [0, [6, 6, 60]], [0.22, [20, 20, 130]], [0.42, [100, 20, 120]],
+  [0.58, [200, 35, 45]], [0.74, [250, 115, 20]], [0.88, [255, 205, 40]],
+  [1, [255, 255, 225]],
+];
+
+/** The thermal scale's colour for 0 (coldest) to 1 (hottest). */
+export function thermalColour(t) {
+  const x = Math.min(1, Math.max(0, t));
+  for (let k = 1; k < THERMAL_STOPS.length; k += 1) {
+    const [hi, top] = THERMAL_STOPS[k];
+    if (x <= hi) {
+      const [lo, bottom] = THERMAL_STOPS[k - 1];
+      const f = (x - lo) / (hi - lo);
+      return bottom.map((c, i) => Math.round(c + (top[i] - c) * f));
+    }
+  }
+  return THERMAL_STOPS[THERMAL_STOPS.length - 1][1];
+}
+
+const THERMAL_LUT = Array.from({ length: 256 }, (_, v) => thermalColour(v / 255));
+
+/** Redraw RGBA bytes as a heat map of their red channel, in place. */
+export function thermalMap(data) {
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] === 0) continue;
+    const [r, g, b] = THERMAL_LUT[data[i]];
+    data[i] = r;
+    data[i + 1] = g;
+    data[i + 2] = b;
+  }
+}
+
+// At most this many spots ringed per frame: past it, it is warm ground.
+export const MOST_SPOTS = 25;
+
+/**
+ * The hot spots in a frame: pixels well above the ground within `radius`
+ * pixels (see heatFloor), with red leading (sunlit cloud is
+ * brighter in the short-wave channels), joined into patches. Positions are
+ * fractions of the width and height of the hottest pixel. Hottest first.
+ */
+export function hotSpots(data, width, height, radius = LEAST_RADIUS) {
+  const { mean: around, spread } = localStats(data, width, height, radius);
+  const n = width * height;
+  const hot = new Uint8Array(n);
+  let total = 0;
+  for (let p = 0; p < n; p += 1) {
+    const i = p * 4;
+    if (data[i + 3] > 8 && data[i] >= data[i + 1]
+        && data[i] >= heatFloor(around[p], spread[p])) {
+      hot[p] = 1;
+      total += 1;
+    }
+  }
+  // Hot across a fifth of the frame is a warm landscape, not fires.
+  if (total > n * 0.2) return [];
+  const spots = [];
+  const stack = [];
+  for (let start = 0; start < n; start += 1) {
+    if (!hot[start]) continue;
+    hot[start] = 0;
+    stack.push(start);
+    let pixels = 0; let peak = -1; let px = 0; let py = 0; let above = 0;
+    while (stack.length) {
+      const p = stack.pop();
+      const x = p % width;
+      const y = (p - x) / width;
+      pixels += 1;
+      const red = data[p * 4];
+      if (red > peak) { peak = red; px = x; py = y; above = red - around[p]; }
+      if (x > 0 && hot[p - 1]) { hot[p - 1] = 0; stack.push(p - 1); }
+      if (x < width - 1 && hot[p + 1]) { hot[p + 1] = 0; stack.push(p + 1); }
+      if (y > 0 && hot[p - width]) { hot[p - width] = 0; stack.push(p - width); }
+      if (y < height - 1 && hot[p + width]) { hot[p + width] = 0; stack.push(p + width); }
+    }
+    spots.push({ x: (px + 0.5) / width, y: (py + 0.5) / height, pixels, peak,
+      above: Math.round(above) });
+  }
+  spots.sort((a, b) => b.peak - a.peak || b.pixels - a.pixels);
+  return spots.slice(0, MOST_SPOTS);
+}
+
+/** "3 hot spots", for the bar. */
+export function spotsSaid(spots) {
+  if (!spots) return '';
+  if (!spots.length) return 'No hot spots';
+  return `🔥 ${spots.length} hot spot${spots.length === 1 ? '' : 's'}`;
 }
 
 /** How many hours a run of frames covers, first to last. */
@@ -295,7 +432,11 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
     done: 0, missing: 0, playing: null, speed: DEFAULT_SPEED, filming: null,
     // On from the start for a heat product, where the hottest pixels are the
     // point; off for anything else, whose colours it would only distort.
-    contrast: isHeat(title),
+    // How the frames are drawn: 'thermal' (the heat on a blue-to-yellow
+    // scale, hot spots ringed), 'contrast' (the picture dimmed, the hottest
+    // pixels red to white) or 'picture' (as EUMETSAT drew it). Thermal for a
+    // heat product, where finding the fire is the point.
+    view: isHeat(title) ? 'thermal' : 'picture',
     daily: false, span: '', format: 'image/jpeg',
     outline: L.rectangle(bounds, {
       color: '#ffb74d', weight: 1.5, fill: false, dashArray: '4 4', interactive: false,
@@ -320,7 +461,7 @@ export async function startAreaLoop({ layerId, title, bounds, hours = 48 }) {
   mine.frames = plan.frames.map((f) => ({ ...f, url: null, img: null, failed: false }));
   mine.wms = plan.wms;
   mine.title = plan.title || title;
-  mine.contrast = isHeat(mine.title);
+  mine.view = isHeat(mine.title) ? 'thermal' : 'picture';
   mine.daily = Boolean(plan.daily);
   mine.span = spanSaid(plan);
   mine.format = plan.format || 'image/jpeg';
@@ -369,16 +510,17 @@ async function fetchFrame(mine, i) {
     const blob = await res.blob();
     if (!blob.type.startsWith('image/')) throw new Error(blob.type);
     const raw = await picture(blob);
-    const { hot, drawn } = await heated(raw.img, mine.format, mine.pxPerKm);
+    const { hot, thermal, spots, drawn } = await heated(raw.img, mine.format, mine.pxPerKm);
     if (loop !== mine) {
-      URL.revokeObjectURL(raw.url);
-      if (hot) URL.revokeObjectURL(hot.url);
+      for (const copy of [raw, hot, thermal]) if (copy) URL.revokeObjectURL(copy.url);
       return;
     }
     frame.raw = raw;
     frame.hot = hot ?? raw;
+    frame.thermal = thermal ?? raw;
+    frame.spots = spots;
     frame.drawn = drawn;
-    Object.assign(frame, mine.contrast ? frame.hot : frame.raw);
+    Object.assign(frame, copyFor(frame, mine.view));
     mine.done += 1;
     // The newest frame in hand goes on the map as it arrives, until somebody
     // plays, steps or scrubs -- after which the picture is theirs to choose.
@@ -401,11 +543,13 @@ async function picture(blob) {
 }
 
 /**
- * The heat-contrasted copy of a frame (null if the browser will not make
- * one), and how much of the frame has anything drawn on it at all.
+ * A frame's other two drawings -- heat-contrasted and thermal, each null if
+ * the browser will not make it -- its hot spots, and how much of it has
+ * anything drawn on it at all.
  */
 async function heated(img, format = 'image/jpeg', pxPerKm = 1) {
   let drawn = null;
+  let spots = [];
   try {
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth;
@@ -413,25 +557,58 @@ async function heated(img, format = 'image/jpeg', pxPerKm = 1) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(img, 0, 0);
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const radius = localRadius(pxPerKm);
     drawn = drawnShare(pixels.data);
-    heatContrast(pixels.data, canvas.width, canvas.height, localRadius(pxPerKm));
-    ctx.putImageData(pixels, 0, 0);
+    // Found on the frame as it came, before either drawing changes it.
+    spots = hotSpots(pixels.data, canvas.width, canvas.height, radius);
+    const original = new Uint8ClampedArray(pixels.data);
     // Saved as it came: a PNG keeps the gaps between a day's swaths clear.
-    const blob = await new Promise((done) => canvas.toBlob(done, format, 0.92));
-    return { hot: blob ? await picture(blob) : null, drawn };
+    const encode = async () => {
+      const blob = await new Promise((done) => canvas.toBlob(done, format, 0.92));
+      return blob ? picture(blob) : null;
+    };
+    heatContrast(pixels.data, canvas.width, canvas.height, radius);
+    ctx.putImageData(pixels, 0, 0);
+    const hot = await encode();
+    pixels.data.set(original);
+    thermalMap(pixels.data);
+    ctx.putImageData(pixels, 0, 0);
+    ringSpots(ctx, spots, canvas.width, canvas.height);
+    const thermal = await encode();
+    return { hot, thermal, spots, drawn };
   } catch {
-    // The plain frame is still the frame; losing the contrast is not a
+    // The plain frame is still the frame; losing a drawing of it is not a
     // reason to lose the picture.
-    return { hot: null, drawn };
+    return { hot: null, thermal: null, spots, drawn };
   }
 }
 
-/** Switch every frame between plain and heat-contrasted, keeping the place. */
-function setContrast(on) {
+/** Ring each hot spot on a thermal frame, in white, sized by the spot. */
+function ringSpots(ctx, spots, width, height) {
+  ctx.save();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = Math.max(1.5, Math.min(width, height) / 300);
+  for (const spot of spots) {
+    ctx.beginPath();
+    ctx.arc(spot.x * width, spot.y * height, 6 + Math.sqrt(spot.pixels) * 1.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** Which drawing of a frame a view shows. */
+function copyFor(frame, view) {
+  if (view === 'thermal') return frame.thermal ?? frame.raw;
+  if (view === 'contrast') return frame.hot ?? frame.raw;
+  return frame.raw;
+}
+
+/** Switch every frame to another drawing, keeping the place. */
+function setView(view) {
   if (!loop) return;
-  loop.contrast = on;
+  loop.view = view;
   for (const frame of loop.frames) {
-    if (frame.raw) Object.assign(frame, on ? frame.hot : frame.raw);
+    if (frame.raw) Object.assign(frame, copyFor(frame, view));
   }
   if (loop.at >= 0) show(loop.at);
   refreshBar();
@@ -510,7 +687,7 @@ export function closeLoop() {
   loop.overlay?.remove();
   loop.outline?.remove();
   for (const frame of loop.frames) {
-    for (const copy of new Set([frame.raw, frame.hot])) {
+    for (const copy of new Set([frame.raw, frame.hot, frame.thermal])) {
       if (copy?.url) URL.revokeObjectURL(copy.url);
     }
   }
@@ -560,11 +737,14 @@ function buildBar() {
       },
     }, ...SPEEDS.map((sp) => el('option', { value: String(sp), selected: sp === loop.speed },
       `${sp} fps`))),
-    heat: el('button', {
-      class: 'loop-heat',
-      title: 'Dim the scene and draw the hottest pixels red to white, so fires stand out',
-      onclick: () => setContrast(!loop.contrast),
-    }, '🔥 Heat contrast'),
+    heat: el('select', {
+      class: 'loop-speed loop-view',
+      title: 'Thermal: the heat on a blue-to-yellow scale, hot spots ringed. '
+        + 'Heat contrast: the scene dimmed, the hottest pixels red to white. '
+        + 'Picture: as EUMETSAT drew it.',
+      onchange: (e) => setView(e.target.value),
+    }, ...VIEWS.map(([value, label]) => el('option', { value, selected: value === loop.view }, label))),
+    spots: el('span', { class: 'loop-spots' }),
     rec: el('button', {
       class: 'cop-rec',
       onclick: () => (loop.filming ? (loop.filming.stop = true) : film()),
@@ -575,7 +755,7 @@ function buildBar() {
     el('span', { class: 'loop-tag', title: loop.title },
       loop.daily ? `${loop.frames.length} days · area` : '48 h · area'),
     parts.play, parts.back, parts.scrub, parts.on, parts.when, parts.speed, parts.heat,
-    parts.rec,
+    parts.spots, parts.rec,
     el('button', { class: 'loop-x', title: 'Close the area loop', onclick: closeLoop }, '✕'));
   document.querySelector('.stage')?.append(bar);
   refreshBar();
@@ -597,8 +777,12 @@ function refreshBar() {
   parts.rec.title = filming ? 'Stop recording' : `Save the ${loop.span.toLowerCase()} as a video`;
   parts.rec.classList.toggle('is-on', filming);
   parts.rec.disabled = loop.done < 2;
-  parts.heat.classList.toggle('is-on', loop.contrast);
+  parts.heat.value = loop.view;
   parts.heat.disabled = filming;
+  const spots = loop.frames[at]?.spots;
+  parts.spots.hidden = loop.view === 'picture' || !spots;
+  parts.spots.textContent = spotsSaid(spots);
+  parts.spots.classList.toggle('is-hot', Boolean(spots?.length));
 }
 
 // ── The video ──────────────────────────────────────────────────
@@ -642,7 +826,8 @@ async function film() {
     drawTemplate(ctx, {
       picture: frame.img, title: mine.title, frames: held, index, bounds, where, rings,
       note: `${mine.daily ? `${held.length} days` : `${spanHours(held)} h`} over the highlighted area`
-        + (mine.contrast ? ' · heat contrast on' : ''),
+        + (mine.view === 'thermal' ? ' · thermal view, hot spots ringed'
+          : mine.view === 'contrast' ? ' · heat contrast on' : ''),
       credit: CREDIT,
     });
     show(mine.frames.indexOf(frame));

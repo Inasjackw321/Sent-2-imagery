@@ -546,6 +546,26 @@ instead, which is far smaller and a little fresher. A continent's worth of
 detections would bury the browser, so when there are too many the fiercest are
 kept and the panel says how many were left out.
 
+### Finding fires in a highlighted area: the Thermal view
+
+**Highlight an area** over the Fire Temperature product opens in the
+**🌡 Thermal** view: Meteosat's 3.8 micron channel — the one fires show up in —
+drawn on a blue → red → orange → yellow scale, the same for every frame and
+every box, so cold sea and cloud are navy, warm ground red and orange, and a
+fire a yellow-white point. Every hot spot is ringed in white, and the bar says
+how many are on the frame. They go into the saved video too.
+
+A hot spot is a pixel well above the ground within 20 km of it: at least 25
+levels above its average, and twice the local spread, so the warm side of a
+coastline is not mistaken for one, and capped so a big fire cannot hide
+itself. Judged against its surroundings rather than the whole box, a fire is
+found the same whether the box is drawn small or large. **🔥 Heat contrast**
+and the plain **Picture** are in the same menu.
+
+Sentinel-3's *SLSTR Fire Radiative Power* draws only pixels where it found a
+fire, so a box with none comes back empty — the loop says so rather than
+looking broken.
+
 ### Detected fires on the Fire Temperature picture
 
 Meteosat's **Fire Temperature RGB** shows where it is hot every ten minutes,

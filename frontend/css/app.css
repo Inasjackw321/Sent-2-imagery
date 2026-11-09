@@ -2305,3 +2305,7 @@ body.is-walled { overflow: hidden; }
   outline-offset: 2px;
 }
 
+
+/* The area loop's hot-spot count, beside its view picker. */
+.loop-spots { font-size: 11.5px; color: var(--ink-dim); white-space: nowrap; }
+.loop-spots.is-hot { color: #ffd166; font-weight: 600; }

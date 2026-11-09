@@ -213,3 +213,92 @@ test('an empty fire product is explained, not left looking broken', () => {
     /only the pixels where the satellite detected a fire.*none in this box over these 14 days/);
   assert.match(emptySaid('OLCI Level 2 CHL', 14, true), /nothing over this box in these 14 days/);
 });
+
+// ── Thermal view ─────────────────────────────────────────────
+
+import {
+  MOST_SPOTS, VIEWS, hotSpots, spotsSaid, thermalColour, thermalMap,
+} from '../frontend/js/arealoop.js';
+
+test('the thermal scale runs navy, red, orange, yellow, white', () => {
+  const [r0, , b0] = thermalColour(0);
+  assert.ok(b0 > r0, 'cold is blue');
+  const [rMid, gMid] = thermalColour(0.6);
+  assert.ok(rMid > 180 && gMid < 80, 'warm is red');
+  const [r9, g9, b9] = thermalColour(0.9);
+  assert.ok(r9 > 240 && g9 > 180 && b9 < 120, 'hot is yellow');
+  assert.deepEqual(thermalColour(1), [255, 255, 225]);
+  assert.deepEqual(thermalColour(2), thermalColour(1));
+});
+
+test('a frame becomes a heat map of its red channel; gaps stay clear', () => {
+  const data = new Uint8ClampedArray([30, 10, 20, 255, 250, 90, 30, 255, 200, 0, 0, 0]);
+  thermalMap(data);
+  assert.deepEqual(Array.from(data.slice(0, 3)), thermalColour(30 / 255));
+  assert.deepEqual(Array.from(data.slice(4, 7)), thermalColour(250 / 255));
+  assert.deepEqual(Array.from(data.slice(8, 12)), [200, 0, 0, 0]);
+});
+
+test('a fire is a hot spot, found where it is', () => {
+  const w = 60;
+  const h = 40;
+  const special = { [at(w, 30, 20)]: [240, 80, 30], [at(w, 31, 20)]: [200, 60, 30] };
+  const spots = hotSpots(frame(w, h, [40, 12, 25], special), w, h, 6);
+  assert.equal(spots.length, 1);
+  assert.equal(spots[0].pixels, 2);
+  assert.ok(Math.abs(spots[0].x - 30.5 / w) < 1e-9 && Math.abs(spots[0].y - 20.5 / h) < 1e-9);
+  assert.ok(spots[0].above > 150);
+});
+
+test('warm ground, cloud and noise are not hot spots', () => {
+  const w = 60;
+  const h = 40;
+  const warm = {};
+  for (let y = 0; y < h; y += 1) for (let x = 0; x < 30; x += 1) warm[at(w, x, y)] = [180, 50, 40];
+  assert.deepEqual(hotSpots(frame(w, h, [40, 12, 25], warm), w, h, 6), [],
+    'a warm half is warm all across, not a spot');
+  const cloud = { [at(w, 30, 20)]: [150, 220, 240] };
+  assert.deepEqual(hotSpots(frame(w, h, [40, 12, 25], cloud), w, h, 6), []);
+  const noise = {};
+  for (let i = 0; i < w * h; i += 13) noise[i] = [40 + (i % 15), 12, 25];
+  assert.deepEqual(hotSpots(frame(w, h, [40, 12, 25], noise), w, h, 6), []);
+});
+
+test('separate fires are separate spots, hottest first, and capped', () => {
+  const w = 200;
+  const h = 100;
+  const special = {};
+  for (let k = 0; k < MOST_SPOTS + 5; k += 1) special[at(w, 5 + k * 6, 50)] = [120 + k * 4, 30, 20];
+  const spots = hotSpots(frame(w, h, [40, 12, 25], special), w, h, 4);
+  assert.equal(spots.length, MOST_SPOTS);
+  assert.ok(spots[0].peak >= spots[1].peak);
+});
+
+test('the bar says how many', () => {
+  assert.equal(spotsSaid([]), 'No hot spots');
+  assert.equal(spotsSaid([{}]), '🔥 1 hot spot');
+  assert.equal(spotsSaid([{}, {}, {}]), '🔥 3 hot spots');
+  assert.equal(spotsSaid(undefined), '');
+  assert.deepEqual(VIEWS.map(([v]) => v), ['thermal', 'contrast', 'picture']);
+});
+
+test('the edge of warm ground does not glow as heat', () => {
+  // A sunlit coast: warm land beside cold sea. Each side is even; the edge
+  // between them is where a plain average would call the warm side hot.
+  const w = 60;
+  const h = 40;
+  const warm = {};
+  for (let y = 0; y < h; y += 1) for (let x = 0; x < 30; x += 1) warm[at(w, x, y)] = [180, 50, 40];
+  assert.equal(heatContrast(frame(w, h, [40, 12, 25], warm), w, h, 6).hot, 0);
+});
+
+test('a big fire does not hide itself by raising its own surroundings', () => {
+  // A fire front filling a quarter of the neighbourhood.
+  const w = 40;
+  const h = 40;
+  const special = {};
+  for (let y = 14; y < 26; y += 1) for (let x = 14; x < 26; x += 1) special[at(w, x, y)] = [245, 120, 40];
+  const spots = hotSpots(frame(w, h, [40, 12, 25], special), w, h, 12);
+  assert.equal(spots.length, 1);
+  assert.ok(spots[0].pixels > 50);
+});

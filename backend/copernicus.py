@@ -632,10 +632,17 @@ def demo_tile(asked: dict[str, str]) -> bytes:
         phase = 0.0
     xs = np.linspace(x0, x1, width)[None, :]
     ys = np.linspace(y1, y0, height)[:, None]
-    # A fire that circles a point in the eastern Mediterranean once a demo day.
+    # A fire that circles a point in the eastern Mediterranean once a demo day,
+    # and two smaller ones that flare and die down. A few kilometres across,
+    # as a real fire is to Meteosat: a point, not a region -- so it tests
+    # what finding a real fire takes.
     cx = 3.9e6 + 1.5e5 * np.cos(2 * np.pi * phase)
     cy = 3.6e6 + 1.5e5 * np.sin(2 * np.pi * phase)
-    heat = np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * 4e4 ** 2))
+    heat = np.exp(-((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * 4e3 ** 2))
+    for k, (fx, fy) in enumerate(((3.75e6, 3.5e6), (4.05e6, 3.72e6))):
+        flare = 0.5 + 0.5 * np.sin(2 * np.pi * (phase * 3 + k / 2))
+        heat = np.maximum(heat, flare * np.exp(-((xs - fx) ** 2 + (ys - fy) ** 2)
+                                               / (2 * 2.5e3 ** 2)))
     ground = 0.5 + 0.5 * np.sin(xs / 9e4) * np.cos(ys / 7e4)
     rgb = np.stack([60 + 40 * ground + 195 * heat, 20 + 30 * ground + 220 * heat,
                     70 + 40 * ground + 60 * heat], axis=-1)
