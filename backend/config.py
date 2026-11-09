@@ -392,6 +392,21 @@ COMPOSITES = {
         "hint": "Burn scars, active fire and soil moisture.",
         "default_stretch": {"mode": "percentile_linked", "low": 2, "high": 98, "gamma": 1.05},
     },
+    # Not a colouring of three bands but a detection: the short-wave infrared
+    # picture, dimmed, with every burning pixel painted over it. See
+    # activefire.py for the tests and where they come from.
+    "active_fire": {
+        "label": "Active fire detection",
+        "bands": ["swir22", "nir08", "red", "swir16", "coastal"],
+        # The three drawn underneath; the other two are only for the tests.
+        "display": ["swir22", "nir08", "red"],
+        "hint": "Every burning pixel, found by the Landsat active-fire tests "
+                "(Schroeder et al. 2016): yellow is certain, orange likely, "
+                "ringed in red. Drawn over short-wave infrared, which sees "
+                "through smoke. One daytime pass at a time.",
+        "default_stretch": {"mode": "percentile_linked", "low": 2, "high": 98, "gamma": 1.05},
+        "fire": True,
+    },
     "bathymetric": {
         "label": "Bathymetric",
         "bands": ["red", "green", "coastal"],

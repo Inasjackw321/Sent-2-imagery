@@ -943,6 +943,18 @@ async function enhanceWithNetwork(key) {
   }
 }
 
+/** What the active fire tests found, in a line. */
+export function fireSaid(fire) {
+  if (!fire?.pixels) {
+    return 'no active fire in this pass (a fire under thick cloud, or at night, is not seen)';
+  }
+  const n = fire.clusters;
+  const big = fire.where?.[0];
+  return `🔥 ${n} active fire${n === 1 ? '' : 's'} · ${fire.pixels} burning pixels`
+    + ` (${fire.unambiguous} certain, ${fire.potential} likely) · ~${fire.area_ha} ha`
+    + (big ? ` · largest at ${big.lat.toFixed(4)}, ${big.lon.toFixed(4)}` : '');
+}
+
 /** One line above the button saying exactly what pressing it will produce. */
 function planSummary(dates, plan) {
   if (!store.aoi) return 'Draw an area on the map to begin.';
@@ -1056,6 +1068,8 @@ function describeResult(meta) {
   if (meta.change) return `${changeSaid(meta, fmt.date)} — ${size}`;
   // Said every time: the detail in this one was drawn by a network that has
   // learnt what 2.5 m imagery looks like, not measured by the satellite.
+  // Active fire: what was found is the whole reading.
+  if (meta.fire) return `${fmt.date(meta.scene.date)} — ${fireSaid(meta.fire)}`;
   const net = meta.neural || meta.sen2sr;
   if (net) {
     return `${net.name ?? 'SEN2SR'} ×${net.scale} · ${fmt.date(meta.scene.date)} — ${size} · `

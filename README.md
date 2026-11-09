@@ -546,6 +546,25 @@ instead, which is far smaller and a little fresher. A continent's worth of
 detections would bury the browser, so when there are too many the fiercest are
 kept and the panel says how many were left out.
 
+### Finding fires exactly: Active fire detection
+
+For the most exact answer free data gives, pick a Sentinel-2 or Landsat date
+and choose **Active fire detection** under *How it looks*. Every burning
+pixel — 20 m on Sentinel-2, 30 m on Landsat — is found with the tests behind
+the operational Landsat fire product (Schroeder et al. 2016, *Remote Sensing
+of Environment* 185): flames are far brighter at 2.2 microns than in the near
+infrared, the opposite of ordinary ground. Certain fires are painted
+yellow-white, likely ones orange, both ringed in red, over the short-wave
+infrared picture, which sees through smoke. The message says how many fires,
+how many burning pixels, the area and where the largest is.
+
+It needs a daytime pass with the fire not under thick cloud, so it is a few
+times a week rather than every ten minutes — use Meteosat's Thermal view to
+spot a fire as it starts, and this to see exactly where it is burning. It
+looks at one pass at a time (a merge of dates would average a fire away) and
+switches the cloud mask off, because Sentinel-2's cloud mask can mistake a
+fire for cloud.
+
 ### Finding fires in a highlighted area: the Thermal view
 
 **Highlight an area** over the Fire Temperature product opens in the
@@ -779,6 +798,7 @@ backend/
   enhance.py     compositing, haze removal, CLAHE, denoise, white balance
   superres.py    sub-pixel registration, multi-frame fusion, deconvolution
   neural.py      SEN2SR: the 2.5 m network, its install, its weights, tiling
+  activefire.py  active fire pixels in Sentinel-2 / Landsat (Schroeder et al. 2016)
   sr4rs.py       SR4RS: its TensorFlow runtime (uv), its model, the child run
   sr4rs_worker.py  run inside that runtime: loads the SavedModel, tiles 160 → 512
   app.py         FastAPI routes and static hosting

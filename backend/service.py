@@ -10,7 +10,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from . import composite, config, enhance, neural, raster, sar, sr4rs, stac, superres
+from . import activefire, composite, config, enhance, neural, raster, sar, sr4rs, stac, superres
 from .geo import (Grid, circle_to_polygon, geodesic_area_km2, geometry_bounds,
                   normalise_aoi)
 
@@ -505,6 +505,18 @@ def render(req: dict) -> dict:
 
     applied: list[str] = []
 
+    # Active fire is about one moment and the raw short-wave infrared. A
+    # merge of dates averages a fire away; and Sentinel-2's cloud mask now
+    # and then calls a fire's saturated pixels cloud, so masking is skipped.
+    detecting = mode == "composite" and config.COMPOSITES.get(preset, {}).get("fire")
+    if detecting:
+        if len(scenes) > 1:
+            raise RenderError("Active fire detection looks at one pass — a merge "
+                              "of dates would average a fire away. Show a single date.")
+        if req.get("mask_clouds"):
+            req = {**req, "mask_clouds": False}
+            applied.append("cloud mask off — it can mistake a fire for cloud")
+
     # Two passes and the difference between them, which is neither a picture
     # of one date nor an average of several. It does not go through _gather
     # at all: that exists to fold several dates into one, and folding is the
@@ -549,6 +561,8 @@ def render(req: dict) -> dict:
             f"speckle-averaged over {len(scenes)} passes" if sat["kind"] == "radar"
             else f"median merge of {len(scenes)} dates")
 
+    # The fire tests read reflectance as measured, before any enhancement.
+    measured = bands
     bands = _enhance_bands(bands, req, applied, optical=sat["kind"] == "optical")
 
     legend = None
@@ -556,6 +570,7 @@ def render(req: dict) -> dict:
     hist = None
     index_arr = None
     stretch_bounds = None
+    fire_report = None
     pixel_area = grid.ground_res_m ** 2
 
     if mode == "index":
@@ -569,6 +584,12 @@ def render(req: dict) -> dict:
                            scale=(sr_report["scale"] if sr_report
                                   else neural_report["scale"] if neural_report else 1),
                            valid=valid)
+        if detecting:
+            found = activefire.detect(measured, grid.ground_res_m)
+            rgb = activefire.paint(rgb, found)
+            fire_report = activefire.report(found, measured, grid)
+            applied.append(f"active fire: {fire_report['pixels']} burning pixels"
+                           f" in {fire_report['clusters']} fires")
 
     # A radar swath is a slanted strip, so the catalogue can offer a pass whose
     # bounding box covers the area while the strip itself misses it. Saying so
@@ -627,6 +648,8 @@ def render(req: dict) -> dict:
         "sen2sr": neural_report if network == "sen2sr" else None,
         # The same, for whichever network drew it -- SEN2SR or SR4RS.
         "neural": neural_report,
+        # What the active fire tests found, when that was the picture.
+        "fire": fire_report,
         # Pixel size is not resolution. A small area asked for at 2048 px has
         # tiny pixels and still cannot resolve anything Sentinel-2 did not: the
         # honest figure is the satellite's 10 m, divided by what the merge won.

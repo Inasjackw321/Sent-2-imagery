@@ -165,7 +165,11 @@ def test_enhancements_are_reported_in_metadata():
 def test_every_visualisation_uses_bands_the_satellite_carries():
     """Nothing may be offered that cannot actually be rendered."""
     for key, spec in config.COMPOSITES.items():
-        assert len(spec["bands"]) == 3, f"{key} needs exactly three channels"
+        # Three drawn; a composite that also reads bands for another purpose
+        # (active fire) names which three with "display".
+        drawn = spec.get("display", spec["bands"])
+        assert len(drawn) == 3, f"{key} needs exactly three channels"
+        assert set(drawn) <= set(spec["bands"]), f"{key} draws a band it does not read"
         for band in spec["bands"]:
             assert band in config.BANDS, f"{key} wants a missing band: {band}"
     for key, spec in config.INDICES.items():

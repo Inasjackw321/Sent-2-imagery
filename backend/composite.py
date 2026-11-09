@@ -216,7 +216,9 @@ def render_composite(bands: dict, preset: str, opts: dict) -> tuple[np.ndarray, 
     low = float(opts.get("stretch_low", defaults.get("low", 2)))
     high = float(opts.get("stretch_high", defaults.get("high", 98)))
     gamma = float(opts.get("gamma") or defaults.get("gamma", 1.0))
-    keys = spec["bands"]
+    # The three bands drawn: a composite that reads more than three for some
+    # other purpose (active fire) names which three it shows.
+    keys = spec.get("display", spec["bands"])
 
     if spec.get("from_db"):
         bands = {k: from_decibels(bands[k]) for k in keys}
