@@ -568,6 +568,25 @@ instead, which is far smaller and a little fresher. A continent's worth of
 detections would bury the browser, so when there are too many the fiercest are
 kept and the panel says how many were left out.
 
+### Detect fires: every fire product in one place
+
+At the top of **Live satellites** is **🔥 Detect fires**, holding every
+product that can see a fire, from every satellite:
+
+| product | how often | detail |
+|---|---|---|
+| Meteosat Fire Temperature | every 10 minutes, day and night | 1–3 km |
+| VIIRS NOAA-20, Suomi-NPP, NOAA-21 fire detections (NASA) | a pass or two a day each | 375 m |
+| MODIS Terra and Aqua fire detections (NASA) | a pass or two a day each | 1 km |
+| Sentinel-3 SLSTR fire radiative power | daily | 1 km |
+
+Meteosat's is on when the map opens: it is the first to see a fire start.
+The polar orbiters pass at different times of day, so between them a fire is
+seen several times a day, at finer detail. **Highlight an area** plays any of
+them back over your box: 48 hours of Meteosat at ten minutes, or the last 14
+days of the others. They are taken out of their satellites' own lists, so
+fire is in one place.
+
 ### Finding fires exactly: Active fire detection
 
 For the most exact answer free data gives, pick a Sentinel-2 or Landsat date

@@ -675,7 +675,7 @@ def _live_catalogue(refresh: bool = False) -> dict:
     """
     if config.DEMO_MODE:
         found = copernicus.demo()
-        found["families"] = [*found["families"], gibs.demo()]
+        found["families"] = copernicus.gather_fires([*found["families"], gibs.demo()])
         return found
     nasa = gibs.family(refresh=refresh)
     try:
@@ -687,7 +687,8 @@ def _live_catalogue(refresh: bool = False) -> dict:
                  "attribution": gibs.ATTRIBUTION,
                  "live_within_hours": copernicus.LIVE_WITHIN.total_seconds() / 3600,
                  "days_offered": copernicus.DAYS_OFFERED}
-    found["families"] = [*found["families"], nasa]
+    # Every fire product in one family at the top: see copernicus.gather_fires.
+    found["families"] = copernicus.gather_fires([*found["families"], nasa])
     return found
 
 

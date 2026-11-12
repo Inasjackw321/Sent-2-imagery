@@ -1619,6 +1619,9 @@ body.is-walled { overflow: hidden; }
   border: 1px solid var(--line); border-radius: 6px;
 }
 .cop-layer:hover { color: var(--ink); }
+/* Detect fires names are whole sentences of satellite and resolution: wrap
+   them rather than clip them. */
+.cop-family-fires .cop-layer { white-space: normal; text-align: left; flex-basis: 100%; }
 .cop-layer.is-on {
   color: #e6fff7; background: rgba(76,224,179,.16); border-color: rgba(76,224,179,.55);
 }

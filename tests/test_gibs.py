@@ -78,7 +78,7 @@ def test_days_are_asked_for_as_plain_dates():
 def test_the_panel_shows_the_main_five_and_keeps_the_rest_behind_all_products():
     fam = gibs.sort_layers(XML, now=NOW)
     everyday = [l["subject"] for l in fam["layers"] if l["everyday"]]
-    assert everyday[:3] == ["co2", "lst_day", "fires"]
+    assert everyday[:3] == ["co2", "lst_day", "fires_viirs_noaa20"]
     assert len(everyday) <= copernicus.MOST_EVERYDAY
 
 
@@ -165,7 +165,8 @@ class TestTheRoutes:
         monkeypatch.setattr(copernicus, "layers", down)
         monkeypatch.setattr(gibs, "family", lambda refresh=False: gibs.sort_layers(XML, now=NOW))
         got = client.get("/api/copernicus").json()
-        assert [f["key"] for f in got["families"]] == ["nasa"]
+        # Detect fires gathers NASA's fire layer; the rest stay under NASA.
+        assert [f["key"] for f in got["families"]] == ["fires", "nasa"]
 
     def test_both_down_is_an_error(self, client, monkeypatch):
         monkeypatch.setattr(config, "DEMO_MODE", False)
@@ -177,3 +178,31 @@ class TestTheRoutes:
         monkeypatch.setattr(gibs, "family",
                             lambda refresh=False: {**gibs.FAMILY, "layers": [], "stale": 0})
         assert client.get("/api/copernicus").status_code == 502
+
+
+FIRE_XML = catalogue(
+    layer("VIIRS_NOAA20_Thermal_Anomalies_375m_All",
+          "Fires and Thermal Anomalies (Day and Night, VIIRS, NOAA-20)"),
+    layer("VIIRS_NOAA20_Thermal_Anomalies_375m_Day",
+          "Fires and Thermal Anomalies (Day, VIIRS, NOAA-20)"),
+    layer("VIIRS_SNPP_Thermal_Anomalies_375m_All",
+          "Fires and Thermal Anomalies (Day and Night, VIIRS, Suomi NPP)"),
+    layer("VIIRS_NOAA21_Thermal_Anomalies_375m_All",
+          "Fires and Thermal Anomalies (Day and Night, VIIRS, NOAA-21)"),
+    layer("MODIS_Terra_Thermal_Anomalies_All", "Fires and Thermal Anomalies (Day and Night, MODIS, Terra)"),
+    layer("MODIS_Aqua_Thermal_Anomalies_All", "Fires and Thermal Anomalies (Day and Night, MODIS, Aqua)"),
+    layer("MODIS_Combined_Thermal_Anomalies_All", "Fires and Thermal Anomalies (MODIS, Combined)"),
+)
+
+
+def test_every_viirs_and_modis_fire_layer_is_offered_once_day_and_night():
+    fam = gibs.sort_layers(FIRE_XML, now=NOW)
+    by = {l["subject"]: l["id"] for l in fam["layers"]}
+    assert by == {
+        "fires_viirs_noaa20": "VIIRS_NOAA20_Thermal_Anomalies_375m_All",
+        "fires_viirs_snpp": "VIIRS_SNPP_Thermal_Anomalies_375m_All",
+        "fires_viirs_noaa21": "VIIRS_NOAA21_Thermal_Anomalies_375m_All",
+        "fires_modis_terra": "MODIS_Terra_Thermal_Anomalies_All",
+        "fires_modis_aqua": "MODIS_Aqua_Thermal_Anomalies_All",
+    }
+    assert all(l["short"].endswith(("375 m", "1 km")) for l in fam["layers"])

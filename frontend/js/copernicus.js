@@ -136,10 +136,16 @@ export function wmsOptions(layerId, time, extra = {}) {
   };
 }
 
-/** Where a product's tiles come from: its family's own address (NASA's), or
- * the catalogue's (EUMETSAT's). Both are this app's proxies. */
+/** Where a product's tiles come from: its own address (a Detect fires
+ * product, which may be NASA's or EUMETSAT's), its family's (NASA's), or the
+ * catalogue's (EUMETSAT's). All of them are this app's proxies. */
 function tilesFor(pick) {
-  return pick?.family?.wms ?? catalogue.wms;
+  return pick?.layer?.wms ?? pick?.family?.wms ?? catalogue.wms;
+}
+
+/** Whose data a product is, for the credit. */
+function creditFor(pick) {
+  return pick?.layer?.attribution ?? pick?.family?.attribution ?? catalogue.attribution;
 }
 
 function show() {
@@ -163,7 +169,7 @@ function show() {
   // is the globe.
   drawn = L.tileLayer.wms(tilesFor(chosen), wmsOptions(chosen.layer.id, timeParam(), {
     opacity,
-    attribution: chosen.family.attribution ?? catalogue.attribution,
+    attribution: creditFor(chosen),
   }));
   // A swath does not cover the globe, so missing tiles are ordinary: a polar
   // orbiter has simply not been over that ground today. A run of them
@@ -310,7 +316,7 @@ function buildDock() {
       onclick: toggle },
       el('span', { class: 'cop-mark' }, '🛰'), 'Live satellites'),
     el('div', { class: 'cop-body', id: 'copBody', hidden: !enabled },
-      ...families.map((family) => el('div', { class: 'cop-family' },
+      ...families.map((family) => el('div', { class: `cop-family cop-family-${family.key}` },
         el('div', { class: 'cop-name' },
           el('i', { style: `background:${family.colour}` }),
           family.short,
@@ -721,7 +727,7 @@ async function startFilm() {
   const [rings, where] = await Promise.all([loadLand(), placeOf(map.getBounds())]);
   const template = {
     title: layer.title, frames, bounds: boundsOf(map.getBounds()), where, rings,
-    note: `${chosen.family.short} · the view on screen`, credit: catalogue?.attribution ?? '',
+    note: `${chosen.family.short} · the view on screen`, credit: creditFor(chosen) ?? '',
   };
   const chunks = [];
   const kind = filmType();
@@ -930,6 +936,10 @@ function onWheel(e) {
 
 /** A label that fits, from a title that does not. */
 function shortName(layer) {
+  // A Detect fires product is already named for its button -- which
+  // satellite, how sharp or how often -- and its satellite is not the
+  // heading above it, so it is shown whole.
+  if (layer.source_family) return layer.title;
   return layer.title
     // The satellite's name is already the heading above the list, so it is
     // only taking room away from the part that says which product this is.
@@ -1016,11 +1026,11 @@ function paint() {
   } else {
     // Said once, because it is the question the picker raises: why are these
     // two not in the list of satellites you can search by date?
-    if (chosen.family.key !== 'nasa') {
+    if ((chosen.layer.source_family ?? chosen.family.key) !== 'nasa') {
       lines.push('Published as NetCDF rather than tiled GeoTIFF, so these are '
         + 'live layers rather than scenes you can pick a date for.');
     }
-    lines.push(chosen.family.attribution ?? catalogue.attribution);
+    lines.push(creditFor(chosen));
   }
   if (problem) lines.push(problem);
   note.textContent = lines.filter(Boolean).join(' ');

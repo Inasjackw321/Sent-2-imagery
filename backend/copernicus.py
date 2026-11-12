@@ -337,6 +337,115 @@ def shortlist(key: str, group: list[dict[str, Any]]) -> None:
         entry["everyday"] = False
 
 
+# ── Detect fires: every product that can see a fire, in one place ──
+#
+# Fire is the question people bring to this panel most, and the products
+# that answer it were scattered over four satellites' lists under four
+# naming schemes. So they are gathered into one family at the top, in the
+# order worth reaching for them, and taken out of the families they came
+# from. Each keeps where its tiles come from and how its days are named.
+
+FIRE_FAMILY: dict[str, Any] = {
+    "key": "fires",
+    "short": "🔥 Detect fires",
+    "label": "Detect fires · every satellite product that sees fire",
+    "colour": "#ff7043",
+    "resolution": "375 m – 3 km",
+    "spans_days": False,
+    "about": "Every product here that detects fire. Meteosat's Fire "
+             "Temperature shows heat every ten minutes, day and night — the "
+             "first to see a fire start. VIIRS (375 m) and MODIS (1 km) are "
+             "NASA's fire detections, a few passes a day between them. "
+             "Sentinel-3's fire radiative power is daily at 1 km. Use "
+             "Highlight an area to play any of them back: the last 48 hours "
+             "of Meteosat, or 14 days of the others.",
+    "words": (),
+}
+
+# The order the products are offered in, by what is in their name: the one
+# that sees a fire first, then the sharpest detections, then the rest.
+FIRE_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("meteosat", ("fire temperature", "firetemperature", "fire_temperature")),
+    ("viirs_noaa20", ("noaa20", "noaa-20")),
+    ("viirs_snpp", ("snpp", "suomi")),
+    ("viirs_noaa21", ("noaa21", "noaa-21")),
+    ("modis_terra", ("terra",)),
+    ("modis_aqua", ("aqua",)),
+    ("slstr", ("frp", "fire radiative")),
+)
+
+FIRE_WORDS = ("fire temperature", "firetemperature", "fire_temperature", "frp",
+              "fire radiative", "thermal anomalies", "thermal_anomalies",
+              "fires and thermal")
+
+
+def is_fire(entry: dict[str, Any]) -> bool:
+    """Whether a product detects fire."""
+    low = f"{entry.get('id', '')} {entry.get('title', '')}".lower()
+    return any(word in low for word in FIRE_WORDS)
+
+
+def fire_rank(entry: dict[str, Any]) -> int:
+    low = f"{entry.get('id', '')} {entry.get('title', '')}".lower()
+    for at, (_, words) in enumerate(FIRE_ORDER):
+        if any(w in low for w in words):
+            return at
+    return len(FIRE_ORDER)
+
+
+def fire_title(entry: dict[str, Any], source: dict[str, Any]) -> str:
+    """A button-sized name: which satellite, and how sharp or how often."""
+    if entry.get("short"):
+        return entry["short"]
+    low = f"{entry.get('id', '')} {entry.get('title', '')}".lower()
+    if any(w in low for w in FIRE_ORDER[0][1]):
+        gen = "MSG" if ("msg" in low or "seviri" in low) else "MTG"
+        return f"Meteosat {gen} Fire Temperature · 10 min"
+    if "frp" in low or "fire radiative" in low:
+        sat = " 3A" if ("3a" in low or "s3a" in low) else " 3B" if ("3b" in low or "s3b" in low) else ""
+        return f"Sentinel-{sat.strip() or '3'} SLSTR fire power · 1 km"
+    return f"{source.get('short', '')} · {entry.get('title', '')}".strip(" ·")
+
+
+def gather_fires(families: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The families with a Detect fires family first, holding every fire
+    product, and those products taken out of the families they came from.
+
+    Each product carries its own tile address, orbit kind and day naming from
+    the family it came from, because one family now holds products from two
+    services and both kinds of orbit.
+    """
+    gathered: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for family in families:
+        keep = []
+        for entry in family.get("layers", []):
+            if not is_fire(entry):
+                keep.append(entry)
+                continue
+            gathered.append({
+                **entry,
+                "full_title": entry.get("title"),
+                "title": fire_title(entry, family),
+                "source": family.get("short"),
+                "source_family": family.get("key"),
+                "wms": family.get("wms") or TILES,
+                "attribution": family.get("attribution") or ATTRIBUTION,
+                "spans_days": bool(family.get("spans_days")),
+                "time_as_date": bool(family.get("time_as_date")),
+                "everyday": True,
+            })
+        rest.append({**family, "layers": keep})
+    gathered.sort(key=lambda e: (fire_rank(e), e["id"]))
+    # The first one -- Meteosat's, where there is one -- opens with the map.
+    for at, entry in enumerate(gathered):
+        entry["pinned"] = at == 0
+        entry["rank"] = at
+    fires = {**FIRE_FAMILY, "layers": gathered, "stale": 0,
+             "live_within_hours": 24 * 60}
+    return [fires, *rest]
+
+
 def live_within(family: dict[str, Any]) -> dt.timedelta:
     """How old the newest frame may be before this family counts as stale.
 
@@ -592,9 +701,11 @@ def history(found: dict[str, Any], layer_id: str, hours: float,
     if hit is None:
         raise CopernicusError(f"{layer_id} is not a layer being served now")
     family, entry = hit
-    daily = bool(family.get("spans_days"))
-    frames = (history_days(entry, days, as_date=bool(family.get("time_as_date")))
-              if daily else history_frames(entry, hours))
+    # A product can carry these itself: the Detect fires family holds
+    # products from both kinds of orbit and from two services.
+    daily = bool(entry.get("spans_days", family.get("spans_days")))
+    as_date = bool(entry.get("time_as_date", family.get("time_as_date")))
+    frames = history_days(entry, days, as_date=as_date) if daily else history_frames(entry, hours)
     step = 24 * 60 if daily else (entry.get("step_minutes") or 10)
     return {"layer": layer_id, "title": entry.get("title"), "family": family["short"],
             "daily": daily, "step_minutes": step, "frames": frames,
@@ -606,8 +717,9 @@ def history(found: dict[str, Any], layer_id: str, hours: float,
             # them black. Meteosat's disc has no gaps, and a JPEG is a tenth
             # of the size.
             "format": "image/png" if daily else "image/jpeg",
-            "wms": family.get("wms") or TILES,
-            "attribution": family.get("attribution") or found.get("attribution")}
+            "wms": entry.get("wms") or family.get("wms") or TILES,
+            "attribution": (entry.get("attribution") or family.get("attribution")
+                            or found.get("attribution"))}
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +796,9 @@ def demo() -> dict[str, Any]:
         "sentinel-3": [entry("copernicus:s3_olci_truecolour",
                              "Sentinel-3 OLCI true colour (demo)"),
                        entry("copernicus:s3_slstr_lst",
-                             "Sentinel-3 SLSTR land surface temperature (demo)")],
+                             "Sentinel-3 SLSTR land surface temperature (demo)"),
+                       entry("copernicus:sentinel3a_slstr_level2_frp",
+                             "SLSTR Level 2 Fire Radiative Power (FRP) - Sentinel-3A (demo)")],
         "sentinel-5p": [entry("copernicus:s5p_no2",
                               "Sentinel-5P nitrogen dioxide (demo)"),
                         entry("copernicus:s5p_ch4",

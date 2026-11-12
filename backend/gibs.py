@@ -67,16 +67,30 @@ FAMILY: dict[str, Any] = {
 }
 
 # One layer per subject, best first. `words`: any of these in the name or
-# title qualifies; `prefer`: each of these present ranks a layer higher;
-# `avoid`: any of these rules it out.
+# title qualifies; `need`: groups of words, one of each group must be there
+# too; `prefer`: each of these present ranks a layer higher; `avoid`: any of
+# these rules it out.
+_FIRE = ("thermal anomalies", "thermal_anomalies", "fires and thermal")
+# Day-and-night ("All") rather than the day-only or night-only variants.
+_FIRE_PREFER = ("375m", "_all", "day and night")
 SUBJECTS: tuple[dict[str, Any], ...] = (
     {"key": "co2", "words": ("carbon dioxide", "carbon_dioxide", "xco2"),
      "prefer": ("total column", "total_column", "oco-2", "oco2"),
      "avoid": ("difference", "uncertainty", "quality")},
     {"key": "lst_day", "words": ("land surface temp", "land_surface_temp"),
      "prefer": ("day", "terra", "modis"), "avoid": ("night", "anomal", "8-day", "monthly")},
-    {"key": "fires", "words": ("thermal anomalies", "thermal_anomalies", "fires and thermal"),
-     "prefer": ("375m", "viirs", "noaa20", "all"), "avoid": ("day only", "night only")},
+    # Fire detections, one layer per satellite: each passes at its own time
+    # of day, so together they see a fire more often than any one does.
+    {"key": "fires_viirs_noaa20", "words": _FIRE, "need": (("viirs",), ("noaa20", "noaa-20")),
+     "prefer": _FIRE_PREFER, "avoid": ("monthly",), "short": "VIIRS NOAA-20 fires · 375 m"},
+    {"key": "fires_viirs_snpp", "words": _FIRE, "need": (("viirs",), ("snpp", "suomi")),
+     "prefer": _FIRE_PREFER, "avoid": ("monthly",), "short": "VIIRS Suomi-NPP fires · 375 m"},
+    {"key": "fires_viirs_noaa21", "words": _FIRE, "need": (("viirs",), ("noaa21", "noaa-21")),
+     "prefer": _FIRE_PREFER, "avoid": ("monthly",), "short": "VIIRS NOAA-21 fires · 375 m"},
+    {"key": "fires_modis_terra", "words": _FIRE, "need": (("modis",), ("terra",)),
+     "prefer": _FIRE_PREFER, "avoid": ("monthly", "combined"), "short": "MODIS Terra fires · 1 km"},
+    {"key": "fires_modis_aqua", "words": _FIRE, "need": (("modis",), ("aqua",)),
+     "prefer": _FIRE_PREFER, "avoid": ("monthly", "combined"), "short": "MODIS Aqua fires · 1 km"},
     {"key": "co", "words": ("carbon monoxide", "carbon_monoxide"),
      "prefer": ("total column", "day", "airs", "mopitt"), "avoid": ("night", "monthly")},
     {"key": "aerosol", "words": ("aerosol optical depth", "aerosol_optical_depth"),
@@ -140,6 +154,8 @@ def subject_of(name: str, title: str) -> list[tuple[str, int]]:
             continue
         if any(w in low for w in subject["avoid"]):
             continue
+        if not all(any(w in low for w in group) for group in subject.get("need", ())):
+            continue
         out.append((subject["key"], sum(w in low for w in subject["prefer"])))
     return out
 
@@ -197,6 +213,8 @@ def sort_layers(xml: str, now: dt.datetime | None = None) -> dict[str, Any]:
             # A day as a plain date: that is how GIBS names its days.
             "time_default": newest.date().isoformat(),
         })
+        if subject.get("short"):
+            entry["short"] = subject["short"]
         layers.append(entry)
     copernicus.shortlist("nasa", layers)
     return {**FAMILY, "layers": layers, "stale": 0}
@@ -257,13 +275,22 @@ def demo() -> dict[str, Any]:
     seeded = [
         ("OCO-2_Carbon_Dioxide_Total_Column_Average", "Carbon Dioxide (Total Column Average, OCO-2) (demo)", "co2"),
         ("MODIS_Terra_Land_Surface_Temp_Day", "Land Surface Temperature (Day, MODIS, Terra) (demo)", "lst_day"),
-        ("VIIRS_NOAA20_Thermal_Anomalies_375m_All", "Fires and Thermal Anomalies (VIIRS, NOAA-20) (demo)", "fires"),
+        ("VIIRS_NOAA20_Thermal_Anomalies_375m_All",
+         "Fires and Thermal Anomalies (Day and Night, VIIRS, NOAA-20) (demo)", "fires_viirs_noaa20"),
+        ("VIIRS_SNPP_Thermal_Anomalies_375m_All",
+         "Fires and Thermal Anomalies (Day and Night, VIIRS, Suomi NPP) (demo)", "fires_viirs_snpp"),
+        ("MODIS_Terra_Thermal_Anomalies_All",
+         "Fires and Thermal Anomalies (Day and Night, MODIS, Terra) (demo)", "fires_modis_terra"),
+        ("MODIS_Aqua_Thermal_Anomalies_All",
+         "Fires and Thermal Anomalies (Day and Night, MODIS, Aqua) (demo)", "fires_modis_aqua"),
     ]
+    shorts = {s["key"]: s.get("short") for s in SUBJECTS}
     layers = [{"id": ident, "title": title, "subject": subject, "family": "nasa",
                "newest": mtg._stamp(newest), "oldest": mtg._stamp(newest - dt.timedelta(days=60)),
                "time_default": newest.date().isoformat(), "frames": days_for(newest),
                "step_minutes": copernicus.DAILY_STEP_MINUTES, "animates": False,
-               "live": True, "age_minutes": 24 * 60}
+               "live": True, "age_minutes": 24 * 60,
+               **({"short": shorts[subject]} if shorts.get(subject) else {})}
               for ident, title, subject in seeded]
     copernicus.shortlist("nasa", layers)
     return {**FAMILY, "layers": layers, "stale": 0}
