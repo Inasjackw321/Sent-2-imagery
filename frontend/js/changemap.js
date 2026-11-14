@@ -40,6 +40,7 @@ const state = {
   background: 'satellite',
   watermark: '@Kaldockhi',
   saved: [],
+  editing: false,         // the settings unfolded again while a map is showing
 };
 
 // Map layers, in a pane of their own above the imagery.
@@ -390,26 +391,44 @@ function section(n, title, ...children) {
     ...children);
 }
 
+/** The area in a line: its size, then its name -- isolated, because a
+ * place name in Persian or Arabic would otherwise reorder the line round it. */
+function areaLine() {
+  if (!state.bounds) return ['Drag a box on the map round the place to compare.'];
+  return [`${areaSaid(state.bounds)} · `, el('bdi', {}, state.label || 'your area')];
+}
+
+/** While a map is showing, the settings fold into one line. */
+function settingsLine() {
+  return el('div', { class: 'cm-folded' },
+    el('div', { class: 'cm-folded-text' },
+      el('div', {}, ...areaLine()),
+      el('div', { class: 'cm-dim' },
+        `${daySaid(state.start)} → ${daySaid(state.end)} · ${state.images} image${state.images === 1 ? '' : 's'} each side`)),
+    el('button', { class: 'btn btn-ghost btn-sm', onclick: () => { state.editing = true; render(); } },
+      'Edit'));
+}
+
 function render() {
   const host = $('#cmBody');
   if (!host) return;
   host.innerHTML = '';
   const presets = datePresets();
   const running = state.job?.state === 'running';
+  const folded = state.result && !state.editing && !running;
 
-  host.append(
-    el('p', { class: 'cm-intro' },
-      'Where did the ground change between two dates? Sentinel-1 radar sees through cloud '
-      + 'and at night; red is where its signal fell, cyan where it rose.'),
+  // append() would write a missing part as the word "null": only real ones.
+  const parts = folded ? [settingsLine()] : [
+    state.result ? null : el('p', { class: 'cm-intro' },
+      'What changed between two dates? Sentinel-1 radar sees through cloud and at night: '
+      + 'red where its signal fell, cyan where it rose.'),
 
     section(1, 'Where',
       el('div', { class: 'cm-row' },
         el('button', { class: 'btn btn-ghost btn-sm', onclick: drawArea }, '▭ Draw a box'),
         store.aoi ? el('button', { class: 'btn btn-ghost btn-sm', onclick: useImageryArea },
           'Use my imagery area') : null),
-      el('div', { class: 'cm-said' }, state.bounds
-        ? `${state.label || 'Your area'} · ${areaSaid(state.bounds)}`
-        : 'Drag a box on the map round the place to compare.')),
+      el('div', { class: 'cm-said' }, ...areaLine())),
 
     section(2, 'When',
       el('div', { class: 'cm-chips' },
@@ -437,15 +456,17 @@ function render() {
 
     el('button', {
       class: 'btn btn-primary cm-go', disabled: !state.plan || running || state.planning,
-      onclick: findChanges,
+      onclick: () => { state.editing = false; findChanges(); },
     }, running ? 'Making the change map…' : state.plan?.saved ? 'Open the change map' : 'Find changes'),
+  ];
+  host.append(...[
+    ...parts,
     el('div', { class: 'cm-progress', id: 'cmProgress', hidden: !running },
       el('div', { class: 'loop-track' }, el('div', { class: 'loop-fill', id: 'cmFill' })),
       el('div', { class: 'cm-said', id: 'cmMessage' }, '')),
-
     state.result ? resultBox() : null,
     savedBox(),
-  );
+  ].filter(Boolean));
   renderProgress();
 }
 
@@ -467,8 +488,9 @@ function renderProgress() {
   if (!box) return;
   box.hidden = job?.state !== 'running';
   if (!job) return;
-  $('#cmFill').style.width = `${Math.round((job.fraction ?? 0) * 100)}%`;
-  $('#cmMessage').textContent = job.message ?? '';
+  const pct = Math.round((job.fraction ?? 0) * 100);
+  $('#cmFill').style.width = `${pct}%`;
+  $('#cmMessage').textContent = `${job.message ?? ''} ${pct ? `· ${pct}%` : ''}`.trim();
 }
 
 function resultBox() {
@@ -478,7 +500,7 @@ function resultBox() {
   const km = (v) => (v < 0.01 ? `${Math.round(v * 1e6).toLocaleString()} m²` : `${v.toFixed(2)} km²`);
   return el('div', { class: 'cm-result' },
     el('div', { class: 'cm-step-head' }, el('span', { class: 'cm-n cm-n-done' }, '✓'),
-      `${r.label}: ${daySaid(r.params.start)} → ${daySaid(r.params.end)}`),
+      el('bdi', {}, r.label), `: ${daySaid(r.params.start)} → ${daySaid(r.params.end)}`),
     el('div', { class: 'cm-dim' }, `Before ${r.before_said} · After ${r.after_said} · orbit ${r.orbit}`),
     el('div', { class: 'cm-stats' },
       el('div', { class: 'cm-stat' }, el('b', { style: `color:${r.colours.decrease}` }, km(s.decrease_km2)),
