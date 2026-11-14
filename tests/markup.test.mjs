@@ -231,11 +231,29 @@ test('the editor opens on the picture that is on screen', () => {
 test('annotating needs a picture and animating needs two dates', () => {
   // Different conditions, so they are not the same disabled check.
   assert.match(PANEL, /#markupBtn'\)\.disabled = !store\.image\?\.src/);
-  assert.match(PANEL, /#animateBtn'\)\.disabled = chosenDates\(\)\.length < 2/);
+  // Any two dates of the list: the compare dialog picks them, from any mode.
+  assert.match(PANEL, /#animateBtn'\)\.disabled = !store\.aoi \|\| \(store\.dates \?\? \[\]\)\.length < 2/);
 });
 
 test('an animation of one date is refused before anything is rendered', () => {
-  const at3 = PANEL.indexOf('async function makeAnimation');
+  const at3 = PANEL.indexOf('function makeAnimation');
   const block = PANEL.slice(at3, at3 + 900);
   assert.match(block, /dates\.length < 2/);
+  const at4 = PANEL.indexOf('async function renderGif');
+  assert.match(PANEL.slice(at4, at4 + 200), /picked\.length < 2\) return/);
+});
+
+test('text is typed into a box on the picture, never window.prompt', () => {
+  assert.doesNotMatch(SOURCE, /window\.prompt/);
+  assert.match(SOURCE, /function startTyping/);
+});
+
+test('text can be made bigger', () => {
+  const ctx = fakeCtx();
+  paint(ctx, [{ kind: 'text', from: { x: 0.1, y: 0.1 }, said: 'big', colour: '#fff', size: 2.4 }], 1000, 1000);
+  const plate = ctx.calls.find((c) => c[0] === 'fillRect');
+  const small = fakeCtx();
+  paint(small, [{ kind: 'text', from: { x: 0.1, y: 0.1 }, said: 'big', colour: '#fff' }], 1000, 1000);
+  const smallPlate = small.calls.find((c) => c[0] === 'fillRect');
+  assert.ok(plate[4] > smallPlate[4] * 2, 'the XL plate is over twice as tall');
 });

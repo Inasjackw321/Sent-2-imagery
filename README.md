@@ -709,6 +709,19 @@ Writing an image to the clipboard needs a secure context and the browser's
 permission, and neither is guaranteed; if it is refused the picture is saved as
 a file instead and the app says so, so it is never lost to a permission prompt.
 
+### Annotate, and compare dates as a GIF
+
+**Annotate…** opens the picture on screen in a box to mark up: arrows, boxes
+and text in five colours. For text, pick **T**, choose a size (S, M, L, XL),
+click where it goes and type — Enter places it, Esc cancels. **Save PNG**
+saves the picture with the marks drawn in.
+
+**Compare GIF…** works in any mode once there are dates: tick the dates to
+compare (the one on screen and the one before it are ticked to start), pick
+a speed, and **Make GIF**. Each frame is drawn exactly like the picture on
+screen and stamped with its date; two dates flicker before ↔ after, more play
+as a timelapse (up to 12).
+
 ## Where the imagery comes from
 
 Sentinel-2 from [Earth Search](https://earth-search.aws.element84.com/v1),

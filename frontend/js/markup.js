@@ -36,6 +36,8 @@ const HEAD = 0.022;
 const TEXT = 0.035;
 
 export const COLOURS = ['#ff4a44', '#ffd23f', '#4ce0b3', '#7fc4ff', '#ffffff'];
+// Text sizes, as multiples of the base size.
+export const SIZES = [['S', 0.7], ['M', 1], ['L', 1.6], ['XL', 2.4]];
 
 let host = null;          // the dialog
 let picture = null;       // the HTMLImageElement being marked up
@@ -45,6 +47,8 @@ let tool = 'arrow';
 let colour = COLOURS[0];
 let drawing = null;       // the mark being dragged out
 let name = 'imagery';
+let size = 1;             // the text size being written in
+let typing = null;        // the box being typed into, while one is open
 
 /** Where a mark sits, as a fraction of the picture. */
 export function at(event, box) {
@@ -120,7 +124,7 @@ function arrow(ctx, mark, wide, tall, unit) {
 }
 
 function label(ctx, mark, wide, tall, unit) {
-  const size = Math.max(11, unit * TEXT);
+  const size = Math.max(11, unit * TEXT * (mark.size ?? 1));
   ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, sans-serif`;
   ctx.textBaseline = 'top';
   const x = mark.from.x * wide;
@@ -149,6 +153,7 @@ export function openMarkup(src, saveAs = 'imagery') {
 }
 
 export function closeMarkup() {
+  typing = null;
   host?.remove();
   host = null;
   canvas = null;
@@ -180,6 +185,15 @@ function build() {
         pick('arrow', '↗ Arrow'),
         pick('box', '▭ Box'),
         pick('text', 'T Text'),
+        el('div', { class: 'mk-sizes', title: 'Text size' },
+          ...SIZES.map(([label, k]) => el('button', {
+            class: `mk-size${k === size ? ' is-on' : ''}`, type: 'button', 'data-size': String(k),
+            onclick: () => {
+              size = k;
+              host.querySelectorAll('.mk-size').forEach(
+                (b) => b.classList.toggle('is-on', Number(b.dataset.size) === k));
+            },
+          }, label))),
         el('div', { class: 'mk-colours' },
           ...COLOURS.map((c) => el('button', {
             class: `mk-colour${c === colour ? ' is-on' : ''}`, type: 'button',
@@ -209,11 +223,13 @@ function build() {
         }, 'Close')),
       stage,
       el('div', { class: 'mk-hint' },
-        'Drag to draw. Text asks for the words, then click where it goes. '
-        + 'The marks are saved into the picture.')));
+        'Drag to draw an arrow or a box. For text, pick T, click where it goes and type — '
+        + 'Enter to place it, Esc to cancel. The marks are saved into the picture.')));
   document.body.append(host);
 
   canvas.addEventListener('pointerdown', down);
+  // A click's own default would move the focus off the text box just placed.
+  canvas.addEventListener('mousedown', (e) => { if (tool === 'text') e.preventDefault(); });
   canvas.addEventListener('pointermove', move);
   canvas.addEventListener('pointerup', up);
   canvas.addEventListener('pointercancel', up);
@@ -223,16 +239,56 @@ function down(event) {
   const box = canvas.getBoundingClientRect();
   const spot = at(event, box);
   if (tool === 'text') {
-    // eslint-disable-next-line no-alert
-    const said = window.prompt('What should it say?');
-    if (said?.trim()) {
-      marks.push({ kind: 'text', from: spot, said: said.trim(), colour });
-      redraw();
-    }
+    // A box to type into, where the text will go. Not the browser's prompt: the
+    // desktop app's window does not support it, and it handed back nothing,
+    // so no text was ever added.
+    event.preventDefault();
+    startTyping(spot, event, box);
     return;
   }
   canvas.setPointerCapture?.(event.pointerId);
   drawing = { kind: tool, from: spot, to: spot, colour };
+}
+
+/** A text box over the picture at the click; Enter places it, Esc drops it. */
+function startTyping(spot, event, box) {
+  finishTyping(true);
+  const stage = canvas.parentElement;
+  const where = stage.getBoundingClientRect();
+  const px = box.height / canvas.height;     // screen pixels per picture pixel
+  const unit = Math.min(canvas.width, canvas.height);
+  const fontPx = Math.max(11, unit * TEXT * size) * px;
+  const input = el('input', {
+    class: 'mk-type', type: 'text', placeholder: 'Type, then Enter',
+    style: `left:${event.clientX - where.left}px;top:${event.clientY - where.top}px;`
+      + `font-size:${Math.max(12, fontPx)}px;color:${colour}`,
+  });
+  typing = { input, spot, colour, size };
+  // As wide as what is typed, not an input's default twenty characters --
+  // which at the large sizes is wider than the picture.
+  const fit = () => { input.style.width = `${Math.max(8, input.value.length + 2)}ch`; };
+  input.addEventListener('input', fit);
+  fit();
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finishTyping(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finishTyping(false); }
+  });
+  input.addEventListener('blur', () => finishTyping(true));
+  stage.append(input);
+  input.focus();
+}
+
+function finishTyping(keep) {
+  if (!typing) return;
+  const { input, spot, colour: c, size: k } = typing;
+  typing = null;
+  const said = input.value.trim();
+  input.remove();
+  if (keep && said) {
+    marks.push({ kind: 'text', from: spot, said, colour: c, size: k });
+    redraw();
+  }
 }
 
 function move(event) {
@@ -256,6 +312,7 @@ function redraw() {
 }
 
 function save() {
+  finishTyping(true);
   // Drawn again at full size into a canvas of its own rather than exported
   // from the one on screen, so what is saved does not depend on how big the
   // window happened to be.

@@ -820,7 +820,9 @@ function sync() {
   // Annotating needs a picture on screen; animating needs two dates and not
   // a picture at all, so the two are not the same condition.
   $('#markupBtn').disabled = !store.image?.src;
-  $('#animateBtn').disabled = chosenDates().length < 2;
+  // Any two dates of the list will do, whatever mode the panel is in: the
+  // comparison dialog picks them.
+  $('#animateBtn').disabled = !store.aoi || (store.dates ?? []).length < 2;
   $('#copyRegion').disabled = $('#saveRegion').disabled = !store.image;
   syncNetworks();
 }
@@ -1162,28 +1164,88 @@ function exportStem() {
  * single picture does -- so a frame and a saved picture are the same pixels
  * rather than two routes that drift.
  */
-async function makeAnimation() {
-  const dates = chosenDates();
-  if (dates.length < 2) {
-    toast('Tick two or more dates to animate between them');
+/** The GIF's dates to start with: the ticked ones, or the date on screen and
+ * the one before it. Oldest first, at most the twelve a GIF holds. */
+export function gifStartDates(dates, chosen, most = GIF_MOST) {
+  const pick = chosen.length >= 2 ? chosen : (() => {
+    const at = dates.findIndex((d) => d.id === chosen[0]?.id);
+    if (at < 0) return dates.slice(0, 2);
+    return [dates[at], dates[at + 1] ?? dates[at - 1]].filter(Boolean);
+  })();
+  return pick.slice(0, most).map((d) => d.id);
+}
+
+const GIF_MOST = 12;
+const GIF_SPEEDS = [[1200, 'Slow'], [700, 'Normal'], [400, 'Fast']];
+
+/**
+ * Compare dates as an animated GIF: a dialog to tick which dates, how fast,
+ * and flicker or timelapse, from any mode. Every frame is drawn the same way
+ * as the picture on screen -- same visualisation, same tuning -- but always
+ * as a plain picture of one date: a network-enhanced or radar-change view
+ * cannot be a frame of a comparison.
+ */
+function makeAnimation() {
+  const dates = store.dates ?? [];
+  if (!store.aoi || dates.length < 2) {
+    toast('Draw an area and search for dates first');
     return;
   }
-  // The picture on screen where there is one, so the animation is the same
-  // rendering as what is being looked at, and a fresh one otherwise.
-  const body = { ...(lastRequest ?? buildRequest(dates)), scenes: dates,
-                 // Two dates bounce into the same two-frame loop, so the
-                 // flicker comparison is what you get either way; three or
-                 // more run forward and back rather than jumping from the
-                 // last frame to the first.
-                 bounce: dates.length > 2 };
+  document.querySelector('.gif-box')?.remove();
+  const ticked = new Set(gifStartDates(dates, chosenDates()));
+  let ms = 700;
+  const count = el('span', { class: 'gif-count' });
+  const go = el('button', { class: 'btn btn-primary btn-sm', value: 'ok' }, 'Make GIF');
+  const sayCount = () => {
+    count.textContent = `${ticked.size} date${ticked.size === 1 ? '' : 's'} ticked`
+      + (ticked.size > GIF_MOST ? ` — at most ${GIF_MOST}` : '');
+    go.disabled = ticked.size < 2 || ticked.size > GIF_MOST;
+  };
+  const rows = dates.map((d) => el('label', { class: 'gif-date' },
+    el('input', { type: 'checkbox', checked: ticked.has(d.id),
+      onchange: (e) => { if (e.target.checked) ticked.add(d.id); else ticked.delete(d.id); sayCount(); } }),
+    el('span', {}, fmt.date(d.date)),
+    el('small', {}, d.cloud != null ? `${Math.round(d.cloud)}% cloud` : (d.satellite ?? ''))));
+  const box = el('dialog', { class: 'gif-box' },
+    el('form', { method: 'dialog' },
+      el('h3', {}, 'Compare dates as a GIF'),
+      el('p', {}, 'Tick the dates to compare. Each is drawn exactly like the picture on screen and '
+        + 'stamped with its date. Two dates flicker before ↔ after; more play as a timelapse.'),
+      el('div', { class: 'gif-dates' }, ...rows),
+      el('div', { class: 'gif-row' }, el('span', {}, 'Speed'),
+        ...GIF_SPEEDS.map(([value, label]) => el('label', { class: 'gif-speed' },
+          el('input', { type: 'radio', name: 'gifspeed', value: String(value), checked: value === ms,
+            onchange: () => { ms = value; } }), label))),
+      el('div', { class: 'gif-row' }, count),
+      el('div', { class: 'row' },
+        el('button', { class: 'btn btn-ghost btn-sm', value: 'cancel', formnovalidate: true }, 'Cancel'),
+        go)));
+  document.body.append(box);
+  sayCount();
+  box.addEventListener('close', () => {
+    const ok = box.returnValue === 'ok';
+    box.remove();
+    if (ok) renderGif(dates.filter((d) => ticked.has(d.id)), ms);
+  });
+  box.showModal();
+}
+
+async function renderGif(picked, ms) {
+  if (picked.length < 2) return;
+  // The visualisation and tuning of the picture on screen, as a plain
+  // picture: no network enhancement, no change view, one date per frame.
+  const base = plainRequest(lastRequest ?? buildRequest(picked));
+  const body = { ...buildRequest(picked), ...base, aoi: store.aoi, scenes: picked, ms,
+    bounce: picked.length > 2 };
+  if (body.mode === 'change') { body.mode = 'composite'; delete body.colormap; }
   delete body.scene;
   try {
     const blob = await withBusy(
-      `Rendering ${dates.length} frames…`, () => api.animate(body));
-    await savePicture(blob, `${exportStem()}_${dates.length}frames.gif`,
-      { title: 'Imagery', what: `${dates.length} dates, oldest first` });
+      `Drawing ${picked.length} dates for the GIF…`, () => api.animate(body));
+    await savePicture(blob, `${exportStem()}_compare_${picked.length}dates.gif`,
+      { title: 'Imagery', what: `The GIF of ${picked.length} dates` });
   } catch (err) {
-    toast(`Could not animate that: ${err.message}`, 'err');
+    toast(`Could not make the GIF: ${err.message}`, 'err');
   }
 }
 
