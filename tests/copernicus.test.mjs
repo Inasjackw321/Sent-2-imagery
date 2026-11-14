@@ -349,9 +349,14 @@ test('the recording is offered only where there is something to animate', () => 
   assert.match(SOURCE.slice(at - 260, at), /layer\.animates/);
 });
 
-test('and it says so rather than failing where the browser cannot record', () => {
-  assert.match(SOURCE, /if \(!window\.MediaRecorder\)/);
-  assert.match(SOURCE, /cannot record video/);
+test('and it says so rather than failing where the browser cannot record', async () => {
+  // Recording is the video editor's job now: MP4 through WebCodecs, else the
+  // frames recorded as they play, else a plain error.
+  const { readFileSync } = await import('node:fs');
+  const editor = readFileSync(new URL('../frontend/js/videoeditor.js', import.meta.url), 'utf8');
+  assert.match(editor, /if \(!window\.VideoEncoder \|\| !window\.VideoFrame\) return null/);
+  assert.match(editor, /if \(!window\.MediaRecorder\) throw new Error\('this browser cannot make videos'\)/);
+  assert.match(SOURCE, /openVideoEditor\(/);
 });
 
 test('the video does not draw the basemap', () => {

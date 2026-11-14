@@ -511,6 +511,59 @@ merge just removed actually looked like. Fade it against the imagery with the
 slider; it draws under your drawn area and under the render, because it is
 context rather than the subject.
 
+## Where did the ground change: the Change map
+
+**🛰 Change map**, in the column of buttons on the map, answers "what changed
+here between these two dates?" from Sentinel-1 radar, which sees through
+cloud and at night. It is the
+[Satellite Change Map](https://github.com/Inasjackw321/satellite-change-)
+app, built in:
+
+1. **Where** — drag a box on the map, or use the area you drew for imagery.
+   Very small boxes are enlarged to 4 km across, very large ones trimmed.
+2. **When** — two dates, or one click for the last month, three months or
+   year.
+3. **How careful** — how many radar passes to average on each side, 1 to 20.
+   More finds smaller changes and downloads more.
+
+Before anything is downloaded it says exactly which passes it will use and
+roughly how much it will fetch (from Microsoft Planetary Computer: free, no
+account), and warns if the nearest pass is weeks from a date. **Find
+changes** runs it in the background with a progress bar.
+
+The result is drawn on the map: **red** where the radar signal fell (a
+building gone, flooding), **cyan** where it rose (rubble, new structures,
+vehicles), each spot numbered with how many times it changed between passes
+— click one for its size, change and dates. Underneath:
+
+- **Sensitive · Balanced · Strict** changes what counts as a change, at once;
+- a **reliability check** in plain words: the same test run on the before
+  passes against each other, where nothing should have changed;
+- **Changes / Changes on radar / Radar only**, with a before ↔ after slider;
+- the biggest spots, a click away;
+- **Save**: the picture (map, numbers, legend, scale, credits, watermark —
+  over a satellite photo or the radar), the spots as CSV or GeoJSON, a
+  GeoTIFF of the change on its 10 m grid, or **📦 Everything** in one zip
+  with a note saying what each file is.
+
+Every map is kept on this computer and listed under **Saved change maps**,
+so it reopens instantly. A flagged spot means the radar signal changed, not
+necessarily damage. The method (likelihood ratio test with Bartlett
+correction, averaging over time, speckle level measured from the data) is
+described in the original project's README.
+
+## Videos: an editor, and MP4
+
+Every **⏺ Video** — a Highlight-an-area loop or the live layer's loop — now
+draws its frames first, then opens a small editor: play and scrub it,
+**trim** the start and end, **crop** it (drag the box, or Free, 16:9,
+square, 9:16 for phones, 4:5), change the **speed**, and adjust
+**brightness, contrast and saturation**. **Save MP4** writes an H.264 MP4
+with the browser's own encoder, frame by frame — exact, and faster than
+playing it. A browser without an H.264 encoder writes MP4 with VP9 video
+instead and says so (it plays in browsers, VLC, Windows and Android, not on
+an iPhone).
+
 ## Carbon dioxide and more: NASA's satellites
 
 The **Live satellites** panel has a **NASA** family alongside EUMETSAT's,
@@ -839,6 +892,7 @@ backend/
   enhance.py     compositing, haze removal, CLAHE, denoise, white balance
   superres.py    sub-pixel registration, multi-frame fusion, deconvolution
   neural.py      SEN2SR: the 2.5 m network, its install, its weights, tiling
+  changemap/     the Change map: radar change detection (from satellite-change-)
   gibs.py        NASA GIBS live layers: CO2 (OCO-2), surface temperature, fires, air
   activefire.py  active fire pixels in Sentinel-2 / Landsat (Schroeder et al. 2016)
   sr4rs.py       SR4RS: its TensorFlow runtime (uv), its model, the child run

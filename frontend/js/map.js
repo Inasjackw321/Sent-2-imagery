@@ -16,6 +16,7 @@ import { initClouds } from './clouds.js';
 import { initRadar } from './radar.js';
 import { initMTG } from './mtg.js';
 import { initCopernicus } from './copernicus.js';
+import { initChangeMap } from './changemap.js';
 import { initAreaLoop } from './arealoop.js';
 import { initVessels } from './vessels.js';
 import { initCams } from './cams.js';
@@ -169,6 +170,7 @@ export function initMap() {
   initMTG(map);
   initAreaLoop(map);
   initCopernicus(map, { pickArea });
+  initChangeMap(map, { pickArea });
   initTracker(map);
   initVessels(map);
   initSeismic(map);

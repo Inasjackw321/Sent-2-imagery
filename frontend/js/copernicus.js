@@ -22,7 +22,8 @@ import { activeAt, paintMarks } from './incidents.js';
 import {
   FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
 } from './filmtemplate.js';
-import { $, debounce, el, toast } from './ui.js';
+import { $, debounce, el, savePicture, toast } from './ui.js';
+import { openVideoEditor } from './videoeditor.js';
 
 // How often to ask the backend what the newest frame is.
 //
@@ -447,7 +448,7 @@ function buildBar() {
     layer.animates
       ? el('button', {
         class: `cop-rec${filming ? ' is-on' : ''}`, id: 'copRec',
-        title: filming ? 'Stop and save' : 'Record the loop as a video',
+        title: filming ? 'Stop preparing the video' : 'Make a video of the loop: trim, crop and save it as MP4',
         onclick: () => (filming ? stopFilm() : startFilm()),
       }, filming ? '■' : '●')
       : null,
@@ -501,9 +502,9 @@ function refreshBar() {
   if (warmNode) warmNode.textContent = warmSaid();
   const rec = $('#copRec');
   if (rec) {
-    rec.textContent = filming ? '■' : '●';
+    rec.textContent = filming ? `■ ${filming.made ?? 0}/${filming.of ?? ''}` : '●';
     rec.classList.toggle('is-on', Boolean(filming));
-    rec.title = filming ? 'Stop and save' : 'Record the loop as a video';
+    rec.title = filming ? 'Stop preparing the video' : 'Make a video of the loop: trim, crop and save it as MP4';
   }
   const play = $('#copPlay');
   if (play) {
@@ -690,33 +691,20 @@ function stopWarming() {
 // loop: a video is watched rather than glanced at, and a front crossing the
 // country at eight frames a second is a flicker.
 const FILM_HOLD_MS = 260;
-const FILM_FPS = 25;
 
 let filming = null;
-
-function filmType() {
-  for (const kind of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8',
-                      'video/webm', 'video/mp4']) {
-    if (window.MediaRecorder?.isTypeSupported?.(kind)) return kind;
-  }
-  return '';
-}
 
 async function startFilm() {
   const layer = chosen?.layer;
   const frames = layer?.frames ?? [];
   if (filming || !map || frames.length < 2) return;
-  if (!window.MediaRecorder) {
-    problem = 'This browser cannot record video.';
-    paint();
-    return;
-  }
   pause();
 
   const box = map.getContainer().getBoundingClientRect();
   // The map is drawn onto `shot`, and the shot laid out in the video template
-  // -- the date, the timeline and a minimap of where -- on `canvas`, which is
-  // what is recorded. See filmtemplate.js.
+  // -- the date, the timeline and a minimap of where -- on `canvas`. Each
+  // frame is kept as a still and handed to the video editor, which trims,
+  // crops and encodes them as an MP4. See videoeditor.js.
   const shot = document.createElement('canvas');
   shot.width = Math.round(box.width);
   shot.height = Math.round(box.height);
@@ -729,16 +717,10 @@ async function startFilm() {
     title: layer.title, frames, bounds: boundsOf(map.getBounds()), where, rings,
     note: `${chosen.family.short} · the view on screen`, credit: creditFor(chosen) ?? '',
   };
-  const chunks = [];
-  const kind = filmType();
-  const rec = new MediaRecorder(canvas.captureStream(FILM_FPS),
-                                kind ? { mimeType: kind } : undefined);
-  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  const done = new Promise((ready) => { rec.onstop = ready; });
-  filming = { stop: false, rec };
+  filming = { stop: false, made: 0, of: frames.length };
   refreshBar();
-  rec.start();
 
+  const stills = [];
   const outlines = await bordersForFilm();
   for (const [index, frame] of frames.entries()) {
     if (filming?.stop) break;
@@ -746,16 +728,21 @@ async function startFilm() {
     await filmFrame(shot.getContext('2d'), shot, frame, outlines, box);
     drawTemplate(ctx, { ...template, picture: shot, index });
     // eslint-disable-next-line no-await-in-loop
-    await held(FILM_HOLD_MS);
+    const still = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
+    if (still) stills.push(still);
+    filming.made = index + 1;
+    refreshBar();
   }
-  rec.stop();
-  await done;
+  const stopped = filming?.stop;
   filming = null;
   if (!warming) coolOven();
   refreshBar();
-  if (chunks.length) {
-    save(new Blob(chunks, { type: kind || 'video/webm' }), layer, frames);
-  }
+  if (stopped || !stills.length) return;
+  await openVideoEditor({
+    frames: stills, fps: Math.round(1000 / FILM_HOLD_MS), name: filmName(layer, frames),
+    title: `Edit video · ${layer.title}`,
+    save: (blob, filename) => savePicture(blob, filename, { title: layer.title, what: 'Video' }),
+  });
 }
 
 function stopFilm() {
@@ -816,17 +803,11 @@ function held(ms) {
   return new Promise((done) => setTimeout(done, ms));
 }
 
-function save(blob, layer, frames) {
+/** The video's name, without its extension: product, first and last frame. */
+function filmName(layer, frames) {
   const from = frames[0]?.time?.slice(0, 16).replace(/[:T]/g, '') ?? '';
   const to = frames[frames.length - 1]?.time?.slice(11, 16).replace(':', '') ?? '';
-  const name = `${(layer?.id ?? 'satellite').split(':').pop()}_${from}-${to}`
-    + `_kaldockhi.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return `${(layer?.id ?? 'satellite').split(':').pop()}_${from}-${to}_kaldockhi`;
 }
 
 function play() {

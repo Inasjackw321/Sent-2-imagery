@@ -98,6 +98,14 @@ export const api = {
   sen2sr: () => request('/api/sen2sr', { method: 'GET' }),
   sen2srInstall: () => request('/api/sen2sr/install', { body: {} }),
   sr4rs: () => request('/api/sr4rs', { method: 'GET' }),
+  changePlan: (body) => request('/api/change/plan', { body }),
+  changeRun: (body) => request('/api/change/run', { body }),
+  changeJob: () => request('/api/change/job', { method: 'GET' }),
+  changeResult: (key, preset = 'Balanced') => request(
+    `/api/change/result/${encodeURIComponent(key)}?preset=${encodeURIComponent(preset)}`,
+    { method: 'GET' }),
+  changeSaved: () => request('/api/change/saved', { method: 'GET' }),
+  changeForget: (key) => request(`/api/change/saved/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   sr4rsInstall: () => request('/api/sr4rs/install', { body: {} }),
   renderFile: (body) => request('/api/render?download=1', { body, raw: true }),
   // The province borders, for drawing a picture with no map tiles in it.

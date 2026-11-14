@@ -25,6 +25,11 @@ from . import (
     ollama, passes, seismic, service, shake, sr4rs, stac, tracker, version, vessels,
     weather,
 )
+from .changemap import engine as changeengine
+from .changemap import export as changeexport
+from .changemap import files as changefiles
+from .changemap import jobs as changejobs
+from .changemap import view as changeview
 from .geo import geodesic_area_km2, geometry_bounds, normalise_aoi
 from .raster import BandReadError, scenes_are_safe
 
@@ -1120,6 +1125,121 @@ def sr4rs_install(request: Request, body: dict = Body(default={})) -> dict:
     if not sr4rs.runtime_ready():
         sr4rs.install_in_background()
     return sr4rs.status()
+
+
+# ---------------------------------------------------------------------------
+# Change map: where the ground changed between two dates, from Sentinel-1
+# radar (backend/changemap, ported from the Satellite Change Map app).
+# ---------------------------------------------------------------------------
+
+
+def _page_only(request: Request) -> None:
+    """Refuse a request that did not come from this app's own page."""
+    if not _from_this_page(request):
+        raise HTTPException(status_code=403, detail="Not from this app's page")
+
+
+def _change_fail(exc: Exception) -> HTTPException:
+    return _fail(exc, 400 if isinstance(exc, changejobs.ChangeError) else 502)
+
+
+@app.post("/api/change/plan")
+def change_plan(body: dict = Body(...)) -> dict:
+    """Which images a comparison would use and how much it would download.
+    Nothing is downloaded but the catalogue's answer."""
+    try:
+        return changejobs.plan(body)
+    except (changejobs.ChangeError, changeengine.source.SourceError) as exc:
+        raise _change_fail(exc)
+
+
+@app.post("/api/change/run")
+def change_run(request: Request, body: dict = Body(...)) -> dict:
+    """Start making a change map on a thread. Poll /api/change/job."""
+    _page_only(request)
+    try:
+        return changejobs.start(body)
+    except changejobs.ChangeError as exc:
+        raise _change_fail(exc)
+
+
+@app.get("/api/change/job")
+def change_job() -> dict:
+    return changejobs.status()
+
+
+@app.get("/api/change/result/{key}")
+def change_result(key: str, request: Request) -> dict:
+    """A change map at one detection setting: overlay, radar images, spots,
+    summary. Changing the setting is a new call, answered from memory."""
+    try:
+        name, det = changejobs.detection_from(dict(request.query_params))
+        return changeview.result_view(changejobs.load(key), name, det)
+    except changejobs.ChangeError as exc:
+        raise _change_fail(exc)
+
+
+@app.get("/api/change/saved")
+def change_saved() -> dict:
+    return {"saved": changejobs.saved()}
+
+
+@app.delete("/api/change/saved/{key}")
+def change_forget(key: str, request: Request) -> dict:
+    origin = request.headers.get("origin")
+    if origin is not None and urllib.parse.urlsplit(origin).netloc != request.headers.get("host", ""):
+        raise HTTPException(status_code=403, detail="Not from this app's page")
+    try:
+        changejobs.forget(key)
+    except changejobs.ChangeError as exc:
+        raise _change_fail(exc)
+    return {"saved": changejobs.saved()}
+
+
+CHANGE_KINDS = {
+    "png": ("image/png", "png"), "jpeg": ("image/jpeg", "jpg"),
+    "csv": ("text/csv", "csv"), "geojson": ("application/geo+json", "geojson"),
+    "tif": ("image/tiff", "tif"), "zip": ("application/zip", "zip"),
+}
+
+
+@app.get("/api/change/export/{key}")
+def change_export(key: str, request: Request,
+                  kind: str = Query("png"),
+                  background: str = Query("satellite"),
+                  watermark: str = Query("@Kaldockhi", max_length=60),
+                  numbers: bool = Query(True)) -> Response:
+    """A change map saved as a file: the picture, the spots, GeoJSON, a
+    GeoTIFF of the change, or a zip of everything."""
+    if kind not in CHANGE_KINDS:
+        raise HTTPException(status_code=400, detail="Not a kind of file this can make")
+    try:
+        name, det = changejobs.detection_from(dict(request.query_params))
+        result = changejobs.load(key)
+    except changejobs.ChangeError as exc:
+        raise _change_fail(exc)
+    if config.DEMO_MODE:
+        background = "radar"      # the demo reaches nobody, Esri included
+    background = background if background in ("satellite", "radar") else "satellite"
+    p = result.params
+    stem = filename_stem(f"change_{p.label}_{p.start}_{p.end}_{name.lower()}")
+    if kind in ("png", "jpeg", "zip"):
+        picture, _note = changeexport.export_image(
+            result, det, name, background=background, watermark=watermark,
+            numbers=numbers, fmt="JPEG" if kind == "jpeg" else "PNG")
+    if kind in ("png", "jpeg"):
+        body = picture
+    elif kind == "csv":
+        body = changeexport.spots_csv(result, det).encode()
+    elif kind == "geojson":
+        body = changefiles.spots_geojson(result, det).encode()
+    elif kind == "tif":
+        body = changefiles.change_geotiff(result, det)
+    else:
+        body = changefiles.bundle(result, name, det, stem, picture)
+    media, ext = CHANGE_KINDS[kind]
+    return Response(content=body, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{stem}.{ext}"'})
 
 
 @app.post("/api/render")

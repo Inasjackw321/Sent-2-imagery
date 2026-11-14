@@ -1,0 +1,2 @@
+mp4-muxer 5.2.2 by Vanilagy (MIT, see LICENSE): https://github.com/Vanilagy/mp4-muxer
+Used by js/videoeditor.js to write recorded videos as MP4 files.

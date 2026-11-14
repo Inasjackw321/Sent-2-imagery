@@ -13,7 +13,8 @@
 // so the canvas the video is recorded from is not tainted.
 
 import { api } from './api.js';
-import { el, toast } from './ui.js';
+import { el, savePicture, toast } from './ui.js';
+import { openVideoEditor } from './videoeditor.js';
 import {
   FILM_H, FILM_W, boundsOf, drawTemplate, loadLand, placeOf,
 } from './filmtemplate.js';
@@ -34,7 +35,6 @@ export const SPEEDS = [1, 2, 4, 8, 12, 16];
 const DEFAULT_SPEED = 8;
 // A fortnight of days at eight a second is under two seconds of video.
 const DAILY_SPEED = 2;
-const FILM_FPS = 25;
 
 // The data credit EUMETSAT asks for, carried in every saved video.
 const CREDIT = 'Contains modified Copernicus data · EUMETSAT View';
@@ -782,8 +782,9 @@ function refreshBar() {
   for (const b of [parts.back, parts.on, parts.scrub]) b.disabled = filming;
   parts.scrub.value = String(at);
   parts.when.textContent = frameSaid(loop.frames[at]);
-  parts.rec.textContent = filming ? '■ Recording' : '⏺ Video';
-  parts.rec.title = filming ? 'Stop recording' : `Save the ${loop.span.toLowerCase()} as a video`;
+  if (!filming) parts.rec.textContent = '⏺ Video';
+  parts.rec.title = filming ? 'Stop preparing the video'
+    : `Make a video of the ${loop.span.toLowerCase()}: trim, crop and save it as MP4`;
   parts.rec.classList.toggle('is-on', filming);
   parts.rec.disabled = loop.done < 2;
   parts.heat.value = loop.view;
@@ -796,20 +797,8 @@ function refreshBar() {
 
 // ── The video ──────────────────────────────────────────────────
 
-function filmType() {
-  for (const kind of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8',
-                      'video/webm', 'video/mp4']) {
-    if (window.MediaRecorder?.isTypeSupported?.(kind)) return kind;
-  }
-  return '';
-}
-
 async function film() {
   if (!loop || loop.filming || loop.done < 2) return;
-  if (!window.MediaRecorder) {
-    toast('This browser cannot record video.', 'err');
-    return;
-  }
   pause();
   const mine = loop;
   const held = mine.frames.filter((f) => f.img);
@@ -823,13 +812,9 @@ async function film() {
   refreshBar();
   const [rings, where] = await Promise.all([loadLand(), placeOf(mine.bounds)]);
   const bounds = boundsOf(mine.bounds);
-  const kind = filmType();
-  const chunks = [];
-  const rec = new MediaRecorder(canvas.captureStream(FILM_FPS),
-    kind ? { mimeType: kind } : undefined);
-  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  const stopped = new Promise((ready) => { rec.onstop = ready; });
-  rec.start();
+  // Every frame drawn once, exactly, and kept as a still: the editor then
+  // trims, crops and encodes them -- nothing is recorded in real time.
+  const stills = [];
   for (const [index, frame] of held.entries()) {
     if (mine.filming.stop || loop !== mine) break;
     drawTemplate(ctx, {
@@ -839,23 +824,21 @@ async function film() {
           : mine.view === 'contrast' ? ' · heat contrast on' : ''),
       credit: CREDIT,
     });
-    show(mine.frames.indexOf(frame));
     // eslint-disable-next-line no-await-in-loop
-    await new Promise((done) => setTimeout(done, 1000 / mine.speed));
+    const still = await new Promise((done) => canvas.toBlob(done, 'image/jpeg', 0.92));
+    if (still) stills.push(still);
+    if (mine.bar) mine.bar.rec.textContent = `■ ${index + 1} / ${held.length}`;
   }
-  rec.stop();
-  await stopped;
+  const stopped = mine.filming.stop;
   if (loop === mine) {
     mine.filming = null;
     refreshBar();
   }
-  if (!chunks.length) return;
-  const blob = new Blob(chunks, { type: kind || 'video/webm' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `${filmName(mine.layerId, held)}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  if (stopped || !stills.length) return;
+  await openVideoEditor({
+    frames: stills, fps: mine.speed, name: filmName(mine.layerId, held),
+    title: `Edit video · ${mine.title}`,
+    save: (blob, filename) => savePicture(blob, filename, { title: mine.title, what: 'Video' }),
+  });
 }
 
